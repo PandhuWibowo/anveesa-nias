@@ -64,6 +64,7 @@ func main() {
 
 	// Apply middleware stack
 	var handler http.Handler = mux
+	handler = mw.InjectUserContext(cfg.JWTSecret)(handler) // Extract JWT claims and set headers
 	handler = mw.CORS(cfg.CORSOrigin)(handler)
 	handler = mw.SecurityHeaders(handler)
 
@@ -169,6 +170,10 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		if len(parts) >= 2 {
 			sub := parts[1]
 			switch {
+			case sub == "folder" && r.Method == http.MethodPatch:
+				handlers.UpdateConnectionFolder()(w, r)
+			case sub == "visibility" && r.Method == http.MethodPatch:
+				handlers.UpdateConnectionVisibility()(w, r)
 			case sub == "query" && r.Method == http.MethodPost:
 				handlers.ExecuteQuery()(w, r)
 			case sub == "explain" && r.Method == http.MethodPost:
@@ -295,6 +300,26 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 
+	// ── User Connection Assignments ──────────────────────────────
+	mux.HandleFunc("/api/users/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/api/users/")
+		parts := strings.Split(path, "/")
+		
+		if len(parts) >= 2 && parts[1] == "connections" {
+			switch r.Method {
+			case http.MethodGet:
+				handlers.GetUserConnections()(w, r)
+			case http.MethodPost:
+				handlers.SetUserConnections()(w, r)
+			default:
+				http.NotFound(w, r)
+			}
+			return
+		}
+		
+		http.NotFound(w, r)
+	})
+
 	// Start background scheduler
 	handlers.StartScheduler()
 
@@ -409,7 +434,48 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 
-	// ── RBAC ─────────────────────────────────────────────────────
+	// ── RBAC: Roles ───────────────────────────────────────────────
+	mux.HandleFunc("/api/roles", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handlers.ListRoles()(w, r)
+		case http.MethodPost:
+			handlers.CreateRole()(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/roles/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handlers.GetRole()(w, r)
+		case http.MethodPut:
+			handlers.UpdateRole()(w, r)
+		case http.MethodDelete:
+			handlers.DeleteRole()(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	// ── RBAC: Permissions ─────────────────────────────────────────
+	mux.HandleFunc("/api/app-permissions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handlers.ListAppPermissions()(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/my-permissions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// TODO: Implement GetMyPermissions handler
+			http.Error(w, "not implemented yet", http.StatusNotImplemented)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+
+	// ── RBAC: Legacy permissions table ────────────────────────────
 	mux.HandleFunc("/api/permissions", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:

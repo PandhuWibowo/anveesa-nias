@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -30,6 +31,14 @@ func RequireAuth(secret string) func(http.Handler) http.Handler {
 				http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 				return
 			}
+			
+			// Extract claims and set as headers for downstream handlers
+			if claims, ok := token.Claims.(*Claims); ok {
+				r.Header.Set("X-User-ID", strconv.FormatInt(claims.UserID, 10))
+				r.Header.Set("X-Username", claims.Username)
+				r.Header.Set("X-User-Role", claims.Role)
+			}
+			
 			next.ServeHTTP(w, r)
 		})
 	}

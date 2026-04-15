@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import axios from 'axios'
 
 interface AuditEntry {
@@ -22,6 +22,55 @@ const loading = ref(false)
 const filter = ref('')
 const limit = ref(200)
 const expanded = ref<number | null>(null)
+
+// Column visibility & sorting
+type ColumnKey = 'time' | 'user' | 'connection' | 'sql' | 'duration' | 'rows' | 'status'
+const allColumns: ColumnKey[] = ['time', 'user', 'connection', 'sql', 'duration', 'rows', 'status']
+const visibleColumns = ref<Set<ColumnKey>>(new Set(allColumns))
+const showColumnMenu = ref(false)
+const sortKey = ref<keyof AuditEntry | ''>('')
+const sortDir = ref<'asc' | 'desc'>('desc')
+
+const columnMap: Record<ColumnKey, { label: string; key: keyof AuditEntry }> = {
+  time: { label: 'Time', key: 'executed_at' },
+  user: { label: 'User', key: 'username' },
+  connection: { label: 'Connection', key: 'conn_name' },
+  sql: { label: 'SQL', key: 'sql' },
+  duration: { label: 'Duration', key: 'duration_ms' },
+  rows: { label: 'Rows', key: 'row_count' },
+  status: { label: 'Status', key: 'error' },
+}
+
+function toggleColumn(col: ColumnKey) {
+  if (visibleColumns.value.has(col)) {
+    visibleColumns.value.delete(col)
+  } else {
+    visibleColumns.value.add(col)
+  }
+  visibleColumns.value = new Set(visibleColumns.value)
+}
+
+function sortBy(key: keyof AuditEntry) {
+  if (sortKey.value === key) {
+    sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortKey.value = key
+    sortDir.value = 'asc'
+  }
+}
+
+const sortedEntries = computed(() => {
+  if (!sortKey.value) return entries.value
+  const sorted = [...entries.value]
+  sorted.sort((a, b) => {
+    const aVal = a[sortKey.value as keyof AuditEntry]
+    const bVal = b[sortKey.value as keyof AuditEntry]
+    if (aVal === bVal) return 0
+    const cmp = aVal > bVal ? 1 : -1
+    return sortDir.value === 'asc' ? cmp : -cmp
+  })
+  return sorted
+})
 
 async function load() {
   loading.value = true
@@ -78,6 +127,26 @@ onMounted(load)
           <option :value="500">500</option>
           <option :value="1000">1000</option>
         </select>
+        
+        <!-- Column visibility toggle -->
+        <div class="col-vis-wrapper" @click.stop>
+          <button class="base-btn base-btn--ghost base-btn--sm" @click="showColumnMenu = !showColumnMenu">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+            Columns
+          </button>
+          <div v-if="showColumnMenu" class="col-vis-menu">
+            <div class="col-vis-header">
+              <span style="font-weight:600;font-size:11px">Column Visibility</span>
+            </div>
+            <div class="col-vis-list">
+              <label v-for="[key, col] in Object.entries(columnMap)" :key="key" class="col-vis-item">
+                <input type="checkbox" :checked="visibleColumns.has(key as ColumnKey)" @change="toggleColumn(key as ColumnKey)" />
+                <span>{{ col.label }}</span>
+              </label>
+            </div>
+          </div>
+        </div>
+        
         <button class="base-btn base-btn--ghost base-btn--sm" @click="load">Refresh</button>
         <button class="base-btn base-btn--ghost base-btn--sm" style="color:var(--danger)" @click="clearAll">Clear All</button>
       </div>
@@ -90,32 +159,50 @@ onMounted(load)
         <table v-else class="al-table">
           <thead>
             <tr>
-              <th>Time</th>
-              <th>User</th>
-              <th>Connection</th>
-              <th>SQL</th>
-              <th class="al-th-right">Duration</th>
-              <th class="al-th-right">Rows</th>
-              <th>Status</th>
+              <th v-if="visibleColumns.has('time')" class="al-th-sort" @click="sortBy('executed_at')">
+                Time
+                <span class="sort-icon">{{ sortKey === 'executed_at' ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}</span>
+              </th>
+              <th v-if="visibleColumns.has('user')" class="al-th-sort" @click="sortBy('username')">
+                User
+                <span class="sort-icon">{{ sortKey === 'username' ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}</span>
+              </th>
+              <th v-if="visibleColumns.has('connection')" class="al-th-sort" @click="sortBy('conn_name')">
+                Connection
+                <span class="sort-icon">{{ sortKey === 'conn_name' ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}</span>
+              </th>
+              <th v-if="visibleColumns.has('sql')" class="al-th-sort" @click="sortBy('sql')">
+                SQL
+                <span class="sort-icon">{{ sortKey === 'sql' ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}</span>
+              </th>
+              <th v-if="visibleColumns.has('duration')" class="al-th-right al-th-sort" @click="sortBy('duration_ms')">
+                Duration
+                <span class="sort-icon">{{ sortKey === 'duration_ms' ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}</span>
+              </th>
+              <th v-if="visibleColumns.has('rows')" class="al-th-right al-th-sort" @click="sortBy('row_count')">
+                Rows
+                <span class="sort-icon">{{ sortKey === 'row_count' ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}</span>
+              </th>
+              <th v-if="visibleColumns.has('status')">Status</th>
             </tr>
           </thead>
           <tbody>
-            <template v-for="e in entries" :key="e.id">
+            <template v-for="e in sortedEntries" :key="e.id">
               <tr class="al-row" :class="{ 'al-row--err': e.error, 'al-row--open': expanded === e.id }" @click="expanded = expanded === e.id ? null : e.id">
-                <td class="al-td-dim al-td-nowrap">{{ new Date(e.executed_at).toLocaleTimeString() }}</td>
-                <td class="al-td-user">{{ e.username || '—' }}</td>
-                <td class="al-td-dim">{{ e.conn_name || '—' }}</td>
-                <td class="al-td-sql">{{ e.sql }}</td>
-                <td class="al-td-right al-td-num">{{ e.duration_ms }}ms</td>
-                <td class="al-td-right al-td-num">{{ e.row_count }}</td>
-                <td>
+                <td v-if="visibleColumns.has('time')" class="al-td-dim al-td-nowrap">{{ new Date(e.executed_at).toLocaleTimeString() }}</td>
+                <td v-if="visibleColumns.has('user')" class="al-td-user">{{ e.username || '—' }}</td>
+                <td v-if="visibleColumns.has('connection')" class="al-td-dim">{{ e.conn_name || '—' }}</td>
+                <td v-if="visibleColumns.has('sql')" class="al-td-sql">{{ e.sql }}</td>
+                <td v-if="visibleColumns.has('duration')" class="al-td-right al-td-num">{{ e.duration_ms }}ms</td>
+                <td v-if="visibleColumns.has('rows')" class="al-td-right al-td-num">{{ e.row_count }}</td>
+                <td v-if="visibleColumns.has('status')">
                   <span class="al-badge" :class="e.error ? 'al-badge--err' : 'al-badge--ok'">
                     {{ e.error ? 'Error' : 'OK' }}
                   </span>
                 </td>
               </tr>
               <tr v-if="expanded === e.id" class="al-detail-row">
-                <td colspan="7">
+                <td :colspan="visibleColumns.size">
                   <div class="al-detail">
                     <div v-if="e.error" class="al-detail-error">{{ e.error }}</div>
                     <pre class="al-detail-sql">{{ e.sql }}</pre>
@@ -128,8 +215,8 @@ onMounted(load)
                 </td>
               </tr>
             </template>
-            <tr v-if="entries.length === 0">
-              <td colspan="7" style="text-align:center;color:var(--text-muted);padding:24px;font-size:13px">
+            <tr v-if="sortedEntries.length === 0">
+              <td :colspan="visibleColumns.size" style="text-align:center;color:var(--text-muted);padding:24px;font-size:13px">
                 No audit log entries.
               </td>
             </tr>
@@ -174,6 +261,20 @@ onMounted(load)
   font-size: 10.5px; font-weight: 600; text-transform: uppercase;
   letter-spacing: 0.4px; color: var(--text-muted); text-align: left;
 }
+.al-th-sort {
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.12s, background 0.12s;
+}
+.al-th-sort:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.sort-icon {
+  margin-left: 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
 .al-table td { padding: 7px 14px; border-bottom: 1px solid var(--border); color: var(--text-primary); }
 .al-row { cursor: pointer; transition: background 0.1s; }
 .al-row:hover td { background: var(--bg-hover); }
@@ -202,4 +303,45 @@ onMounted(load)
   color: var(--text-primary); white-space: pre-wrap; word-break: break-all;
 }
 .al-detail-meta { font-size: 11px; color: var(--text-muted); }
+
+/* Column visibility dropdown */
+.col-vis-wrapper { position: relative; }
+.col-vis-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  min-width: 180px;
+  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+}
+.col-vis-header {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+.col-vis-list {
+  overflow-y: auto;
+  max-height: 260px;
+  padding: 4px;
+}
+.col-vis-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.col-vis-item:hover { background: var(--bg-hover); }
+.col-vis-item input[type="checkbox"] { cursor: pointer; }
 </style>

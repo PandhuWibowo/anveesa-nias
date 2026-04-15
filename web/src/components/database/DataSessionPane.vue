@@ -70,6 +70,7 @@ async function handleSelectTable(payload: { db: string; table: string }) {
 
 function handleSort(col: string, dir: 'asc' | 'desc') { sortBy.value = col; sortDir.value = dir; page.value = 1; loadData() }
 function handlePageChange(p: number) { page.value = p; loadData() }
+function handlePageSizeChange(size: number) { pageSize.value = size; page.value = 1; loadData() }
 
 async function handleSaveRow(payload: { pkValue: unknown; updates: Record<string, unknown> }) {
   if (!selected.value || !props.connId) return
@@ -304,7 +305,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           <span v-else style="font-size:13px;color:var(--text-muted)">Select a table to browse data</span>
         </div>
         <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column">
-          <DataTable v-if="selected" :columns="columns" :rows="rows" :loading="loading" :page="page" :page-size="pageSize" :total-rows="totalRows" :editable="editMode" :pk-column="pkColumn" @page-change="handlePageChange" @sort="handleSort" @save-row="handleSaveRow" @delete-row="handleDeleteRow" @add-row="handleAddRow" />
+          <DataTable v-if="selected" :columns="columns" :rows="rows" :loading="loading" :page="page" :page-size="pageSize" :total-rows="totalRows" :editable="editMode" :pk-column="pkColumn" @page-change="handlePageChange" @page-size-change="handlePageSizeChange" @sort="handleSort" @save-row="handleSaveRow" @delete-row="handleDeleteRow" @add-row="handleAddRow" />
           <div v-else class="empty-state">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="color:var(--text-muted)"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
             Select a table from the left to browse its data.

@@ -325,13 +325,15 @@ func ListConnections() http.HandlerFunc {
 			        c.folder_id, COALESCE(c.visibility,'shared'), COALESCE(c.owner_id,0), c.created_at
 			 FROM connections c ORDER BY c.id`
 		} else {
-			// Regular user: filter by visibility and ownership
-			query = `SELECT c.id, c.name, c.driver, COALESCE(c.host,''), COALESCE(c.port,0), c.database,
+			// Regular user: filter by visibility, ownership, explicit permissions, and folder membership
+			query = `SELECT DISTINCT c.id, c.name, c.driver, COALESCE(c.host,''), COALESCE(c.port,0), c.database,
 			        COALESCE(c.username,''), c.ssl, COALESCE(c.tags,''),
 			        COALESCE(c.ssh_host,''), COALESCE(c.ssh_port,22), COALESCE(c.ssh_user,''),
 			        c.folder_id, COALESCE(c.visibility,'shared'), COALESCE(c.owner_id,0), c.created_at
 			 FROM connections c
 			 LEFT JOIN connection_folders f ON c.folder_id = f.id
+			 LEFT JOIN user_connections uc ON c.id = uc.conn_id AND uc.user_id = ?
+			 LEFT JOIN folder_members fm ON f.id = fm.folder_id AND fm.user_id = ?
 			 WHERE 
 			   -- Connection is shared and not in a private folder
 			   (c.visibility = 'shared' AND (f.id IS NULL OR f.visibility = 'shared'))
@@ -339,8 +341,12 @@ func ListConnections() http.HandlerFunc {
 			   OR c.owner_id = ?
 			   -- OR user owns the folder containing the connection
 			   OR f.owner_id = ?
+			   -- OR connection has been explicitly assigned to user
+			   OR uc.conn_id IS NOT NULL
+			   -- OR user is a member of the folder (access group)
+			   OR fm.folder_id IS NOT NULL
 			 ORDER BY c.id`
-			args = append(args, userID, userID)
+			args = append(args, userID, userID, userID, userID)
 		}
 
 		rows, err := appdb.DB.Query(query, args...)
@@ -476,6 +482,106 @@ func DeleteConnection() http.HandlerFunc {
 		EvictFromPool(id)
 		appdb.DB.Exec(`DELETE FROM connections WHERE id=?`, id)
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// UpdateConnectionFolder updates the folder and/or visibility of a connection
+func UpdateConnectionFolder() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		
+		// Extract connection ID from URL
+		path := strings.TrimPrefix(r.URL.Path, "/api/connections/")
+		parts := strings.Split(path, "/")
+		if len(parts) < 2 || parts[1] != "folder" {
+			http.Error(w, `{"error":"invalid endpoint"}`, http.StatusBadRequest)
+			return
+		}
+		
+		id, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Check permission
+		if !canModifyConnection(r, id) {
+			http.Error(w, `{"error":"permission denied"}`, http.StatusForbidden)
+			return
+		}
+
+		var payload struct {
+			FolderID   *int64  `json:"folder_id"`
+			Visibility *string `json:"visibility"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Update folder_id and/or visibility
+		if payload.FolderID != nil {
+			_, err = appdb.DB.Exec(`UPDATE connections SET folder_id = ? WHERE id = ?`, payload.FolderID, id)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"failed to update folder: %v"}`, err), http.StatusInternalServerError)
+				return
+			}
+		}
+
+		if payload.Visibility != nil {
+			_, err = appdb.DB.Exec(`UPDATE connections SET visibility = ? WHERE id = ?`, *payload.Visibility, id)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"failed to update visibility: %v"}`, err), http.StatusInternalServerError)
+				return
+			}
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"message": "connection updated"})
+	}
+}
+
+// UpdateConnectionVisibility updates only the visibility of a connection
+func UpdateConnectionVisibility() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		
+		// Extract connection ID from URL
+		path := strings.TrimPrefix(r.URL.Path, "/api/connections/")
+		parts := strings.Split(path, "/")
+		if len(parts) < 2 || parts[1] != "visibility" {
+			http.Error(w, `{"error":"invalid endpoint"}`, http.StatusBadRequest)
+			return
+		}
+		
+		id, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Check permission
+		if !canModifyConnection(r, id) {
+			http.Error(w, `{"error":"permission denied"}`, http.StatusForbidden)
+			return
+		}
+
+		var payload struct {
+			Visibility string `json:"visibility"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+			return
+		}
+
+		_, err = appdb.DB.Exec(`UPDATE connections SET visibility = ? WHERE id = ?`, payload.Visibility, id)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"failed to update visibility: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"message": "visibility updated"})
 	}
 }
 

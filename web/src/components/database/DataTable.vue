@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import CellInspector from '@/components/ui/CellInspector.vue'
 
 interface Props {
@@ -28,6 +28,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   (e: 'page-change', page: number): void
+  (e: 'page-size-change', size: number): void
   (e: 'sort', col: string, dir: 'asc' | 'desc'): void
   (e: 'cell-click', payload: { row: number; col: string; value: unknown }): void
   (e: 'save-row', payload: { pkValue: unknown; updates: Record<string, unknown> }): void
@@ -37,6 +38,34 @@ const emit = defineEmits<{
 
 const sortCol = ref<string>('')
 const sortDir = ref<'asc' | 'desc'>('asc')
+
+// Column visibility state (all visible by default)
+const visibleColumns = ref<Set<string>>(new Set(props.columns))
+const showColumnMenu = ref(false)
+
+// Reset all columns to visible when props.columns changes (new table selected)
+watch(() => props.columns, (newColumns) => {
+  visibleColumns.value = new Set(newColumns)
+}, { immediate: true })
+
+const filteredColumns = computed(() => props.columns.filter(c => visibleColumns.value.has(c)))
+
+function toggleColumn(col: string) {
+  if (visibleColumns.value.has(col)) {
+    visibleColumns.value.delete(col)
+  } else {
+    visibleColumns.value.add(col)
+  }
+  visibleColumns.value = new Set(visibleColumns.value)
+}
+
+function showAllColumns() {
+  visibleColumns.value = new Set(props.columns)
+}
+
+function hideAllColumns() {
+  visibleColumns.value = new Set()
+}
 
 // Cell inspector state
 const inspector = ref({ show: false, column: '', value: undefined as unknown, rowIndex: 0 })
@@ -153,6 +182,7 @@ function addRow() {
             <th
               v-for="col in columns"
               :key="col"
+              v-show="visibleColumns.has(col)"
               :class="{ sorted: sortCol === col }"
               @click="handleSort(col)"
             >
@@ -181,6 +211,7 @@ function addRow() {
             <td
               v-for="(val, cIdx) in row"
               :key="cIdx"
+              v-show="visibleColumns.has(columns[cIdx])"
               :class="cellClass(val)"
               @click="handleCellClick(rIdx, cIdx, val)"
             >
@@ -204,7 +235,7 @@ function addRow() {
                 <button class="rbtn rbtn--cancel" @click="showNewRow=false" title="Cancel">✕</button>
               </div>
             </td>
-            <td v-for="col in columns" :key="col">
+            <td v-for="col in columns" :key="col" v-show="visibleColumns.has(col)">
               <input
                 class="cell-input"
                 :placeholder="col"
@@ -222,12 +253,46 @@ function addRow() {
       <button class="base-btn base-btn--ghost base-btn--xs" @click="showNewRow=true">+ Add row</button>
     </div>
 
-    <!-- Pagination -->
+    <!-- Pagination & Controls -->
     <div class="pagination" v-if="totalRows > 0">
       <span class="pagination__info">
         Rows {{ (page - 1) * pageSize + 1 }}–{{ Math.min(page * pageSize, totalRows) }} of {{ totalRows.toLocaleString() }}
       </span>
+      <div style="display:flex;align-items:center;gap:6px;margin-left:12px">
+        <span style="font-size:11px;color:var(--text-muted)">Per page:</span>
+        <select class="page-size-select" :value="pageSize" @change="emit('page-size-change', Number(($event.target as HTMLSelectElement).value))">
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+          <option value="500">500</option>
+        </select>
+      </div>
       <div class="pagination__spacer" />
+      
+      <!-- Column visibility toggle -->
+      <div class="col-vis-wrapper" @click.stop>
+        <button class="base-btn base-btn--ghost base-btn--xs" @click="showColumnMenu = !showColumnMenu">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+          Columns
+        </button>
+        <div v-if="showColumnMenu" class="col-vis-menu">
+          <div class="col-vis-header">
+            <span style="font-weight:600;font-size:11px">Column Visibility</span>
+            <div style="display:flex;gap:4px">
+              <button class="col-vis-btn" @click="showAllColumns">All</button>
+              <button class="col-vis-btn" @click="hideAllColumns">None</button>
+            </div>
+          </div>
+          <div class="col-vis-list">
+            <label v-for="col in columns" :key="col" class="col-vis-item">
+              <input type="checkbox" :checked="visibleColumns.has(col)" @change="toggleColumn(col)" />
+              <span>{{ col }}</span>
+            </label>
+          </div>
+        </div>
+      </div>
+      
       <button class="base-btn base-btn--ghost base-btn--xs" :disabled="page <= 1" @click="emit('page-change', page - 1)">← Prev</button>
       <span style="font-size:12px;color:var(--text-secondary)">{{ page }} / {{ totalPages }}</span>
       <button class="base-btn base-btn--ghost base-btn--xs" :disabled="page >= totalPages" @click="emit('page-change', page + 1)">Next →</button>
@@ -287,5 +352,84 @@ function addRow() {
   padding: 6px 12px;
   border-top: 1px solid var(--border);
   background: var(--bg-elevated);
+}
+
+/* Page size selector */
+.page-size-select {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 11px;
+  cursor: pointer;
+  outline: none;
+}
+.page-size-select:hover {
+  background: var(--bg-hover);
+}
+
+/* Column visibility dropdown */
+.col-vis-wrapper {
+  position: relative;
+}
+.col-vis-menu {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  min-width: 200px;
+  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+}
+.col-vis-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+.col-vis-btn {
+  padding: 2px 6px;
+  font-size: 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.col-vis-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.col-vis-list {
+  overflow-y: auto;
+  max-height: 260px;
+  padding: 4px;
+}
+.col-vis-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.col-vis-item:hover {
+  background: var(--bg-hover);
+}
+.col-vis-item input[type="checkbox"] {
+  cursor: pointer;
 }
 </style>

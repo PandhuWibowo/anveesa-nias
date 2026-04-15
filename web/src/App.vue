@@ -1,15 +1,23 @@
 <script setup lang="ts">
 import { NConfigProvider, NMessageProvider, NDialogProvider, NNotificationProvider, NSpin } from 'naive-ui'
-import { onMounted, computed } from 'vue'
+import { onMounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useTheme } from '@/composables/useTheme'
 import { useAuth } from '@/composables/useAuth'
 
 const { naiveTheme, themeOverrides, syncTheme } = useTheme()
-const { authReady, fetchMe } = useAuth()
+const { authReady, authEnabled, isAuthenticated, fetchMe } = useAuth()
+const router = useRouter()
+const route = useRoute()
 
 onMounted(async () => {
   syncTheme()
   await fetchMe()
+  
+  // After auth check, redirect to login if auth is enabled and user is not authenticated
+  if (authEnabled.value && !isAuthenticated.value && route.name !== 'login') {
+    router.push({ name: 'login' })
+  }
 })
 </script>
 

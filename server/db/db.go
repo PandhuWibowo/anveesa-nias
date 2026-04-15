@@ -159,6 +159,68 @@ func migrate() error {
 		`ALTER TABLE connection_folders ADD COLUMN parent_id INTEGER DEFAULT NULL`,
 		`ALTER TABLE connection_folders ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private'`,
 		`ALTER TABLE connection_folders ADD COLUMN color TEXT DEFAULT '#4f9cf9'`,
+
+		// ── Phase 1: Enhanced Database Operation Permissions ──
+		`ALTER TABLE permissions ADD COLUMN db_permissions TEXT DEFAULT '["select","insert","update","delete","create","alter","drop"]'`,
+		`ALTER TABLE permissions ADD COLUMN database_filter TEXT DEFAULT ''`,
+		`ALTER TABLE permissions ADD COLUMN is_active INTEGER DEFAULT 1`,
+		`ALTER TABLE connections ADD COLUMN environment TEXT DEFAULT 'development'`,
+
+		// ── Phase 2: Access Groups (Folder Extensions) ──
+		`ALTER TABLE connection_folders ADD COLUMN role_restrict TEXT DEFAULT ''`,
+		`ALTER TABLE connection_folders ADD COLUMN is_active INTEGER DEFAULT 1`,
+
+		// Folder members (group membership)
+		`CREATE TABLE IF NOT EXISTS folder_members (
+			folder_id INTEGER NOT NULL REFERENCES connection_folders(id) ON DELETE CASCADE,
+			user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			PRIMARY KEY (folder_id, user_id)
+		)`,
+
+		// Folder connections (connections in folders with permissions)
+		`CREATE TABLE IF NOT EXISTS folder_connections (
+			folder_id   INTEGER NOT NULL REFERENCES connection_folders(id) ON DELETE CASCADE,
+			conn_id     INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+			permissions TEXT DEFAULT '["select","insert","update","delete","create","alter","drop"]',
+			PRIMARY KEY (folder_id, conn_id)
+		)`,
+
+		// Direct user-connection assignments
+		`CREATE TABLE IF NOT EXISTS user_connections (
+			user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			conn_id     INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+			permissions TEXT DEFAULT '["select","insert","update","delete","create","alter","drop"]',
+			PRIMARY KEY (user_id, conn_id)
+		)`,
+
+		// ── Phase 3: Application-Level Role Permissions ──
+		`CREATE TABLE IF NOT EXISTS roles (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			name        TEXT UNIQUE NOT NULL,
+			description TEXT DEFAULT '',
+			permissions TEXT DEFAULT '[]',
+			is_system   INTEGER DEFAULT 0,
+			is_active   INTEGER DEFAULT 1,
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		// Seed system roles
+		`INSERT OR IGNORE INTO roles (name, description, permissions, is_system) VALUES
+			('admin', 'Full system access',
+			 '["connections.view","connections.create","connections.edit","connections.delete","query.execute","schema.browse","audit.view","users.manage","folders.manage","roles.manage"]',
+			 1),
+			('user', 'Standard user access',
+			 '["connections.view","query.execute","schema.browse"]',
+			 1)`,
+
+		// Add role_id and per-user permission overrides
+		`ALTER TABLE users ADD COLUMN role_id INTEGER REFERENCES roles(id) DEFAULT 2`,
+		`ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT '[]'`,
+		`ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1`,
+		
+		// Set existing users to active
+		`UPDATE users SET is_active = 1 WHERE is_active IS NULL`,
 	}
 	for _, s := range stmts {
 		if _, err := DB.Exec(s); err != nil {

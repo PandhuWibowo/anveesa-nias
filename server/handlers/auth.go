@@ -125,6 +125,7 @@ func RegisterHandler(cfg *config.Config) http.HandlerFunc {
 		var body struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
+			RoleID   *int64 `json:"role_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Username == "" || body.Password == "" {
 			http.Error(w, `{"error":"username and password required"}`, http.StatusBadRequest)
@@ -155,14 +156,23 @@ func RegisterHandler(cfg *config.Config) http.HandlerFunc {
 
 		var count int
 		appdb.DB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
+		
+		// Determine role
 		role := "user"
+		roleID := int64(2)
 		if count == 0 {
 			role = "admin"
+			roleID = 1
+		} else if body.RoleID != nil {
+			// Allow specifying role_id from admin UI
+			roleID = *body.RoleID
+			// Get role name from role_id
+			appdb.DB.QueryRow(`SELECT name FROM roles WHERE id = ?`, roleID).Scan(&role)
 		}
 
 		res, err := appdb.DB.Exec(
-			`INSERT INTO users (username, password, role) VALUES (?, ?, ?)`,
-			body.Username, string(hash), role,
+			`INSERT INTO users (username, password, role, role_id, is_active) VALUES (?, ?, ?, ?, 1)`,
+			body.Username, string(hash), role, roleID,
 		)
 		if err != nil {
 			// Generic error to prevent username enumeration

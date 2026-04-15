@@ -38,17 +38,18 @@ func ListFolders() http.HandlerFunc {
 				 FROM connection_folders ORDER BY sort_order, name`,
 			)
 		} else {
-			// Regular user: only see shared folders or folders they own
+			// Regular user: see shared folders, owned folders, or folders they're members of
 			var userID int64
 			if userIDStr != "" {
 				userID, _ = strconv.ParseInt(userIDStr, 10, 64)
 			}
 			rows, err = appdb.DB.Query(
-				`SELECT id, name, parent_id, owner_id, visibility, color, COALESCE(sort_order,0), created_at
-				 FROM connection_folders
-				 WHERE visibility='shared' OR owner_id=?
-				 ORDER BY sort_order, name`,
-				userID,
+				`SELECT DISTINCT cf.id, cf.name, cf.parent_id, cf.owner_id, cf.visibility, cf.color, COALESCE(cf.sort_order,0), cf.created_at
+				 FROM connection_folders cf
+				 LEFT JOIN folder_members fm ON cf.id = fm.folder_id AND fm.user_id = ?
+				 WHERE cf.visibility='shared' OR cf.owner_id=? OR fm.folder_id IS NOT NULL
+				 ORDER BY cf.sort_order, cf.name`,
+				userID, userID,
 			)
 		}
 		if err != nil {

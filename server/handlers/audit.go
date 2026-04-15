@@ -38,6 +38,9 @@ func ListAuditLog() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
+		userRole := r.Header.Get("X-User-Role")
+		username := r.Header.Get("X-Username")
+
 		limit := 200
 		if l := r.URL.Query().Get("limit"); l != "" {
 			if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 1000 {
@@ -49,11 +52,24 @@ func ListAuditLog() http.HandlerFunc {
 		query := `SELECT id, username, conn_id, conn_name, sql, duration_ms, row_count, COALESCE(error,''), executed_at
 		           FROM audit_log`
 		args := []interface{}{}
+		whereClause := []string{}
+
+		// Non-admin users can only see their own audit logs
+		if userRole != "admin" && username != "" {
+			whereClause = append(whereClause, "username = ?")
+			args = append(args, username)
+		}
+
 		if filter != "" {
-			query += ` WHERE sql LIKE ? OR username LIKE ? OR conn_name LIKE ?`
+			whereClause = append(whereClause, "(sql LIKE ? OR username LIKE ? OR conn_name LIKE ?)")
 			pct := "%" + filter + "%"
 			args = append(args, pct, pct, pct)
 		}
+
+		if len(whereClause) > 0 {
+			query += ` WHERE ` + strings.Join(whereClause, " AND ")
+		}
+
 		query += ` ORDER BY id DESC LIMIT ?`
 		args = append(args, limit)
 
@@ -108,10 +124,27 @@ func WriteAuditFromRequest(r *http.Request, connID int64, connName, sql string, 
 func GetAuditStats() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		
+		userRole := r.Header.Get("X-User-Role")
+		username := r.Header.Get("X-Username")
+		
 		var total, errors int64
 		var avgMs float64
-		appdb.DB.QueryRow(`SELECT COUNT(*), COUNT(CASE WHEN error != '' THEN 1 END), COALESCE(AVG(duration_ms),0) FROM audit_log`).
-			Scan(&total, &errors, &avgMs)
+		
+		// Non-admin users only see their own stats
+		if userRole != "admin" && username != "" {
+			appdb.DB.QueryRow(`
+				SELECT COUNT(*), COUNT(CASE WHEN error != '' THEN 1 END), COALESCE(AVG(duration_ms),0) 
+				FROM audit_log 
+				WHERE username = ?
+			`, username).Scan(&total, &errors, &avgMs)
+		} else {
+			appdb.DB.QueryRow(`
+				SELECT COUNT(*), COUNT(CASE WHEN error != '' THEN 1 END), COALESCE(AVG(duration_ms),0) 
+				FROM audit_log
+			`).Scan(&total, &errors, &avgMs)
+		}
+		
 		json.NewEncoder(w).Encode(map[string]any{
 			"total": total, "errors": errors, "avg_ms": avgMs,
 		})

@@ -1,167 +1,305 @@
-<template>
-  <div class="rbac-root">
-    <div class="rbac-header">
-      <h2>Permission Matrix</h2>
-      <button class="rbac-btn rbac-btn--primary" @click="showForm = true">+ Grant Permission</button>
-    </div>
-
-    <div class="rbac-desc">
-      Control what each user can do per connection.
-      <strong>readonly</strong> = SELECT only &nbsp;|&nbsp;
-      <strong>readwrite</strong> = SELECT + DML &nbsp;|&nbsp;
-      <strong>admin</strong> = all including DDL.
-    </div>
-
-    <div class="rbac-table-wrap">
-      <table class="rbac-table">
-        <thead>
-          <tr>
-            <th>User</th>
-            <th>Connection</th>
-            <th>Level</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="p in permissions" :key="p.id">
-            <td>{{ p.username || `#${p.user_id}` }}</td>
-            <td>{{ p.conn_name || 'All connections' }}</td>
-            <td>
-              <span :class="['rbac-badge', 'rbac-badge--' + p.level]">{{ p.level }}</span>
-            </td>
-            <td>
-              <select :value="p.level" @change="changeLevel(p, ($event.target as HTMLSelectElement).value)"
-                class="rbac-select">
-                <option value="readonly">readonly</option>
-                <option value="readwrite">readwrite</option>
-                <option value="admin">admin</option>
-              </select>
-              <button class="rbac-del" @click="deletePermission(p.id)" title="Revoke">✕</button>
-            </td>
-          </tr>
-          <tr v-if="permissions.length === 0">
-            <td colspan="4" class="rbac-empty">No permissions configured — all authenticated users have read-write access by default.</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <!-- Grant form modal -->
-    <div v-if="showForm" class="rbac-modal-overlay" @click.self="showForm = false">
-      <div class="rbac-modal">
-        <div class="rbac-modal-header">
-          <span>Grant Permission</span>
-          <button class="rbac-modal-close" @click="showForm = false">✕</button>
-        </div>
-        <div class="rbac-form">
-          <label>User</label>
-          <select v-model="form.user_id" class="rbac-input">
-            <option value="">Select user…</option>
-            <option v-for="u in users" :key="u.id" :value="u.id">{{ u.username }}</option>
-          </select>
-          <label>Connection</label>
-          <select v-model="form.conn_id" class="rbac-input">
-            <option :value="-1">All connections</option>
-            <option v-for="c in connections" :key="c.id" :value="c.id">{{ c.name }}</option>
-          </select>
-          <label>Level</label>
-          <select v-model="form.level" class="rbac-input">
-            <option value="readonly">readonly</option>
-            <option value="readwrite">readwrite</option>
-            <option value="admin">admin</option>
-          </select>
-          <div class="rbac-form-actions">
-            <button class="rbac-btn" @click="showForm = false">Cancel</button>
-            <button class="rbac-btn rbac-btn--primary" @click="grantPermission">Grant</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import axios from 'axios'
+import { NButton, NCard, NTable, NTag, NSwitch, NModal, NForm, NFormItem, NInput, NCheckboxGroup, NCheckbox, NSpace, NSpin } from 'naive-ui'
+import { useToast } from '@/composables/useToast'
 
-interface PermissionView {
+const toast = useToast()
+
+interface Role {
   id: number
-  user_id: number
-  conn_id: number
-  level: string
-  username: string
-  conn_name: string
+  name: string
+  description: string
+  permissions: string
+  is_system: boolean
+  is_active: boolean
+  user_count: number
+  created_at: string
+  updated_at: string
 }
-interface User { id: number; username: string }
-interface Conn { id: number; name: string }
 
-const permissions = ref<PermissionView[]>([])
-const users = ref<User[]>([])
-const connections = ref<Conn[]>([])
-const showForm = ref(false)
-const form = ref({ user_id: '' as string | number, conn_id: -1 as number, level: 'readonly' })
+interface Permission {
+  key: string
+  label: string
+  group: string
+}
 
-onMounted(() => {
-  load()
-  loadUsers()
-  loadConnections()
+const roles = ref<Role[]>([])
+const permissions = ref<Permission[]>([])
+const loading = ref(false)
+const showModal = ref(false)
+const editingRole = ref<Role | null>(null)
+
+const formData = ref({
+  name: '',
+  description: '',
+  permissions: [] as string[],
 })
 
-async function load() {
-  const { data } = await axios.get('/api/permissions')
-  permissions.value = data
-}
-async function loadUsers() {
-  try { const { data } = await axios.get('/api/admin/users'); users.value = data } catch {}
-}
-async function loadConnections() {
-  try { const { data } = await axios.get('/api/connections'); connections.value = data } catch {}
+onMounted(async () => {
+  await Promise.all([fetchRoles(), fetchPermissions()])
+})
+
+async function fetchRoles() {
+  loading.value = true
+  try {
+    const { data } = await axios.get<Role[]>('/api/roles')
+    roles.value = data || []
+  } catch (error: any) {
+    toast.error(error.response?.data?.message || 'Failed to load roles')
+  } finally {
+    loading.value = false
+  }
 }
 
-async function grantPermission() {
-  if (!form.value.user_id) return
-  await axios.post('/api/permissions', form.value)
-  showForm.value = false
-  form.value = { user_id: '', conn_id: -1, level: 'readonly' }
-  await load()
+async function fetchPermissions() {
+  try {
+    const { data } = await axios.get<Permission[]>('/api/app-permissions')
+    permissions.value = data || []
+  } catch (error: any) {
+    toast.error(error.response?.data?.message || 'Failed to load permissions')
+  }
 }
 
-async function changeLevel(p: PermissionView, level: string) {
-  await axios.post('/api/permissions', { user_id: p.user_id, conn_id: p.conn_id, level })
-  await load()
+function openCreateModal() {
+  editingRole.value = null
+  formData.value = {
+    name: '',
+    description: '',
+    permissions: [],
+  }
+  showModal.value = true
 }
 
-async function deletePermission(id: number) {
-  await axios.delete(`/api/permissions/${id}`)
-  await load()
+function openEditModal(role: Role) {
+  editingRole.value = role
+  try {
+    const perms = JSON.parse(role.permissions)
+    formData.value = {
+      name: role.name,
+      description: role.description,
+      permissions: Array.isArray(perms) ? perms : [],
+    }
+  } catch {
+    formData.value = {
+      name: role.name,
+      description: role.description,
+      permissions: [],
+    }
+  }
+  showModal.value = true
+}
+
+async function saveRole() {
+  if (!formData.value.name) {
+    toast.error('Role name is required')
+    return
+  }
+
+  try {
+    if (editingRole.value) {
+      await axios.put(`/api/roles/${editingRole.value.id}`, formData.value)
+      toast.success('Role updated successfully')
+    } else {
+      await axios.post('/api/roles', formData.value)
+      toast.success('Role created successfully')
+    }
+    showModal.value = false
+    fetchRoles()
+  } catch (error: any) {
+    toast.error(error.response?.data?.message || 'Failed to save role')
+  }
+}
+
+async function deleteRole(role: Role) {
+  if (!confirm(`Delete role "${role.name}"?`)) return
+  
+  try {
+    await axios.delete(`/api/roles/${role.id}`)
+    toast.success('Role deleted successfully')
+    fetchRoles()
+  } catch (error: any) {
+    toast.error(error.response?.data?.message || 'Failed to delete role')
+  }
+}
+
+// Group permissions by category
+const groupedPermissions = ref<Record<string, Permission[]>>({})
+$: {
+  const grouped: Record<string, Permission[]> = {}
+  permissions.value.forEach(p => {
+    if (!grouped[p.group]) grouped[p.group] = []
+    grouped[p.group].push(p)
+  })
+  groupedPermissions.value = grouped
 }
 </script>
 
+<template>
+  <div class="rbac-view">
+    <div class="rbac-header">
+      <div>
+        <h1 class="rbac-title">Roles & Permissions</h1>
+        <p class="rbac-subtitle">Manage user roles and access control</p>
+      </div>
+      <NButton type="primary" @click="openCreateModal">
+        <template #icon>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+        </template>
+        Create Role
+      </NButton>
+    </div>
+
+    <NSpin :show="loading">
+      <NCard v-for="role in roles" :key="role.id" class="role-card">
+        <div class="role-card-header">
+          <div class="role-info">
+            <div class="role-name">
+              {{ role.name }}
+              <NTag v-if="role.is_system" size="small" type="info">System</NTag>
+            </div>
+            <div class="role-description">{{ role.description }}</div>
+            <div class="role-meta">
+              <span>{{ role.user_count }} users</span>
+              <span>·</span>
+              <span>{{ JSON.parse(role.permissions || '[]').length }} permissions</span>
+            </div>
+          </div>
+          <div class="role-actions">
+            <NButton v-if="!role.is_system" size="small" @click="openEditModal(role)">Edit</NButton>
+            <NButton v-if="!role.is_system" size="small" type="error" @click="deleteRole(role)">Delete</NButton>
+          </div>
+        </div>
+      </NCard>
+    </NSpin>
+
+    <NModal v-model:show="showModal" preset="card" :title="editingRole ? 'Edit Role' : 'Create Role'" style="width: 600px">
+      <NForm>
+        <NFormItem label="Role Name">
+          <NInput v-model:value="formData.name" placeholder="e.g. Developer, DBA" />
+        </NFormItem>
+        <NFormItem label="Description">
+          <NInput v-model:value="formData.description" placeholder="Brief description of this role" type="textarea" />
+        </NFormItem>
+        <NFormItem label="Permissions">
+          <div class="permissions-grid">
+            <div v-for="(perms, group) in groupedPermissions" :key="group" class="permission-group">
+              <div class="permission-group-title">{{ group }}</div>
+              <NCheckboxGroup v-model:value="formData.permissions">
+                <NSpace vertical>
+                  <NCheckbox v-for="perm in perms" :key="perm.key" :value="perm.key">
+                    {{ perm.label }}
+                  </NCheckbox>
+                </NSpace>
+              </NCheckboxGroup>
+            </div>
+          </div>
+        </NFormItem>
+      </NForm>
+      <template #footer>
+        <div style="display: flex; justify-content: flex-end; gap: 8px">
+          <NButton @click="showModal = false">Cancel</NButton>
+          <NButton type="primary" @click="saveRole">{{ editingRole ? 'Update' : 'Create' }}</NButton>
+        </div>
+      </template>
+    </NModal>
+  </div>
+</template>
+
 <style scoped>
-.rbac-root { padding: 24px; max-width: 880px; display: flex; flex-direction: column; gap: 16px; }
-.rbac-header { display: flex; align-items: center; justify-content: space-between; }
-.rbac-header h2 { font-size: 20px; font-weight: 700; color: var(--text-primary); margin: 0; }
-.rbac-desc { font-size: 13px; color: var(--text-muted); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
-.rbac-table-wrap { overflow-x: auto; }
-.rbac-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.rbac-table th { background: var(--bg-sidebar); padding: 8px 12px; text-align: left; font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--border); }
-.rbac-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--text-primary); }
-.rbac-badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px; text-transform: uppercase; letter-spacing: .3px; }
-.rbac-badge--readonly  { background: rgba(79,156,249,.15); color: #4f9cf9; }
-.rbac-badge--readwrite { background: rgba(86,196,144,.15); color: #56c490; }
-.rbac-badge--admin     { background: rgba(249,127,79,.15); color: #f97f4f; }
-.rbac-select { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary); font-size: 12px; padding: 2px 6px; margin-right: 6px; }
-.rbac-del { background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
-.rbac-del:hover { background: rgba(249,127,79,.15); color: #f97f4f; }
-.rbac-empty { text-align: center; padding: 20px; color: var(--text-muted); font-size: 13px; }
-.rbac-btn { padding: 7px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-panel); color: var(--text-primary); font-size: 13px; cursor: pointer; }
-.rbac-btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.rbac-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 1000; display: flex; align-items: center; justify-content: center; }
-.rbac-modal { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; width: 380px; }
-.rbac-modal-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 14px; color: var(--text-primary); }
-.rbac-modal-close { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 16px; }
-.rbac-form { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
-.rbac-form label { font-size: 12px; color: var(--text-muted); }
-.rbac-input { background: var(--bg-sidebar); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-size: 13px; padding: 6px 10px; }
-.rbac-form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+.rbac-view {
+  padding: 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.rbac-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+}
+
+.rbac-title {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 4px 0;
+}
+
+.rbac-subtitle {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.role-card {
+  margin-bottom: 16px;
+}
+
+.role-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.role-info {
+  flex: 1;
+}
+
+.role-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.role-description {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.role-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  gap: 8px;
+}
+
+.role-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.permissions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 16px;
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 12px;
+  background: var(--bg-surface);
+  border-radius: 8px;
+}
+
+.permission-group {
+  padding: 12px;
+  background: var(--bg-elevated);
+  border-radius: 6px;
+}
+
+.permission-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
 </style>

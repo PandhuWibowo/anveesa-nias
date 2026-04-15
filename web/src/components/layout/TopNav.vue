@@ -25,6 +25,16 @@ const activeConn = computed(() =>
 const driverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', sqlite: '#0f80cc', mssql: '#cc2927' }
 const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', sqlite: 'SQ', mssql: 'MS' }
 
+// Check if user has permission
+const hasPermission = (permission: string): boolean => {
+  if (!authEnabled.value || !user.value) return true // No auth = full access
+  if (user.value.role === 'admin') return true // Admin has all permissions
+  // For now, just check role-based access
+  return false
+}
+
+const isAdmin = computed(() => !authEnabled.value || user.value?.role === 'admin')
+
 // Nav group dropdown (data / admin / tools / monitor)
 const openMenu = ref<string | null>(null)
 // Connections panel — kept separate so outside-click logic doesn't conflict
@@ -41,8 +51,8 @@ const directLinks = [
   { name: 'welcome', label: 'Home', icon: 'grid' },
 ]
 
-// Grouped dropdown menus
-const menuGroups = [
+// Grouped dropdown menus (filtered by permissions)
+const allMenuGroups = [
   {
     id: 'data',
     label: 'Data',
@@ -58,16 +68,18 @@ const menuGroups = [
     id: 'admin',
     label: 'Administration',
     icon: 'settings',
+    requiresAdmin: true,
     items: [
       { name: 'connections', label: 'Connections', desc: 'Manage database connections',          icon: 'plug'  },
       { name: 'users',       label: 'Users',       desc: 'Manage user accounts',                icon: 'users' },
-      { name: 'rbac',        label: 'Permissions', desc: 'Role-based access control matrix',    icon: 'rbac'  },
+      { name: 'permissions', label: 'Permissions', desc: 'Roles, access groups & permissions',  icon: 'rbac'  },
     ],
   },
   {
     id: 'tools',
     label: 'Tools',
     icon: 'wrench',
+    requiresAdmin: true,
     items: [
       { name: 'diff',      label: 'Schema Diff',  desc: 'Compare schemas across connections', icon: 'diff'      },
       { name: 'backup',    label: 'Backup',       desc: 'Backup & restore databases',         icon: 'backup'    },
@@ -80,15 +92,44 @@ const menuGroups = [
     label: 'Monitoring',
     icon: 'activity',
     items: [
-      { name: 'audit',       label: 'Audit Log',   desc: 'Query execution history & errors',  icon: 'audit'      },
-      { name: 'health',      label: 'Health',      desc: 'Connection pool & server status',   icon: 'health'     },
-      { name: 'row-history', label: 'Row History', desc: 'Track INSERT / UPDATE / DELETE',    icon: 'rowhistory' },
+      { name: 'audit',       label: 'Audit Log',   desc: 'Query execution history & errors',  icon: 'audit',      requiresAdmin: false },
+      { name: 'health',      label: 'Health',      desc: 'Connection pool & server status',   icon: 'health',     requiresAdmin: true },
+      { name: 'row-history', label: 'Row History', desc: 'Track INSERT / UPDATE / DELETE',    icon: 'rowhistory', requiresAdmin: true },
     ],
   },
 ]
 
+// Filter menu groups and items based on user permissions
+const menuGroups = computed(() => {
+  return allMenuGroups.map(group => {
+    // Filter items within the group
+    const filteredItems = group.items.filter((item: any) => {
+      // If item requires admin and user is not admin, hide it
+      if (item.requiresAdmin && !isAdmin.value) {
+        return false
+      }
+      return true
+    })
+    
+    // If group requires admin and user is not admin, hide entire group
+    if (group.requiresAdmin && !isAdmin.value) {
+      return null
+    }
+    
+    // If all items are filtered out, hide the group
+    if (filteredItems.length === 0) {
+      return null
+    }
+    
+    return {
+      ...group,
+      items: filteredItems
+    }
+  }).filter((g): g is NonNullable<typeof g> => g !== null)
+})
+
 // Is any item in a group active?
-function groupActive(group: typeof menuGroups[0]) {
+function groupActive(group: typeof allMenuGroups[0]) {
   return group.items.some(i => i.name === route.name)
 }
 
