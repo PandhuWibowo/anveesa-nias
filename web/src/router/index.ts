@@ -85,7 +85,7 @@ const router = createRouter({
           path: 'connections',
           name: 'connections',
           component: () => import('@/views/ConnectionsView.vue'),
-          meta: { requiresAdmin: true },
+          meta: { requiresAdmin: false },
         },
         {
           path: 'er',

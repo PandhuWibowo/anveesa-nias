@@ -223,6 +223,9 @@ function reorderPosition(folderId: number): 'before' | 'after' | null {
     <div class="connpanel__header">
       <span v-if="!collapsed" class="connpanel__title">Connections</span>
       <div style="display:flex;gap:4px;margin-left:auto">
+        <button v-if="!collapsed" class="icon-btn" @click="router.push({ name: 'connections' })" title="New connection">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/><line x1="9" y1="9" x2="15" y2="9"/></svg>
+        </button>
         <button v-if="!collapsed" class="icon-btn" @click="showNewFolder = !showNewFolder" title="New folder">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
         </button>

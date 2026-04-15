@@ -60,8 +60,9 @@ const allMenuGroups = [
     items: [
       { name: 'dashboard',     label: 'Dashboard',     desc: 'Database statistics & overview',       icon: 'dashboard' },
       { name: 'data',          label: 'Data Browser',  desc: 'Browse data, schema & run SQL queries', icon: 'table'   },
+      { name: 'connections',   label: 'Connections',   desc: 'Manage your database connections',     icon: 'plug'      },
       { name: 'er',            label: 'ER Diagram',    desc: 'Entity relationship visualization',    icon: 'er'        },
-      { name: 'saved-queries', label: 'Saved Queries', desc: 'Global library of saved SQL queries',  icon: 'saved'     },
+      { name: 'saved-queries', label: 'Saved Queries', desc: 'Your saved SQL queries',               icon: 'saved'     },
     ],
   },
   {
@@ -70,7 +71,6 @@ const allMenuGroups = [
     icon: 'settings',
     requiresAdmin: true,
     items: [
-      { name: 'connections', label: 'Connections', desc: 'Manage database connections',          icon: 'plug'  },
       { name: 'users',       label: 'Users',       desc: 'Manage user accounts',                icon: 'users' },
       { name: 'permissions', label: 'Permissions', desc: 'Roles, access groups & permissions',  icon: 'rbac'  },
     ],
