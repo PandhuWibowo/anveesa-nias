@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import TopNav from '@/components/layout/TopNav.vue'
 import ToastContainer from '@/components/ui/ToastContainer.vue'
@@ -8,17 +8,29 @@ import StatusBar from '@/components/layout/StatusBar.vue'
 import SchemaSearch from '@/components/ui/SchemaSearch.vue'
 import { useConnections } from '@/composables/useConnections'
 
-const router = useRouter()
-const { fetchConnections } = useConnections()
+const LS_KEY = 'activeConnId'
 
-const activeConnId = ref<number | null>(null)
+const router = useRouter()
+const { connections, fetchConnections } = useConnections()
+
+const stored = localStorage.getItem(LS_KEY)
+const activeConnId = ref<number | null>(stored ? Number(stored) : null)
 const schemaSearchOpen = ref(false)
 
-onMounted(() => {
-  fetchConnections()
+onMounted(async () => {
+  await fetchConnections()
+  // Validate that the restored ID still exists; clear it if not
+  if (activeConnId.value !== null && !connections.value.find(c => c.id === activeConnId.value)) {
+    activeConnId.value = null
+  }
   window.addEventListener('keydown', handleGlobal)
 })
 onBeforeUnmount(() => window.removeEventListener('keydown', handleGlobal))
+
+watch(activeConnId, (id) => {
+  if (id === null) localStorage.removeItem(LS_KEY)
+  else localStorage.setItem(LS_KEY, String(id))
+})
 
 function handleGlobal(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key === 'k') {

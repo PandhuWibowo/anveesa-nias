@@ -16,7 +16,8 @@ import type { SQLPanelPayload } from '@/components/database/SQLPanel.vue'
 
 type ImportRow = (string | number | null)[]
 
-const props = defineProps<{ connId: number | null; darkMode: boolean; initialSQL?: string | null }>()
+const props = defineProps<{ connId: number | null; darkMode: boolean; initialSQL?: string | null; initialDb?: string; initialTable?: string }>()
+const emit = defineEmits<{ (e: 'table-selected', db: string, table: string): void }>()
 
 const { connections } = useConnections()
 const { fetchTableData, fetchTableColumns, columns: schemaColumns, fetchColumns } = useSchema()
@@ -64,6 +65,7 @@ async function handleSelectTable(payload: { db: string; table: string }) {
     const pk = cols?.find((c: any) => c.is_primary_key)
     pkColumn.value = pk?.name ?? (cols?.[0]?.name ?? '')
   }
+  emit('table-selected', payload.db, payload.table)
 }
 
 function handleSort(col: string, dir: 'asc' | 'desc') { sortBy.value = col; sortDir.value = dir; page.value = 1; loadData() }
@@ -221,8 +223,13 @@ const profilerShow = ref(false)
 
 function openSchemaTableInSQL(table: string) { openSqlTab(`SELECT *\nFROM ${table}\nLIMIT 100;`) }
 
-// Open with initial SQL if provided
-onMounted(() => { if (props.initialSQL) openSqlTab(props.initialSQL) })
+// Open with initial SQL if provided; restore last selected table
+onMounted(() => {
+  if (props.initialSQL) openSqlTab(props.initialSQL)
+  if (props.initialDb && props.initialTable) {
+    handleSelectTable({ db: props.initialDb, table: props.initialTable })
+  }
+})
 
 function driverColor(d: string) { return ({ postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', sqlite: '#7bc8f6', mssql: '#cc2927' } as Record<string,string>)[d] ?? '#555' }
 function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', sqlite: 'SQ', mssql: 'MS' } as Record<string,string>)[d] ?? '??' }

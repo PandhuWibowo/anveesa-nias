@@ -14,11 +14,49 @@ interface Session {
   id: string
   connId: number | null
   initialSQL: string | null
+  initialDb?: string
+  initialTable?: string
 }
 
+interface PersistedSession { connId: number; db?: string; table?: string }
+interface PersistedState { sessions: PersistedSession[]; activeConnId: number | null }
+
+const LS_KEY = 'dv_state'
+
+function loadPersistedState(): PersistedState | null {
+  try { return JSON.parse(localStorage.getItem(LS_KEY) ?? 'null') } catch { return null }
+}
+
+function persistState() {
+  const state: PersistedState = {
+    sessions: sessions.value
+      .filter(s => s.connId != null)
+      .map(s => ({ connId: s.connId as number, db: s.initialDb, table: s.initialTable })),
+    activeConnId: sessions.value.find(s => s.id === activeSessionId.value)?.connId ?? null,
+  }
+  localStorage.setItem(LS_KEY, JSON.stringify(state))
+}
+
+const persisted = loadPersistedState()
+
 let sessionCounter = 0
-const sessions = ref<Session[]>([])
-const activeSessionId = ref<string>('')
+const sessions = ref<Session[]>(
+  (persisted?.sessions ?? []).map(s => ({
+    id: `session-${++sessionCounter}`,
+    connId: s.connId,
+    initialSQL: null,
+    initialDb: s.db,
+    initialTable: s.table,
+  }))
+)
+const activeSessionId = ref<string>(
+  persisted?.activeConnId
+    ? (sessions.value.find(s => s.connId === persisted!.activeConnId)?.id ?? sessions.value[0]?.id ?? '')
+    : (sessions.value[0]?.id ?? '')
+)
+
+watch(sessions, persistState, { deep: true })
+watch(activeSessionId, persistState)
 
 function sessionLabel(s: Session) {
   const conn = s.connId ? connections.value.find(c => c.id === s.connId) : null
@@ -128,6 +166,11 @@ onMounted(() => {
 })
 
 function onPickerKeydown(e: KeyboardEvent) { if (e.key === 'Escape') pickerOpen.value = false }
+
+function handleTableSelected(sessionId: string, db: string, table: string) {
+  const session = sessions.value.find(s => s.id === sessionId)
+  if (session) { session.initialDb = db; session.initialTable = table }
+}
 </script>
 
 <template>
@@ -202,6 +245,9 @@ function onPickerKeydown(e: KeyboardEvent) { if (e.key === 'Escape') pickerOpen.
             :conn-id="s.connId"
             :dark-mode="mode === 'dark'"
             :initial-s-q-l="s.initialSQL"
+            :initial-db="s.initialDb"
+            :initial-table="s.initialTable"
+            @table-selected="(db, table) => handleTableSelected(s.id, db, table)"
           />
         </KeepAlive>
       </div>
