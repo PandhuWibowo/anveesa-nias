@@ -141,9 +141,14 @@ function onDocClick(e: MouseEvent) {
 onMounted(() => document.addEventListener('mousedown', onDocClick, true))
 onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick, true))
 
-// Bootstrap: open first session from the global connection prop
+// Bootstrap or switch session when the global active connection changes
 watch(() => props.activeConnId, (id) => {
-  if (id != null && sessions.value.length === 0) {
+  if (id == null) return
+  const existing = sessions.value.find(s => s.connId === id)
+  if (existing) {
+    // Session already open — just bring it to focus
+    activeSessionId.value = existing.id
+  } else {
     openSession(id)
   }
 }, { immediate: true })
