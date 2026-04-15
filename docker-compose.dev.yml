@@ -1,0 +1,34 @@
+version: "3.8"
+
+services:
+  # Backend server with hot reload
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile.dev
+    container_name: nias-server-dev
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./server:/app
+      - ./data:/data
+    environment:
+      - NIAS_ENV=development
+      - PORT=8080
+      - DB_PATH=/data/nias.db
+      - JWT_SECRET=dev-secret-not-for-production
+      - CORS_ORIGIN=http://localhost:5173
+    command: ["go", "run", "."]
+
+  # Frontend with Vite dev server
+  web:
+    image: oven/bun:1
+    container_name: nias-web-dev
+    working_dir: /app
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./web:/app
+    environment:
+      - VITE_API_URL=http://localhost:8080
+    command: ["bun", "run", "dev", "--host", "0.0.0.0"]

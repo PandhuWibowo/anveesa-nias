@@ -1,0 +1,43 @@
+version: "3.8"
+
+services:
+  nias:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: anveesa-nias
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - nias-data:/app/data
+      - nias-backups:/app/backups
+    environment:
+      - NIAS_ENV=production
+      - PORT=8080
+      - HOST=0.0.0.0
+      - DB_PATH=/app/data/nias.db
+      - BACKUP_ENABLED=true
+      - BACKUP_DIR=/app/backups
+      - BACKUP_HOURS=24
+      - JWT_SECRET=${JWT_SECRET:-change-this-in-production-min-32-chars}
+      - JWT_EXPIRY_HOURS=72
+      - AUTH_ENABLED=true
+      - NIAS_ENCRYPTION_KEY=${NIAS_ENCRYPTION_KEY:-change-this-32-byte-key-in-prod}
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:8080}
+      - RATE_LIMIT_ENABLED=true
+      - RATE_LIMIT_REQUESTS=100
+      - RATE_LIMIT_WINDOW=60
+      - LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  nias-data:
+    driver: local
+  nias-backups:
+    driver: local
