@@ -27,12 +27,12 @@ var AllDbPerms = []DbPerm{DbPermSelect, DbPermInsert, DbPermUpdate, DbPermDelete
 // GetUserRole returns the role name for a user ID (with default fallback)
 func GetUserRole(userID int64) (string, error) {
 	var roleName string
-	err := DB.QueryRow(`
+	err := DB.QueryRow(ConvertQuery(`
 		SELECT COALESCE(r.name, 'user')
 		FROM users u
 		LEFT JOIN roles r ON r.id = u.role_id
 		WHERE u.id = ?
-	`, userID).Scan(&roleName)
+	`), userID).Scan(&roleName)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return "user", nil
@@ -159,7 +159,7 @@ func GetUserConnectionPermissions(userID int64, role string, connID int64) ([]Db
 
 	// Check if user owns the connection
 	var ownerID int64
-	err := DB.QueryRow(`SELECT owner_id FROM connections WHERE id = ?`, connID).Scan(&ownerID)
+	err := DB.QueryRow(ConvertQuery(`SELECT owner_id FROM connections WHERE id = ?`), connID).Scan(&ownerID)
 	if err == nil && ownerID == userID {
 		return AllDbPerms, nil
 	}
@@ -386,7 +386,7 @@ func GetGroupConnections(groupID int64) ([]map[string]interface{}, error) {
 
 // SetGroupMembers replaces all members for a group
 func SetGroupMembers(groupID int64, userIDs []int64) error {
-	if _, err := DB.Exec(`DELETE FROM folder_members WHERE folder_id = ?`, groupID); err != nil {
+	if _, err := DB.Exec(ConvertQuery(`DELETE FROM folder_members WHERE folder_id = ?`), groupID); err != nil {
 		return err
 	}
 	if len(userIDs) == 0 {
@@ -404,7 +404,7 @@ func SetGroupMembers(groupID int64, userIDs []int64) error {
 
 // SetGroupConnections replaces all connections for a group
 func SetGroupConnections(groupID int64, connIDs []int64, permsMap map[int64][]DbPerm) error {
-	if _, err := DB.Exec(`DELETE FROM folder_connections WHERE folder_id = ?`, groupID); err != nil {
+	if _, err := DB.Exec(ConvertQuery(`DELETE FROM folder_connections WHERE folder_id = ?`), groupID); err != nil {
 		return err
 	}
 	if len(connIDs) == 0 {
@@ -426,7 +426,7 @@ func SetGroupConnections(groupID int64, connIDs []int64, permsMap map[int64][]Db
 
 // SetUserDirectConnections replaces direct connection assignments for a user
 func SetUserDirectConnections(userID int64, connIDs []int64, permsMap map[int64][]DbPerm) error {
-	if _, err := DB.Exec(`DELETE FROM user_connections WHERE user_id = ?`, userID); err != nil {
+	if _, err := DB.Exec(ConvertQuery(`DELETE FROM user_connections WHERE user_id = ?`), userID); err != nil {
 		return err
 	}
 	if len(connIDs) == 0 {
@@ -434,21 +434,38 @@ func SetUserDirectConnections(userID int64, connIDs []int64, permsMap map[int64]
 	}
 	vals := make([]string, len(connIDs))
 	args := make([]interface{}, 0, len(connIDs)*3)
+	
+	// Build placeholders - need to convert ? to $1, $2, etc for PostgreSQL
+	paramIndex := 1
 	for i, cid := range connIDs {
-		vals[i] = "(?, ?, ?)"
+		if IsPostgreSQL() || IsMySQL() {
+			vals[i] = fmt.Sprintf("($%d, $%d, $%d)", paramIndex, paramIndex+1, paramIndex+2)
+			paramIndex += 3
+		} else {
+			vals[i] = "(?, ?, ?)"
+		}
 		perms := AllDbPerms
 		if p, ok := permsMap[cid]; ok && len(p) > 0 {
 			perms = p
 		}
 		args = append(args, userID, cid, dbPermsToJSON(perms))
 	}
-	_, err := DB.Exec(`INSERT OR IGNORE INTO user_connections (user_id, conn_id, permissions) VALUES `+strings.Join(vals, ","), args...)
+	
+	// Build INSERT query with proper syntax for each database
+	var query string
+	if IsPostgreSQL() || IsMySQL() {
+		query = `INSERT INTO user_connections (user_id, conn_id, permissions) VALUES ` + strings.Join(vals, ",") + ` ON CONFLICT (user_id, conn_id) DO UPDATE SET permissions = EXCLUDED.permissions`
+	} else {
+		query = `INSERT OR REPLACE INTO user_connections (user_id, conn_id, permissions) VALUES ` + strings.Join(vals, ",")
+	}
+	
+	_, err := DB.Exec(query, args...)
 	return err
 }
 
 // GetUserConnectionAssignments returns all connection assignments for a user
 func GetUserConnectionAssignments(userID int64, role string) ([]map[string]interface{}, error) {
-	query := `
+	query := ConvertQuery(`
 		SELECT DISTINCT 
 			c.id, c.name, c.driver, c.host, c.port, 
 			COALESCE(c.environment, 'development') AS environment,
@@ -474,7 +491,7 @@ func GetUserConnectionAssignments(userID int64, role string) ([]map[string]inter
 		  AND (f.role_restrict = '' OR f.role_restrict = ?)
 		
 		ORDER BY name
-	`
+	`)
 
 	rows, err := DB.Query(query, userID, userID, role)
 	if err != nil {

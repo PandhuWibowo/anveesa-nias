@@ -10,6 +10,7 @@ import (
 	appdb "github.com/anveesa/nias/db"
 )
 
+
 type AuditEntry struct {
 	ID         int64  `json:"id"`
 	EventType  string `json:"event_type"`
@@ -36,14 +37,24 @@ func WriteFeatureAccessAudit(username, action, target, details string) {
 }
 
 func writeAuditEvent(eventType, action, target, details, username string, connID *int64, connName, sql string, durationMs, rowCount int64, errMsg string) {
-	appdb.DB.Exec(
-		`INSERT INTO audit_log (event_type, action, target, details, username, conn_id, conn_name, sql, duration_ms, row_count, error, executed_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+	query := appdb.ConvertQuery(`INSERT INTO audit_log (event_type, action, target, details, username, conn_id, conn_name, sql, duration_ms, row_count, error, executed_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+	
+	_, err := appdb.DB.Exec(
+		query,
 		eventType, action, target, details, username, connID, connName, sql, durationMs, rowCount, errMsg,
 		time.Now().Format("2006-01-02 15:04:05"),
 	)
-	// Prune to last 10000 entries
-	appdb.DB.Exec(`DELETE FROM audit_log WHERE id NOT IN (SELECT id FROM audit_log ORDER BY id DESC LIMIT 10000)`)
+	if err != nil {
+		// Log error but don't fail the request
+		println("Failed to write audit log:", err.Error())
+		return
+	}
+	
+	// Prune to last 10000 entries (in a separate transaction to reduce lock time)
+	go func() {
+		appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM audit_log WHERE id NOT IN (SELECT id FROM audit_log ORDER BY id DESC LIMIT 10000)`))
+	}()
 }
 
 func ListAuditLog() http.HandlerFunc {
@@ -90,6 +101,9 @@ func ListAuditLog() http.HandlerFunc {
 
 		query += ` ORDER BY id DESC LIMIT ?`
 		args = append(args, limit)
+
+		// Convert query for PostgreSQL/MySQL compatibility
+		query = appdb.ConvertQuery(query)
 
 		rows, err := appdb.DB.Query(query, args...)
 		if err != nil {
@@ -185,11 +199,11 @@ func GetAuditStats() http.HandlerFunc {
 		
 		// Non-admin users only see their own stats
 		if userRole != "admin" && username != "" {
-			appdb.DB.QueryRow(`
+			appdb.DB.QueryRow(appdb.ConvertQuery(`
 				SELECT COUNT(*), COUNT(CASE WHEN error != '' THEN 1 END), COALESCE(AVG(duration_ms),0) 
 				FROM audit_log 
 				WHERE username = ?
-			`, username).Scan(&total, &errors, &avgMs)
+			`), username).Scan(&total, &errors, &avgMs)
 		} else {
 			appdb.DB.QueryRow(`
 				SELECT COUNT(*), COUNT(CASE WHEN error != '' THEN 1 END), COALESCE(AVG(duration_ms),0) 
@@ -199,8 +213,8 @@ func GetAuditStats() http.HandlerFunc {
 		
 		var queryCount, featureCount int64
 		if userRole != "admin" && username != "" {
-			appdb.DB.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE username = ? AND event_type = 'query_execution'`, username).Scan(&queryCount)
-			appdb.DB.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE username = ? AND event_type = 'feature_access'`, username).Scan(&featureCount)
+			appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COUNT(*) FROM audit_log WHERE username = ? AND event_type = 'query_execution'`), username).Scan(&queryCount)
+			appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COUNT(*) FROM audit_log WHERE username = ? AND event_type = 'feature_access'`), username).Scan(&featureCount)
 		} else {
 			appdb.DB.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE event_type = 'query_execution'`).Scan(&queryCount)
 			appdb.DB.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE event_type = 'feature_access'`).Scan(&featureCount)

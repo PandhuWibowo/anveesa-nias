@@ -36,7 +36,7 @@ const driverCounts = computed(() => {
             </svg>
           </div>
           <h1 class="wv-title">
-            {{ connections.length ? 'Select a connection to start' : 'Welcome to Singapay SQL' }}
+            {{ connections.length ? 'Select a connection to start' : 'Welcome to Anveesa Nias' }}
           </h1>
           <p class="wv-sub">
             {{ connections.length

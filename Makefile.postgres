@@ -1,0 +1,43 @@
+# Makefile for development with PostgreSQL
+
+.PHONY: help
+help:
+	@echo "Anveesa Nias - Development with PostgreSQL"
+	@echo ""
+	@echo "Commands:"
+	@echo "  make postgres-start    Start PostgreSQL container"
+	@echo "  make postgres-stop     Stop PostgreSQL container"
+	@echo "  make postgres-clean    Remove PostgreSQL data (fresh start)"
+	@echo "  make dev-postgres      Start app with PostgreSQL"
+	@echo "  make psql              Connect to PostgreSQL"
+
+.PHONY: postgres-start
+postgres-start:
+	@echo "Starting PostgreSQL container..."
+	docker-compose -f docker-compose.dev-postgres.yml up -d
+	@echo "Waiting for PostgreSQL to be ready..."
+	@sleep 3
+	@echo "✅ PostgreSQL ready!"
+
+.PHONY: postgres-stop
+postgres-stop:
+	@echo "Stopping PostgreSQL..."
+	docker-compose -f docker-compose.dev-postgres.yml down
+
+.PHONY: postgres-clean
+postgres-clean:
+	@echo "⚠️  Removing PostgreSQL data..."
+	docker-compose -f docker-compose.dev-postgres.yml down -v
+	@echo "✅ PostgreSQL data removed"
+
+.PHONY: dev-postgres
+dev-postgres: postgres-start
+	@echo "Starting development servers with PostgreSQL..."
+	@trap 'kill 0' INT; \
+	  (cd server && export $$(cat ../.env.dev-postgres | xargs) && go run .) & \
+	  (until nc -z localhost 8080 2>/dev/null; do sleep 0.3; done; cd web && bun run dev) & \
+	  wait
+
+.PHONY: psql
+psql:
+	docker exec -it nias-dev-postgres psql -U nias_dev nias_dev

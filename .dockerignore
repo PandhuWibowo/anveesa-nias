@@ -1,0 +1,44 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+docs/
+.cursor/
+
+# Development files
+.env*
+!.env.example
+.vscode/
+.idea/
+
+# Build artifacts
+server/data.db*
+server/backups/
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+*_test.go
+**/*_test.go
+test/
+tests/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/

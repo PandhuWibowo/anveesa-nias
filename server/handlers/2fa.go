@@ -35,7 +35,7 @@ func Setup2FA() http.HandlerFunc {
 
 		// Generate TOTP key
 		key, err := totp.Generate(totp.GenerateOpts{
-			Issuer:      "Singapay SQL",
+			Issuer:      "Anveesa Nias",
 			AccountName: username,
 			Period:      30,
 			Digits:      otp.DigitsSix,
@@ -210,8 +210,13 @@ func Verify2FA() http.HandlerFunc {
 		var userID int64
 		var secret, backupCodesJSON string
 		var totpEnabled int
-		err := appdb.DB.QueryRow(`SELECT id, totp_secret, totp_enabled, COALESCE(backup_codes, '[]') FROM users WHERE username = ?`,
-			body.Username).Scan(&userID, &secret, &totpEnabled, &backupCodesJSON)
+		
+		query := `SELECT id, totp_secret, totp_enabled, COALESCE(backup_codes, '[]') FROM users WHERE username = ?`
+		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
+			query = `SELECT id, totp_secret, totp_enabled, COALESCE(backup_codes, '[]') FROM users WHERE username = $1`
+		}
+		
+		err := appdb.DB.QueryRow(query, body.Username).Scan(&userID, &secret, &totpEnabled, &backupCodesJSON)
 		if err != nil {
 			http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
 			return

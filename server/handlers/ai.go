@@ -47,12 +47,20 @@ func SaveAISettings() http.HandlerFunc {
 
 		// Only update API key if it's provided and doesn't contain masked characters
 		if s.APIKey != "" && !strings.Contains(s.APIKey, "•") {
-			appdb.DB.Exec(`INSERT OR REPLACE INTO settings (key,value) VALUES ('ai_api_key',?)`, s.APIKey)
+			if appdb.IsPostgreSQL() || appdb.IsMySQL() {
+				appdb.DB.Exec(`INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, "ai_api_key", s.APIKey)
+			} else {
+				appdb.DB.Exec(`INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)`, "ai_api_key", s.APIKey)
+			}
 		}
 		// Validate base URL
 		if s.BaseURL != "" {
 			if u, err := url.Parse(s.BaseURL); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
-				appdb.DB.Exec(`INSERT OR REPLACE INTO settings (key,value) VALUES ('ai_base_url',?)`, s.BaseURL)
+				if appdb.IsPostgreSQL() || appdb.IsMySQL() {
+					appdb.DB.Exec(`INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, "ai_base_url", s.BaseURL)
+				} else {
+					appdb.DB.Exec(`INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)`, "ai_base_url", s.BaseURL)
+				}
 			}
 		}
 		// Validate model name (alphanumeric, dashes, dots only)
@@ -65,7 +73,11 @@ func SaveAISettings() http.HandlerFunc {
 				}
 			}
 			if safe && len(s.Model) <= 100 {
-				appdb.DB.Exec(`INSERT OR REPLACE INTO settings (key,value) VALUES ('ai_model',?)`, s.Model)
+				if appdb.IsPostgreSQL() || appdb.IsMySQL() {
+					appdb.DB.Exec(`INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, "ai_model", s.Model)
+				} else {
+					appdb.DB.Exec(`INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)`, "ai_model", s.Model)
+				}
 			}
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -73,7 +85,7 @@ func SaveAISettings() http.HandlerFunc {
 }
 
 // Safety system prompt to prevent prompt injection attacks
-const aiSafetyPrompt = `You are an expert SQL assistant for Singapay SQL, a database management tool.
+const aiSafetyPrompt = `You are an expert SQL assistant for Anveesa Nias, a database management tool.
 Your role is STRICTLY limited to:
 - Generating SQL queries based on user requirements
 - Explaining SQL queries and their execution plans

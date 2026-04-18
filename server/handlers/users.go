@@ -61,11 +61,12 @@ func UpdateUser() http.HandlerFunc {
 			return
 		}
 
-		var body struct {
-			Role     string `json:"role"`
-			RoleID   *int64 `json:"role_id"`
-			Password string `json:"password"`
-		}
+	var body struct {
+		Role        string   `json:"role"`
+		RoleID      *int64   `json:"role_id"`
+		Password    string   `json:"password"`
+		Connections []int64  `json:"connections"`
+	}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
 			return
@@ -74,25 +75,36 @@ func UpdateUser() http.HandlerFunc {
 		// Update role by role_id (new RBAC system)
 		if body.RoleID != nil {
 			var roleName string
-			err := appdb.DB.QueryRow(`SELECT name FROM roles WHERE id = ?`, *body.RoleID).Scan(&roleName)
+			err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT name FROM roles WHERE id = ?`), *body.RoleID).Scan(&roleName)
 			if err == nil {
-				appdb.DB.Exec(`UPDATE users SET role = ?, role_id = ? WHERE id = ?`, roleName, *body.RoleID, id)
+				appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET role = ?, role_id = ? WHERE id = ?`), roleName, *body.RoleID, id)
 			}
 		} else if body.Role != "" {
 			// Update role by name (legacy)
-			appdb.DB.Exec(`UPDATE users SET role = ? WHERE id = ?`, body.Role, id)
+			appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET role = ? WHERE id = ?`), body.Role, id)
 		}
 
-		// Update password if provided
-		if body.Password != "" {
-			hash, err := bcrypt.GenerateFromPassword([]byte(body.Password), bcrypt.DefaultCost)
-			if err == nil {
-				appdb.DB.Exec(`UPDATE users SET password = ? WHERE id = ?`, string(hash), id)
-			}
+	// Update password if provided
+	if body.Password != "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(body.Password), bcrypt.DefaultCost)
+		if err == nil {
+			appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET password = ? WHERE id = ?`), string(hash), id)
 		}
+	}
 
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"message": "user updated"})
+	// Update connection assignments
+	if body.Connections != nil {
+		// Clear existing connections
+		appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM user_connections WHERE user_id = ?`), id)
+		
+		// Add new connections
+		for _, connID := range body.Connections {
+			appdb.DB.Exec(appdb.ConvertQuery(`INSERT INTO user_connections (user_id, conn_id) VALUES (?, ?)`), id, connID)
+		}
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"message": "user updated"})
 	}
 }
 
@@ -100,7 +112,7 @@ func DeleteUser() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		idStr := strings.TrimPrefix(r.URL.Path, "/api/admin/users/")
 		id, _ := strconv.ParseInt(idStr, 10, 64)
-		appdb.DB.Exec(`DELETE FROM users WHERE id=?`, id)
+		appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM users WHERE id=?`), id)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

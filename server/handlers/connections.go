@@ -53,6 +53,8 @@ func SetEncryptionKey(key string) {
 	encryptionKey = []byte(key)
 }
 
+// appdb.ConvertQuery converts SQLite ? placeholders to PostgreSQL $1, $2, ... if needed
+
 // encryptCredential encrypts sensitive data using AES-GCM
 func encryptCredential(plaintext string) (string, error) {
 	if plaintext == "" {
@@ -109,22 +111,25 @@ func decryptCredential(encrypted string) (string, error) {
 }
 
 type Connection struct {
-	ID         int64  `json:"id"`
-	Name       string `json:"name"`
-	Driver     string `json:"driver"`
-	Host       string `json:"host"`
-	Port       int    `json:"port"`
-	Database   string `json:"database"`
-	Username   string `json:"username"`
-	SSL        bool   `json:"ssl"`
-	Tags       string `json:"tags"`
-	SSHHost    string `json:"ssh_host"`
-	SSHPort    int    `json:"ssh_port"`
-	SSHUser    string `json:"ssh_user"`
-	FolderID   *int64 `json:"folder_id"`
-	Visibility string `json:"visibility"`
-	OwnerID    int64  `json:"owner_id"`
-	CreatedAt  string `json:"created_at"`
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Driver      string `json:"driver"`
+	Host        string `json:"host"`
+	Port        int    `json:"port"`
+	Database    string `json:"database"`
+	Username    string `json:"username"`
+	Password    string `json:"password,omitempty"`
+	SSL         bool   `json:"ssl"`
+	Tags        string `json:"tags"`
+	SSHHost     string `json:"ssh_host"`
+	SSHPort     int    `json:"ssh_port"`
+	SSHUser     string `json:"ssh_user"`
+	SSHPassword string `json:"ssh_password,omitempty"`
+	SSHKey      string `json:"ssh_key,omitempty"`
+	FolderID    *int64 `json:"folder_id"`
+	Visibility  string `json:"visibility"`
+	OwnerID     int64  `json:"owner_id"`
+	CreatedAt   string `json:"created_at"`
 }
 
 type ConnectionInput struct {
@@ -346,6 +351,7 @@ func ListConnections() http.HandlerFunc {
 			   -- OR user is a member of the folder (access group)
 			   OR fm.folder_id IS NOT NULL
 			 ORDER BY c.id`
+			query = appdb.ConvertQuery(query)
 			args = append(args, userID, userID, userID, userID)
 		}
 
@@ -430,27 +436,46 @@ func CreateConnection() http.HandlerFunc {
 			ownerID, _ = strconv.ParseInt(userIDStr, 10, 64)
 		}
 
-		res, err := appdb.DB.Exec(
-			`INSERT INTO connections (name, driver, host, port, database, username, password, ssl, tags,
-			  ssh_host, ssh_port, ssh_user, ssh_password, ssh_key, folder_id, visibility, owner_id)
-			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			in.Name, in.Driver, in.Host, in.Port, in.Database, in.Username, encPassword, ssl, in.Tags,
-			in.SSHHost, in.SSHPort, in.SSHUser, encSSHPassword, encSSHKey, in.FolderID, in.Visibility, ownerID,
-		)
-		if err != nil {
-			http.Error(w, `{"error":"failed to save connection"}`, http.StatusInternalServerError)
-			return
-		}
-		id, _ := res.LastInsertId()
-
+		var id int64
 		var c Connection
 		var sslV int
+		
+		// PostgreSQL and MySQL support RETURNING clause
+		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
+			query := `INSERT INTO connections (name, driver, host, port, database, username, password, ssl, tags,
+			  ssh_host, ssh_port, ssh_user, ssh_password, ssh_key, folder_id, visibility, owner_id)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`
+			err := appdb.DB.QueryRow(query,
+				in.Name, in.Driver, in.Host, in.Port, in.Database, in.Username, encPassword, ssl, in.Tags,
+				in.SSHHost, in.SSHPort, in.SSHUser, encSSHPassword, encSSHKey, in.FolderID, in.Visibility, ownerID,
+			).Scan(&id)
+			if err != nil {
+				http.Error(w, `{"error":"failed to save connection"}`, http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// SQLite uses LastInsertId
+			res, err := appdb.DB.Exec(
+				`INSERT INTO connections (name, driver, host, port, database, username, password, ssl, tags,
+				  ssh_host, ssh_port, ssh_user, ssh_password, ssh_key, folder_id, visibility, owner_id)
+				 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				in.Name, in.Driver, in.Host, in.Port, in.Database, in.Username, encPassword, ssl, in.Tags,
+				in.SSHHost, in.SSHPort, in.SSHUser, encSSHPassword, encSSHKey, in.FolderID, in.Visibility, ownerID,
+			)
+			if err != nil {
+				http.Error(w, `{"error":"failed to save connection"}`, http.StatusInternalServerError)
+				return
+			}
+			id, _ = res.LastInsertId()
+		}
+
+		// Fetch the created connection
 		appdb.DB.QueryRow(
-			`SELECT id, name, driver, COALESCE(host,''), COALESCE(port,0), database,
+			appdb.ConvertQuery(`SELECT id, name, driver, COALESCE(host,''), COALESCE(port,0), database,
 			        COALESCE(username,''), ssl, COALESCE(tags,''),
 			        COALESCE(ssh_host,''), COALESCE(ssh_port,22), COALESCE(ssh_user,''),
 			        folder_id, COALESCE(visibility,'shared'), COALESCE(owner_id,0), created_at
-			 FROM connections WHERE id=?`, id,
+			 FROM connections WHERE id=?`), id,
 		).Scan(&c.ID, &c.Name, &c.Driver, &c.Host, &c.Port, &c.Database,
 			&c.Username, &sslV, &c.Tags,
 			&c.SSHHost, &c.SSHPort, &c.SSHUser,
@@ -458,6 +483,207 @@ func CreateConnection() http.HandlerFunc {
 		c.SSL = sslV == 1
 
 		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(c)
+	}
+}
+
+func GetConnection() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		
+		idStr := strings.TrimPrefix(r.URL.Path, "/api/connections/")
+		connID, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			http.Error(w, `{"error":"invalid connection id"}`, http.StatusBadRequest)
+			return
+		}
+		
+		// Get current user info
+		userIDStr := r.Header.Get("X-User-ID")
+		userRole := r.Header.Get("X-User-Role")
+		var userID int64
+		if userIDStr != "" {
+			userID, _ = strconv.ParseInt(userIDStr, 10, 64)
+		}
+		
+		// Fetch connection
+		var c Connection
+		var ssl int
+		var encPassword, encSSHPassword, encSSHKey string
+		
+		query := appdb.ConvertQuery(`SELECT id, name, driver, COALESCE(host,''), COALESCE(port,0), database,
+			COALESCE(username,''), password, ssl, COALESCE(tags,''),
+			COALESCE(ssh_host,''), COALESCE(ssh_port,22), COALESCE(ssh_user,''), ssh_password, ssh_key,
+			folder_id, COALESCE(visibility,'shared'), COALESCE(owner_id,0), created_at
+			FROM connections WHERE id=?`)
+		
+		err = appdb.DB.QueryRow(query, connID).Scan(
+			&c.ID, &c.Name, &c.Driver, &c.Host, &c.Port, &c.Database,
+			&c.Username, &encPassword, &ssl, &c.Tags,
+			&c.SSHHost, &c.SSHPort, &c.SSHUser, &encSSHPassword, &encSSHKey,
+			&c.FolderID, &c.Visibility, &c.OwnerID, &c.CreatedAt)
+		
+		if err != nil {
+			http.Error(w, `{"error":"connection not found"}`, http.StatusNotFound)
+			return
+		}
+		
+		c.SSL = ssl == 1
+		
+		// Check permission
+		if isAuthEnabled() && userRole != "admin" && c.OwnerID != userID && c.Visibility != "shared" {
+			http.Error(w, `{"error":"permission denied"}`, http.StatusForbidden)
+			return
+		}
+		
+		// Mask passwords (show bullets for security)
+		if encPassword != "" {
+			c.Password = "••••••••"
+		}
+		if encSSHPassword != "" {
+			c.SSHPassword = "••••••••"
+		}
+		if encSSHKey != "" {
+			c.SSHKey = "••••••••"
+		}
+		
+		json.NewEncoder(w).Encode(c)
+	}
+}
+
+func UpdateConnection() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		
+		// Get connection ID from URL
+		idStr := strings.TrimPrefix(r.URL.Path, "/api/connections/")
+		connID, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			http.Error(w, `{"error":"invalid connection id"}`, http.StatusBadRequest)
+			return
+		}
+		
+		// Check if connection exists and user has permission
+		var existingOwnerID int64
+		err = appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT owner_id FROM connections WHERE id = ?`), connID).Scan(&existingOwnerID)
+		if err != nil {
+			http.Error(w, `{"error":"connection not found"}`, http.StatusNotFound)
+			return
+		}
+		
+		// Get current user info
+		userIDStr := r.Header.Get("X-User-ID")
+		userRole := r.Header.Get("X-User-Role")
+		var userID int64
+		if userIDStr != "" {
+			userID, _ = strconv.ParseInt(userIDStr, 10, 64)
+		}
+		
+		// Check permission: must be owner or admin
+		if isAuthEnabled() && userRole != "admin" && existingOwnerID != userID {
+			http.Error(w, `{"error":"permission denied"}`, http.StatusForbidden)
+			return
+		}
+		
+		var in ConnectionInput
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+			return
+		}
+		
+		if in.Name == "" || in.Driver == "" {
+			http.Error(w, `{"error":"name and driver are required"}`, http.StatusBadRequest)
+			return
+		}
+		
+		if in.Driver == "sqlite" && in.Database == "" {
+			http.Error(w, `{"error":"database path is required for SQLite"}`, http.StatusBadRequest)
+			return
+		}
+		
+		// Validate input
+		if err := validateConnectionInput(&in); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		
+		if in.Visibility == "" {
+			in.Visibility = "shared"
+		}
+		
+		// Handle password: if empty or masked, keep existing
+		var encPassword string
+		if in.Password != "" && !strings.Contains(in.Password, "•") {
+			encPassword, err = encryptCredential(in.Password)
+			if err != nil {
+				http.Error(w, `{"error":"encryption error"}`, http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// Keep existing password
+			appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT password FROM connections WHERE id = ?`), connID).Scan(&encPassword)
+		}
+		
+		// Handle SSH credentials
+		var encSSHPassword, encSSHKey string
+		if in.SSHPassword != "" && !strings.Contains(in.SSHPassword, "•") {
+			encSSHPassword, err = encryptCredential(in.SSHPassword)
+			if err != nil {
+				http.Error(w, `{"error":"encryption error"}`, http.StatusInternalServerError)
+				return
+			}
+		} else {
+			appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT ssh_password FROM connections WHERE id = ?`), connID).Scan(&encSSHPassword)
+		}
+		
+		if in.SSHKey != "" && !strings.Contains(in.SSHKey, "•") {
+			encSSHKey, err = encryptCredential(in.SSHKey)
+			if err != nil {
+				http.Error(w, `{"error":"encryption error"}`, http.StatusInternalServerError)
+				return
+			}
+		} else {
+			appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT ssh_key FROM connections WHERE id = ?`), connID).Scan(&encSSHKey)
+		}
+		
+		ssl := 0
+		if in.SSL {
+			ssl = 1
+		}
+		
+		// Update connection
+		query := appdb.ConvertQuery(`UPDATE connections SET 
+			name=?, driver=?, host=?, port=?, database=?, username=?, password=?, ssl=?, tags=?,
+			ssh_host=?, ssh_port=?, ssh_user=?, ssh_password=?, ssh_key=?, folder_id=?, visibility=?
+			WHERE id=?`)
+		
+		_, err = appdb.DB.Exec(query,
+			in.Name, in.Driver, in.Host, in.Port, in.Database, in.Username, encPassword, ssl, in.Tags,
+			in.SSHHost, in.SSHPort, in.SSHUser, encSSHPassword, encSSHKey, in.FolderID, in.Visibility, connID,
+		)
+		if err != nil {
+			http.Error(w, `{"error":"failed to update connection"}`, http.StatusInternalServerError)
+			return
+		}
+		
+		// Evict from pool to force reconnect with new credentials
+		EvictFromPool(connID)
+		
+		// Fetch updated connection
+		var c Connection
+		var sslV int
+		appdb.DB.QueryRow(
+			appdb.ConvertQuery(`SELECT id, name, driver, COALESCE(host,''), COALESCE(port,0), database,
+			        COALESCE(username,''), ssl, COALESCE(tags,''),
+			        COALESCE(ssh_host,''), COALESCE(ssh_port,22), COALESCE(ssh_user,''),
+			        folder_id, COALESCE(visibility,'shared'), COALESCE(owner_id,0), created_at
+			 FROM connections WHERE id=?`), connID,
+		).Scan(&c.ID, &c.Name, &c.Driver, &c.Host, &c.Port, &c.Database,
+			&c.Username, &sslV, &c.Tags,
+			&c.SSHHost, &c.SSHPort, &c.SSHUser,
+			&c.FolderID, &c.Visibility, &c.OwnerID, &c.CreatedAt)
+		c.SSL = sslV == 1
+		
 		json.NewEncoder(w).Encode(c)
 	}
 }
@@ -480,7 +706,7 @@ func DeleteConnection() http.HandlerFunc {
 		}
 
 		EvictFromPool(id)
-		appdb.DB.Exec(`DELETE FROM connections WHERE id=?`, id)
+		appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM connections WHERE id=?`), id)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -521,7 +747,7 @@ func UpdateConnectionFolder() http.HandlerFunc {
 
 		// Update folder_id and/or visibility
 		if payload.FolderID != nil {
-			_, err = appdb.DB.Exec(`UPDATE connections SET folder_id = ? WHERE id = ?`, payload.FolderID, id)
+			_, err = appdb.DB.Exec(appdb.ConvertQuery(`UPDATE connections SET folder_id = ? WHERE id = ?`), payload.FolderID, id)
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"failed to update folder: %v"}`, err), http.StatusInternalServerError)
 				return
@@ -529,7 +755,7 @@ func UpdateConnectionFolder() http.HandlerFunc {
 		}
 
 		if payload.Visibility != nil {
-			_, err = appdb.DB.Exec(`UPDATE connections SET visibility = ? WHERE id = ?`, *payload.Visibility, id)
+			_, err = appdb.DB.Exec(appdb.ConvertQuery(`UPDATE connections SET visibility = ? WHERE id = ?`), *payload.Visibility, id)
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"failed to update visibility: %v"}`, err), http.StatusInternalServerError)
 				return
@@ -574,7 +800,7 @@ func UpdateConnectionVisibility() http.HandlerFunc {
 			return
 		}
 
-		_, err = appdb.DB.Exec(`UPDATE connections SET visibility = ? WHERE id = ?`, payload.Visibility, id)
+		_, err = appdb.DB.Exec(appdb.ConvertQuery(`UPDATE connections SET visibility = ? WHERE id = ?`), payload.Visibility, id)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"failed to update visibility: %v"}`, err), http.StatusInternalServerError)
 			return
@@ -604,7 +830,7 @@ func canModifyConnection(r *http.Request, connID int64) bool {
 	userID, _ := strconv.ParseInt(userIDStr, 10, 64)
 
 	var ownerID int64
-	err := appdb.DB.QueryRow(`SELECT COALESCE(owner_id,0) FROM connections WHERE id=?`, connID).Scan(&ownerID)
+	err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COALESCE(owner_id,0) FROM connections WHERE id=?`), connID).Scan(&ownerID)
 	if err != nil {
 		return false
 	}
@@ -654,7 +880,7 @@ func openRemoteDB(connID int64) (*sql.DB, string, error) {
 	var ssl int
 	var encPassword string
 	err := appdb.DB.QueryRow(
-		`SELECT driver, COALESCE(host,''), COALESCE(port,0), database, COALESCE(username,''), COALESCE(password,''), ssl FROM connections WHERE id=?`, connID,
+		appdb.ConvertQuery(`SELECT driver, COALESCE(host,''), COALESCE(port,0), database, COALESCE(username,''), COALESCE(password,''), ssl FROM connections WHERE id=?`), connID,
 	).Scan(&in.Driver, &in.Host, &in.Port, &in.Database, &in.Username, &encPassword, &ssl)
 	if err != nil {
 		return nil, "", fmt.Errorf("connection not found")

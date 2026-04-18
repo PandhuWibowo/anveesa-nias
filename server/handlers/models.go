@@ -448,7 +448,7 @@ func CheckReadPermission(r *http.Request, connID int64) bool {
 
 	// Check if user owns this connection (backward compatibility)
 	var ownerID sql.NullInt64
-	err = db.DB.QueryRow(`SELECT owner_id FROM connections WHERE id = ?`, connID).Scan(&ownerID)
+	err = db.DB.QueryRow(db.ConvertQuery(`SELECT owner_id FROM connections WHERE id = ?`), connID).Scan(&ownerID)
 	if err == nil && ownerID.Valid && ownerID.Int64 == userID {
 		return true
 	}
@@ -502,7 +502,7 @@ func CheckWritePermission(r *http.Request, connID int64) bool {
 
 	// Check if user owns this connection (backward compatibility)
 	var ownerID sql.NullInt64
-	err = db.DB.QueryRow(`SELECT owner_id FROM connections WHERE id = ?`, connID).Scan(&ownerID)
+	err = db.DB.QueryRow(db.ConvertQuery(`SELECT owner_id FROM connections WHERE id = ?`), connID).Scan(&ownerID)
 	if err == nil && ownerID.Valid && ownerID.Int64 == userID {
 		return true
 	}

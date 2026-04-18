@@ -69,7 +69,7 @@ func GetBackup() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/sql")
 		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 
-		fmt.Fprintf(w, "-- Singapay SQL Dump\n")
+		fmt.Fprintf(w, "-- Anveesa Nias Database Dump\n")
 		fmt.Fprintf(w, "-- Driver: %s | Database: %s\n", driver, dbName)
 		fmt.Fprintf(w, "-- Generated: %s\n\n", time.Now().Format(time.RFC3339))
 		fmt.Fprintf(w, "SET FOREIGN_KEY_CHECKS=0;\n\n")

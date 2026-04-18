@@ -17,6 +17,8 @@ func currentUserFromHeaders(r *http.Request) (int64, string, string) {
 	return userID, r.Header.Get("X-Username"), r.Header.Get("X-User-Role")
 }
 
+// appdb.ConvertQuery converts SQLite ? placeholders to PostgreSQL $1, $2, ... if needed
+
 func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	if !isAuthEnabled() {
 		return true
@@ -55,6 +57,8 @@ func ListWorkflows() http.HandlerFunc {
 		defer rows.Close()
 
 		var workflows []ApprovalWorkflow
+		var workflowIDs []int64
+		
 		for rows.Next() {
 			var wf ApprovalWorkflow
 			var isActive, allGroups, allConnections int
@@ -65,20 +69,32 @@ func ListWorkflows() http.HandlerFunc {
 			wf.IsActive = parseSQLBool(isActive)
 			wf.AssignAllGroups = parseSQLBool(allGroups)
 			wf.AssignAllConnections = parseSQLBool(allConnections)
-			wf.Steps, _ = listWorkflowSteps(wf.ID)
-			wf.AccessGroups, _ = listWorkflowAccessGroups(wf.ID)
-			wf.Connections, _ = listWorkflowConnections(wf.ID)
-			if wf.Steps == nil {
-				wf.Steps = []WorkflowStep{}
-			}
-			if wf.AccessGroups == nil {
-				wf.AccessGroups = []WorkflowAccessGroup{}
-			}
-			if wf.Connections == nil {
-				wf.Connections = []WorkflowConnection{}
-			}
+			wf.Steps = []WorkflowStep{}
+			wf.AccessGroups = []WorkflowAccessGroup{}
+			wf.Connections = []WorkflowConnection{}
 			workflows = append(workflows, wf)
+			workflowIDs = append(workflowIDs, wf.ID)
 		}
+		
+		// Close rows before making additional queries to release lock
+		rows.Close()
+		
+		// Load related data for each workflow (after closing main query)
+		for i := range workflows {
+			workflows[i].Steps, _ = listWorkflowSteps(workflows[i].ID)
+			workflows[i].AccessGroups, _ = listWorkflowAccessGroups(workflows[i].ID)
+			workflows[i].Connections, _ = listWorkflowConnections(workflows[i].ID)
+			if workflows[i].Steps == nil {
+				workflows[i].Steps = []WorkflowStep{}
+			}
+			if workflows[i].AccessGroups == nil {
+				workflows[i].AccessGroups = []WorkflowAccessGroup{}
+			}
+			if workflows[i].Connections == nil {
+				workflows[i].Connections = []WorkflowConnection{}
+			}
+		}
+		
 		if workflows == nil {
 			workflows = []ApprovalWorkflow{}
 		}
@@ -131,15 +147,29 @@ func CreateWorkflow() http.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-		res, err := tx.Exec(`
-			INSERT INTO approval_workflow (name, description, is_active, assign_all_groups, assign_all_connections, created_at, updated_at)
-			VALUES (?, ?, 1, ?, ?, ?, ?)
-		`, strings.TrimSpace(req.Name), strings.TrimSpace(req.Description), boolInt(req.AssignAllGroups), boolInt(req.AssignAllConnections), now, now)
-		if err != nil {
-			http.Error(w, jsonError("failed to create workflow"), http.StatusInternalServerError)
-			return
+		var workflowID int64
+		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
+			// Use RETURNING for PostgreSQL/MySQL
+			err := tx.QueryRow(`
+				INSERT INTO approval_workflow (name, description, is_active, assign_all_groups, assign_all_connections, created_at, updated_at)
+				VALUES ($1, $2, 1, $3, $4, $5, $6) RETURNING id
+			`, strings.TrimSpace(req.Name), strings.TrimSpace(req.Description), boolInt(req.AssignAllGroups), boolInt(req.AssignAllConnections), now, now).Scan(&workflowID)
+			if err != nil {
+				http.Error(w, jsonError("failed to create workflow"), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// Use LastInsertId for SQLite
+			res, err := tx.Exec(`
+				INSERT INTO approval_workflow (name, description, is_active, assign_all_groups, assign_all_connections, created_at, updated_at)
+				VALUES (?, ?, 1, ?, ?, ?, ?)
+			`, strings.TrimSpace(req.Name), strings.TrimSpace(req.Description), boolInt(req.AssignAllGroups), boolInt(req.AssignAllConnections), now, now)
+			if err != nil {
+				http.Error(w, jsonError("failed to create workflow"), http.StatusInternalServerError)
+				return
+			}
+			workflowID, _ = res.LastInsertId()
 		}
-		workflowID, _ := res.LastInsertId()
 
 		if err := replaceWorkflowStepsTx(tx, workflowID, req.Steps); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
@@ -243,7 +273,7 @@ func ToggleWorkflowActive() http.HandlerFunc {
 			http.Error(w, jsonError("invalid request"), http.StatusBadRequest)
 			return
 		}
-		if _, err := appdb.DB.Exec(`UPDATE approval_workflow SET is_active = ?, updated_at = ? WHERE id = ?`, boolInt(body.IsActive), time.Now().UTC().Format("2006-01-02 15:04:05"), id); err != nil {
+		if _, err := appdb.DB.Exec(appdb.ConvertQuery(`UPDATE approval_workflow SET is_active = ?, updated_at = ? WHERE id = ?`), boolInt(body.IsActive), time.Now().UTC().Format("2006-01-02 15:04:05"), id); err != nil {
 			http.Error(w, jsonError("failed to update workflow"), http.StatusInternalServerError)
 			return
 		}
@@ -263,12 +293,12 @@ func DeleteWorkflow() http.HandlerFunc {
 			return
 		}
 		var count int
-		_ = appdb.DB.QueryRow(`SELECT COUNT(*) FROM query_approval_request WHERE workflow_id = ?`, id).Scan(&count)
+		_ = appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COUNT(*) FROM query_approval_request WHERE workflow_id = ?`), id).Scan(&count)
 		if count > 0 {
 			http.Error(w, jsonError("cannot delete workflow in use by approval requests"), http.StatusBadRequest)
 			return
 		}
-		if _, err := appdb.DB.Exec(`DELETE FROM approval_workflow WHERE id = ?`, id); err != nil {
+		if _, err := appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM approval_workflow WHERE id = ?`), id); err != nil {
 			http.Error(w, jsonError("failed to delete workflow"), http.StatusInternalServerError)
 			return
 		}
@@ -337,6 +367,7 @@ func ListApprovalRequests() http.HandlerFunc {
 				   )
 				ORDER BY q.created_at DESC
 			`
+			query = appdb.ConvertQuery(query)
 			rows, err = appdb.DB.Query(query, userID, userID, role)
 		}
 		if err != nil {
@@ -410,16 +441,32 @@ func CreateApprovalRequest() http.HandlerFunc {
 		}
 
 		now := time.Now().UTC().Format("2006-01-02 15:04:05")
-		res, err := appdb.DB.Exec(`
-			INSERT INTO query_approval_request
-				(title, description, conn_id, database_name, statement, status, creator_id, workflow_id, current_step, revision, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, 'pending_review', ?, ?, 1, 1, ?, ?)
-		`, body.Title, strings.TrimSpace(body.Description), body.ConnID, strings.TrimSpace(body.Database), body.Statement, userID, workflowID, now, now)
-		if err != nil {
-			http.Error(w, jsonError("failed to create approval request"), http.StatusInternalServerError)
-			return
+		
+		var reqID int64
+		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
+			// Use RETURNING for PostgreSQL/MySQL
+			err := appdb.DB.QueryRow(`
+				INSERT INTO query_approval_request
+					(title, description, conn_id, database_name, statement, status, creator_id, workflow_id, current_step, revision, created_at, updated_at)
+				VALUES ($1, $2, $3, $4, $5, 'pending_review', $6, $7, 1, 1, $8, $9) RETURNING id
+			`, body.Title, strings.TrimSpace(body.Description), body.ConnID, strings.TrimSpace(body.Database), body.Statement, userID, workflowID, now, now).Scan(&reqID)
+			if err != nil {
+				http.Error(w, jsonError("failed to create approval request"), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// Use LastInsertId for SQLite
+			res, err := appdb.DB.Exec(`
+				INSERT INTO query_approval_request
+					(title, description, conn_id, database_name, statement, status, creator_id, workflow_id, current_step, revision, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, 'pending_review', ?, ?, 1, 1, ?, ?)
+			`, body.Title, strings.TrimSpace(body.Description), body.ConnID, strings.TrimSpace(body.Database), body.Statement, userID, workflowID, now, now)
+			if err != nil {
+				http.Error(w, jsonError("failed to create approval request"), http.StatusInternalServerError)
+				return
+			}
+			reqID, _ = res.LastInsertId()
 		}
-		reqID, _ := res.LastInsertId()
 		req, _ := getApprovalRequestByID(reqID)
 		if req != nil && username != "" {
 			req.CreatorName = username
@@ -492,13 +539,13 @@ func UpdateApprovalRequest() http.HandlerFunc {
 		}
 
 		now := time.Now().UTC().Format("2006-01-02 15:04:05")
-		_, err = appdb.DB.Exec(`
+		_, err = appdb.DB.Exec(appdb.ConvertQuery(`
 			UPDATE query_approval_request
 			SET title = ?, description = ?, conn_id = ?, database_name = ?, statement = ?,
 				status = 'pending_review', workflow_id = ?, current_step = 1, reviewer_id = NULL,
 				revision = revision + 1, execute_error = '', updated_at = ?
 			WHERE id = ?
-		`, body.Title, strings.TrimSpace(body.Description), body.ConnID, strings.TrimSpace(body.Database), body.Statement, workflowID, now, id)
+		`), body.Title, strings.TrimSpace(body.Description), body.ConnID, strings.TrimSpace(body.Database), body.Statement, workflowID, now, id)
 		if err != nil {
 			http.Error(w, jsonError("failed to update approval request"), http.StatusInternalServerError)
 			return
@@ -641,21 +688,21 @@ func ApproveApprovalStep() http.HandlerFunc {
 			return
 		}
 
-		if _, err := appdb.DB.Exec(`
+		if _, err := appdb.DB.Exec(appdb.ConvertQuery(`
 			INSERT INTO query_approval (request_id, step_id, revision, user_id, username, action, note)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`, id, step.ID, req.Revision, userID, username, body.Action, strings.TrimSpace(body.Note)); err != nil {
+		`), id, step.ID, req.Revision, userID, username, body.Action, strings.TrimSpace(body.Note)); err != nil {
 			http.Error(w, jsonError("failed to record approval action"), http.StatusInternalServerError)
 			return
 		}
 
 		now := time.Now().UTC().Format("2006-01-02 15:04:05")
 		if body.Action == "rejected" {
-			_, _ = appdb.DB.Exec(`
+			_, _ = appdb.DB.Exec(appdb.ConvertQuery(`
 				UPDATE query_approval_request
 				SET status = 'rejected', reviewer_id = ?, review_note = ?, updated_at = ?
 				WHERE id = ?
-			`, userID, strings.TrimSpace(body.Note), now, id)
+			`), userID, strings.TrimSpace(body.Note), now, id)
 			json.NewEncoder(w).Encode(map[string]string{"message": "changes requested"})
 			return
 		}
@@ -664,15 +711,15 @@ func ApproveApprovalStep() http.HandlerFunc {
 		if approvedCount >= step.RequiredApprovals {
 			totalSteps, _ := countWorkflowSteps(req.WorkflowID)
 			if req.CurrentStep >= totalSteps {
-				_, _ = appdb.DB.Exec(`
+				_, _ = appdb.DB.Exec(appdb.ConvertQuery(`
 					UPDATE query_approval_request
 					SET status = 'approved', reviewer_id = ?, review_note = ?, current_step = ?, updated_at = ?
 					WHERE id = ?
-				`, userID, strings.TrimSpace(body.Note), req.CurrentStep+1, now, id)
+				`), userID, strings.TrimSpace(body.Note), req.CurrentStep+1, now, id)
 				json.NewEncoder(w).Encode(map[string]string{"message": "all steps approved, request is approved"})
 				return
 			}
-			_, _ = appdb.DB.Exec(`UPDATE query_approval_request SET current_step = ?, updated_at = ? WHERE id = ?`, req.CurrentStep+1, now, id)
+			_, _ = appdb.DB.Exec(appdb.ConvertQuery(`UPDATE query_approval_request SET current_step = ?, updated_at = ? WHERE id = ?`), req.CurrentStep+1, now, id)
 			json.NewEncoder(w).Encode(map[string]string{"message": "step approved, moved to next step"})
 			return
 		}
@@ -721,7 +768,7 @@ func ExecuteApprovalRequest() http.HandlerFunc {
 			return
 		}
 
-		_, _ = appdb.DB.Exec(`UPDATE query_approval_request SET status = 'executing', updated_at = ? WHERE id = ?`, time.Now().UTC().Format("2006-01-02 15:04:05"), id)
+		_, _ = appdb.DB.Exec(appdb.ConvertQuery(`UPDATE query_approval_request SET status = 'executing', updated_at = ? WHERE id = ?`), time.Now().UTC().Format("2006-01-02 15:04:05"), id)
 
 		db, driver, err := GetDB(req.ConnID)
 		if err != nil {
@@ -761,11 +808,11 @@ func ExecuteApprovalRequest() http.HandlerFunc {
 func getWorkflowByID(id int64) (*ApprovalWorkflow, error) {
 	var wf ApprovalWorkflow
 	var isActive, allGroups, allConnections int
-	err := appdb.DB.QueryRow(`
+	err := appdb.DB.QueryRow(appdb.ConvertQuery(`
 		SELECT id, name, description, is_active, assign_all_groups, assign_all_connections, created_at, updated_at
 		FROM approval_workflow
 		WHERE id = ?
-	`, id).Scan(&wf.ID, &wf.Name, &wf.Description, &isActive, &allGroups, &allConnections, &wf.CreatedAt, &wf.UpdatedAt)
+	`), id).Scan(&wf.ID, &wf.Name, &wf.Description, &isActive, &allGroups, &allConnections, &wf.CreatedAt, &wf.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -791,12 +838,12 @@ func getWorkflowByID(id int64) (*ApprovalWorkflow, error) {
 }
 
 func listWorkflowSteps(workflowID int64) ([]WorkflowStep, error) {
-	rows, err := appdb.DB.Query(`
+	rows, err := appdb.DB.Query(appdb.ConvertQuery(`
 		SELECT id, workflow_id, step_order, name, required_approvals
 		FROM workflow_step
 		WHERE workflow_id = ?
 		ORDER BY step_order ASC
-	`, workflowID)
+	`), workflowID)
 	if err != nil {
 		return nil, err
 	}
@@ -815,7 +862,7 @@ func listWorkflowSteps(workflowID int64) ([]WorkflowStep, error) {
 }
 
 func listStepApprovers(stepID int64) ([]StepApprover, error) {
-	rows, err := appdb.DB.Query(`
+	rows, err := appdb.DB.Query(appdb.ConvertQuery(`
 		SELECT sa.id, sa.step_id, sa.approver_type, sa.approver_id,
 			CASE
 				WHEN sa.approver_type = 'role' THEN COALESCE(r.name, 'unknown')
@@ -826,7 +873,7 @@ func listStepApprovers(stepID int64) ([]StepApprover, error) {
 		LEFT JOIN roles r ON sa.approver_type = 'role' AND sa.approver_id = r.id
 		LEFT JOIN users u ON sa.approver_type = 'user' AND sa.approver_id = u.id
 		WHERE sa.step_id = ?
-	`, stepID)
+	`), stepID)
 	if err != nil {
 		return nil, err
 	}
@@ -844,13 +891,13 @@ func listStepApprovers(stepID int64) ([]StepApprover, error) {
 }
 
 func listWorkflowAccessGroups(workflowID int64) ([]WorkflowAccessGroup, error) {
-	rows, err := appdb.DB.Query(`
+	rows, err := appdb.DB.Query(appdb.ConvertQuery(`
 		SELECT wf.folder_id, COALESCE(f.name, 'unknown')
 		FROM workflow_folder wf
 		LEFT JOIN connection_folders f ON f.id = wf.folder_id
 		WHERE wf.workflow_id = ?
 		ORDER BY f.name ASC
-	`, workflowID)
+	`), workflowID)
 	if err != nil {
 		return nil, err
 	}
@@ -868,13 +915,13 @@ func listWorkflowAccessGroups(workflowID int64) ([]WorkflowAccessGroup, error) {
 }
 
 func listWorkflowConnections(workflowID int64) ([]WorkflowConnection, error) {
-	rows, err := appdb.DB.Query(`
+	rows, err := appdb.DB.Query(appdb.ConvertQuery(`
 		SELECT wc.conn_id, COALESCE(c.name, 'unknown'), COALESCE(c.driver, ''), COALESCE(c.environment, 'development')
 		FROM workflow_connection wc
 		LEFT JOIN connections c ON c.id = wc.conn_id
 		WHERE wc.workflow_id = ?
 		ORDER BY c.name ASC
-	`, workflowID)
+	`), workflowID)
 	if err != nil {
 		return nil, err
 	}
@@ -892,7 +939,7 @@ func listWorkflowConnections(workflowID int64) ([]WorkflowConnection, error) {
 }
 
 func replaceWorkflowStepsTx(tx *sql.Tx, workflowID int64, steps []CreateWorkflowStepReq) error {
-	if _, err := tx.Exec(`DELETE FROM workflow_step WHERE workflow_id = ?`, workflowID); err != nil {
+	if _, err := tx.Exec(appdb.ConvertQuery(`DELETE FROM workflow_step WHERE workflow_id = ?`), workflowID); err != nil {
 		return err
 	}
 	for i, step := range steps {
@@ -903,16 +950,27 @@ func replaceWorkflowStepsTx(tx *sql.Tx, workflowID int64, steps []CreateWorkflow
 		if required < 1 {
 			required = 1
 		}
-		res, err := tx.Exec(`INSERT INTO workflow_step (workflow_id, step_order, name, required_approvals) VALUES (?, ?, ?, ?)`, workflowID, i+1, strings.TrimSpace(step.Name), required)
-		if err != nil {
-			return err
+		
+		var stepID int64
+		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
+			// Use RETURNING for PostgreSQL/MySQL
+			err := tx.QueryRow(`INSERT INTO workflow_step (workflow_id, step_order, name, required_approvals) VALUES ($1, $2, $3, $4) RETURNING id`, workflowID, i+1, strings.TrimSpace(step.Name), required).Scan(&stepID)
+			if err != nil {
+				return err
+			}
+		} else {
+			// Use LastInsertId for SQLite
+			res, err := tx.Exec(`INSERT INTO workflow_step (workflow_id, step_order, name, required_approvals) VALUES (?, ?, ?, ?)`, workflowID, i+1, strings.TrimSpace(step.Name), required)
+			if err != nil {
+				return err
+			}
+			stepID, _ = res.LastInsertId()
 		}
-		stepID, _ := res.LastInsertId()
 		for _, approver := range step.Approvers {
 			if approver.ApproverType != "role" && approver.ApproverType != "user" {
 				return fmt.Errorf("invalid approver type")
 			}
-			if _, err := tx.Exec(`INSERT INTO step_approver (step_id, approver_type, approver_id) VALUES (?, ?, ?)`, stepID, approver.ApproverType, approver.ApproverID); err != nil {
+			if _, err := tx.Exec(appdb.ConvertQuery(`INSERT INTO step_approver (step_id, approver_type, approver_id) VALUES (?, ?, ?)`), stepID, approver.ApproverType, approver.ApproverID); err != nil {
 				return err
 			}
 		}
@@ -921,11 +979,15 @@ func replaceWorkflowStepsTx(tx *sql.Tx, workflowID int64, steps []CreateWorkflow
 }
 
 func replaceWorkflowGroupsTx(tx *sql.Tx, workflowID int64, groupIDs []int64) error {
-	if _, err := tx.Exec(`DELETE FROM workflow_folder WHERE workflow_id = ?`, workflowID); err != nil {
+	if _, err := tx.Exec(appdb.ConvertQuery(`DELETE FROM workflow_folder WHERE workflow_id = ?`), workflowID); err != nil {
 		return err
 	}
 	for _, groupID := range groupIDs {
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO workflow_folder (workflow_id, folder_id) VALUES (?, ?)`, workflowID, groupID); err != nil {
+		query := `INSERT OR IGNORE INTO workflow_folder (workflow_id, folder_id) VALUES (?, ?)`
+		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
+			query = `INSERT INTO workflow_folder (workflow_id, folder_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`
+		}
+		if _, err := tx.Exec(query, workflowID, groupID); err != nil {
 			return err
 		}
 	}
@@ -933,11 +995,15 @@ func replaceWorkflowGroupsTx(tx *sql.Tx, workflowID int64, groupIDs []int64) err
 }
 
 func replaceWorkflowConnectionsTx(tx *sql.Tx, workflowID int64, connIDs []int64) error {
-	if _, err := tx.Exec(`DELETE FROM workflow_connection WHERE workflow_id = ?`, workflowID); err != nil {
+	if _, err := tx.Exec(appdb.ConvertQuery(`DELETE FROM workflow_connection WHERE workflow_id = ?`), workflowID); err != nil {
 		return err
 	}
 	for _, connID := range connIDs {
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO workflow_connection (workflow_id, conn_id) VALUES (?, ?)`, workflowID, connID); err != nil {
+		query := `INSERT OR IGNORE INTO workflow_connection (workflow_id, conn_id) VALUES (?, ?)`
+		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
+			query = `INSERT INTO workflow_connection (workflow_id, conn_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`
+		}
+		if _, err := tx.Exec(query, workflowID, connID); err != nil {
 			return err
 		}
 	}
@@ -946,13 +1012,13 @@ func replaceWorkflowConnectionsTx(tx *sql.Tx, workflowID int64, connIDs []int64)
 
 func findApplicableWorkflows(userID int64, role string, connID int64) ([]ApprovalWorkflow, error) {
 	if role == "admin" {
-		rows, err := appdb.DB.Query(`
-			SELECT id
+		rows, err := appdb.DB.Query(appdb.ConvertQuery(`
+			SELECT id, name
 			FROM approval_workflow
 			WHERE is_active = 1
 			  AND (assign_all_connections = 1 OR id IN (SELECT workflow_id FROM workflow_connection WHERE conn_id = ?))
 			ORDER BY name ASC
-		`, connID)
+		`), connID)
 		if err != nil {
 			return nil, err
 		}
@@ -960,7 +1026,8 @@ func findApplicableWorkflows(userID int64, role string, connID int64) ([]Approva
 		var workflows []ApprovalWorkflow
 		for rows.Next() {
 			var id int64
-			if err := rows.Scan(&id); err != nil {
+			var name string
+			if err := rows.Scan(&id, &name); err != nil {
 				return nil, err
 			}
 			wf, _ := getWorkflowByID(id)
@@ -971,8 +1038,8 @@ func findApplicableWorkflows(userID int64, role string, connID int64) ([]Approva
 		return workflows, rows.Err()
 	}
 
-	rows, err := appdb.DB.Query(`
-		SELECT DISTINCT aw.id
+	rows, err := appdb.DB.Query(appdb.ConvertQuery(`
+		SELECT DISTINCT aw.id, aw.name
 		FROM approval_workflow aw
 		WHERE aw.is_active = 1
 		  AND (aw.assign_all_connections = 1 OR aw.id IN (
@@ -990,7 +1057,7 @@ func findApplicableWorkflows(userID int64, role string, connID int64) ([]Approva
 				)
 		  )
 		ORDER BY aw.name ASC
-	`, connID, userID, userID, role)
+	`), connID, userID, userID, role)
 	if err != nil {
 		return nil, err
 	}
@@ -999,7 +1066,8 @@ func findApplicableWorkflows(userID int64, role string, connID int64) ([]Approva
 	var workflows []ApprovalWorkflow
 	for rows.Next() {
 		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
 			return nil, err
 		}
 		wf, _ := getWorkflowByID(id)
@@ -1062,7 +1130,7 @@ func scanApprovalRequests(rows *sql.Rows) ([]QueryApprovalRequest, error) {
 }
 
 func getApprovalRequestByID(id int64) (*QueryApprovalRequest, error) {
-	rows, err := appdb.DB.Query(`
+	rows, err := appdb.DB.Query(appdb.ConvertQuery(`
 		SELECT
 			q.id, q.title, q.description, q.conn_id,
 			COALESCE(c.name, ''), COALESCE(c.driver, ''), COALESCE(c.environment, 'development'),
@@ -1075,7 +1143,7 @@ func getApprovalRequestByID(id int64) (*QueryApprovalRequest, error) {
 		LEFT JOIN users u1 ON u1.id = q.creator_id
 		LEFT JOIN users u2 ON u2.id = q.reviewer_id
 		WHERE q.id = ?
-	`, id)
+	`), id)
 	if err != nil {
 		return nil, err
 	}
@@ -1088,12 +1156,12 @@ func getApprovalRequestByID(id int64) (*QueryApprovalRequest, error) {
 }
 
 func listRequestApproverNames(requestID int64, revision int) ([]string, error) {
-	rows, err := appdb.DB.Query(`
+	rows, err := appdb.DB.Query(appdb.ConvertQuery(`
 		SELECT DISTINCT username
 		FROM query_approval
 		WHERE request_id = ? AND revision = ? AND action = 'approved'
 		ORDER BY username ASC
-	`, requestID, revision)
+	`), requestID, revision)
 	if err != nil {
 		return nil, err
 	}
@@ -1136,11 +1204,11 @@ func listRequestApprovals(requestID int64, revision int) ([]ChangeApproval, erro
 
 func getStepByWorkflowAndOrder(workflowID int64, order int) (*WorkflowStep, error) {
 	var step WorkflowStep
-	err := appdb.DB.QueryRow(`
+	err := appdb.DB.QueryRow(appdb.ConvertQuery(`
 		SELECT id, workflow_id, step_order, name, required_approvals
 		FROM workflow_step
 		WHERE workflow_id = ? AND step_order = ?
-	`, workflowID, order).Scan(&step.ID, &step.WorkflowID, &step.StepOrder, &step.Name, &step.RequiredApprovals)
+	`), workflowID, order).Scan(&step.ID, &step.WorkflowID, &step.StepOrder, &step.Name, &step.RequiredApprovals)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1169,13 +1237,13 @@ func isUserEligibleForStep(stepID, userID int64, role string) (bool, error) {
 
 func hasUserActedOnStep(requestID, stepID, userID int64, revision int) (bool, error) {
 	var count int
-	err := appdb.DB.QueryRow(`SELECT COUNT(*) FROM query_approval WHERE request_id = ? AND step_id = ? AND user_id = ? AND revision = ?`, requestID, stepID, userID, revision).Scan(&count)
+	err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COUNT(*) FROM query_approval WHERE request_id = ? AND step_id = ? AND user_id = ? AND revision = ?`), requestID, stepID, userID, revision).Scan(&count)
 	return count > 0, err
 }
 
 func countStepApprovals(requestID, stepID int64, revision int) (int, error) {
 	var count int
-	err := appdb.DB.QueryRow(`SELECT COUNT(*) FROM query_approval WHERE request_id = ? AND step_id = ? AND action = 'approved' AND revision = ?`, requestID, stepID, revision).Scan(&count)
+	err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COUNT(*) FROM query_approval WHERE request_id = ? AND step_id = ? AND action = 'approved' AND revision = ?`), requestID, stepID, revision).Scan(&count)
 	return count, err
 }
 
@@ -1207,25 +1275,25 @@ func canRequesterManageApprovedRequest(req *QueryApprovalRequest, userID int64, 
 
 func countWorkflowSteps(workflowID int64) (int, error) {
 	var count int
-	err := appdb.DB.QueryRow(`SELECT COUNT(*) FROM workflow_step WHERE workflow_id = ?`, workflowID).Scan(&count)
+	err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COUNT(*) FROM workflow_step WHERE workflow_id = ?`), workflowID).Scan(&count)
 	return count, err
 }
 
 func markApprovalRequestExecution(id int64, status QueryApprovalStatus, execError string) {
 	now := time.Now().UTC()
 	if status == QueryApprovalStatusDone {
-		_, _ = appdb.DB.Exec(`
+		_, _ = appdb.DB.Exec(appdb.ConvertQuery(`
 			UPDATE query_approval_request
 			SET status = ?, execute_error = ?, executed_at = ?, updated_at = ?
 			WHERE id = ?
-		`, status, execError, now.Format("2006-01-02 15:04:05"), now.Format("2006-01-02 15:04:05"), id)
+		`), status, execError, now.Format("2006-01-02 15:04:05"), now.Format("2006-01-02 15:04:05"), id)
 		return
 	}
-	_, _ = appdb.DB.Exec(`
+	_, _ = appdb.DB.Exec(appdb.ConvertQuery(`
 		UPDATE query_approval_request
 		SET status = ?, execute_error = ?, updated_at = ?
 		WHERE id = ?
-	`, status, execError, now.Format("2006-01-02 15:04:05"), id)
+	`), status, execError, now.Format("2006-01-02 15:04:05"), id)
 }
 
 func canViewApprovalRequest(r *http.Request, req *QueryApprovalRequest) bool {

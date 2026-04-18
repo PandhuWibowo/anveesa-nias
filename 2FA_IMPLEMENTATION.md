@@ -65,7 +65,7 @@ New columns added to `users` table:
 - **Algorithm**: SHA1 (standard)
 - **Digits**: 6
 - **Period**: 30 seconds
-- **Issuer**: "Singapay SQL"
+- **Issuer**: "Anveesa Nias"
 
 ### Backup Codes
 - 10 codes generated using cryptographically secure random

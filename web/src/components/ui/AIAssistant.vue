@@ -100,7 +100,7 @@ async function saveSettings() {
 }
 
 function buildSystemPrompt(): string {
-  let sys = `You are an expert SQL assistant embedded in Singapay SQL, a database management tool.
+  let sys = `You are an expert SQL assistant embedded in Anveesa Nias, a database management tool.
 When generating SQL, always wrap it in a \`\`\`sql code block.
 Be concise and accurate.`
   if (props.connectionInfo) sys += `\nDatabase connection: ${props.connectionInfo}`

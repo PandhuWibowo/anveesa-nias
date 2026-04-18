@@ -148,9 +148,9 @@ func DeleteFolder() http.HandlerFunc {
 			return
 		}
 
-		appdb.DB.Exec(`UPDATE connections SET folder_id=NULL WHERE folder_id=?`, id)
-		appdb.DB.Exec(`UPDATE connection_folders SET parent_id=NULL WHERE parent_id=?`, id)
-		appdb.DB.Exec(`DELETE FROM connection_folders WHERE id=?`, id)
+		appdb.DB.Exec(appdb.ConvertQuery(`UPDATE connections SET folder_id=NULL WHERE folder_id=?`), id)
+		appdb.DB.Exec(appdb.ConvertQuery(`UPDATE connection_folders SET parent_id=NULL WHERE parent_id=?`), id)
+		appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM connection_folders WHERE id=?`), id)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -174,7 +174,7 @@ func canModifyFolder(r *http.Request, folderID string) bool {
 	userID, _ := strconv.ParseInt(userIDStr, 10, 64)
 
 	var ownerID int64
-	err := appdb.DB.QueryRow(`SELECT owner_id FROM connection_folders WHERE id=?`, folderID).Scan(&ownerID)
+	err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT owner_id FROM connection_folders WHERE id=?`), folderID).Scan(&ownerID)
 	if err != nil {
 		return false
 	}
@@ -214,9 +214,9 @@ func MoveConnectionToFolder() http.HandlerFunc {
 		}
 
 		if req.Visibility != "" {
-			appdb.DB.Exec(`UPDATE connections SET folder_id=?, visibility=? WHERE id=?`, req.FolderID, req.Visibility, connID)
+			appdb.DB.Exec(appdb.ConvertQuery(`UPDATE connections SET folder_id=?, visibility=? WHERE id=?`), req.FolderID, req.Visibility, connID)
 		} else {
-			appdb.DB.Exec(`UPDATE connections SET folder_id=? WHERE id=?`, req.FolderID, connID)
+			appdb.DB.Exec(appdb.ConvertQuery(`UPDATE connections SET folder_id=? WHERE id=?`), req.FolderID, connID)
 		}
 		json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	}
@@ -244,7 +244,7 @@ func SetConnectionVisibility() http.HandlerFunc {
 			http.Error(w, `{"error":"visibility must be private or shared"}`, http.StatusBadRequest)
 			return
 		}
-		appdb.DB.Exec(`UPDATE connections SET visibility=? WHERE id=?`, req.Visibility, connID)
+		appdb.DB.Exec(appdb.ConvertQuery(`UPDATE connections SET visibility=? WHERE id=?`), req.Visibility, connID)
 		json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	}
 }
@@ -267,7 +267,7 @@ func canAccessFolder(r *http.Request, folderID int64) bool {
 
 	var visibility string
 	var ownerID int64
-	err := appdb.DB.QueryRow(`SELECT visibility, owner_id FROM connection_folders WHERE id=?`, folderID).Scan(&visibility, &ownerID)
+	err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT visibility, owner_id FROM connection_folders WHERE id=?`), folderID).Scan(&visibility, &ownerID)
 	if err != nil {
 		return false
 	}

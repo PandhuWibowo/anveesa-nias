@@ -62,6 +62,6 @@ const driverLabel: Record<string, string> = {
     <div class="statusbar__sep" />
 
     <!-- Version -->
-    <div class="statusbar__version">Singapay SQL · v0.1.0</div>
+    <div class="statusbar__version">Anveesa Nias · v0.1.0</div>
   </footer>
 </template>

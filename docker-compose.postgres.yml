@@ -1,0 +1,80 @@
+# Docker Compose with PostgreSQL
+# For production deployments with persistent PostgreSQL database
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: anveesa-nias-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nias}
+      POSTGRES_USER: ${POSTGRES_USER:-nias}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-password}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nias}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nias-network
+
+  nias:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: anveesa-nias
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Environment
+      - NIAS_ENV=${NIAS_ENV:-production}
+      - PORT=8080
+      - HOST=0.0.0.0
+
+      # Database - PostgreSQL
+      - DB_DRIVER=postgres
+      - DATABASE_URL=postgres://${POSTGRES_USER:-nias}:${POSTGRES_PASSWORD:-change-this-password}@postgres:5432/${POSTGRES_DB:-nias}?sslmode=disable
+
+      # Security - REQUIRED in production
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRY_HOURS=${JWT_EXPIRY_HOURS:-72}
+      - AUTH_ENABLED=${AUTH_ENABLED:-true}
+      - NIAS_ENCRYPTION_KEY=${NIAS_ENCRYPTION_KEY}
+
+      # Default Admin Account
+      - DEFAULT_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME:-admin}
+      - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD}
+
+      # CORS
+      - CORS_ORIGIN=${CORS_ORIGIN:-*}
+
+      # Rate Limiting
+      - RATE_LIMIT_ENABLED=${RATE_LIMIT_ENABLED:-true}
+      - RATE_LIMIT_REQUESTS=${RATE_LIMIT_REQUESTS:-100}
+      - RATE_LIMIT_WINDOW=${RATE_LIMIT_WINDOW:-60}
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - nias-network
+
+volumes:
+  postgres-data:
+    driver: local
+
+networks:
+  nias-network:
+    driver: bridge

@@ -1,0 +1,61 @@
+# Production Docker Compose - Uses pre-built image from Docker Hub
+# For SQLite (single container, simple deployment)
+
+services:
+  nias:
+    image: anveesa/nias:latest
+    container_name: anveesa-nias
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - nias-data:/app/data
+      - nias-backups:/app/backups
+    environment:
+      # Environment
+      - NIAS_ENV=${NIAS_ENV:-production}
+      - PORT=8080
+      - HOST=0.0.0.0
+
+      # Database - SQLite (default)
+      - DB_DRIVER=sqlite
+      - DB_PATH=/app/data/nias.db
+
+      # Security - REQUIRED
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
+      - JWT_EXPIRY_HOURS=${JWT_EXPIRY_HOURS:-72}
+      - AUTH_ENABLED=${AUTH_ENABLED:-true}
+      - NIAS_ENCRYPTION_KEY=${NIAS_ENCRYPTION_KEY:?NIAS_ENCRYPTION_KEY is required}
+
+      # Default Admin
+      - DEFAULT_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME:-admin}
+      - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:?DEFAULT_ADMIN_PASSWORD is required}
+
+      # Backups
+      - BACKUP_ENABLED=${BACKUP_ENABLED:-true}
+      - BACKUP_DIR=/app/backups
+      - BACKUP_HOURS=${BACKUP_HOURS:-24}
+
+      # CORS
+      - CORS_ORIGIN=${CORS_ORIGIN:-*}
+
+      # Rate Limiting
+      - RATE_LIMIT_ENABLED=${RATE_LIMIT_ENABLED:-true}
+      - RATE_LIMIT_REQUESTS=${RATE_LIMIT_REQUESTS:-100}
+      - RATE_LIMIT_WINDOW=${RATE_LIMIT_WINDOW:-60}
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  nias-data:
+    driver: local
+  nias-backups:
+    driver: local

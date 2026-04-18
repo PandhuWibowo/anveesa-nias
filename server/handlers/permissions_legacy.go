@@ -111,7 +111,7 @@ func DeletePermission() http.HandlerFunc {
 			return
 		}
 
-		_, err := db.DB.Exec(`DELETE FROM permissions WHERE id = ?`, id)
+		_, err := db.DB.Exec(db.ConvertQuery(`DELETE FROM permissions WHERE id = ?`), id)
 		if err != nil {
 			http.Error(w, "failed to delete permission", http.StatusInternalServerError)
 			return

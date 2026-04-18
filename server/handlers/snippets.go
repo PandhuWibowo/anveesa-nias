@@ -98,7 +98,7 @@ func DeleteSnippet() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(r.URL.Path, "/")
 		id := parts[len(parts)-1]
-		appdb.DB.Exec(`DELETE FROM snippets WHERE id=?`, id)
+		appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM snippets WHERE id=?`), id)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

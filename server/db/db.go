@@ -2,22 +2,219 @@
 package db
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
 
+	"github.com/anveesa/nias/config"
+	"github.com/go-sql-driver/mysql"
+	_ "github.com/lib/pq"
 	_ "modernc.org/sqlite"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var DB *sql.DB
+var dbDriver string
 
-func Init(path string) error {
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return fmt.Errorf("open sqlite: %w", err)
+func Init(cfg *config.Config) error {
+	var db *sql.DB
+	var err error
+
+	dbDriver = cfg.DBDriver
+
+	switch cfg.DBDriver {
+	case "postgres":
+		// PostgreSQL (including AWS RDS PostgreSQL)
+		db, err = sql.Open("postgres", cfg.DBURL)
+		if err != nil {
+			return fmt.Errorf("open postgres: %w", err)
+		}
+
+		// Configure connection pool for PostgreSQL
+		db.SetMaxOpenConns(25)
+		db.SetMaxIdleConns(5)
+		db.SetConnMaxLifetime(0)
+
+		// Test connection
+		if err := db.Ping(); err != nil {
+			return fmt.Errorf("ping postgres: %w", err)
+		}
+
+	case "mysql":
+		// MySQL/MariaDB (including AWS RDS MySQL/MariaDB)
+		// Register TLS config if SSL is enabled
+		if cfg.DBSSLMode != "disable" && cfg.DBSSLRootCert != "" {
+			if err := registerMySQLTLS(cfg.DBSSLRootCert); err != nil {
+				return fmt.Errorf("register MySQL TLS: %w", err)
+			}
+		}
+
+		db, err = sql.Open("mysql", cfg.DBURL)
+		if err != nil {
+			return fmt.Errorf("open mysql: %w", err)
+		}
+
+		// Configure connection pool for MySQL
+		db.SetMaxOpenConns(25)
+		db.SetMaxIdleConns(5)
+		db.SetConnMaxLifetime(0)
+
+		// Test connection
+		if err := db.Ping(); err != nil {
+			return fmt.Errorf("ping mysql: %w", err)
+		}
+
+	default:
+		// SQLite
+		db, err = sql.Open("sqlite", cfg.DBPath)
+		if err != nil {
+			return fmt.Errorf("open sqlite: %w", err)
+		}
+
+		// Configure connection pool to prevent too many concurrent writes
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+		db.SetConnMaxLifetime(0)
+
+		// Enable WAL mode and set busy timeout
+		if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+			return fmt.Errorf("enable WAL mode: %w", err)
+		}
+		if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+			return fmt.Errorf("set busy timeout: %w", err)
+		}
 	}
 
 	DB = db
-	return migrate()
+	if err := migrate(); err != nil {
+		return err
+	}
+	return seedDefaultAdmin()
+}
+
+// registerMySQLTLS registers TLS configuration for MySQL (for RDS SSL)
+func registerMySQLTLS(certPath string) error {
+	rootCertPool := x509.NewCertPool()
+	pem, err := os.ReadFile(certPath)
+	if err != nil {
+		return fmt.Errorf("read cert file: %w", err)
+	}
+	if ok := rootCertPool.AppendCertsFromPEM(pem); !ok {
+		return fmt.Errorf("failed to append PEM")
+	}
+	
+	return mysql.RegisterTLSConfig("custom", &tls.Config{
+		RootCAs: rootCertPool,
+	})
+}
+
+// IsPostgreSQL returns true if using PostgreSQL
+func IsPostgreSQL() bool {
+	return dbDriver == "postgres"
+}
+
+// IsMySQL returns true if using MySQL/MariaDB
+func IsMySQL() bool {
+	return dbDriver == "mysql"
+}
+
+// ConvertQuery converts SQLite ? placeholders to PostgreSQL/MySQL $1, $2, ... if needed
+func ConvertQuery(query string) string {
+	if !IsPostgreSQL() && !IsMySQL() {
+		return query // SQLite uses ?, no conversion needed
+	}
+	
+	// Handle INSERT OR IGNORE (SQLite-specific)
+	hasInsertOrIgnore := strings.Contains(query, "INSERT OR IGNORE")
+	if hasInsertOrIgnore {
+		query = strings.Replace(query, "INSERT OR IGNORE", "INSERT", 1)
+	}
+	
+	// Convert ? to $1, $2, $3, etc.
+	result := ""
+	paramCount := 1
+	inQuote := false
+	quoteChar := byte(0)
+	
+	for i := 0; i < len(query); i++ {
+		ch := query[i]
+		
+		// Track if we're inside a string literal
+		if (ch == '\'' || ch == '"') && (i == 0 || query[i-1] != '\\') {
+			if !inQuote {
+				inQuote = true
+				quoteChar = ch
+			} else if ch == quoteChar {
+				inQuote = false
+			}
+		}
+		
+		// Only replace ? outside of string literals
+		if ch == '?' && !inQuote {
+			result += "$" + strconv.Itoa(paramCount)
+			paramCount++
+		} else {
+			result += string(ch)
+		}
+	}
+	
+	// Add ON CONFLICT DO NOTHING for PostgreSQL/MySQL if original had INSERT OR IGNORE
+	if hasInsertOrIgnore && (IsPostgreSQL() || IsMySQL()) {
+		result += " ON CONFLICT DO NOTHING"
+	}
+	
+	return result
+}
+
+// convertSQL converts SQLite SQL to PostgreSQL/MySQL SQL if needed
+func convertSQL(stmt string) string {
+	if IsPostgreSQL() {
+		// PostgreSQL conversions
+		stmt = strings.ReplaceAll(stmt, "INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+		stmt = strings.ReplaceAll(stmt, "AUTOINCREMENT", "")
+		stmt = strings.ReplaceAll(stmt, "DATETIME", "TIMESTAMP")
+		
+		// Handle INSERT OR IGNORE for migrations
+		if strings.Contains(stmt, "INSERT OR IGNORE") {
+			// Convert to INSERT ... ON CONFLICT DO NOTHING
+			// For roles table, add unique constraint handling
+			stmt = strings.Replace(stmt, "INSERT OR IGNORE", "INSERT", 1)
+			if strings.Contains(stmt, "INTO roles") {
+				// Add ON CONFLICT for roles table (unique on name)
+				stmt = strings.TrimSuffix(stmt, ";")
+				stmt += " ON CONFLICT (name) DO NOTHING"
+			} else {
+				// Generic ON CONFLICT for other tables
+				stmt += " ON CONFLICT DO NOTHING"
+			}
+		}
+		
+		// Handle ON DELETE CASCADE for foreign keys
+		// PostgreSQL is stricter about REFERENCES syntax
+		return stmt
+		
+	} else if IsMySQL() {
+		// MySQL/MariaDB conversions (for RDS MySQL/MariaDB)
+		stmt = strings.ReplaceAll(stmt, "INTEGER PRIMARY KEY AUTOINCREMENT", "INT PRIMARY KEY AUTO_INCREMENT")
+		stmt = strings.ReplaceAll(stmt, "AUTOINCREMENT", "AUTO_INCREMENT")
+		stmt = strings.ReplaceAll(stmt, "DATETIME", "DATETIME")
+		
+		// Handle INSERT OR IGNORE for MySQL
+		if strings.Contains(stmt, "INSERT OR IGNORE") {
+			stmt = strings.Replace(stmt, "INSERT OR IGNORE", "INSERT IGNORE", 1)
+		}
+		
+		// MySQL uses different check constraint syntax (5.7 doesn't support CHECK)
+		// For compatibility, we'll keep CHECK but it may be ignored in older MySQL
+		return stmt
+	}
+
+	// SQLite - no conversion needed
+	return stmt
 }
 
 func migrate() error {
@@ -274,6 +471,16 @@ func migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_query_approval_request_status ON query_approval_request(status, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_query_approval_request_conn ON query_approval_request(conn_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_query_approval_request_creator ON query_approval_request(creator_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_workflow_step_workflow ON workflow_step(workflow_id, step_order)`,
+		`CREATE INDEX IF NOT EXISTS idx_step_approver_step ON step_approver(step_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_step_approver_type_id ON step_approver(approver_type, approver_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_connections_folder ON connections(folder_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_connections_visibility_owner ON connections(visibility, owner_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_connections_user ON user_connections(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_connections_conn ON user_connections(conn_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_folder_members_user ON folder_members(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_folder_members_folder ON folder_members(folder_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_connection_folders_owner ON connection_folders(owner_id)`,
 
 		// ── Phase 3: Application-Level Role Permissions ──
 		`CREATE TABLE IF NOT EXISTS roles (
@@ -308,11 +515,29 @@ func migrate() error {
 		`ALTER TABLE query_approval ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
 	}
 	for _, s := range stmts {
-		if _, err := DB.Exec(s); err != nil {
-			// ALTER TABLE ADD COLUMN is idempotent-ish; ignore "duplicate column" errors
-			if !isAlterAdd(s) {
-				return fmt.Errorf("migrate: %w", err)
+		convertedSQL := convertSQL(s)
+		if _, err := DB.Exec(convertedSQL); err != nil {
+			// Ignore errors for ALTER TABLE ADD COLUMN (duplicate column)
+			// PostgreSQL: "column already exists"
+			// SQLite: "duplicate column name"
+			// MySQL: "Duplicate column name"
+			errMsg := strings.ToLower(err.Error())
+			if isAlterAdd(s) && (strings.Contains(errMsg, "duplicate column") || 
+				strings.Contains(errMsg, "already exists")) {
+				continue
 			}
+			// Ignore table/index already exists
+			// PostgreSQL: "already exists"
+			// MySQL: "already exists" or "table 'name' already exists"
+			if strings.Contains(errMsg, "already exists") {
+				continue
+			}
+			// For non-critical errors, log and continue
+			if !strings.Contains(s, "CREATE TABLE") {
+				fmt.Printf("Warning: migration error (non-fatal): %v\n", err)
+				continue
+			}
+			return fmt.Errorf("migrate: %w", err)
 		}
 	}
 	return nil
@@ -341,4 +566,87 @@ func Close() error {
 		return nil
 	}
 	return DB.Close()
+}
+
+// seedDefaultAdmin creates a default admin account if no users exist
+func seedDefaultAdmin() error {
+	// Check if any users exist
+	var count int
+	if err := DB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+		return fmt.Errorf("check users count: %w", err)
+	}
+
+	// If users already exist, skip seeding
+	if count > 0 {
+		return nil
+	}
+
+	// Ensure admin role exists (id=1)
+	var roleCount int
+	DB.QueryRow(`SELECT COUNT(*) FROM roles WHERE id = 1`).Scan(&roleCount)
+	if roleCount == 0 {
+		// Create admin role
+		if IsPostgreSQL() || IsMySQL() {
+			DB.Exec(`INSERT INTO roles (id, name, description, is_system) VALUES (1, 'Admin', 'Full system access', 1)`)
+		} else {
+			DB.Exec(`INSERT INTO roles (id, name, description, is_system) VALUES (1, 'Admin', 'Full system access', 1)`)
+		}
+	}
+
+	// Get default credentials from environment
+	username := getEnvOrDefault("DEFAULT_ADMIN_USERNAME", "admin")
+	password := getEnvOrDefault("DEFAULT_ADMIN_PASSWORD", "Admin123!")
+
+	// Skip if using default insecure password in production
+	env := getEnvOrDefault("NIAS_ENV", "development")
+	if env == "production" && password == "Admin123!" {
+		return fmt.Errorf("DEFAULT_ADMIN_PASSWORD must be set in production")
+	}
+
+	// Hash the password (using bcrypt cost 12 same as auth.go)
+	hash, err := hashPassword(password)
+	if err != nil {
+		return fmt.Errorf("hash password: %w", err)
+	}
+
+	// Create the admin user (use $1, $2 for PostgreSQL/MySQL, ? for SQLite)
+	var query string
+	if IsPostgreSQL() || IsMySQL() {
+		query = `INSERT INTO users (username, password, role, role_id, is_active) VALUES ($1, $2, 'admin', 1, 1)`
+	} else {
+		query = `INSERT INTO users (username, password, role, role_id, is_active) VALUES (?, ?, 'admin', 1, 1)`
+	}
+	
+	_, err = DB.Exec(query, username, hash)
+	if err != nil {
+		return fmt.Errorf("create default admin: %w", err)
+	}
+
+	fmt.Printf("✓ Default admin account created: %s\n", username)
+	fmt.Printf("  Username: %s\n", username)
+	if password == "Admin123!" {
+		fmt.Printf("  Password: %s (CHANGE THIS IMMEDIATELY!)\n", password)
+	} else {
+		fmt.Printf("  Password: %s\n", password)
+	}
+	fmt.Println("  Please change the password after first login!")
+
+	return nil
+}
+
+// hashPassword hashes a password using bcrypt (same as auth.go)
+func hashPassword(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+// getEnvOrDefault returns environment variable or default value
+func getEnvOrDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
 }

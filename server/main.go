@@ -42,10 +42,17 @@ func main() {
 	}
 
 	// Initialize database
-	if err := appdb.Init(cfg.DBPath); err != nil {
+	if err := appdb.Init(cfg); err != nil {
 		log.Fatalf("Database init failed: %v", err)
 	}
-	log.Printf("Database initialized: %s", cfg.DBPath)
+	switch cfg.DBDriver {
+	case "sqlite":
+		log.Printf("Database initialized: SQLite (%s)", cfg.DBPath)
+	case "postgres":
+		log.Printf("Database initialized: PostgreSQL")
+	case "mysql":
+		log.Printf("Database initialized: MySQL/MariaDB")
+	}
 
 	// Set JWT secret
 	handlers.SetJWTSecret(cfg.JWTSecret)
@@ -89,10 +96,10 @@ func main() {
 	go func() {
 		var err error
 		if cfg.TLSEnabled {
-			log.Printf("Singapay SQL server listening on https://%s:%s", cfg.Host, cfg.Port)
+			log.Printf("Anveesa Nias server listening on https://%s:%s", cfg.Host, cfg.Port)
 			err = server.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
 		} else {
-			log.Printf("Singapay SQL server listening on http://%s:%s", cfg.Host, cfg.Port)
+			log.Printf("Anveesa Nias server listening on http://%s:%s", cfg.Host, cfg.Port)
 			if cfg.IsProduction() {
 				log.Println("WARNING: Running without TLS in production!")
 			}
@@ -167,6 +174,18 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/connections/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/connections/")
 		parts := strings.SplitN(path, "/", 5)
+
+		// GET /api/connections/{id}
+		if len(parts) == 1 && r.Method == http.MethodGet {
+			handlers.GetConnection()(w, r)
+			return
+		}
+
+		// PUT /api/connections/{id}
+		if len(parts) == 1 && r.Method == http.MethodPut {
+			handlers.UpdateConnection()(w, r)
+			return
+		}
 
 		// DELETE /api/connections/{id}
 		if len(parts) == 1 && r.Method == http.MethodDelete {

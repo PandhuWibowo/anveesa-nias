@@ -11,6 +11,8 @@ import (
 	"github.com/anveesa/nias/db"
 )
 
+// db.ConvertQuery converts SQLite ? placeholders to PostgreSQL $1, $2, ... if needed
+
 // ── Roles ──
 
 // ListRoles returns all roles
@@ -88,16 +90,29 @@ func CreateRole() http.HandlerFunc {
 		permsJSON := AppPermsToJSON(req.Permissions)
 		now := time.Now().UTC().Format("2006-01-02 15:04:05")
 
-		result, err := db.DB.Exec(`
-			INSERT INTO roles (name, description, permissions, is_system, is_active, created_at, updated_at)
-			VALUES (?, ?, ?, 0, 1, ?, ?)
-		`, req.Name, req.Description, permsJSON, now, now)
-		if err != nil {
-			http.Error(w, "failed to create role", http.StatusInternalServerError)
-			return
+		var id int64
+		if db.IsPostgreSQL() || db.IsMySQL() {
+			// Use RETURNING for PostgreSQL/MySQL
+			err := db.DB.QueryRow(`
+				INSERT INTO roles (name, description, permissions, is_system, is_active, created_at, updated_at)
+				VALUES ($1, $2, $3, 0, 1, $4, $5) RETURNING id
+			`, req.Name, req.Description, permsJSON, now, now).Scan(&id)
+			if err != nil {
+				http.Error(w, "failed to create role", http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// Use LastInsertId for SQLite
+			result, err := db.DB.Exec(`
+				INSERT INTO roles (name, description, permissions, is_system, is_active, created_at, updated_at)
+				VALUES (?, ?, ?, 0, 1, ?, ?)
+			`, req.Name, req.Description, permsJSON, now, now)
+			if err != nil {
+				http.Error(w, "failed to create role", http.StatusInternalServerError)
+				return
+			}
+			id, _ = result.LastInsertId()
 		}
-
-		id, _ := result.LastInsertId()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]interface{}{"id": id})
@@ -113,7 +128,7 @@ func UpdateRole() http.HandlerFunc {
 		// Check if system role - allow editing permissions but not name
 		var isSystem int
 		var currentName string
-		db.DB.QueryRow(`SELECT is_system, name FROM roles WHERE id = ?`, id).Scan(&isSystem, &currentName)
+		db.DB.QueryRow(db.ConvertQuery(`SELECT is_system, name FROM roles WHERE id = ?`), id).Scan(&isSystem, &currentName)
 
 		var req CreateRoleRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -129,10 +144,10 @@ func UpdateRole() http.HandlerFunc {
 		permsJSON := AppPermsToJSON(req.Permissions)
 		now := time.Now().UTC().Format("2006-01-02 15:04:05")
 
-		_, err := db.DB.Exec(`
+		_, err := db.DB.Exec(db.ConvertQuery(`
 			UPDATE roles SET name = ?, description = ?, permissions = ?, updated_at = ?
 			WHERE id = ?
-		`, req.Name, req.Description, permsJSON, now, id)
+		`), req.Name, req.Description, permsJSON, now, id)
 		if err != nil {
 			http.Error(w, "failed to update role", http.StatusInternalServerError)
 			return
@@ -150,7 +165,7 @@ func DeleteRole() http.HandlerFunc {
 
 		// Check if system role
 		var isSystem int
-		db.DB.QueryRow(`SELECT is_system FROM roles WHERE id = ?`, id).Scan(&isSystem)
+		db.DB.QueryRow(db.ConvertQuery(`SELECT is_system FROM roles WHERE id = ?`), id).Scan(&isSystem)
 		if isSystem == 1 {
 			http.Error(w, "cannot delete system role", http.StatusForbidden)
 			return
@@ -158,13 +173,13 @@ func DeleteRole() http.HandlerFunc {
 
 		// Check if role has users
 		var count int
-		db.DB.QueryRow(`SELECT COUNT(*) FROM users WHERE role_id = ?`, id).Scan(&count)
+		db.DB.QueryRow(db.ConvertQuery(`SELECT COUNT(*) FROM users WHERE role_id = ?`), id).Scan(&count)
 		if count > 0 {
 			http.Error(w, "cannot delete role with assigned users", http.StatusConflict)
 			return
 		}
 
-		_, err := db.DB.Exec(`DELETE FROM roles WHERE id = ?`, id)
+		_, err := db.DB.Exec(db.ConvertQuery(`DELETE FROM roles WHERE id = ?`), id)
 		if err != nil {
 			http.Error(w, "failed to delete role", http.StatusInternalServerError)
 			return

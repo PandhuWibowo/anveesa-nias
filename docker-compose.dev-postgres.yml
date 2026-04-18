@@ -1,0 +1,24 @@
+# Development with PostgreSQL - No more locking issues!
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nias-dev-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: nias_dev
+      POSTGRES_USER: nias_dev
+      POSTGRES_PASSWORD: dev_password
+    volumes:
+      - postgres-dev-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nias_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres-dev-data:
+    driver: local

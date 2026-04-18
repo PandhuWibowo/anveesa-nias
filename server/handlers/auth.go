@@ -61,9 +61,14 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 			totpEnabled int
 			totpSecret  string
 		)
-		err := appdb.DB.QueryRow(
-			`SELECT id, username, password, role, COALESCE(totp_enabled, 0), COALESCE(totp_secret, '') FROM users WHERE username = ?`, body.Username,
-		).Scan(&id, &username, &hash, &role, &totpEnabled, &totpSecret)
+		
+		// Use appropriate parameter placeholder for database
+		query := `SELECT id, username, password, role, COALESCE(totp_enabled, 0), COALESCE(totp_secret, '') FROM users WHERE username = ?`
+		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
+			query = `SELECT id, username, password, role, COALESCE(totp_enabled, 0), COALESCE(totp_secret, '') FROM users WHERE username = $1`
+		}
+		
+		err := appdb.DB.QueryRow(query, body.Username).Scan(&id, &username, &hash, &role, &totpEnabled, &totpSecret)
 		if err != nil {
 			// Use constant-time comparison to prevent timing attacks
 			bcrypt.CompareHashAndPassword([]byte("$2a$12$dummy.hash.for.timing"), []byte(body.Password))
@@ -210,19 +215,38 @@ func RegisterHandler(cfg *config.Config) http.HandlerFunc {
 			// Allow specifying role_id from admin UI
 			roleID = *body.RoleID
 			// Get role name from role_id
-			appdb.DB.QueryRow(`SELECT name FROM roles WHERE id = ?`, roleID).Scan(&role)
+			query := `SELECT name FROM roles WHERE id = ?`
+			if appdb.IsPostgreSQL() || appdb.IsMySQL() {
+				query = `SELECT name FROM roles WHERE id = $1`
+			}
+			appdb.DB.QueryRow(query, roleID).Scan(&role)
 		}
 
-		res, err := appdb.DB.Exec(
-			`INSERT INTO users (username, password, role, role_id, is_active) VALUES (?, ?, ?, ?, 1)`,
-			body.Username, string(hash), role, roleID,
-		)
-		if err != nil {
-			// Generic error to prevent username enumeration
-			http.Error(w, `{"error":"registration failed"}`, http.StatusConflict)
-			return
+		var id int64
+		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
+			// Use RETURNING for PostgreSQL/MySQL
+			err := appdb.DB.QueryRow(
+				`INSERT INTO users (username, password, role, role_id, is_active) VALUES ($1, $2, $3, $4, 1) RETURNING id`,
+				body.Username, string(hash), role, roleID,
+			).Scan(&id)
+			if err != nil {
+				// Generic error to prevent username enumeration
+				http.Error(w, `{"error":"registration failed"}`, http.StatusConflict)
+				return
+			}
+		} else {
+			// Use LastInsertId for SQLite
+			res, err := appdb.DB.Exec(
+				`INSERT INTO users (username, password, role, role_id, is_active) VALUES (?, ?, ?, ?, 1)`,
+				body.Username, string(hash), role, roleID,
+			)
+			if err != nil {
+				// Generic error to prevent username enumeration
+				http.Error(w, `{"error":"registration failed"}`, http.StatusConflict)
+				return
+			}
+			id, _ = res.LastInsertId()
 		}
-		id, _ := res.LastInsertId()
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{
 			"id": id, "username": body.Username, "role": role,

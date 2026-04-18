@@ -1,0 +1,51 @@
+services:
+  nias:
+    image: anveesa/nias:latest
+    container_name: anveesa-nias
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount RDS CA certificate if using SSL
+      - ./certs:/app/certs:ro
+    environment:
+      # Environment
+      - NIAS_ENV=production
+      - PORT=8080
+      - HOST=0.0.0.0
+
+      # Database - AWS RDS MySQL/MariaDB
+      - DB_DRIVER=mysql
+      - DATABASE_URL=${RDS_DATABASE_URL}
+      - DB_SSL_MODE=${DB_SSL_MODE:-require}
+      - DB_SSL_ROOT_CERT=${DB_SSL_ROOT_CERT:-/app/certs/rds-ca-bundle.pem}
+
+      # Security - REQUIRED
+      - JWT_SECRET=${JWT_SECRET}
+      - NIAS_ENCRYPTION_KEY=${NIAS_ENCRYPTION_KEY}
+      - DEFAULT_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME:-admin}
+      - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD}
+
+      # Application
+      - CORS_ORIGIN=${CORS_ORIGIN:-*}
+      - RATE_LIMIT_ENABLED=${RATE_LIMIT_ENABLED:-true}
+      - RATE_LIMIT_REQUESTS=${RATE_LIMIT_REQUESTS:-100}
+      - RATE_LIMIT_WINDOW=${RATE_LIMIT_WINDOW:-60}
+      - JWT_EXPIRY_HOURS=${JWT_EXPIRY_HOURS:-72}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M

@@ -82,7 +82,7 @@ func PingAllConnections() http.HandlerFunc {
 
 func pingConn(connID int64) HealthResult {
 	var name, driver string
-	appdb.DB.QueryRow(`SELECT name, driver FROM connections WHERE id=?`, connID).Scan(&name, &driver)
+	appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT name, driver FROM connections WHERE id=?`), connID).Scan(&name, &driver)
 
 	result := HealthResult{
 		ConnID: connID, ConnName: name, Driver: driver, Status: "unknown",

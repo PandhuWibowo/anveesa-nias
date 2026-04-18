@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
+import axios from 'axios'
 import { useConnections, type DbDriver, type ConnectionForm } from '@/composables/useConnections'
 import { useFolders } from '@/composables/useFolders'
 import { useToast } from '@/composables/useToast'
@@ -13,6 +14,7 @@ const { confirm } = useConfirm()
 onMounted(() => fetchFolders())
 
 const showForm = ref(false)
+const editingId = ref<number | null>(null)
 const testing = ref(false)
 const saving = ref(false)
 const testResult = ref<{ ok: boolean; message: string } | null>(null)
@@ -59,6 +61,7 @@ function selectDriver(d: DbDriver) {
 }
 
 function resetForm() {
+  editingId.value = null
   form.name = ''
   form.driver = 'postgres'
   form.host = 'localhost'
@@ -78,6 +81,34 @@ function resetForm() {
   testResult.value = null
 }
 
+async function editConnection(id: number) {
+  try {
+    const { data: conn } = await axios.get(`/api/connections/${id}`)
+    
+    editingId.value = id
+    form.name = conn.name
+    form.driver = conn.driver
+    form.host = conn.host || 'localhost'
+    form.port = conn.port || defaultPorts[conn.driver as DbDriver]
+    form.database = conn.database
+    form.username = conn.username || ''
+    form.password = conn.password || ''
+    form.ssl = conn.ssl || false
+    form.tags = conn.tags || ''
+    form.ssh_host = conn.ssh_host || ''
+    form.ssh_port = conn.ssh_port || 22
+    form.ssh_user = conn.ssh_user || ''
+    form.ssh_password = conn.ssh_password || ''
+    form.ssh_key = conn.ssh_key || ''
+    form.folder_id = conn.folder_id
+    form.visibility = conn.visibility || 'shared'
+    testResult.value = null
+    showForm.value = true
+  } catch (err) {
+    toast.error('Failed to load connection')
+  }
+}
+
 async function handleTest() {
   testing.value = true
   testResult.value = null
@@ -94,15 +125,34 @@ async function handleSave() {
     toast.error('Database path is required for SQLite')
     return
   }
+  
   saving.value = true
-  const conn = await saveConnection({ ...form })
+  let conn
+  
+  if (editingId.value) {
+    // Update existing connection
+    try {
+      const { data } = await axios.put(`/api/connections/${editingId.value}`, form)
+      conn = data
+      await fetchConnections()
+      toast.success(`Connection "${conn.name}" updated`)
+    } catch (err) {
+      toast.error('Failed to update connection')
+    }
+  } else {
+    // Create new connection
+    conn = await saveConnection({ ...form })
+    if (conn) {
+      toast.success(`Connection "${conn.name}" saved`)
+    } else {
+      toast.error('Failed to save connection')
+    }
+  }
+  
   saving.value = false
   if (conn) {
-    toast.success(`Connection "${conn.name}" saved`)
     showForm.value = false
     resetForm()
-  } else {
-    toast.error('Failed to save connection')
   }
 }
 
@@ -221,6 +271,9 @@ async function handleDelete(id: number, name: string) {
               @click="setConnectionVisibility(conn.id, conn.visibility === 'shared' ? 'private' : 'shared').then(() => fetchConnections())">
               {{ conn.visibility === 'shared' ? '🌐' : '🔒' }}
             </button>
+            <button class="icon-btn" @click="editConnection(conn.id)" title="Edit">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            </button>
             <button class="icon-btn danger" @click="handleDelete(conn.id, conn.name)" title="Delete">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
             </button>
@@ -235,7 +288,7 @@ async function handleDelete(id: number, name: string) {
           class="conn-form page-panel"
         >
           <div class="modal-hd">
-            <span class="modal-title">New Connection</span>
+            <span class="modal-title">{{ editingId ? 'Edit Connection' : 'New Connection' }}</span>
             <button class="icon-btn" @click="showForm = false; resetForm()">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
@@ -405,7 +458,7 @@ async function handleDelete(id: number, name: string) {
             </button>
             <button class="base-btn base-btn--primary base-btn--sm" :disabled="saving" @click="handleSave">
               <svg v-if="saving" class="spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-              {{ saving ? 'Saving…' : 'Save Connection' }}
+              {{ saving ? (editingId ? 'Updating…' : 'Saving…') : (editingId ? 'Update Connection' : 'Save Connection') }}
             </button>
           </div>
         </div>

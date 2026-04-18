@@ -92,7 +92,7 @@ func ClearHistory() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/connections/"), "/")
 		connID, _ := strconv.ParseInt(parts[0], 10, 64)
-		appdb.DB.Exec(`DELETE FROM query_history WHERE conn_id = ?`, connID)
+		appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM query_history WHERE conn_id = ?`), connID)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

@@ -175,7 +175,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
         </svg>
       </div>
       <div class="topnav__brand-text">
-        <span class="topnav__brand-name">Singapay <strong>SQL</strong></span>
+        <span class="topnav__brand-name">Anveesa <strong>Nias</strong></span>
         <span class="topnav__brand-version">v0.1.0</span>
       </div>
     </div>

@@ -95,7 +95,7 @@ async function disableTwoFA() {
 
 function downloadBackupCodes() {
   if (!setupData.value) return
-  const text = `Singapay SQL - Backup Codes\n\n${setupData.value.backup_codes.join('\n')}\n\nKeep these codes safe! Each can only be used once.`
+  const text = `Anveesa Nias - Backup Codes\n\n${setupData.value.backup_codes.join('\n')}\n\nKeep these codes safe! Each can only be used once.`
   const blob = new Blob([text], { type: 'text/plain' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

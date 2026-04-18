@@ -126,7 +126,7 @@ func UpdateSavedQuery() http.HandlerFunc {
 		if isAuthEnabled() && userRole != "admin" && userIDStr != "" {
 			userID, _ := strconv.ParseInt(userIDStr, 10, 64)
 			var ownerID sql.NullInt64
-			err := appdb.DB.QueryRow(`SELECT user_id FROM saved_queries WHERE id = ?`, id).Scan(&ownerID)
+			err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT user_id FROM saved_queries WHERE id = ?`), id).Scan(&ownerID)
 			if err != nil || (ownerID.Valid && ownerID.Int64 != userID) {
 				http.Error(w, `{"error":"permission denied"}`, http.StatusForbidden)
 				return
@@ -141,7 +141,7 @@ func UpdateSavedQuery() http.HandlerFunc {
 		json.NewDecoder(r.Body).Decode(&body)
 		now := time.Now().Format("2006-01-02 15:04:05")
 		appdb.DB.Exec(
-			`UPDATE saved_queries SET name=?, sql=?, description=?, updated_at=? WHERE id=?`,
+			appdb.ConvertQuery(`UPDATE saved_queries SET name=?, sql=?, description=?, updated_at=? WHERE id=?`),
 			body.Name, body.SQL, body.Description, now, id,
 		)
 		w.WriteHeader(http.StatusNoContent)
@@ -160,14 +160,14 @@ func DeleteSavedQuery() http.HandlerFunc {
 		if isAuthEnabled() && userRole != "admin" && userIDStr != "" {
 			userID, _ := strconv.ParseInt(userIDStr, 10, 64)
 			var ownerID sql.NullInt64
-			err := appdb.DB.QueryRow(`SELECT user_id FROM saved_queries WHERE id = ?`, id).Scan(&ownerID)
+			err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT user_id FROM saved_queries WHERE id = ?`), id).Scan(&ownerID)
 			if err != nil || (ownerID.Valid && ownerID.Int64 != userID) {
 				http.Error(w, `{"error":"permission denied"}`, http.StatusForbidden)
 				return
 			}
 		}
 		
-		appdb.DB.Exec(`DELETE FROM saved_queries WHERE id=?`, id)
+		appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM saved_queries WHERE id=?`), id)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

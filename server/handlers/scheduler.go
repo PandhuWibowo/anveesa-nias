@@ -123,8 +123,8 @@ func DeleteSchedule() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(r.URL.Path, "/")
 		id := parts[len(parts)-1]
-		appdb.DB.Exec(`DELETE FROM schedules WHERE id=?`, id)
-		appdb.DB.Exec(`DELETE FROM schedule_runs WHERE schedule_id=?`, id)
+		appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM schedules WHERE id=?`), id)
+		appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM schedule_runs WHERE schedule_id=?`), id)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -251,7 +251,7 @@ func executeSchedule(s Schedule) (map[string]any, error) {
 	recordScheduleRun(s.ID, rowCount, "", alerted)
 	now := time.Now().Format("2006-01-02 15:04:05")
 	next := time.Now().Add(time.Duration(s.IntervalMin) * time.Minute).Format("2006-01-02 15:04:05")
-	appdb.DB.Exec(`UPDATE schedules SET last_run_at=?, next_run_at=? WHERE id=?`, now, next, s.ID)
+	appdb.DB.Exec(appdb.ConvertQuery(`UPDATE schedules SET last_run_at=?, next_run_at=? WHERE id=?`), now, next, s.ID)
 
 	return map[string]any{"row_count": rowCount, "alerted": alerted}, nil
 }
