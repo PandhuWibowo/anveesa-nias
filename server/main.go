@@ -400,6 +400,7 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 	mux.HandleFunc("/api/admin/audit/stats", handlers.GetAuditStats())
+	mux.HandleFunc("/api/audit/access", handlers.LogFeatureAccess())
 
 	// ── Schedules ────────────────────────────────────────────────
 	mux.HandleFunc("/api/schedules", func(w http.ResponseWriter, r *http.Request) {

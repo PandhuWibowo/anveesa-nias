@@ -4,6 +4,10 @@ import axios from 'axios'
 
 interface AuditEntry {
   id: number
+  event_type: 'query_execution' | 'feature_access'
+  action: string
+  target: string
+  details: string
   username: string
   conn_id: number | null
   conn_name: string
@@ -14,18 +18,19 @@ interface AuditEntry {
   executed_at: string
 }
 
-interface Stats { total: number; errors: number; avg_ms: number }
+interface Stats { total: number; errors: number; avg_ms: number; query_count: number; feature_count: number }
 
 const entries = ref<AuditEntry[]>([])
 const stats = ref<Stats | null>(null)
 const loading = ref(false)
 const filter = ref('')
+const eventType = ref<'all' | 'query_execution' | 'feature_access'>('all')
 const limit = ref(200)
 const expanded = ref<number | null>(null)
 
 // Column visibility & sorting
-type ColumnKey = 'time' | 'user' | 'connection' | 'sql' | 'duration' | 'rows' | 'status'
-const allColumns: ColumnKey[] = ['time', 'user', 'connection', 'sql', 'duration', 'rows', 'status']
+type ColumnKey = 'time' | 'type' | 'user' | 'connection' | 'sql' | 'duration' | 'rows' | 'status'
+const allColumns: ColumnKey[] = ['time', 'type', 'user', 'connection', 'sql', 'duration', 'rows', 'status']
 const visibleColumns = ref<Set<ColumnKey>>(new Set(allColumns))
 const showColumnMenu = ref(false)
 const sortKey = ref<keyof AuditEntry | ''>('')
@@ -33,6 +38,7 @@ const sortDir = ref<'asc' | 'desc'>('desc')
 
 const columnMap: Record<ColumnKey, { label: string; key: keyof AuditEntry }> = {
   time: { label: 'Time', key: 'executed_at' },
+  type: { label: 'Type', key: 'event_type' },
   user: { label: 'User', key: 'username' },
   connection: { label: 'Connection', key: 'conn_name' },
   sql: { label: 'SQL', key: 'sql' },
@@ -78,7 +84,7 @@ async function load() {
   loading.value = true
   try {
     const [{ data: e }, { data: s }] = await Promise.all([
-      axios.get<AuditEntry[]>('/api/admin/audit', { params: { q: filter.value || undefined, limit: limit.value } }),
+      axios.get<AuditEntry[]>('/api/admin/audit', { params: { q: filter.value || undefined, limit: limit.value, event_type: eventType.value } }),
       axios.get<Stats>('/api/admin/audit/stats'),
     ])
     entries.value = e ?? []
@@ -86,6 +92,17 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+function eventLabel(entry: AuditEntry) {
+  return entry.event_type === 'feature_access' ? 'Feature Access' : 'Query Execution'
+}
+
+function eventSummary(entry: AuditEntry) {
+  if (entry.event_type === 'feature_access') {
+    return entry.target || entry.details || 'Feature access'
+  }
+  return entry.sql
 }
 
 async function clearAll() {
@@ -109,6 +126,8 @@ onMounted(load)
           </div>
           <div v-if="stats" class="page-metrics al-stats">
             <div class="page-metric al-stat"><span class="page-metric__value">{{ stats.total.toLocaleString() }}</span><span class="page-metric__label">Total</span></div>
+            <div class="page-metric al-stat"><span class="page-metric__value">{{ stats.feature_count.toLocaleString() }}</span><span class="page-metric__label">Feature Access</span></div>
+            <div class="page-metric al-stat"><span class="page-metric__value">{{ stats.query_count.toLocaleString() }}</span><span class="page-metric__label">Query Execution</span></div>
             <div class="page-metric al-stat"><span class="page-metric__value al-stat-err">{{ stats.errors.toLocaleString() }}</span><span class="page-metric__label">Errors</span></div>
             <div class="page-metric al-stat"><span class="page-metric__value">{{ Math.round(stats.avg_ms) }}ms</span><span class="page-metric__label">Avg Latency</span></div>
           </div>
@@ -120,9 +139,14 @@ onMounted(load)
         <input
           class="al-search"
           v-model="filter"
-          placeholder="Filter by SQL, user, or connection…"
+          placeholder="Filter by SQL, feature, user, or connection…"
           @keydown.enter="load"
         />
+        <select class="al-limit" v-model="eventType" @change="load">
+          <option value="all">All events</option>
+          <option value="feature_access">Feature access</option>
+          <option value="query_execution">Query execution</option>
+        </select>
         <select class="al-limit" v-model="limit" @change="load">
           <option :value="100">100</option>
           <option :value="200">200</option>
@@ -170,6 +194,10 @@ onMounted(load)
                 User
                 <span class="sort-icon">{{ sortKey === 'username' ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}</span>
               </th>
+              <th v-if="visibleColumns.has('type')" class="al-th-sort" @click="sortBy('event_type')">
+                Type
+                <span class="sort-icon">{{ sortKey === 'event_type' ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}</span>
+              </th>
               <th v-if="visibleColumns.has('connection')" class="al-th-sort" @click="sortBy('conn_name')">
                 Connection
                 <span class="sort-icon">{{ sortKey === 'conn_name' ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}</span>
@@ -194,13 +222,18 @@ onMounted(load)
               <tr class="al-row" :class="{ 'al-row--err': e.error, 'al-row--open': expanded === e.id }" @click="expanded = expanded === e.id ? null : e.id">
                 <td v-if="visibleColumns.has('time')" class="al-td-dim al-td-nowrap">{{ new Date(e.executed_at).toLocaleTimeString() }}</td>
                 <td v-if="visibleColumns.has('user')" class="al-td-user">{{ e.username || '—' }}</td>
+                <td v-if="visibleColumns.has('type')">
+                  <span class="al-badge" :class="e.event_type === 'feature_access' ? 'al-badge--feature' : 'al-badge--query'">
+                    {{ eventLabel(e) }}
+                  </span>
+                </td>
                 <td v-if="visibleColumns.has('connection')" class="al-td-dim">{{ e.conn_name || '—' }}</td>
-                <td v-if="visibleColumns.has('sql')" class="al-td-sql">{{ e.sql }}</td>
-                <td v-if="visibleColumns.has('duration')" class="al-td-right al-td-num">{{ e.duration_ms }}ms</td>
-                <td v-if="visibleColumns.has('rows')" class="al-td-right al-td-num">{{ e.row_count }}</td>
+                <td v-if="visibleColumns.has('sql')" class="al-td-sql">{{ eventSummary(e) }}</td>
+                <td v-if="visibleColumns.has('duration')" class="al-td-right al-td-num">{{ e.event_type === 'query_execution' ? `${e.duration_ms}ms` : '—' }}</td>
+                <td v-if="visibleColumns.has('rows')" class="al-td-right al-td-num">{{ e.event_type === 'query_execution' ? e.row_count : '—' }}</td>
                 <td v-if="visibleColumns.has('status')">
                   <span class="al-badge" :class="e.error ? 'al-badge--err' : 'al-badge--ok'">
-                    {{ e.error ? 'Error' : 'OK' }}
+                    {{ e.error ? 'Error' : (e.event_type === 'feature_access' ? 'Viewed' : 'OK') }}
                   </span>
                 </td>
               </tr>
@@ -208,11 +241,17 @@ onMounted(load)
                 <td :colspan="visibleColumns.size">
                   <div class="al-detail">
                     <div v-if="e.error" class="al-detail-error">{{ e.error }}</div>
-                    <pre class="al-detail-sql">{{ e.sql }}</pre>
+                    <pre class="al-detail-sql">{{ e.event_type === 'feature_access' ? `${e.action}\n${e.target}\n${e.details}`.trim() : e.sql }}</pre>
                     <div class="al-detail-meta">
                       {{ new Date(e.executed_at).toLocaleString() }}
-                      · {{ e.duration_ms }}ms
-                      · {{ e.row_count }} rows
+                      <template v-if="e.event_type === 'query_execution'">
+                        · {{ e.duration_ms }}ms
+                        · {{ e.row_count }} rows
+                      </template>
+                      <template v-else>
+                        · {{ e.action || 'open_feature' }}
+                        <span v-if="e.target">· {{ e.target }}</span>
+                      </template>
                     </div>
                   </div>
                 </td>
@@ -291,6 +330,8 @@ onMounted(load)
 .al-badge { padding: 4px 10px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
 .al-badge--ok { background: rgba(74,222,128,0.15); color: #4ade80; }
 .al-badge--err { background: rgba(248,113,113,0.15); color: #f87171; }
+.al-badge--feature { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+.al-badge--query { background: rgba(92, 184, 165, 0.15); color: var(--brand); }
 .al-detail-row td { padding: 0 !important; }
 .al-detail { padding: 12px 16px; background: var(--bg-body); border-bottom: 1px solid var(--border); }
 .al-detail-error { color: var(--danger); font-size: 12px; margin-bottom: 8px; }

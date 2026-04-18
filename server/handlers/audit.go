@@ -12,6 +12,10 @@ import (
 
 type AuditEntry struct {
 	ID         int64  `json:"id"`
+	EventType  string `json:"event_type"`
+	Action     string `json:"action"`
+	Target     string `json:"target"`
+	Details    string `json:"details"`
 	Username   string `json:"username"`
 	ConnID     *int64 `json:"conn_id"`
 	ConnName   string `json:"conn_name"`
@@ -24,10 +28,18 @@ type AuditEntry struct {
 
 // WriteAuditLog writes a query execution record to the audit log.
 func WriteAuditLog(username string, connID int64, connName, sql string, durationMs, rowCount int64, errMsg string) {
+	writeAuditEvent("query_execution", "execute_query", connName, "", username, &connID, connName, sql, durationMs, rowCount, errMsg)
+}
+
+func WriteFeatureAccessAudit(username, action, target, details string) {
+	writeAuditEvent("feature_access", action, target, details, username, nil, "", "", 0, 0, "")
+}
+
+func writeAuditEvent(eventType, action, target, details, username string, connID *int64, connName, sql string, durationMs, rowCount int64, errMsg string) {
 	appdb.DB.Exec(
-		`INSERT INTO audit_log (username, conn_id, conn_name, sql, duration_ms, row_count, error, executed_at)
-		 VALUES (?,?,?,?,?,?,?,?)`,
-		username, connID, connName, sql, durationMs, rowCount, errMsg,
+		`INSERT INTO audit_log (event_type, action, target, details, username, conn_id, conn_name, sql, duration_ms, row_count, error, executed_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		eventType, action, target, details, username, connID, connName, sql, durationMs, rowCount, errMsg,
 		time.Now().Format("2006-01-02 15:04:05"),
 	)
 	// Prune to last 10000 entries
@@ -48,8 +60,9 @@ func ListAuditLog() http.HandlerFunc {
 			}
 		}
 		filter := r.URL.Query().Get("q")
+		eventType := r.URL.Query().Get("event_type")
 
-		query := `SELECT id, username, conn_id, conn_name, sql, duration_ms, row_count, COALESCE(error,''), executed_at
+		query := `SELECT id, COALESCE(event_type,'query_execution'), COALESCE(action,''), COALESCE(target,''), COALESCE(details,''), username, conn_id, conn_name, sql, duration_ms, row_count, COALESCE(error,''), executed_at
 		           FROM audit_log`
 		args := []interface{}{}
 		whereClause := []string{}
@@ -60,10 +73,15 @@ func ListAuditLog() http.HandlerFunc {
 			args = append(args, username)
 		}
 
+		if eventType != "" && eventType != "all" {
+			whereClause = append(whereClause, "event_type = ?")
+			args = append(args, eventType)
+		}
+
 		if filter != "" {
-			whereClause = append(whereClause, "(sql LIKE ? OR username LIKE ? OR conn_name LIKE ?)")
+			whereClause = append(whereClause, "(sql LIKE ? OR username LIKE ? OR conn_name LIKE ? OR target LIKE ? OR details LIKE ?)")
 			pct := "%" + filter + "%"
-			args = append(args, pct, pct, pct)
+			args = append(args, pct, pct, pct, pct, pct)
 		}
 
 		if len(whereClause) > 0 {
@@ -83,13 +101,47 @@ func ListAuditLog() http.HandlerFunc {
 		var entries []AuditEntry
 		for rows.Next() {
 			var e AuditEntry
-			rows.Scan(&e.ID, &e.Username, &e.ConnID, &e.ConnName, &e.SQL, &e.DurationMs, &e.RowCount, &e.Error, &e.ExecutedAt)
+			rows.Scan(&e.ID, &e.EventType, &e.Action, &e.Target, &e.Details, &e.Username, &e.ConnID, &e.ConnName, &e.SQL, &e.DurationMs, &e.RowCount, &e.Error, &e.ExecutedAt)
 			entries = append(entries, e)
 		}
 		if entries == nil {
 			entries = []AuditEntry{}
 		}
 		json.NewEncoder(w).Encode(entries)
+	}
+}
+
+func LogFeatureAccess() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		username := r.Header.Get("X-Username")
+		if username == "" {
+			username = "anonymous"
+		}
+		var body struct {
+			Action  string `json:"action"`
+			Target  string `json:"target"`
+			Details string `json:"details"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, jsonError("invalid request"), http.StatusBadRequest)
+			return
+		}
+		action := strings.TrimSpace(body.Action)
+		target := strings.TrimSpace(body.Target)
+		if action == "" {
+			action = "open_feature"
+		}
+		if target == "" {
+			http.Error(w, jsonError("target is required"), http.StatusBadRequest)
+			return
+		}
+		WriteFeatureAccessAudit(username, action, target, strings.TrimSpace(body.Details))
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}
 }
 
@@ -145,8 +197,18 @@ func GetAuditStats() http.HandlerFunc {
 			`).Scan(&total, &errors, &avgMs)
 		}
 		
+		var queryCount, featureCount int64
+		if userRole != "admin" && username != "" {
+			appdb.DB.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE username = ? AND event_type = 'query_execution'`, username).Scan(&queryCount)
+			appdb.DB.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE username = ? AND event_type = 'feature_access'`, username).Scan(&featureCount)
+		} else {
+			appdb.DB.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE event_type = 'query_execution'`).Scan(&queryCount)
+			appdb.DB.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE event_type = 'feature_access'`).Scan(&featureCount)
+		}
+
 		json.NewEncoder(w).Encode(map[string]any{
 			"total": total, "errors": errors, "avg_ms": avgMs,
+			"query_count": queryCount, "feature_count": featureCount,
 		})
 	}
 }

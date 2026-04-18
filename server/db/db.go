@@ -59,6 +59,10 @@ func migrate() error {
 		`ALTER TABLE connections ADD COLUMN ssh_key TEXT DEFAULT ''`,
 		`CREATE TABLE IF NOT EXISTS audit_log (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_type  TEXT NOT NULL DEFAULT 'query_execution',
+			action      TEXT NOT NULL DEFAULT '',
+			target      TEXT NOT NULL DEFAULT '',
+			details     TEXT NOT NULL DEFAULT '',
 			username    TEXT NOT NULL DEFAULT '',
 			conn_id     INTEGER,
 			conn_name   TEXT NOT NULL DEFAULT '',
@@ -68,7 +72,12 @@ func migrate() error {
 			error       TEXT DEFAULT '',
 			executed_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`ALTER TABLE audit_log ADD COLUMN event_type TEXT NOT NULL DEFAULT 'query_execution'`,
+		`ALTER TABLE audit_log ADD COLUMN action TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE audit_log ADD COLUMN target TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE audit_log ADD COLUMN details TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_log_time ON audit_log(executed_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_log_type_time ON audit_log(event_type, executed_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS schedules (
 			id              INTEGER PRIMARY KEY AUTOINCREMENT,
 			name            TEXT NOT NULL,

@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import axios from 'axios'
 import { useAuth } from '@/composables/useAuth'
 
 const router = createRouter({
@@ -174,6 +175,31 @@ router.beforeEach((to) => {
       return { name: 'welcome' }
     }
   }
+})
+
+let lastAuditKey = ''
+
+router.afterEach((to, from) => {
+  if (to.name === from.name && to.fullPath === from.fullPath) {
+    return
+  }
+  if (to.name === 'login') {
+    return
+  }
+  const { authEnabled, isAuthenticated } = useAuth()
+  if (authEnabled.value && !isAuthenticated.value) {
+    return
+  }
+  const auditKey = `${String(to.name ?? '')}:${to.fullPath}`
+  if (auditKey === lastAuditKey) {
+    return
+  }
+  lastAuditKey = auditKey
+  void axios.post('/api/audit/access', {
+    action: 'open_feature',
+    target: String(to.name ?? to.path),
+    details: to.fullPath,
+  }).catch(() => {})
 })
 
 export default router
