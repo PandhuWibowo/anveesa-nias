@@ -75,14 +75,19 @@ const visibleDiffs = computed(() => {
 </script>
 
 <template>
-  <div class="sd-root">
-    <div class="sd-scroll">
-      <!-- Header -->
-      <div class="sd-title">Schema Diff</div>
-      <div class="sd-sub">Compare table structures across two connections or databases.</div>
+  <div class="page-shell sd-root">
+    <div class="page-scroll sd-scroll">
+      <div class="page-stack">
+      <section class="page-hero">
+        <div class="page-hero__content">
+          <div class="page-kicker">Comparison</div>
+          <div class="page-title">Schema Diff</div>
+          <div class="page-subtitle">Compare table structures across two connections or databases before you promote or reconcile schema changes.</div>
+        </div>
+      </section>
 
       <!-- Pickers -->
-      <div class="sd-pickers">
+      <div class="page-toolbar-surface sd-pickers">
         <div class="sd-picker">
           <div class="sd-picker-label">Connection A</div>
           <select class="sd-select" v-model="connA" @change="onConnAChange">
@@ -122,7 +127,7 @@ const visibleDiffs = computed(() => {
       <div v-if="error" class="notice notice--error">{{ error }}</div>
 
       <!-- Summary -->
-      <div v-if="result" class="sd-summary">
+      <div v-if="result" class="page-card sd-summary">
         <div class="sd-sum-item" style="color:#4ade80"><strong>{{ summaryAdded }}</strong> added</div>
         <div class="sd-sum-item" style="color:#f87171"><strong>{{ summaryRemoved }}</strong> removed</div>
         <div class="sd-sum-item" style="color:#fbbf24"><strong>{{ summaryChanged }}</strong> changed</div>
@@ -142,7 +147,7 @@ const visibleDiffs = computed(() => {
         <div
           v-for="d in visibleDiffs"
           :key="d.name"
-          class="sd-item"
+          class="page-card sd-item"
           :class="`sd-item--${d.status}`"
         >
           <div class="sd-item-head">
@@ -176,15 +181,14 @@ const visibleDiffs = computed(() => {
           </div>
         </div>
       </div>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.sd-root { width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden; }
-.sd-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 24px 28px 40px; display: flex; flex-direction: column; gap: 16px; }
-.sd-title { font-size: 20px; font-weight: 700; color: var(--text-primary); }
-.sd-sub { font-size: 13px; color: var(--text-muted); margin-top: -10px; }
+.sd-root { background: var(--bg-body); }
+.sd-scroll { display: flex; flex-direction: column; gap: 16px; }
 .sd-pickers { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
 .sd-picker { display: flex; flex-direction: column; gap: 6px; }
 .sd-picker-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted); }
@@ -196,16 +200,14 @@ const visibleDiffs = computed(() => {
 .sd-swap { display: flex; align-items: center; color: var(--text-muted); padding-bottom: 4px; }
 .sd-summary {
   display: flex; align-items: center; gap: 20px;
-  padding: 12px 16px; background: var(--bg-elevated); border: 1px solid var(--border);
-  border-radius: 8px; font-size: 13px;
+  padding: 12px 16px; font-size: 13px;
 }
 .sd-sum-item { display: flex; gap: 4px; }
 .sd-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); cursor: pointer; }
 .sd-list { display: flex; flex-direction: column; gap: 8px; }
 .sd-empty { font-size: 13px; color: var(--text-muted); text-align: center; padding: 24px; }
 .sd-item {
-  background: var(--bg-elevated); border: 1px solid var(--border);
-  border-radius: 8px; overflow: hidden;
+  overflow: hidden;
 }
 .sd-item--added { border-left: 3px solid #4ade80; }
 .sd-item--removed { border-left: 3px solid #f87171; }

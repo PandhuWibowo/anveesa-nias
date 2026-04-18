@@ -52,16 +52,17 @@ const statusColor = (s: string) =>
 </script>
 
 <template>
-  <div class="hv-root">
-    <div class="hv-scroll">
-      <!-- Header -->
-      <div class="hv-header">
-        <div>
-          <div class="hv-title">Connection Health</div>
-          <div class="hv-sub">Live latency and pool stats for all connections. Refreshes every 5s.</div>
+  <div class="page-shell hv-root">
+    <div class="page-scroll hv-scroll">
+      <div class="page-stack">
+      <section class="page-hero">
+        <div class="page-hero__content">
+          <div class="page-kicker">Observability</div>
+          <div class="page-title">Connection Health</div>
+          <div class="page-subtitle">Watch latency, pool pressure, and live connectivity across all database endpoints. Refreshes every 5 seconds.</div>
         </div>
-        <div style="flex:1"/>
-        <label class="hv-auto-toggle">
+        <div class="page-hero__actions">
+          <label class="hv-auto-toggle">
           <input type="checkbox" v-model="autoRefresh" />
           Auto-refresh
         </label>
@@ -69,12 +70,13 @@ const statusColor = (s: string) =>
           <svg :class="loading ? 'spin' : ''" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.43"/></svg>
           Refresh
         </button>
-      </div>
+        </div>
+      </section>
 
       <!-- Cards grid -->
-      <div class="hv-grid">
+      <div class="page-grid page-grid--cards hv-grid">
         <div v-if="results.length === 0 && !loading" class="hv-empty">No connections configured.</div>
-        <div v-for="r in results" :key="r.conn_id" class="hv-card" :class="`hv-card--${r.status}`">
+        <div v-for="r in results" :key="r.conn_id" class="page-card hv-card" :class="`hv-card--${r.status}`">
           <!-- Status dot -->
           <div class="hv-card-head">
             <div class="hv-dot" :style="{ background: statusColor(r.status) }" />
@@ -120,20 +122,17 @@ const statusColor = (s: string) =>
           </div>
         </div>
       </div>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.hv-root { width:100%; height:100%; display:flex; flex-direction:column; overflow:hidden; }
-.hv-scroll { flex:1; min-height:0; overflow-y:auto; padding:24px 28px 40px; display:flex; flex-direction:column; gap:16px; }
-.hv-header { display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap; }
-.hv-title { font-size:20px; font-weight:700; color:var(--text-primary); }
-.hv-sub { font-size:13px; color:var(--text-muted); margin-top:3px; }
+.hv-root { background: var(--bg-body); }
 .hv-auto-toggle { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-muted); cursor:pointer; }
 .hv-empty { color:var(--text-muted); text-align:center; padding:40px; }
 .hv-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:12px; }
-.hv-card { background:var(--bg-elevated); border:1px solid var(--border); border-radius:10px; padding:14px; display:flex; flex-direction:column; gap:10px; }
+.hv-card { padding:14px; display:flex; flex-direction:column; gap:10px; }
 .hv-card--ok { border-left:3px solid #4ade80; }
 .hv-card--error { border-left:3px solid #f87171; }
 .hv-card--unknown { border-left:3px solid var(--text-muted); }

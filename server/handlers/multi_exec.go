@@ -40,6 +40,48 @@ func RunScript() http.HandlerFunc {
 			return
 		}
 
+		stmts := splitStatements(req.SQL)
+		hasWrite := false
+		for _, stmt := range stmts {
+			upper := strings.ToUpper(strings.TrimSpace(stmt))
+			if upper == "" {
+				continue
+			}
+			isRead := strings.HasPrefix(upper, "SELECT") ||
+				strings.HasPrefix(upper, "WITH") ||
+				strings.HasPrefix(upper, "SHOW") ||
+				strings.HasPrefix(upper, "DESCRIBE") ||
+				strings.HasPrefix(upper, "EXPLAIN") ||
+				strings.HasPrefix(upper, "PRAGMA")
+			if !isRead {
+				hasWrite = true
+				break
+			}
+		}
+		if hasWrite && !CheckWritePermission(r, connID) {
+			http.Error(w, `{"error":"write permission denied"}`, http.StatusForbidden)
+			return
+		}
+		if hasWrite && isAuthEnabled() {
+			userID, _, role := currentUserFromHeaders(r)
+			if userID > 0 && role != "admin" {
+				workflows, err := findApplicableWorkflows(userID, role, connID)
+				if err != nil {
+					http.Error(w, jsonError("failed to resolve approval workflows"), http.StatusInternalServerError)
+					return
+				}
+				if len(workflows) > 0 {
+					w.WriteHeader(http.StatusConflict)
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"error":             "approval required before executing write SQL",
+						"approval_required": true,
+						"workflows":         workflows,
+					})
+					return
+				}
+			}
+		}
+
 		db, driver, err := GetDB(connID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
@@ -55,7 +97,6 @@ func RunScript() http.HandlerFunc {
 			}
 		}
 
-		stmts := splitStatements(req.SQL)
 		results := make([]ScriptResult, 0, len(stmts))
 
 		for i, stmt := range stmts {

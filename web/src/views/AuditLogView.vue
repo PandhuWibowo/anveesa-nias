@@ -66,6 +66,8 @@ const sortedEntries = computed(() => {
     const aVal = a[sortKey.value as keyof AuditEntry]
     const bVal = b[sortKey.value as keyof AuditEntry]
     if (aVal === bVal) return 0
+    if (aVal == null) return sortDir.value === 'asc' ? -1 : 1
+    if (bVal == null) return sortDir.value === 'asc' ? 1 : -1
     const cmp = aVal > bVal ? 1 : -1
     return sortDir.value === 'asc' ? cmp : -cmp
   })
@@ -96,25 +98,25 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="al-root">
-    <div class="al-scroll">
-      <!-- Header -->
-      <div class="al-header">
-        <div>
-          <div class="al-title">Audit Log</div>
-          <div class="al-sub">All queries executed across connections.</div>
-        </div>
-        <div style="flex:1"/>
-        <!-- Stats -->
-        <div v-if="stats" class="al-stats">
-          <div class="al-stat"><span class="al-stat-val">{{ stats.total.toLocaleString() }}</span><span class="al-stat-lbl">Total</span></div>
-          <div class="al-stat"><span class="al-stat-val al-stat-err">{{ stats.errors.toLocaleString() }}</span><span class="al-stat-lbl">Errors</span></div>
-          <div class="al-stat"><span class="al-stat-val">{{ Math.round(stats.avg_ms) }}ms</span><span class="al-stat-lbl">Avg</span></div>
-        </div>
-      </div>
+  <div class="page-shell al-root">
+    <div class="page-scroll al-scroll">
+      <div class="page-stack">
+        <section class="page-hero">
+          <div class="page-hero__content">
+            <div class="page-kicker">Observability</div>
+            <div class="page-title">Audit Log</div>
+            <div class="page-subtitle">Review executed SQL, latency, errors, and operator activity across every managed connection.</div>
+          </div>
+          <div v-if="stats" class="page-metrics al-stats">
+            <div class="page-metric al-stat"><span class="page-metric__value">{{ stats.total.toLocaleString() }}</span><span class="page-metric__label">Total</span></div>
+            <div class="page-metric al-stat"><span class="page-metric__value al-stat-err">{{ stats.errors.toLocaleString() }}</span><span class="page-metric__label">Errors</span></div>
+            <div class="page-metric al-stat"><span class="page-metric__value">{{ Math.round(stats.avg_ms) }}ms</span><span class="page-metric__label">Avg Latency</span></div>
+          </div>
+        </section>
 
       <!-- Toolbar -->
-      <div class="al-toolbar">
+      <section class="page-panel al-toolbar-wrap">
+      <div class="page-toolbar al-toolbar">
         <input
           class="al-search"
           v-model="filter"
@@ -150,9 +152,10 @@ onMounted(load)
         <button class="base-btn base-btn--ghost base-btn--sm" @click="load">Refresh</button>
         <button class="base-btn base-btn--ghost base-btn--sm" style="color:var(--danger)" @click="clearAll">Clear All</button>
       </div>
+      </section>
 
       <!-- Table -->
-      <div class="al-table-wrap">
+      <section class="page-panel al-table-wrap">
         <div v-if="loading" class="al-loading">
           <svg class="spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
         </div>
@@ -222,23 +225,18 @@ onMounted(load)
             </tr>
           </tbody>
         </table>
+      </section>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.al-root { width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden; }
-.al-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 24px 28px 40px; display: flex; flex-direction: column; gap: 16px; }
-.al-header { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
-.al-title { font-size: 20px; font-weight: 700; color: var(--text-primary); }
-.al-sub { font-size: 13px; color: var(--text-muted); margin-top: 3px; }
+.al-root { background: var(--bg-body); }
 .al-stats { display: flex; gap: 16px; }
-.al-stat { display: flex; flex-direction: column; align-items: flex-end; }
-.al-stat-val { font-size: 18px; font-weight: 700; color: var(--text-primary); }
 .al-stat-err { color: var(--danger); }
-.al-stat-lbl { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; }
 .al-loading { display: flex; align-items: center; justify-content: center; padding: 40px; color: var(--text-muted); }
+.al-toolbar-wrap { padding: 14px; }
 .al-toolbar { display: flex; align-items: center; gap: 8px; }
 .al-search {
   flex: 1; padding: 6px 12px;
@@ -253,13 +251,13 @@ onMounted(load)
   border-radius: 6px; color: var(--text-primary); font-size: 12px;
   cursor: pointer; outline: none;
 }
-.al-table-wrap { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.al-table-wrap { overflow: hidden; }
 .al-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .al-table th {
-  padding: 8px 14px; background: var(--bg-surface);
+  padding: 10px 14px; background: rgba(255, 255, 255, 0.02);
   border-bottom: 1px solid var(--border);
   font-size: 10.5px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0.4px; color: var(--text-muted); text-align: left;
+  letter-spacing: 0.12em; color: var(--text-muted); text-align: left;
 }
 .al-th-sort {
   cursor: pointer;
@@ -290,7 +288,7 @@ onMounted(load)
 .al-td-right { text-align: right; }
 .al-td-num { font-variant-numeric: tabular-nums; font-family: var(--mono, monospace); }
 .al-th-right { text-align: right; }
-.al-badge { padding: 1px 7px; border-radius: 4px; font-size: 10px; font-weight: 700; }
+.al-badge { padding: 4px 10px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
 .al-badge--ok { background: rgba(74,222,128,0.15); color: #4ade80; }
 .al-badge--err { background: rgba(248,113,113,0.15); color: #f87171; }
 .al-detail-row td { padding: 0 !important; }
@@ -344,4 +342,14 @@ onMounted(load)
 }
 .col-vis-item:hover { background: var(--bg-hover); }
 .col-vis-item input[type="checkbox"] { cursor: pointer; }
+
+@media (max-width: 900px) {
+  .al-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .al-search {
+    min-width: 100%;
+  }
+}
 </style>

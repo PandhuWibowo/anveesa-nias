@@ -56,12 +56,12 @@ const selectedDatabase = ref(props.defaultDb ?? '')
 // ── Tabs ──────────────────────────────────────────────────────────
 interface QueryTab {
   id: string; name: string; sql: string
-  running: boolean; error: string
+  running: boolean; error: string; notice: string; noticeTone: 'error' | 'success'
 }
 
 let tabCounter = 1
 function makeTab(sql = 'SELECT 1;'): QueryTab {
-  return { id: `sp-tab-${tabCounter++}`, name: `Query ${tabCounter - 1}`, sql, running: false, error: '' }
+  return { id: `sp-tab-${tabCounter++}`, name: `Query ${tabCounter - 1}`, sql, running: false, error: '', notice: '', noticeTone: 'error' }
 }
 
 const tabs = ref<QueryTab[]>([makeTab()])
@@ -140,6 +140,12 @@ watch(() => props.connId, () => { txActive.value = false })
 
 // ── Run / Explain / Format / Cancel ──────────────────────────────
 const abortControllers = new Map<string, AbortController>()
+const approvalDialogOpen = ref(false)
+const approvalSubmitting = ref(false)
+const approvalTitle = ref('')
+const approvalDescription = ref('')
+const approvalWorkflowId = ref<number | null>(null)
+const approvalWorkflows = ref<Array<{ id: number; name: string; description: string }>>([])
 
 function formatCurrentSQL() {
   if (!activeTab.value) return
@@ -152,12 +158,58 @@ function cancelQuery() {
   abortControllers.get(activeTab.value.id)?.abort()
 }
 
+function defaultApprovalTitle(sql: string) {
+  const firstLine = sql.trim().split('\n')[0]?.trim() || 'Write SQL change'
+  return firstLine.slice(0, 80)
+}
+
+async function createApprovalRequest(sql: string) {
+  if (!props.connId || !approvalTitle.value.trim()) return null
+  const { data } = await axios.post('/api/approval-requests', {
+    title: approvalTitle.value.trim(),
+    description: approvalDescription.value.trim(),
+    conn_id: props.connId,
+    database: selectedDatabase.value || '',
+    statement: buildParamSQL(sql),
+    workflow_id: approvalWorkflowId.value || 0,
+  })
+  return data
+}
+
+async function handleApprovalRequired(sql: string, responseData: any) {
+  approvalWorkflows.value = Array.isArray(responseData?.workflows) ? responseData.workflows : []
+  approvalWorkflowId.value = approvalWorkflows.value[0]?.id ?? null
+  approvalTitle.value = defaultApprovalTitle(sql)
+  approvalDescription.value = ''
+
+  if (approvalWorkflows.value.length <= 1) {
+    const data = await createApprovalRequest(sql)
+    if (data?.id && activeTab.value) {
+      activeTab.value.error = ''
+      activeTab.value.notice = `Approval request #${data.id} submitted for review.`
+      activeTab.value.noticeTone = 'success'
+      approvalDialogOpen.value = false
+      emit('result', { kind: 'error', error: activeTab.value.notice, sql })
+      return true
+    }
+  }
+
+  approvalDialogOpen.value = true
+  if (activeTab.value) {
+    activeTab.value.notice = responseData?.error ?? 'Approval required before executing write SQL.'
+    activeTab.value.noticeTone = 'error'
+  }
+  return false
+}
+
 async function runQuery() {
   if (!props.connId || !activeTab.value) return
   const tab = activeTab.value
   const ctrl = new AbortController()
   abortControllers.set(tab.id, ctrl)
-  tab.running = true; tab.error = ''
+  tab.running = true
+  tab.error = ''
+  tab.notice = ''
   try {
     const { data } = await axios.post<QueryResult>(
       `/api/connections/${props.connId}/query`,
@@ -180,12 +232,45 @@ async function runQuery() {
   } catch (e: unknown) {
     const err = e as { code?: string; response?: { data?: { error?: string } } }
     if (err.code !== 'ERR_CANCELED') {
+      const responseData = (err as any)?.response?.data
+      if (responseData?.approval_required) {
+        try {
+          await handleApprovalRequired(tab.sql, responseData)
+          return
+        } catch (submitErr: any) {
+          tab.error = submitErr?.response?.data?.error ?? 'Failed to submit approval request'
+          tab.notice = ''
+          tab.noticeTone = 'error'
+          emit('result', { kind: 'error', error: tab.error, sql: tab.sql })
+          return
+        }
+      }
       tab.error = err.response?.data?.error ?? 'Query failed'
+      tab.notice = ''
+      tab.noticeTone = 'error'
       emit('result', { kind: 'error', error: tab.error, sql: tab.sql })
     }
   } finally {
     tab.running = false
     abortControllers.delete(tab.id)
+  }
+}
+
+async function submitApprovalRequest() {
+  if (!props.connId || !activeTab.value || !approvalTitle.value.trim()) return
+  approvalSubmitting.value = true
+  try {
+    const data = await createApprovalRequest(activeTab.value.sql)
+    approvalDialogOpen.value = false
+    activeTab.value.error = ''
+    activeTab.value.notice = `Approval request #${data.id} submitted for review.`
+    activeTab.value.noticeTone = 'success'
+  } catch (e: any) {
+    activeTab.value.error = e?.response?.data?.error ?? 'Failed to submit approval request'
+    activeTab.value.notice = ''
+    activeTab.value.noticeTone = 'error'
+  } finally {
+    approvalSubmitting.value = false
   }
 }
 
@@ -268,7 +353,16 @@ async function runScript() {
     )
     emit('result', { kind: 'script', results: data })
   } catch (e: any) {
-    if (activeTab.value) activeTab.value.error = e?.response?.data?.error ?? 'Script failed'
+    const responseData = e?.response?.data
+    if (activeTab.value && responseData?.approval_required) {
+      try {
+        await handleApprovalRequired(activeTab.value.sql, responseData)
+      } catch (submitErr: any) {
+        activeTab.value.error = submitErr?.response?.data?.error ?? 'Failed to submit approval request'
+      }
+    } else if (activeTab.value) {
+      activeTab.value.error = e?.response?.data?.error ?? 'Script failed'
+    }
   } finally {
     scriptRunning.value = false
   }
@@ -457,9 +551,9 @@ defineExpose({ loadSQL, exportCurrentResult })
   </div>
 
   <!-- Error notice (inline in panel, not in main area) -->
-  <div v-if="activeTab?.error" class="sp-error">
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="flex-shrink:0;color:#f87171"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-    {{ activeTab.error }}
+  <div v-if="activeTab?.error || activeTab?.notice" class="sp-error" :class="{ 'sp-error--success': !activeTab?.error && activeTab?.noticeTone === 'success' }">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="flex-shrink:0;color:currentColor"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    {{ activeTab.error || activeTab.notice }}
   </div>
 
   <!-- CodeMirror editor (one per tab, v-show to preserve state) -->
@@ -504,6 +598,38 @@ defineExpose({ loadSQL, exportCurrentResult })
         <div class="sp-save-footer">
           <button class="base-btn base-btn--ghost base-btn--sm" @click="saveDialogOpen = false">Cancel</button>
           <button class="base-btn base-btn--primary base-btn--sm" :disabled="!saveName.trim()" @click="confirmSave">Save</button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <Teleport to="body">
+    <div v-if="approvalDialogOpen" class="sp-save-overlay" @click.self="approvalDialogOpen = false">
+      <div class="sp-save-modal">
+        <div class="sp-save-header">
+          <span style="font-weight:600;font-size:14px;color:var(--text-primary)">Submit Approval Request</span>
+          <button class="base-btn base-btn--ghost base-btn--sm" @click="approvalDialogOpen = false">×</button>
+        </div>
+        <div class="sp-save-body">
+          <label class="sp-save-label">Title</label>
+          <input v-model="approvalTitle" class="base-input" placeholder="Short request title…" />
+          <label class="sp-save-label" style="margin-top:8px">Description</label>
+          <input v-model="approvalDescription" class="base-input" placeholder="Why is this change needed?" />
+          <template v-if="approvalWorkflows.length > 1">
+            <label class="sp-save-label" style="margin-top:8px">Workflow</label>
+            <select v-model="approvalWorkflowId" class="base-input">
+              <option v-for="wf in approvalWorkflows" :key="wf.id" :value="wf.id">{{ wf.name }}</option>
+            </select>
+          </template>
+          <div style="margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--bg);font-size:11px;color:var(--text-muted)">
+            This write query will be submitted for approval instead of executing immediately.
+          </div>
+        </div>
+        <div class="sp-save-footer">
+          <button class="base-btn base-btn--ghost base-btn--sm" @click="approvalDialogOpen = false">Cancel</button>
+          <button class="base-btn base-btn--primary base-btn--sm" :disabled="approvalSubmitting || !approvalTitle.trim()" @click="submitApprovalRequest">
+            {{ approvalSubmitting ? 'Submitting…' : 'Submit' }}
+          </button>
         </div>
       </div>
     </div>
@@ -613,6 +739,11 @@ defineExpose({ loadSQL, exportCurrentResult })
   background: rgba(248, 113, 113, 0.08);
   border-bottom: 1px solid rgba(248, 113, 113, 0.2);
   flex-shrink: 0; line-height: 1.5;
+}
+.sp-error--success {
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.08);
+  border-bottom-color: rgba(74, 222, 128, 0.2);
 }
 
 /* ── Editor area ─────────────────────────────────────────────────── */

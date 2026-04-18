@@ -104,24 +104,26 @@ function connName(id: number) {
 </script>
 
 <template>
-  <div class="wv-root">
-    <div class="wv-scroll">
-      <!-- Header -->
-      <div class="wv-header">
-        <div>
-          <div class="wv-title">Live Table Watcher</div>
-          <div class="wv-sub">Poll any query on an interval and watch values change in real time.</div>
+  <div class="page-shell wv-root">
+    <div class="page-scroll wv-scroll">
+      <div class="page-stack">
+      <section class="page-hero">
+        <div class="page-hero__content">
+          <div class="page-kicker">Monitoring</div>
+          <div class="page-title">Live Table Watcher</div>
+          <div class="page-subtitle">Poll lightweight queries on an interval and keep the latest value, trendline, and failure state visible at a glance.</div>
         </div>
-        <div style="flex:1"/>
-        <button class="base-btn base-btn--primary base-btn--sm" @click="showForm=true">+ Add Watcher</button>
-      </div>
+        <div class="page-hero__actions">
+          <button class="base-btn base-btn--primary base-btn--sm" @click="showForm=true">+ Add Watcher</button>
+        </div>
+      </section>
 
       <!-- Watchers grid -->
-      <div class="wv-grid">
+      <div class="page-grid page-grid--cards wv-grid">
         <div v-if="watchers.length === 0" class="wv-empty">
           No watchers yet. Add one to monitor a query live.
         </div>
-        <div v-for="w in watchers" :key="w.id" class="wv-card">
+        <div v-for="w in watchers" :key="w.id" class="page-card wv-card">
           <div class="wv-card-head">
             <div class="wv-card-name">{{ w.name }}</div>
             <span class="wv-conn-pill">{{ connName(w.connId) }}</span>
@@ -159,17 +161,18 @@ function connName(id: number) {
           <pre class="wv-sql">{{ w.sql }}</pre>
         </div>
       </div>
+      </div>
     </div>
 
     <!-- Form modal -->
     <Teleport to="body">
       <div v-if="showForm" class="wv-overlay" @click.self="showForm=false">
-        <div class="wv-modal">
-          <div class="wv-modal-head">
+        <div class="page-modal wv-modal">
+          <div class="page-modal__head wv-modal-head">
             <span>New Watcher</span>
             <button class="sl-close" @click="showForm=false">×</button>
           </div>
-          <div class="wv-modal-body">
+          <div class="page-modal__body wv-modal-body">
             <div class="form-group">
               <label class="form-label">Label</label>
               <input v-model="form.name" class="base-input" placeholder="Active orders count" />
@@ -192,7 +195,7 @@ function connName(id: number) {
               </select>
             </div>
           </div>
-          <div class="wv-modal-foot">
+          <div class="page-modal__foot wv-modal-foot">
             <button class="base-btn base-btn--ghost" @click="showForm=false">Cancel</button>
             <button class="base-btn base-btn--primary" :disabled="!form.connId || !form.sql" @click="addWatcher">Add</button>
           </div>

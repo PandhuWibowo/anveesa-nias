@@ -110,15 +110,16 @@ onMounted(fetchStatus)
 </script>
 
 <template>
-  <div class="sec-view">
-    <div class="sec-scroll">
-      <!-- Header -->
-      <div class="sec-header">
-        <div>
-          <h1 class="sec-title">Security Settings</h1>
-          <p class="sec-sub">Manage two-factor authentication and security preferences</p>
+  <div class="page-shell sec-view">
+    <div class="page-scroll sec-scroll">
+      <div class="page-stack">
+      <section class="page-hero">
+        <div class="page-hero__content">
+          <div class="page-kicker">Account Security</div>
+          <div class="page-title">Security Settings</div>
+          <div class="page-subtitle">Manage two-factor authentication, backup codes, and the extra safeguards around your login flow.</div>
         </div>
-      </div>
+      </section>
 
       <!-- Loading -->
       <div v-if="loading" class="sec-loading">
@@ -129,7 +130,7 @@ onMounted(fetchStatus)
       </div>
 
       <!-- 2FA Card -->
-      <div v-else class="sec-card">
+      <div v-else class="page-card sec-card">
         <div class="sec-card-header">
           <div class="sec-card-icon" :class="enabled ? 'sec-card-icon--enabled' : 'sec-card-icon--disabled'">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -182,12 +183,13 @@ onMounted(fetchStatus)
           </button>
         </div>
       </div>
+      </div>
     </div>
 
     <!-- Setup Modal -->
     <Teleport to="body">
       <div v-if="showSetup && setupData" class="sec-modal-overlay" @click.self="showSetup = false">
-        <div class="sec-modal">
+        <div class="page-modal sec-modal">
           <div class="sec-modal-header">
             <h2 class="sec-modal-title">Enable Two-Factor Authentication</h2>
             <button class="sec-modal-close" @click="showSetup = false">×</button>
@@ -262,7 +264,7 @@ onMounted(fetchStatus)
     <!-- Disable Modal -->
     <Teleport to="body">
       <div v-if="showDisable" class="sec-modal-overlay" @click.self="showDisable = false">
-        <div class="sec-modal" style="max-width:440px">
+        <div class="page-modal sec-modal" style="max-width:440px">
           <div class="sec-modal-header">
             <h2 class="sec-modal-title">Disable Two-Factor Authentication</h2>
             <button class="sec-modal-close" @click="showDisable = false">×</button>
@@ -314,41 +316,13 @@ onMounted(fetchStatus)
 
 <style scoped>
 .sec-view {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
+  background: var(--bg-body);
 }
 
 .sec-scroll {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 24px 32px 40px;
   display: flex;
   flex-direction: column;
   gap: 20px;
-}
-
-.sec-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.sec-title {
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin: 0 0 4px;
-}
-
-.sec-sub {
-  font-size: 13px;
-  color: var(--text-muted);
-  margin: 0;
 }
 
 .sec-loading {
@@ -363,9 +337,6 @@ onMounted(fetchStatus)
 
 /* Card */
 .sec-card {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 10px;
   overflow: hidden;
 }
 

@@ -522,21 +522,22 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="perm-root">
-    <div class="perm-scroll">
-      <!-- Page Header -->
-      <div class="perm-header">
-        <div>
-          <div class="perm-title">Permissions & Access Control</div>
-          <div class="perm-sub">Manage roles, access groups, and user permissions</div>
+  <div class="page-shell perm-root">
+    <div class="page-scroll perm-scroll">
+      <div class="page-stack">
+      <section class="page-hero">
+        <div class="page-hero__content">
+          <div class="page-kicker">Administration</div>
+          <div class="page-title">Permissions & Access Control</div>
+          <div class="page-subtitle">Manage roles, access groups, user assignments, and direct connection permissions from one control surface.</div>
         </div>
-      </div>
+      </section>
 
       <!-- Tabs -->
-      <div class="perm-tabs">
+      <div class="page-tabs perm-tabs">
         <button
-          class="perm-tab"
-          :class="{ 'perm-tab--active': activeTab === 'roles' }"
+          class="page-tab perm-tab"
+          :class="{ 'is-active': activeTab === 'roles' }"
           @click="activeTab = 'roles'"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -548,8 +549,8 @@ onMounted(async () => {
           Roles
         </button>
         <button
-          class="perm-tab"
-          :class="{ 'perm-tab--active': activeTab === 'groups' }"
+          class="page-tab perm-tab"
+          :class="{ 'is-active': activeTab === 'groups' }"
           @click="activeTab = 'groups'"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -558,8 +559,8 @@ onMounted(async () => {
           Access Groups
         </button>
         <button
-          class="perm-tab"
-          :class="{ 'perm-tab--active': activeTab === 'users' }"
+          class="page-tab perm-tab"
+          :class="{ 'is-active': activeTab === 'users' }"
           @click="activeTab = 'users'"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -573,7 +574,7 @@ onMounted(async () => {
       <!-- ═══════════════════════════════════════════════════════════════ -->
       <!-- ROLES TAB -->
       <!-- ═══════════════════════════════════════════════════════════════ -->
-      <div v-if="activeTab === 'roles'" class="perm-panel">
+      <div v-if="activeTab === 'roles'" class="page-card perm-panel">
         <div class="perm-panel-header">
           <div>
             <div class="perm-panel-title">Roles</div>
@@ -650,7 +651,7 @@ onMounted(async () => {
       <!-- ═══════════════════════════════════════════════════════════════ -->
       <!-- ACCESS GROUPS TAB -->
       <!-- ═══════════════════════════════════════════════════════════════ -->
-      <div v-if="activeTab === 'groups'" class="perm-panel">
+      <div v-if="activeTab === 'groups'" class="page-card perm-panel">
         <div class="perm-panel-header">
           <div>
             <div class="perm-panel-title">Access Groups</div>
@@ -715,7 +716,7 @@ onMounted(async () => {
       <!-- ═══════════════════════════════════════════════════════════════ -->
       <!-- USERS TAB -->
       <!-- ═══════════════════════════════════════════════════════════════ -->
-      <div v-if="activeTab === 'users'" class="perm-panel">
+      <div v-if="activeTab === 'users'" class="page-card perm-panel">
         <div class="perm-panel-header">
           <div>
             <div class="perm-panel-title">User Management</div>
@@ -772,6 +773,7 @@ onMounted(async () => {
           </table>
         </div>
       </div>
+      </div>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -779,7 +781,7 @@ onMounted(async () => {
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <Teleport to="body">
       <div v-if="showRoleForm" class="perm-overlay" @click.self="showRoleForm = false">
-        <div class="perm-dialog perm-dialog--wide">
+        <div class="page-modal perm-dialog perm-dialog--wide">
           <div class="perm-dialog-header">
             <div class="perm-dialog-title">{{ editingRole ? 'Edit Role' : 'Create Role' }}</div>
             <button class="perm-dialog-close" @click="showRoleForm = false">
@@ -832,7 +834,7 @@ onMounted(async () => {
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <Teleport to="body">
       <div v-if="showGroupForm" class="perm-overlay" @click.self="showGroupForm = false">
-        <div class="perm-dialog">
+        <div class="page-modal perm-dialog">
           <div class="perm-dialog-header">
             <div class="perm-dialog-title">{{ editingGroup ? 'Edit Access Group' : 'Create Access Group' }}</div>
             <button class="perm-dialog-close" @click="showGroupForm = false">
@@ -878,7 +880,7 @@ onMounted(async () => {
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <Teleport to="body">
       <div v-if="showUserForm" class="perm-overlay" @click.self="showUserForm = false">
-        <div class="perm-dialog perm-dialog--wide">
+        <div class="page-modal perm-dialog perm-dialog--wide">
           <div class="perm-dialog-header">
             <div class="perm-dialog-title">{{ editingUser ? 'Edit User' : 'Create User' }}</div>
             <button class="perm-dialog-close" @click="showUserForm = false">
@@ -986,28 +988,8 @@ onMounted(async () => {
 }
 
 .perm-scroll {
-  flex: 1;
-  overflow-y: auto;
-  padding: 24px 32px;
-}
-
-.perm-header {
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 24px;
-}
-
-.perm-title {
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin-bottom: 4px;
-}
-
-.perm-sub {
-  font-size: 14px;
-  color: var(--text-muted);
+  flex-direction: column;
 }
 
 /* ─────────────────────────────────────────────────────────────── */
@@ -1015,45 +997,18 @@ onMounted(async () => {
 /* ─────────────────────────────────────────────────────────────── */
 
 .perm-tabs {
-  display: flex;
-  gap: 4px;
   margin-bottom: 24px;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 0;
 }
 
 .perm-tab {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 16px;
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--text-muted);
   font-size: 14px;
   font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s;
-  position: relative;
-  top: 1px;
 }
-
-.perm-tab:hover {
-  color: var(--text-primary);
-  background: var(--bg-dim);
-}
-
-.perm-tab--active {
-  color: var(--brand);
-  border-bottom-color: var(--brand);
-}
-
 .perm-tab svg {
   opacity: 0.7;
 }
 
-.perm-tab--active svg {
+.perm-tab.is-active svg {
   opacity: 1;
 }
 
@@ -1062,9 +1017,6 @@ onMounted(async () => {
 /* ─────────────────────────────────────────────────────────────── */
 
 .perm-panel {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
   overflow: hidden;
 }
 
@@ -1074,7 +1026,6 @@ onMounted(async () => {
   align-items: flex-start;
   padding: 20px 24px;
   border-bottom: 1px solid var(--border);
-  background: var(--bg-surface);
 }
 
 .perm-panel-title {
@@ -1104,17 +1055,17 @@ onMounted(async () => {
 }
 
 .perm-table thead {
-  background: var(--bg-surface);
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .perm-table th {
   padding: 12px 24px;
   text-align: left;
   font-weight: 600;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.12em;
 }
 
 .perm-table td {
@@ -1124,7 +1075,7 @@ onMounted(async () => {
 }
 
 .perm-table tbody tr:hover {
-  background: var(--bg-dim);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .perm-td-desc {
@@ -1185,12 +1136,12 @@ onMounted(async () => {
 
 .perm-badge {
   display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.12em;
   background: var(--bg-dim);
   color: var(--text-muted);
 }
@@ -1203,7 +1154,7 @@ onMounted(async () => {
 .perm-role-badge {
   display: inline-block;
   padding: 4px 10px;
-  border-radius: 4px;
+  border-radius: 999px;
   font-size: 12px;
   font-weight: 500;
   border: 1px solid;
@@ -1212,7 +1163,7 @@ onMounted(async () => {
 .perm-status {
   display: inline-block;
   padding: 4px 10px;
-  border-radius: 4px;
+  border-radius: 999px;
   font-size: 12px;
   font-weight: 500;
   background: var(--bg-dim);
@@ -1254,15 +1205,11 @@ onMounted(async () => {
 }
 
 .perm-dialog {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
   width: 100%;
   max-width: 500px;
   max-height: 85vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
 }
 
 .perm-dialog--wide {

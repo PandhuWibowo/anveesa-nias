@@ -69,63 +69,72 @@ const roleColors: Record<string, string> = {
 </script>
 
 <template>
-  <div class="u-root">
-    <div class="u-scroll">
-      <!-- Header -->
-      <div class="u-header">
-        <div>
-          <div class="u-title">User Management</div>
-          <div class="u-sub">Manage user accounts and access roles.</div>
-        </div>
-        <button class="base-btn base-btn--ghost base-btn--sm" @click="load">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.43"/></svg>
-          Refresh
-        </button>
-      </div>
+  <div class="page-shell u-root">
+    <div class="page-scroll u-scroll">
+      <div class="page-stack">
+        <section class="page-hero">
+          <div class="page-hero__content">
+            <div class="page-kicker">Administration</div>
+            <div class="page-title">User Management</div>
+            <div class="page-subtitle">Manage user accounts, adjust access roles, and keep the operator roster under control.</div>
+          </div>
+          <div class="page-hero__actions">
+            <button class="base-btn base-btn--ghost base-btn--sm" @click="load">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.43"/></svg>
+              Refresh
+            </button>
+          </div>
+        </section>
 
-      <!-- Error -->
-      <div v-if="error" class="notice notice--error" style="margin-bottom:16px">{{ error }}</div>
+        <section class="page-panel u-table-wrap">
+          <div class="u-panel-head">
+            <div>
+              <div class="u-panel-title">Accounts</div>
+              <div class="u-panel-sub">{{ users.length }} total users</div>
+            </div>
+          </div>
 
-      <!-- Table -->
-      <div class="u-table-wrap">
-        <div v-if="loading" class="u-loading">
-          <svg class="spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-        </div>
-        <table v-else class="u-table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Username</th>
-              <th>Role</th>
-              <th>Created</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="u in users" :key="u.id">
-              <td class="u-td-dim">{{ u.id }}</td>
-              <td class="u-td-name">{{ u.username }}</td>
-              <td>
-                <span class="u-role" :style="{ color: roleColors[u.role] ?? 'var(--text-muted)', borderColor: roleColors[u.role] ?? 'var(--border)' }">
-                  {{ u.role }}
-                </span>
-              </td>
-              <td class="u-td-dim">{{ new Date(u.created_at).toLocaleDateString() }}</td>
-              <td>
-                <div class="u-row-actions">
-                  <button class="base-btn base-btn--ghost base-btn--xs" @click="openEdit(u)">Edit</button>
-                  <button class="base-btn base-btn--ghost base-btn--xs u-btn-del" @click="deleteUser(u)">Delete</button>
-                </div>
-              </td>
-            </tr>
-            <tr v-if="users.length === 0">
-              <td colspan="5" style="text-align:center;color:var(--text-muted);font-size:13px;padding:20px">No users found</td>
-            </tr>
-          </tbody>
-        </table>
+          <div v-if="error" class="notice notice--error u-error">{{ error }}</div>
+
+          <div v-if="loading" class="u-loading">
+            <svg class="spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+          </div>
+          <table v-else class="u-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Username</th>
+                <th>Role</th>
+                <th>Created</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="u in users" :key="u.id">
+                <td class="u-td-dim">{{ u.id }}</td>
+                <td class="u-td-name">{{ u.username }}</td>
+                <td>
+                  <span class="u-role" :style="{ color: roleColors[u.role] ?? 'var(--text-muted)', borderColor: roleColors[u.role] ?? 'var(--border)' }">
+                    {{ u.role }}
+                  </span>
+                </td>
+                <td class="u-td-dim">{{ new Date(u.created_at).toLocaleDateString() }}</td>
+                <td>
+                  <div class="u-row-actions">
+                    <button class="base-btn base-btn--ghost base-btn--xs" @click="openEdit(u)">Edit</button>
+                    <button class="base-btn base-btn--ghost base-btn--xs u-btn-del" @click="deleteUser(u)">Delete</button>
+                  </div>
+                </td>
+              </tr>
+              <tr v-if="users.length === 0">
+                <td colspan="5" class="u-empty">No users found</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
       </div>
     </div>
-
+    
     <!-- Edit modal -->
     <Teleport to="body">
       <div v-if="editTarget" class="u-overlay" @click.self="editTarget=null">
@@ -155,50 +164,49 @@ const roleColors: Record<string, string> = {
 </template>
 
 <style scoped>
-.u-root { width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden; }
-.u-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 28px 32px 40px; }
-
-.u-header {
-  display: flex; align-items: flex-start; justify-content: space-between;
-  margin-bottom: 24px; gap: 16px;
+.u-root { background: var(--bg-body); }
+.u-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px 10px;
 }
-.u-title { font-size: 20px; font-weight: 700; color: var(--text-primary); }
-.u-sub { font-size: 13px; color: var(--text-muted); margin-top: 3px; }
-
+.u-panel-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+.u-panel-sub { margin-top: 4px; font-size: 12px; color: var(--text-muted); }
+.u-error { margin: 0 20px 12px; }
 .u-loading {
   display: flex; align-items: center; justify-content: center;
   padding: 40px; color: var(--text-muted);
 }
-
 .u-table-wrap {
-  background: var(--bg-elevated); border: 1px solid var(--border);
-  border-radius: 8px; overflow: hidden;
+  overflow: hidden;
 }
 .u-table {
   width: 100%; border-collapse: collapse; font-size: 13px;
 }
 .u-table th {
-  background: var(--bg-surface); padding: 9px 16px;
+  background: rgba(255, 255, 255, 0.02); padding: 11px 18px;
   border-bottom: 1px solid var(--border);
   font-size: 11px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0.4px; color: var(--text-muted); text-align: left;
+  letter-spacing: 0.12em; color: var(--text-muted); text-align: left;
 }
 .u-table td {
-  padding: 10px 16px; border-bottom: 1px solid var(--border);
+  padding: 12px 18px; border-bottom: 1px solid var(--border);
   color: var(--text-primary);
 }
 .u-table tr:last-child td { border-bottom: none; }
-.u-table tr:hover td { background: var(--bg-hover); }
+.u-table tr:hover td { background: rgba(255, 255, 255, 0.03); }
 .u-td-dim { color: var(--text-muted); font-size: 12px; }
 .u-td-name { font-weight: 600; }
 .u-role {
   font-size: 11px; font-weight: 600; text-transform: uppercase;
-  padding: 2px 8px; border-radius: 4px; border: 1px solid;
-  letter-spacing: 0.3px;
+  padding: 4px 10px; border-radius: 999px; border: 1px solid;
+  letter-spacing: 0.12em;
 }
 .u-row-actions { display: flex; gap: 6px; }
 .u-btn-del { color: var(--danger) !important; }
 .u-btn-del:hover { background: rgba(239, 68, 68, 0.1) !important; }
+.u-empty { text-align:center;color:var(--text-muted);font-size:13px;padding:24px; }
 
 /* Dialog */
 .u-overlay {

@@ -26,7 +26,8 @@ func ExplainQuery() http.HandlerFunc {
 		}
 
 		var req struct {
-			SQL string `json:"sql"`
+			SQL      string `json:"sql"`
+			Database string `json:"database"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SQL == "" {
 			http.Error(w, `{"error":"sql required"}`, http.StatusBadRequest)
@@ -37,6 +38,21 @@ func ExplainQuery() http.HandlerFunc {
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
+		}
+
+		if req.Database != "" {
+			if !validIdentifier.MatchString(req.Database) {
+				http.Error(w, `{"error":"invalid database name"}`, http.StatusBadRequest)
+				return
+			}
+			switch driver {
+			case "mysql":
+				safeName := strings.ReplaceAll(req.Database, "`", "``")
+				_, _ = db.ExecContext(r.Context(), "USE `"+safeName+"`")
+			case "sqlserver":
+				safeName := strings.ReplaceAll(req.Database, "]", "]]")
+				_, _ = db.ExecContext(r.Context(), "USE ["+safeName+"]")
+			}
 		}
 
 		result := ExplainResult{Driver: driver}

@@ -75,12 +75,32 @@ func ExecuteQuery() http.HandlerFunc {
 			!strings.HasPrefix(upper, "EXPLAIN") &&
 			!strings.HasPrefix(upper, "PRAGMA")
 
-		if isWrite && !CheckWritePermission(r, connID) {
-			http.Error(w, `{"error":"write permission denied"}`, http.StatusForbidden)
-			return
-		}
+			if isWrite && !CheckWritePermission(r, connID) {
+				http.Error(w, `{"error":"write permission denied"}`, http.StatusForbidden)
+				return
+			}
 
-		db, driver, err := GetDB(connID)
+			if isWrite && isAuthEnabled() {
+				userID, _, role := currentUserFromHeaders(r)
+				if userID > 0 && role != "admin" {
+					workflows, err := findApplicableWorkflows(userID, role, connID)
+					if err != nil {
+						http.Error(w, jsonError("failed to resolve approval workflows"), http.StatusInternalServerError)
+						return
+					}
+					if len(workflows) > 0 {
+						w.WriteHeader(http.StatusConflict)
+						_ = json.NewEncoder(w).Encode(map[string]any{
+							"error":             "approval required before executing write SQL",
+							"approval_required": true,
+							"workflows":         workflows,
+						})
+						return
+					}
+				}
+			}
+
+			db, driver, err := GetDB(connID)
 		if err != nil {
 			http.Error(w, `{"error":"database connection error"}`, http.StatusBadGateway)
 			return

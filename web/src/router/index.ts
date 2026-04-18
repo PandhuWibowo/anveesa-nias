@@ -102,9 +102,20 @@ const router = createRouter({
           component: () => import('@/views/SavedQueriesView.vue'),
         },
         {
+          path: 'approvals',
+          name: 'approvals',
+          component: () => import('@/views/ApprovalRequestsView.vue'),
+        },
+        {
           path: 'permissions',
           name: 'permissions',
           component: () => import('@/views/PermissionsView.vue'),
+          meta: { requiresAdmin: true },
+        },
+        {
+          path: 'workflows',
+          name: 'workflows',
+          component: () => import('@/views/ApprovalWorkflowsView.vue'),
           meta: { requiresAdmin: true },
         },
         {

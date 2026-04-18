@@ -96,24 +96,25 @@ onMounted(loadAll)
 </script>
 
 <template>
-  <div class="dash-root">
-    <div class="dash-scroll">
+  <div class="page-shell dash-root">
+    <div class="page-scroll dash-scroll">
+      <div class="page-stack">
+        <section class="page-hero">
+          <div class="page-hero__content">
+            <div class="page-kicker">Overview</div>
+            <div class="page-title">Dashboard</div>
+            <div class="page-subtitle">A live, connection-level snapshot of your databases, footprint, and the surfaces your team can browse right now.</div>
+          </div>
+          <div class="page-hero__actions">
+            <button class="base-btn base-btn--ghost base-btn--sm" @click="loadAll">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.43"/></svg>
+              Refresh All
+            </button>
+          </div>
+        </section>
 
-      <!-- Page header -->
-      <div class="dash-page-header">
-        <div>
-          <div class="dash-page-title">Dashboard</div>
-          <div class="dash-page-sub">Overview of all your database connections</div>
-        </div>
-        <button class="base-btn base-btn--ghost base-btn--sm" @click="loadAll">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.43"/></svg>
-          Refresh All
-        </button>
-      </div>
-
-      <!-- Aggregate stats -->
-      <div class="dash-agg">
-        <div class="dash-agg-card">
+        <div class="dash-agg">
+          <div class="page-panel dash-agg-card">
           <div class="dash-agg-card__icon" style="background:var(--brand-dim);color:var(--brand)">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
           </div>
@@ -122,7 +123,7 @@ onMounted(loadAll)
             <div class="dash-agg-card__value">{{ connections.length }}</div>
           </div>
         </div>
-        <div class="dash-agg-card">
+        <div class="page-panel dash-agg-card">
           <div class="dash-agg-card__icon" style="background:#6366f122;color:#6366f1">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
           </div>
@@ -131,7 +132,7 @@ onMounted(loadAll)
             <div class="dash-agg-card__value">{{ totalTables.toLocaleString() }}</div>
           </div>
         </div>
-        <div class="dash-agg-card">
+        <div class="page-panel dash-agg-card">
           <div class="dash-agg-card__icon" style="background:#10b98122;color:#10b981">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
           </div>
@@ -140,7 +141,7 @@ onMounted(loadAll)
             <div class="dash-agg-card__value">{{ formatBytes(totalSize) }}</div>
           </div>
         </div>
-        <div class="dash-agg-card">
+        <div class="page-panel dash-agg-card">
           <div class="dash-agg-card__icon" style="background:#f59e0b22;color:#f59e0b">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           </div>
@@ -149,10 +150,9 @@ onMounted(loadAll)
             <div class="dash-agg-card__value">{{ loadedCount }} / {{ connections.length }}</div>
           </div>
         </div>
-      </div>
+        </div>
 
-      <!-- No connections -->
-      <div v-if="connections.length === 0" class="dash-empty">
+      <div v-if="connections.length === 0" class="page-panel dash-empty">
         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
         <div class="dash-empty__title">No connections yet</div>
         <div class="dash-empty__sub">Add a connection to get started.</div>
@@ -163,7 +163,7 @@ onMounted(loadAll)
         <div
           v-for="conn in connections"
           :key="conn.id"
-          class="dash-conn-card"
+          class="page-panel dash-conn-card"
           :class="{ 'dash-conn-card--active': conn.id === activeConnId }"
         >
           <!-- Card header -->
@@ -258,35 +258,13 @@ onMounted(loadAll)
           </div>
         </div>
       </div>
-
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.dash-root {
-  width: 100%; height: 100%;
-  display: flex; flex-direction: column;
-  overflow: hidden;
-  background: var(--bg-body);
-}
-.dash-scroll {
-  flex: 1; min-height: 0;
-  overflow-y: auto;
-  padding: 28px 32px 48px;
-}
-
-/* Page header */
-.dash-page-header {
-  display: flex; align-items: flex-start; justify-content: space-between;
-  gap: 16px; margin-bottom: 24px;
-}
-.dash-page-title {
-  font-size: 22px; font-weight: 700; color: var(--text-primary); line-height: 1.2;
-}
-.dash-page-sub {
-  font-size: 13px; color: var(--text-muted); margin-top: 3px;
-}
+.dash-root { background: var(--bg-body); }
 
 /* Aggregate cards */
 .dash-agg {
@@ -295,9 +273,6 @@ onMounted(loadAll)
 .dash-agg-card {
   flex: 1; min-width: 160px;
   display: flex; align-items: center; gap: 14px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 10px;
   padding: 16px 20px;
 }
 .dash-agg-card__icon {
@@ -319,14 +294,11 @@ onMounted(loadAll)
   gap: 16px;
 }
 .dash-conn-card {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 10px;
   padding: 18px 20px;
   display: flex; flex-direction: column; gap: 12px;
-  transition: border-color var(--dur);
+  transition: border-color var(--dur), transform var(--dur), box-shadow var(--dur);
 }
-.dash-conn-card:hover { border-color: var(--brand-dim); }
+.dash-conn-card:hover { border-color: var(--brand-dim); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
 .dash-conn-card--active { border-color: var(--brand); }
 
 .dash-conn-card__header {

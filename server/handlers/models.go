@@ -107,11 +107,13 @@ const (
 	PermConnectionsEdit   = "connections.edit"
 	PermConnectionsDelete = "connections.delete"
 	PermQueryExecute      = "query.execute"
+	PermQueryApprove      = "query.approve"
 	PermSchemaBrowse      = "schema.browse"
 	PermAuditView         = "audit.view"
 	PermUsersManage       = "users.manage"
 	PermFoldersManage     = "folders.manage"
 	PermRolesManage       = "roles.manage"
+	PermWorkflowsManage   = "workflows.manage"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -121,11 +123,13 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermConnectionsEdit, Label: "Edit Connections", Group: "Connections"},
 	{Key: PermConnectionsDelete, Label: "Delete Connections", Group: "Connections"},
 	{Key: PermQueryExecute, Label: "Execute Queries", Group: "Query"},
+	{Key: PermQueryApprove, Label: "Approve Query Requests", Group: "Query"},
 	{Key: PermSchemaBrowse, Label: "Browse Schema", Group: "Schema"},
 	{Key: PermAuditView, Label: "View Audit Logs", Group: "Audit"},
 	{Key: PermUsersManage, Label: "Manage Users", Group: "Administration"},
 	{Key: PermFoldersManage, Label: "Manage Folders", Group: "Administration"},
 	{Key: PermRolesManage, Label: "Manage Roles", Group: "Administration"},
+	{Key: PermWorkflowsManage, Label: "Manage Workflows", Group: "Administration"},
 }
 
 // PermissionDef describes a single permission for the UI.
@@ -192,17 +196,17 @@ func HasAppPerm(perms []string, perm string) bool {
 
 // AccessGroup represents a folder extended with group membership.
 type AccessGroup struct {
-	ID              int64  `json:"id"`
-	Name            string `json:"name"`
-	ParentID        *int64 `json:"parent_id"`
-	OwnerID         int64  `json:"owner_id"`
-	Visibility      string `json:"visibility"` // private|shared
-	Color           string `json:"color"`
-	RoleRestrict    string `json:"role_restrict"` // '' = all roles, or specific role name
-	IsActive        bool   `json:"is_active"`
-	SortOrder       int    `json:"sort_order"`
-	MemberCount     int    `json:"member_count"`
-	ConnectionCount int    `json:"connection_count"`
+	ID              int64     `json:"id"`
+	Name            string    `json:"name"`
+	ParentID        *int64    `json:"parent_id"`
+	OwnerID         int64     `json:"owner_id"`
+	Visibility      string    `json:"visibility"` // private|shared
+	Color           string    `json:"color"`
+	RoleRestrict    string    `json:"role_restrict"` // '' = all roles, or specific role name
+	IsActive        bool      `json:"is_active"`
+	SortOrder       int       `json:"sort_order"`
+	MemberCount     int       `json:"member_count"`
+	ConnectionCount int       `json:"connection_count"`
 	CreatedAt       time.Time `json:"created_at"`
 }
 
@@ -232,24 +236,24 @@ type ConnectionPermission struct {
 
 // CreateAccessGroupRequest is the request body for creating a group.
 type CreateAccessGroupRequest struct {
-	Name                   string                 `json:"name"`
-	Description            string                 `json:"description"`
-	ParentID               *int64                 `json:"parent_id"`
-	RoleRestrict           string                 `json:"role_restrict"`
-	Color                  string                 `json:"color"`
-	UserIDs                []int64                `json:"user_ids"`
-	ConnectionIDs          []int64                `json:"connection_ids"`
-	ConnectionPermissions  []ConnectionPermission `json:"connection_permissions"`
+	Name                  string                 `json:"name"`
+	Description           string                 `json:"description"`
+	ParentID              *int64                 `json:"parent_id"`
+	RoleRestrict          string                 `json:"role_restrict"`
+	Color                 string                 `json:"color"`
+	UserIDs               []int64                `json:"user_ids"`
+	ConnectionIDs         []int64                `json:"connection_ids"`
+	ConnectionPermissions []ConnectionPermission `json:"connection_permissions"`
 }
 
 // UpdateAccessGroupRequest is the request body for updating a group.
 type UpdateAccessGroupRequest struct {
-	Name                   string                 `json:"name"`
-	Description            string                 `json:"description"`
-	RoleRestrict           string                 `json:"role_restrict"`
-	UserIDs                []int64                `json:"user_ids"`
-	ConnectionIDs          []int64                `json:"connection_ids"`
-	ConnectionPermissions  []ConnectionPermission `json:"connection_permissions"`
+	Name                  string                 `json:"name"`
+	Description           string                 `json:"description"`
+	RoleRestrict          string                 `json:"role_restrict"`
+	UserIDs               []int64                `json:"user_ids"`
+	ConnectionIDs         []int64                `json:"connection_ids"`
+	ConnectionPermissions []ConnectionPermission `json:"connection_permissions"`
 }
 
 // UserConnectionAssignment represents connection access for a user.
@@ -262,6 +266,153 @@ type UserConnectionAssignment struct {
 	Environment string   `json:"environment"`
 	Source      string   `json:"source"` // "direct" or group name
 	Permissions []DbPerm `json:"permissions"`
+}
+
+// ── Approval Workflow Models ──
+
+type WorkflowAccessGroup struct {
+	GroupID   int64  `json:"group_id"`
+	GroupName string `json:"group_name"`
+}
+
+type WorkflowConnection struct {
+	ConnID      int64  `json:"conn_id"`
+	Name        string `json:"name"`
+	Driver      string `json:"driver"`
+	Environment string `json:"environment"`
+}
+
+type StepApprover struct {
+	ID           int64  `json:"id"`
+	StepID       int64  `json:"step_id"`
+	ApproverType string `json:"approver_type"`
+	ApproverID   int64  `json:"approver_id"`
+	ApproverName string `json:"approver_name"`
+}
+
+type WorkflowStep struct {
+	ID                int64          `json:"id"`
+	WorkflowID        int64          `json:"workflow_id"`
+	StepOrder         int            `json:"step_order"`
+	Name              string         `json:"name"`
+	RequiredApprovals int            `json:"required_approvals"`
+	Approvers         []StepApprover `json:"approvers"`
+}
+
+type ApprovalWorkflow struct {
+	ID                   int64                 `json:"id"`
+	Name                 string                `json:"name"`
+	Description          string                `json:"description"`
+	IsActive             bool                  `json:"is_active"`
+	AssignAllGroups      bool                  `json:"assign_all_groups"`
+	AssignAllConnections bool                  `json:"assign_all_connections"`
+	AccessGroups         []WorkflowAccessGroup `json:"access_groups,omitempty"`
+	Connections          []WorkflowConnection  `json:"connections,omitempty"`
+	Steps                []WorkflowStep        `json:"steps,omitempty"`
+	CreatedAt            time.Time             `json:"created_at"`
+	UpdatedAt            time.Time             `json:"updated_at"`
+}
+
+type CreateApproverReq struct {
+	ApproverType string `json:"approver_type"`
+	ApproverID   int64  `json:"approver_id"`
+}
+
+type CreateWorkflowStepReq struct {
+	Name              string              `json:"name"`
+	RequiredApprovals int                 `json:"required_approvals"`
+	Approvers         []CreateApproverReq `json:"approvers"`
+}
+
+type CreateWorkflowRequest struct {
+	Name                 string                  `json:"name"`
+	Description          string                  `json:"description"`
+	AssignAllGroups      bool                    `json:"assign_all_groups"`
+	AccessGroupIDs       []int64                 `json:"access_group_ids"`
+	AssignAllConnections bool                    `json:"assign_all_connections"`
+	ConnectionIDs        []int64                 `json:"connection_ids"`
+	Steps                []CreateWorkflowStepReq `json:"steps"`
+}
+
+type QueryApprovalStatus string
+
+const (
+	QueryApprovalStatusDraft         QueryApprovalStatus = "draft"
+	QueryApprovalStatusPendingReview QueryApprovalStatus = "pending_review"
+	QueryApprovalStatusApproved      QueryApprovalStatus = "approved"
+	QueryApprovalStatusRejected      QueryApprovalStatus = "rejected"
+	QueryApprovalStatusExecuting     QueryApprovalStatus = "executing"
+	QueryApprovalStatusDone          QueryApprovalStatus = "done"
+	QueryApprovalStatusFailed        QueryApprovalStatus = "failed"
+)
+
+type QueryApprovalRequest struct {
+	ID           int64               `json:"id"`
+	Title        string              `json:"title"`
+	Description  string              `json:"description"`
+	ConnID       int64               `json:"conn_id"`
+	Connection   string              `json:"connection"`
+	Driver       string              `json:"driver"`
+	Environment  string              `json:"environment"`
+	Database     string              `json:"database"`
+	Statement    string              `json:"statement"`
+	Status       QueryApprovalStatus `json:"status"`
+	CreatorID    int64               `json:"creator_id"`
+	CreatorName  string              `json:"creator_name"`
+	ReviewerID   *int64              `json:"reviewer_id,omitempty"`
+	ReviewerName string              `json:"reviewer_name,omitempty"`
+	ReviewNote   string              `json:"review_note,omitempty"`
+	WorkflowID   int64               `json:"workflow_id"`
+	CurrentStep  int                 `json:"current_step"`
+	Revision     int                 `json:"revision"`
+	Approvers    []string            `json:"approvers,omitempty"`
+	ExecuteError string              `json:"execute_error,omitempty"`
+	ExecutedAt   *time.Time          `json:"executed_at,omitempty"`
+	CreatedAt    time.Time           `json:"created_at"`
+	UpdatedAt    time.Time           `json:"updated_at"`
+}
+
+type CreateQueryApprovalRequest struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	ConnID      int64  `json:"conn_id"`
+	Database    string `json:"database"`
+	Statement   string `json:"statement"`
+	WorkflowID  int64  `json:"workflow_id"`
+}
+
+type UpdateQueryApprovalRequest struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	ConnID      int64  `json:"conn_id"`
+	Database    string `json:"database"`
+	Statement   string `json:"statement"`
+	WorkflowID  int64  `json:"workflow_id"`
+}
+
+type ChangeApproval struct {
+	ID        int64     `json:"id"`
+	RequestID int64     `json:"request_id"`
+	StepID    int64     `json:"step_id"`
+	StepName  string    `json:"step_name"`
+	StepOrder int       `json:"step_order"`
+	Revision  int       `json:"revision"`
+	UserID    int64     `json:"user_id"`
+	Username  string    `json:"username"`
+	Action    string    `json:"action"`
+	Note      string    `json:"note"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type ApprovalProgress struct {
+	Step      WorkflowStep     `json:"step"`
+	Status    string           `json:"status"`
+	Approvals []ChangeApproval `json:"approvals"`
+}
+
+type ApproveStepRequest struct {
+	Action string `json:"action"`
+	Note   string `json:"note"`
 }
 
 // ── Helper Functions for Backward Compatibility ──

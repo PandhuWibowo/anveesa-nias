@@ -123,13 +123,20 @@ function formatDate(d: string) {
 </script>
 
 <template>
-  <div class="sq-view">
-    <!-- Header -->
+  <div class="page-shell sq-view">
+    <div class="page-scroll">
+      <div class="page-stack">
+    <section class="page-hero">
+      <div class="page-hero__content">
+        <div class="page-kicker">Library</div>
+        <div class="page-title">Saved Queries</div>
+        <div class="page-subtitle">Store reusable SQL, filter it by connection, and reopen it directly in the data workspace when you need it again.</div>
+      </div>
+      <div class="page-hero__actions">
     <div class="sq-header">
       <div class="sq-header__left">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--brand)"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
         <div>
-          <h1 class="sq-title">Saved Queries</h1>
           <p class="sq-subtitle">{{ queries.length }} quer{{ queries.length !== 1 ? 'ies' : 'y' }} saved by your session</p>
         </div>
       </div>
@@ -138,9 +145,11 @@ function formatDate(d: string) {
         New Query
       </button>
     </div>
+      </div>
+    </section>
 
     <!-- New query form -->
-    <div v-if="showNew" class="sq-new-form">
+    <div v-if="showNew" class="page-card sq-new-form">
       <div class="sq-new-form__row">
         <div class="sq-field">
           <label class="sq-label">Name *</label>
@@ -171,7 +180,7 @@ function formatDate(d: string) {
     </div>
 
     <!-- Filters -->
-    <div class="sq-filters">
+    <div class="page-toolbar-surface sq-filters">
       <div class="sq-search-wrap">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--text-muted);flex-shrink:0"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input v-model="search" class="sq-search" placeholder="Search by name, SQL or description…" />
@@ -199,7 +208,7 @@ function formatDate(d: string) {
 
     <!-- Query list -->
     <div v-else class="sq-list">
-      <div v-for="q in filtered" :key="q.id" class="sq-card">
+      <div v-for="q in filtered" :key="q.id" class="page-card sq-card">
 
         <!-- Card header -->
         <div class="sq-card__header">
@@ -259,16 +268,14 @@ function formatDate(d: string) {
         </div>
       </div>
     </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .sq-view {
-  display: flex; flex-direction: column;
-  width: 100%; height: 100%; min-height: 0;
-  overflow-y: auto; padding: 24px 32px;
-  background: var(--bg-primary);
-  gap: 20px;
+  background: var(--bg-body);
 }
 
 /* ── Header ─────────────────────────────────────────────────────── */
@@ -282,8 +289,7 @@ function formatDate(d: string) {
 
 /* ── New form ────────────────────────────────────────────────────── */
 .sq-new-form {
-  background: var(--bg-elevated); border: 1px solid var(--border);
-  border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 10px;
+  padding: 16px; display: flex; flex-direction: column; gap: 10px;
 }
 .sq-new-form__row { display: flex; gap: 12px; }
 .sq-new-form__footer { display: flex; justify-content: flex-end; gap: 8px; }
@@ -329,8 +335,7 @@ function formatDate(d: string) {
 
 /* ── Card ────────────────────────────────────────────────────────── */
 .sq-card {
-  background: var(--bg-elevated); border: 1px solid var(--border);
-  border-radius: 10px; overflow: hidden;
+  overflow: hidden;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 .sq-card:hover { border-color: var(--brand); box-shadow: 0 2px 12px rgba(0,0,0,0.1); }

@@ -311,7 +311,7 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/users/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/users/")
 		parts := strings.Split(path, "/")
-		
+
 		if len(parts) >= 2 && parts[1] == "connections" {
 			switch r.Method {
 			case http.MethodGet:
@@ -323,8 +323,63 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			}
 			return
 		}
-		
+
 		http.NotFound(w, r)
+	})
+
+	// ── Approval Workflows ────────────────────────────────────────
+	mux.HandleFunc("/api/workflows", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handlers.ListWorkflows()(w, r)
+		case http.MethodPost:
+			handlers.CreateWorkflow()(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/workflows/applicable", handlers.ListApplicableWorkflows())
+	mux.HandleFunc("/api/workflows/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/active") && r.Method == http.MethodPut:
+			handlers.ToggleWorkflowActive()(w, r)
+		case r.Method == http.MethodGet:
+			handlers.GetWorkflow()(w, r)
+		case r.Method == http.MethodPut:
+			handlers.UpdateWorkflow()(w, r)
+		case r.Method == http.MethodDelete:
+			handlers.DeleteWorkflow()(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	// ── Query Approval Requests ───────────────────────────────────
+	mux.HandleFunc("/api/approval-requests", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handlers.ListApprovalRequests()(w, r)
+		case http.MethodPost:
+			handlers.CreateApprovalRequest()(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/approval-requests/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/approval-progress") && r.Method == http.MethodGet:
+			handlers.GetApprovalProgress()(w, r)
+		case strings.HasSuffix(r.URL.Path, "/approve-step") && r.Method == http.MethodPost:
+			handlers.ApproveApprovalStep()(w, r)
+		case strings.HasSuffix(r.URL.Path, "/execute") && r.Method == http.MethodPost:
+			handlers.ExecuteApprovalRequest()(w, r)
+		case r.Method == http.MethodPut:
+			handlers.UpdateApprovalRequest()(w, r)
+		case r.Method == http.MethodGet:
+			handlers.GetApprovalRequest()(w, r)
+		default:
+			http.NotFound(w, r)
+		}
 	})
 
 	// Start background scheduler

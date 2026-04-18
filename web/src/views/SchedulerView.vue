@@ -100,24 +100,27 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="sc-root">
-    <div class="sc-scroll">
-      <div class="sc-header">
-        <div>
-          <div class="sc-title">Scheduled Queries</div>
-          <div class="sc-sub">Run queries on a schedule and trigger alerts on thresholds.</div>
+  <div class="page-shell sc-root">
+    <div class="page-scroll sc-scroll">
+      <div class="page-stack">
+      <section class="page-hero">
+        <div class="page-hero__content">
+          <div class="page-kicker">Automation</div>
+          <div class="page-title">Scheduled Queries</div>
+          <div class="page-subtitle">Run recurring SQL jobs, monitor thresholds, and inspect execution history without leaving the app.</div>
         </div>
-        <div style="flex:1"/>
-        <button class="base-btn base-btn--primary base-btn--sm" @click="resetForm(); showForm=true">+ New Schedule</button>
-      </div>
+        <div class="page-hero__actions">
+          <button class="base-btn base-btn--primary base-btn--sm" @click="resetForm(); showForm=true">+ New Schedule</button>
+        </div>
+      </section>
 
       <!-- List -->
-      <div class="sc-list">
+      <div class="page-grid sc-list">
         <div v-if="loading" class="sc-empty">
           <svg class="spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
         </div>
         <div v-else-if="schedules.length === 0" class="sc-empty">No schedules yet.</div>
-        <div v-for="s in schedules" :key="s.id" class="sc-item" :class="{ 'sc-item--off': !s.enabled }">
+        <div v-for="s in schedules" :key="s.id" class="page-card sc-item" :class="{ 'sc-item--off': !s.enabled }">
           <div class="sc-item-head">
             <div class="sc-dot" :class="s.enabled ? 'sc-dot--on' : 'sc-dot--off'" />
             <div class="sc-item-info">
@@ -147,7 +150,7 @@ onMounted(load)
       </div>
 
       <!-- Run history panel -->
-      <div v-if="runsFor !== null" class="sc-runs">
+      <div v-if="runsFor !== null" class="page-card sc-runs">
         <div class="sc-runs-header">
           <span>Run History</span>
           <button class="cp-close" @click="runsFor=null; selectedRuns=[]">×</button>
@@ -160,17 +163,18 @@ onMounted(load)
           <span v-if="run.error" class="sc-run-err">{{ run.error }}</span>
         </div>
       </div>
+      </div>
     </div>
 
     <!-- Form modal -->
     <Teleport to="body">
       <div v-if="showForm" class="sc-overlay" @click.self="showForm=false">
-        <div class="sc-modal">
-          <div class="sc-modal-header">
+        <div class="page-modal sc-modal">
+          <div class="page-modal__head sc-modal-header">
             <span>{{ form.id ? 'Edit Schedule' : 'New Schedule' }}</span>
             <button class="cp-close" @click="showForm=false">×</button>
           </div>
-          <div class="sc-modal-body">
+          <div class="page-modal__body sc-modal-body">
             <div class="form-group">
               <label class="form-label">Name</label>
               <input v-model="form.name" class="base-input" placeholder="Daily row count check" />
@@ -205,7 +209,7 @@ onMounted(load)
               <input v-model.number="form.alert_threshold" class="base-input" type="number" placeholder="0" />
             </div>
           </div>
-          <div class="sc-modal-footer">
+          <div class="page-modal__foot sc-modal-footer">
             <button class="base-btn base-btn--ghost" @click="showForm=false">Cancel</button>
             <button class="base-btn base-btn--primary" @click="save" :disabled="!form.name || !form.sql || !form.conn_id">
               {{ form.id ? 'Save' : 'Create' }}

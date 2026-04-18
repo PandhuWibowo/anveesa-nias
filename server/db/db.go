@@ -197,6 +197,75 @@ func migrate() error {
 			PRIMARY KEY (user_id, conn_id)
 		)`,
 
+		// ── Approval Workflows ──
+		`CREATE TABLE IF NOT EXISTS approval_workflow (
+			id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+			name                   TEXT NOT NULL UNIQUE,
+			description            TEXT NOT NULL DEFAULT '',
+			is_active              INTEGER NOT NULL DEFAULT 1,
+			assign_all_groups      INTEGER NOT NULL DEFAULT 0,
+			assign_all_connections INTEGER NOT NULL DEFAULT 0,
+			created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS workflow_step (
+			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+			workflow_id        INTEGER NOT NULL REFERENCES approval_workflow(id) ON DELETE CASCADE,
+			step_order         INTEGER NOT NULL DEFAULT 1,
+			name               TEXT NOT NULL DEFAULT '',
+			required_approvals INTEGER NOT NULL DEFAULT 1,
+			created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS step_approver (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			step_id       INTEGER NOT NULL REFERENCES workflow_step(id) ON DELETE CASCADE,
+			approver_type TEXT NOT NULL CHECK(approver_type IN ('role', 'user')),
+			approver_id   INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS workflow_folder (
+			workflow_id INTEGER NOT NULL REFERENCES approval_workflow(id) ON DELETE CASCADE,
+			folder_id   INTEGER NOT NULL REFERENCES connection_folders(id) ON DELETE CASCADE,
+			PRIMARY KEY (workflow_id, folder_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS workflow_connection (
+			workflow_id INTEGER NOT NULL REFERENCES approval_workflow(id) ON DELETE CASCADE,
+			conn_id     INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+			PRIMARY KEY (workflow_id, conn_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS query_approval_request (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			title        TEXT NOT NULL,
+			description  TEXT NOT NULL DEFAULT '',
+			conn_id      INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+			database_name TEXT NOT NULL DEFAULT '',
+			statement    TEXT NOT NULL,
+			status       TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','pending_review','approved','rejected','executing','done','failed')),
+			creator_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			reviewer_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			review_note  TEXT NOT NULL DEFAULT '',
+			workflow_id  INTEGER NOT NULL REFERENCES approval_workflow(id) ON DELETE CASCADE,
+			current_step INTEGER NOT NULL DEFAULT 0,
+			revision     INTEGER NOT NULL DEFAULT 1,
+			execute_error TEXT NOT NULL DEFAULT '',
+			executed_at  DATETIME NULL,
+			created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS query_approval (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			request_id INTEGER NOT NULL REFERENCES query_approval_request(id) ON DELETE CASCADE,
+			step_id    INTEGER NOT NULL REFERENCES workflow_step(id),
+			revision   INTEGER NOT NULL DEFAULT 1,
+			user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			username   TEXT NOT NULL DEFAULT '',
+			action     TEXT NOT NULL CHECK(action IN ('approved', 'rejected')),
+			note       TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_query_approval_request_status ON query_approval_request(status, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_query_approval_request_conn ON query_approval_request(conn_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_query_approval_request_creator ON query_approval_request(creator_id, created_at DESC)`,
+
 		// ── Phase 3: Application-Level Role Permissions ──
 		`CREATE TABLE IF NOT EXISTS roles (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -222,9 +291,12 @@ func migrate() error {
 		`ALTER TABLE users ADD COLUMN role_id INTEGER REFERENCES roles(id) DEFAULT 2`,
 		`ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT '[]'`,
 		`ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1`,
-		
+
 		// Set existing users to active
 		`UPDATE users SET is_active = 1 WHERE is_active IS NULL`,
+		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","query.execute","query.approve","schema.browse","audit.view","users.manage","folders.manage","roles.manage","workflows.manage"]' WHERE name = 'admin'`,
+		`ALTER TABLE query_approval_request ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE query_approval ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
 	}
 	for _, s := range stmts {
 		if _, err := DB.Exec(s); err != nil {

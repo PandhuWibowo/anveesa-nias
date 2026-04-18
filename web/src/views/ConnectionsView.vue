@@ -147,22 +147,33 @@ async function handleDelete(id: number, name: string) {
 </script>
 
 <template>
-  <div style="display:flex;flex-direction:column;width:100%;height:100%;min-height:0;overflow:hidden">
-    <!-- Header -->
-    <div class="topbar">
-      <span class="topbar__title">Connections</span>
-      <div class="topbar__actions">
-        <button class="base-btn base-btn--primary base-btn--sm" @click="showForm = !showForm">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          New Connection
-        </button>
-      </div>
-    </div>
+  <div class="page-shell conn-page">
+    <div class="page-scroll">
+      <div class="page-stack">
+        <section class="page-hero">
+          <div class="page-hero__content">
+            <div class="page-kicker">Infrastructure</div>
+            <div class="page-title">Connections</div>
+            <div class="page-subtitle">Add, organize, and validate the database endpoints your team works against every day.</div>
+          </div>
+          <div class="page-hero__actions">
+            <button class="base-btn base-btn--primary base-btn--sm" @click="showForm = !showForm">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              New Connection
+            </button>
+          </div>
+        </section>
 
-    <div style="flex:1;overflow-y:auto;padding:20px 24px;display:flex;gap:20px;align-items:flex-start">
+        <div class="conn-layout">
       <!-- Connection list -->
-      <div style="flex:1;min-width:0">
-        <div v-if="loading" style="display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:13px">
+      <section class="page-panel conn-list">
+        <div class="conn-list__head">
+          <div>
+            <div class="conn-list__title">Connection Library</div>
+            <div class="conn-list__sub">{{ connections.length }} saved endpoints</div>
+          </div>
+        </div>
+        <div v-if="loading" style="display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:13px;padding:20px">
           <svg class="spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
           Loading connections…
         </div>
@@ -176,7 +187,7 @@ async function handleDelete(id: number, name: string) {
           <div
             v-for="conn in connections"
             :key="conn.id"
-            style="display:flex;align-items:center;gap:12px;padding:14px 16px;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--r);transition:border-color var(--dur)"
+            class="conn-row"
           >
             <div class="conn-badge" :class="`conn-badge--${conn.driver}`" style="width:36px;height:36px;border-radius:var(--r-sm);font-size:12px">
               {{ conn.driver === 'postgres' ? 'PG' : conn.driver === 'mysql' ? 'MY' : conn.driver === 'mariadb' ? 'MB' : conn.driver === 'sqlite' ? 'SQ' : 'MS' }}
@@ -215,13 +226,13 @@ async function handleDelete(id: number, name: string) {
             </button>
           </div>
         </div>
-      </div>
+      </section>
 
       <!-- Add connection form -->
       <Transition name="modal">
         <div
           v-if="showForm"
-          style="width:380px;flex-shrink:0;background:var(--bg-surface);border:1px solid var(--border-2);border-radius:var(--r-lg);overflow:hidden"
+          class="conn-form page-panel"
         >
           <div class="modal-hd">
             <span class="modal-title">New Connection</span>
@@ -399,6 +410,80 @@ async function handleDelete(id: number, name: string) {
           </div>
         </div>
       </Transition>
+        </div>
+      </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.conn-page {
+  background: var(--bg-body);
+}
+
+.conn-layout {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.conn-list {
+  flex: 1;
+  min-width: 0;
+  padding: 18px;
+}
+
+.conn-list__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.conn-list__title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.conn-list__sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.conn-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 44%),
+    var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  transition: border-color var(--dur), transform var(--dur), box-shadow var(--dur);
+}
+
+.conn-row:hover {
+  border-color: rgba(92, 184, 165, 0.22);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.conn-form {
+  width: 380px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+@media (max-width: 1040px) {
+  .conn-layout {
+    flex-direction: column;
+  }
+
+  .conn-form {
+    width: 100%;
+  }
+}
+</style>

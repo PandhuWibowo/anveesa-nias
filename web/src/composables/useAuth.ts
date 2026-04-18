@@ -8,12 +8,26 @@ interface User {
 }
 
 const STORAGE_KEY = 'nias-token'
+const LEGACY_STORAGE_KEY = STORAGE_KEY
 
 const user = ref<User | null>(null)
-// Use sessionStorage for better security (token expires when browser closes)
-const token = ref<string>(sessionStorage.getItem(STORAGE_KEY) ?? '')
+const persistedToken = localStorage.getItem(STORAGE_KEY) ?? sessionStorage.getItem(LEGACY_STORAGE_KEY) ?? ''
+const token = ref<string>(persistedToken)
 const authReady = ref(false)
 const authEnabled = ref(false)
+
+if (persistedToken && !localStorage.getItem(STORAGE_KEY)) {
+  localStorage.setItem(STORAGE_KEY, persistedToken)
+}
+sessionStorage.removeItem(LEGACY_STORAGE_KEY)
+
+window.addEventListener('storage', (event) => {
+  if (event.key !== STORAGE_KEY) return
+  token.value = event.newValue ?? ''
+  if (!token.value) {
+    user.value = null
+  }
+})
 
 // Add token to all requests
 axios.interceptors.request.use((config) => {
@@ -37,7 +51,8 @@ axios.interceptors.response.use(
       // Clear invalid token
       token.value = ''
       user.value = null
-      sessionStorage.removeItem(STORAGE_KEY)
+      localStorage.removeItem(STORAGE_KEY)
+      sessionStorage.removeItem(LEGACY_STORAGE_KEY)
     }
     return Promise.reject(error)
   }
@@ -59,7 +74,9 @@ export function useAuth() {
     } catch {
       // Token invalid or expired
       token.value = ''
-      sessionStorage.removeItem(STORAGE_KEY)
+      user.value = null
+      localStorage.removeItem(STORAGE_KEY)
+      sessionStorage.removeItem(LEGACY_STORAGE_KEY)
     } finally {
       authReady.value = true
     }
@@ -77,7 +94,8 @@ export function useAuth() {
       // Successful login
       token.value = data.token
       user.value = data.user
-      sessionStorage.setItem(STORAGE_KEY, data.token)
+      localStorage.setItem(STORAGE_KEY, data.token)
+      sessionStorage.removeItem(LEGACY_STORAGE_KEY)
       return { success: true }
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || 'Login failed' }
@@ -87,7 +105,8 @@ export function useAuth() {
   function logout() {
     token.value = ''
     user.value = null
-    sessionStorage.removeItem(STORAGE_KEY)
+    localStorage.removeItem(STORAGE_KEY)
+    sessionStorage.removeItem(LEGACY_STORAGE_KEY)
   }
 
   return {

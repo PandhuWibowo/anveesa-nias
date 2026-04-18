@@ -52,29 +52,37 @@ async function runRestore() {
 </script>
 
 <template>
-  <div class="bv-root">
-    <div class="bv-scroll">
-      <div class="bv-header">
-        <div class="bv-title">Backup &amp; Restore</div>
-        <div class="bv-sub">Download a SQL dump or upload a .sql file to restore data.</div>
-      </div>
+  <div class="page-shell bv-root">
+    <div class="page-scroll bv-scroll">
+      <div class="page-stack">
+      <section class="page-hero">
+        <div class="page-hero__content">
+          <div class="page-kicker">Operations</div>
+          <div class="page-title">Backup &amp; Restore</div>
+          <div class="page-subtitle">Export a SQL snapshot or restore from a reviewed script when you need to recover or clone data quickly.</div>
+        </div>
+      </section>
 
-      <!-- Tabs -->
-      <div class="bv-tabs">
-        <button class="bv-tab" :class="{ 'bv-tab--active': activeTab === 'backup' }" @click="activeTab='backup'">
+      <div class="page-tabs bv-tabs">
+        <button class="page-tab bv-tab" :class="{ 'is-active': activeTab === 'backup' }" @click="activeTab='backup'">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Backup
         </button>
-        <button class="bv-tab" :class="{ 'bv-tab--active': activeTab === 'restore' }" @click="activeTab='restore'">
+        <button class="page-tab bv-tab" :class="{ 'is-active': activeTab === 'restore' }" @click="activeTab='restore'">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           Restore
         </button>
       </div>
 
       <!-- Backup -->
-      <div v-if="activeTab === 'backup'" class="bv-card">
-        <div class="bv-card-title">Download SQL Dump</div>
-        <div class="bv-card-body">
+      <div v-if="activeTab === 'backup'" class="page-card bv-card">
+        <div class="page-card__head">
+          <div>
+            <div class="page-card__title">Download SQL Dump</div>
+            <div class="page-card__sub">Generate a portable SQL export for the selected target.</div>
+          </div>
+        </div>
+        <div class="page-card__body bv-card-body">
           <div class="form-group">
             <label class="form-label">Connection</label>
             <select class="base-input" v-model.number="connId" @change="onConnChange">
@@ -104,9 +112,14 @@ async function runRestore() {
       </div>
 
       <!-- Restore -->
-      <div v-if="activeTab === 'restore'" class="bv-card">
-        <div class="bv-card-title">Restore from SQL File</div>
-        <div class="bv-card-body">
+      <div v-if="activeTab === 'restore'" class="page-card bv-card">
+        <div class="page-card__head">
+          <div>
+            <div class="page-card__title">Restore from SQL File</div>
+            <div class="page-card__sub">Upload or paste a script and apply it to the chosen connection.</div>
+          </div>
+        </div>
+        <div class="page-card__body bv-card-body">
           <div class="form-group">
             <label class="form-label">Connection</label>
             <select class="base-input" v-model.number="connId" @change="onConnChange">
@@ -146,23 +159,14 @@ async function runRestore() {
           </button>
         </div>
       </div>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.bv-root { width:100%; height:100%; display:flex; flex-direction:column; overflow:hidden; }
-.bv-scroll { flex:1; min-height:0; overflow-y:auto; padding:24px 28px 40px; display:flex; flex-direction:column; gap:16px; }
-.bv-header { display:flex; flex-direction:column; gap:4px; }
-.bv-title { font-size:20px; font-weight:700; color:var(--text-primary); }
-.bv-sub { font-size:13px; color:var(--text-muted); }
-.bv-tabs { display:flex; gap:4px; border-bottom:1px solid var(--border); padding-bottom:1px; }
-.bv-tab { display:flex; align-items:center; gap:6px; padding:8px 14px; background:transparent; border:none; border-bottom:2px solid transparent; font-size:13px; color:var(--text-muted); cursor:pointer; transition:all 0.15s; }
-.bv-tab--active { color:var(--brand); border-bottom-color:var(--brand); }
-.bv-tab:hover:not(.bv-tab--active) { color:var(--text-primary); }
-.bv-card { background:var(--bg-elevated); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
-.bv-card-title { padding:12px 16px; font-size:13px; font-weight:700; color:var(--text-primary); border-bottom:1px solid var(--border); }
-.bv-card-body { padding:16px; display:flex; flex-direction:column; gap:14px; }
+.bv-root { background: var(--bg-body); }
+.bv-card-body { display:flex; flex-direction:column; gap:14px; }
 .bv-info { display:flex; align-items:flex-start; gap:8px; font-size:12px; color:var(--text-muted); padding:10px; background:var(--bg-body); border-radius:6px; border:1px solid var(--border); }
 .bv-drop {
   border:2px dashed var(--border); border-radius:8px; padding:28px;
@@ -180,5 +184,5 @@ async function runRestore() {
 .bv-preview { background:var(--bg-body); border:1px solid var(--border); border-radius:6px; overflow:hidden; }
 .bv-preview-header { display:flex; justify-content:space-between; align-items:center; padding:8px 12px; border-bottom:1px solid var(--border); font-size:12px; color:var(--text-muted); }
 .bv-preview-pre { margin:0; padding:10px 12px; font-family:var(--mono,monospace); font-size:11.5px; line-height:1.5; color:var(--text-primary); white-space:pre-wrap; word-break:break-all; }
-.notice--ok { background:rgba(74,222,128,0.1); border:1px solid rgba(74,222,128,0.3); border-radius:6px; padding:10px 14px; font-size:12.5px; color:#4ade80; }
+.notice--ok { background:rgba(74,222,128,0.1); border:1px solid rgba(74,222,128,0.3); border-radius:10px; padding:10px 14px; font-size:12.5px; color:#4ade80; }
 </style>
