@@ -65,15 +65,22 @@ export function useAuth() {
     }
   }
 
-  async function login(username: string, password: string): Promise<boolean> {
+  async function login(username: string, password: string, totpCode?: string): Promise<{ success: boolean; requires2fa?: boolean; username?: string; error?: string }> {
     try {
-      const { data } = await axios.post('/api/auth/login', { username, password })
+      const { data } = await axios.post('/api/auth/login', { username, password, totp_code: totpCode })
+      
+      // Check if 2FA is required
+      if (data.requires_2fa) {
+        return { success: false, requires2fa: true, username: data.username }
+      }
+      
+      // Successful login
       token.value = data.token
       user.value = data.user
       sessionStorage.setItem(STORAGE_KEY, data.token)
-      return true
-    } catch {
-      return false
+      return { success: true }
+    } catch (error: any) {
+      return { success: false, error: error.response?.data?.error || 'Login failed' }
     }
   }
 

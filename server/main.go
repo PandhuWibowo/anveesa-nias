@@ -142,6 +142,13 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/auth/register", mw.RateLimitLogin(handlers.RegisterHandler(cfg)))
 	mux.HandleFunc("/api/auth/me", handlers.MeHandler())
 
+	// ── 2FA ────────────────────────────────────────────────────────
+	mux.HandleFunc("/api/auth/2fa/status", handlers.Get2FAStatus())
+	mux.HandleFunc("/api/auth/2fa/setup", handlers.Setup2FA())
+	mux.HandleFunc("/api/auth/2fa/enable", handlers.Enable2FA())
+	mux.HandleFunc("/api/auth/2fa/disable", handlers.Disable2FA())
+	mux.HandleFunc("/api/auth/2fa/verify", handlers.Verify2FA())
+
 	// ── Connections (list + create) ───────────────────────────────
 	mux.HandleFunc("/api/connections", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {

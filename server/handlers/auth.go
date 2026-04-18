@@ -11,6 +11,7 @@ import (
 	"github.com/anveesa/nias/config"
 	appdb "github.com/anveesa/nias/db"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -45,6 +46,7 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 		var body struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
+			TotpCode string `json:"totp_code"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
@@ -52,14 +54,16 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 		}
 
 		var (
-			id       int64
-			hash     string
-			role     string
-			username string
+			id          int64
+			hash        string
+			role        string
+			username    string
+			totpEnabled int
+			totpSecret  string
 		)
 		err := appdb.DB.QueryRow(
-			`SELECT id, username, password, role FROM users WHERE username = ?`, body.Username,
-		).Scan(&id, &username, &hash, &role)
+			`SELECT id, username, password, role, COALESCE(totp_enabled, 0), COALESCE(totp_secret, '') FROM users WHERE username = ?`, body.Username,
+		).Scan(&id, &username, &hash, &role, &totpEnabled, &totpSecret)
 		if err != nil {
 			// Use constant-time comparison to prevent timing attacks
 			bcrypt.CompareHashAndPassword([]byte("$2a$12$dummy.hash.for.timing"), []byte(body.Password))
@@ -69,6 +73,45 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 		if err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(body.Password)); err != nil {
 			http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 			return
+		}
+
+		// Check if 2FA is enabled
+		if totpEnabled == 1 {
+			// If no TOTP code provided, return response indicating 2FA is required
+			if body.TotpCode == "" {
+				json.NewEncoder(w).Encode(map[string]any{
+					"requires_2fa": true,
+					"username":     username,
+				})
+				return
+			}
+
+			// Verify TOTP code
+			if !totp.Validate(body.TotpCode, totpSecret) {
+				// Check backup codes
+				var backupCodesJSON string
+				appdb.DB.QueryRow(`SELECT COALESCE(backup_codes, '[]') FROM users WHERE id = ?`, id).Scan(&backupCodesJSON)
+				
+				var backupCodes []string
+				json.Unmarshal([]byte(backupCodesJSON), &backupCodes)
+				
+				valid := false
+				for i, code := range backupCodes {
+					if code == body.TotpCode {
+						// Remove used backup code
+						backupCodes = append(backupCodes[:i], backupCodes[i+1:]...)
+						newJSON, _ := json.Marshal(backupCodes)
+						appdb.DB.Exec(`UPDATE users SET backup_codes = ? WHERE id = ?`, string(newJSON), id)
+						valid = true
+						break
+					}
+				}
+				
+				if !valid {
+					http.Error(w, `{"error":"invalid 2FA code"}`, http.StatusUnauthorized)
+					return
+				}
+			}
 		}
 
 		token := jwt.NewWithClaims(jwt.SigningMethodHS256, &Claims{

@@ -47,9 +47,7 @@ const connBtnRef = ref<HTMLElement | null>(null)
 
 // ── Navigation structure ─────────────────────────────────────────
 // Direct links (no dropdown)
-const directLinks = [
-  { name: 'welcome', label: 'Home', icon: 'grid' },
-]
+const directLinks: any[] = []
 
 // Grouped dropdown menus (filtered by permissions)
 const allMenuGroups = [
@@ -340,7 +338,14 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
             </div>
           </div>
           <div class="topnav__menu-sep"></div>
-          <button class="topnav__user-menu-item" @click="handleLogout">
+          <button class="topnav__user-menu-item topnav__user-menu-item--nav" @click="userMenuOpen = false; router.push({ name: 'security' })">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            Security & 2FA
+          </button>
+          <button class="topnav__user-menu-item topnav__user-menu-item--logout" @click="handleLogout">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
             Sign out
           </button>
@@ -736,5 +741,12 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
   transition: background 0.1s, color 0.1s;
   text-align: left;
 }
-.topnav__user-menu-item:hover { background: var(--bg-surface); color: var(--danger); }
+.topnav__user-menu-item--nav:hover { 
+  background: var(--bg-surface); 
+  color: var(--text-primary); 
+}
+.topnav__user-menu-item--logout:hover { 
+  background: var(--bg-surface); 
+  color: var(--danger); 
+}
 </style>

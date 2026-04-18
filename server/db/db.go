@@ -142,6 +142,9 @@ func migrate() error {
 			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`ALTER TABLE saved_queries ADD COLUMN user_id INTEGER DEFAULT NULL`,
+		`ALTER TABLE users ADD COLUMN totp_secret TEXT DEFAULT NULL`,
+		`ALTER TABLE users ADD COLUMN totp_enabled INTEGER DEFAULT 0`,
+		`ALTER TABLE users ADD COLUMN backup_codes TEXT DEFAULT NULL`,
 		`CREATE TABLE IF NOT EXISTS connection_folders (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			name        TEXT NOT NULL,

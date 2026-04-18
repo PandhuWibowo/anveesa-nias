@@ -17,6 +17,10 @@ const router = createRouter({
       children: [
         {
           path: '',
+          redirect: { name: 'data' },
+        },
+        {
+          path: 'welcome',
           name: 'welcome',
           component: () => import('@/views/WelcomeView.vue'),
         },
@@ -112,6 +116,12 @@ const router = createRouter({
           name: 'row-history',
           component: () => import('@/views/RowHistoryView.vue'),
           meta: { requiresAdmin: true },
+        },
+        {
+          path: 'security',
+          name: 'security',
+          component: () => import('@/views/SecurityView.vue'),
+          meta: { requiresAdmin: false },
         },
       ],
     },
