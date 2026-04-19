@@ -8,6 +8,9 @@ const groups = [
     shortcuts: [
       { keys: ['Ctrl', 'Enter'], desc: 'Run query' },
       { keys: ['Mod', 'Enter'], desc: 'Run query (Mac)' },
+      { keys: ['Ctrl', 'Space'], desc: 'Show autocomplete' },
+      { keys: ['Mod', 'Space'], desc: 'Show autocomplete (Mac)' },
+      { keys: ['Alt', '/'], desc: 'Fallback autocomplete' },
       { keys: ['Ctrl', 'Shift', 'F'], desc: 'Format SQL' },
       { keys: ['Tab'], desc: 'Indent / accept completion' },
       { keys: ['Ctrl', 'Z'], desc: 'Undo' },

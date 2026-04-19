@@ -269,6 +269,11 @@ watch(
   { immediate: true },
 )
 
+watch(selectedDatabase, async (db) => {
+  if (!activeConn.value || !db) return
+  schemaCompletion.value = await getCompletionSource(activeConn.value.id, db)
+})
+
 // ── Schema panel ──────────────────────────────────────────────────
 const schemaVisible = ref(true)
 
@@ -676,7 +681,7 @@ function exportResults(format: 'csv' | 'json') {
             </div>
           </template>
           <div class="editor-hint">
-            <kbd>Ctrl</kbd>+<kbd>Enter</kbd> run &nbsp;·&nbsp; <kbd>Tab</kbd> indent &nbsp;·&nbsp; <kbd>Ctrl</kbd>+<kbd>K</kbd> search schema
+            <kbd>Cmd/Ctrl</kbd>+<kbd>Enter</kbd> run &nbsp;·&nbsp; <kbd>Cmd/Ctrl</kbd>+<kbd>Space</kbd> suggest &nbsp;·&nbsp; <kbd>Tab</kbd> indent &nbsp;·&nbsp; <kbd>Ctrl</kbd>+<kbd>K</kbd> search schema
           </div>
           <!-- Param panel -->
           <ParamPanel

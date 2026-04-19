@@ -5,7 +5,7 @@ import { EditorState, Compartment } from '@codemirror/state'
 import { defaultKeymap, indentWithTab, history, historyKeymap } from '@codemirror/commands'
 import { sql } from '@codemirror/lang-sql'
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, indentOnInput } from '@codemirror/language'
-import { closeBrackets, autocompletion, closeBracketsKeymap, completionKeymap, type CompletionSource } from '@codemirror/autocomplete'
+import { closeBrackets, autocompletion, closeBracketsKeymap, completionKeymap, startCompletion, type CompletionSource } from '@codemirror/autocomplete'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { getActiveFunctionHint } from '@/utils/sqlFunctionHelp'
 
@@ -25,6 +25,7 @@ const editorEl = ref<HTMLElement>()
 const functionHint = ref<string | null>(null)
 let view: EditorView | null = null
 const themeCompartment = new Compartment()
+const completionCompartment = new Compartment()
 
 const baseTheme = EditorView.theme({
   '&': {
@@ -66,7 +67,9 @@ function makeExtensions(dark: boolean) {
     bracketMatching(),
     closeBrackets(),
     highlightActiveLine(),
-    autocompletion({ override: props.schemaCompletion ? [props.schemaCompletion] : [] }),
+    completionCompartment.of(
+      autocompletion({ override: props.schemaCompletion ? [props.schemaCompletion] : [] }),
+    ),
     sql(),
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
     baseTheme,
@@ -77,6 +80,9 @@ function makeExtensions(dark: boolean) {
       ...historyKeymap,
       ...completionKeymap,
       indentWithTab,
+      { key: 'Ctrl-Space', run: startCompletion },
+      { key: 'Mod-Space', run: startCompletion },
+      { key: 'Alt-/', run: startCompletion },
       { key: 'Ctrl-Enter', run: () => { emit('run'); return true } },
       { key: 'Mod-Enter', run: () => { emit('run'); return true } },
     ]),
@@ -129,6 +135,15 @@ watch(() => props.darkMode, (dark) => {
   if (!view) return
   view.dispatch({
     effects: themeCompartment.reconfigure(dark ? darkThemeExt : lightTheme),
+  })
+})
+
+watch(() => props.schemaCompletion, (schemaCompletion) => {
+  if (!view) return
+  view.dispatch({
+    effects: completionCompartment.reconfigure(
+      autocompletion({ override: schemaCompletion ? [schemaCompletion] : [] }),
+    ),
   })
 })
 </script>

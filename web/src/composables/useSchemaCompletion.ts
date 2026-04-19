@@ -13,6 +13,16 @@ interface TableInfo {
   columns: Column[]
 }
 
+interface SchemaTableSummary {
+  name: string
+  type: 'table' | 'view'
+}
+
+interface SchemaDatabase {
+  name: string
+  tables: SchemaTableSummary[]
+}
+
 interface ERForeignKey {
   constraint_name: string
   table_name: string
@@ -65,21 +75,23 @@ async function fetchSchema(connId: number, db: string): Promise<SchemaBundle> {
 
   loading.value = true
   try {
-    const [{ data: tables }, { data: er }] = await Promise.all([
-      axios.get<string[]>(`/api/connections/${connId}/schema/${db}`),
+    const [{ data: schemaDatabases }, { data: er }] = await Promise.all([
+      axios.get<SchemaDatabase[]>(`/api/connections/${connId}/schema`),
       axios.get<ERResponse>(`/api/connections/${connId}/er`),
     ])
+
+    const tables = (schemaDatabases ?? []).find((item) => item.name === db)?.tables ?? []
 
     const infos: TableInfo[] = []
     await Promise.all(
       (tables ?? []).map(async (t) => {
         try {
           const { data: cols } = await axios.get<Column[]>(
-            `/api/connections/${connId}/schema/${db}/tables/${t}/columns`,
+            `/api/connections/${connId}/schema/${encodeURIComponent(db)}/tables/${encodeURIComponent(t.name)}/columns`,
           )
-          infos.push({ name: t, columns: cols })
+          infos.push({ name: t.name, columns: cols })
         } catch {
-          infos.push({ name: t, columns: [] })
+          infos.push({ name: t.name, columns: [] })
         }
       }),
     )

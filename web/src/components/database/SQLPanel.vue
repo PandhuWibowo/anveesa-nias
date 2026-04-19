@@ -118,6 +118,11 @@ watch(() => props.connId, async (id) => {
   schemaCompletion.value = await getCompletionSource(id, db)
 }, { immediate: true })
 
+watch(selectedDatabase, async (db) => {
+  if (!props.connId || !db) return
+  schemaCompletion.value = await getCompletionSource(props.connId, db)
+})
+
 // ── Transaction controls ──────────────────────────────────────────
 const txActive = ref(false)
 
@@ -564,13 +569,13 @@ defineExpose({ loadSQL, exportCurrentResult })
           v-model="tab.sql"
           :dark-mode="darkMode"
           :schema-completion="schemaCompletion"
-          placeholder="Write SQL here… (Ctrl+Enter to run)"
+          placeholder="Write SQL here… (Cmd/Ctrl+Enter run, Cmd/Ctrl+Space suggest)"
           @run="runQuery"
         />
       </div>
     </template>
     <div class="sp-hint">
-      <kbd>Ctrl+Enter</kbd> run &nbsp;·&nbsp; <kbd>Tab</kbd> indent &nbsp;·&nbsp; <kbd>Ctrl+Shift+F</kbd> format
+      <kbd>Cmd/Ctrl+Enter</kbd> run &nbsp;·&nbsp; <kbd>Cmd/Ctrl+Space</kbd> suggest &nbsp;·&nbsp; <kbd>Tab</kbd> indent &nbsp;·&nbsp; <kbd>Ctrl+Shift+F</kbd> format
     </div>
     <ParamPanel :sql="activeTab?.sql ?? ''" @update:params="queryParams = $event" />
   </div>
