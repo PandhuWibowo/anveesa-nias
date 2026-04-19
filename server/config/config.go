@@ -66,9 +66,9 @@ func Load() *Config {
 	cfg.TLSCertFile = getEnv("TLS_CERT_FILE", "")
 	cfg.TLSKeyFile = getEnv("TLS_KEY_FILE", "")
 
-	// Database
-	cfg.DBDriver = strings.ToLower(getEnv("DB_DRIVER", "sqlite"))
-	cfg.DBPath = getEnv("DB_PATH", "data.db")
+	// Database - PostgreSQL only (no more SQLite!)
+	cfg.DBDriver = strings.ToLower(getEnv("DB_DRIVER", "postgres"))
+	cfg.DBPath = getEnv("DB_PATH", "")
 	cfg.DBURL = getEnv("DATABASE_URL", "")
 	cfg.DBSSLMode = getEnv("DB_SSL_MODE", "disable")
 	cfg.DBSSLRootCert = getEnv("DB_SSL_ROOT_CERT", "")
@@ -77,9 +77,13 @@ func Load() *Config {
 	cfg.BackupHours = getEnvInt("BACKUP_HOURS", 24)
 
 	// Validate database config
+	if cfg.DBDriver == "sqlite" {
+		log.Fatal("FATAL: SQLite is no longer supported. Please use PostgreSQL or MySQL. Set DB_DRIVER=postgres and DATABASE_URL in .env")
+	}
+	
 	if cfg.DBDriver == "postgres" || cfg.DBDriver == "mysql" {
 		if cfg.DBURL == "" {
-			log.Fatalf("FATAL: DATABASE_URL is required when DB_DRIVER=%s", cfg.DBDriver)
+			log.Fatalf("FATAL: DATABASE_URL is required when DB_DRIVER=%s. Please create a .env file with DATABASE_URL", cfg.DBDriver)
 		}
 		// Add SSL mode to URL if not already present
 		if cfg.DBDriver == "postgres" && cfg.DBSSLMode != "disable" && !strings.Contains(cfg.DBURL, "sslmode=") {
@@ -89,8 +93,8 @@ func Load() *Config {
 			}
 			cfg.DBURL = cfg.DBURL + separator + "sslmode=" + cfg.DBSSLMode
 		}
-	} else if cfg.DBDriver != "sqlite" {
-		log.Fatalf("FATAL: Unsupported DB_DRIVER: %s (must be 'sqlite', 'postgres', or 'mysql')", cfg.DBDriver)
+	} else {
+		log.Fatalf("FATAL: Unsupported DB_DRIVER: %s (must be 'postgres' or 'mysql')", cfg.DBDriver)
 	}
 
 	// Warn about SSL in production

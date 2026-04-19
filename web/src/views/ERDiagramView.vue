@@ -42,7 +42,9 @@ async function fetchER(connId: number, db: string) {
   error.value = ''
   erData.value = null
   try {
-    const { data } = await axios.get<ERData>(`/api/connections/${connId}/er/${db}`)
+    const encodedDb = encodeURIComponent(db)
+    const path = encodedDb ? `/api/connections/${connId}/er/${encodedDb}` : `/api/connections/${connId}/er`
+    const { data } = await axios.get<ERData>(path)
     erData.value = data
     computeLayout()
   } catch (e: unknown) {

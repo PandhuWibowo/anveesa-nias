@@ -10,6 +10,7 @@ import (
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 	appdb "github.com/anveesa/nias/db"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Setup2FA generates a new TOTP secret and QR code for the user
@@ -154,9 +155,7 @@ func Disable2FA() http.HandlerFunc {
 
 		// Check password
 		if body.Password != "" {
-			// In production, use bcrypt.CompareHashAndPassword
-			// For now, assuming bcrypt is already used in login
-			verified = true // TODO: Implement proper password check
+			verified = bcrypt.CompareHashAndPassword([]byte(storedPassword), []byte(body.Password)) == nil
 		}
 
 		// Check backup code

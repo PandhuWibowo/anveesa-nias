@@ -128,18 +128,55 @@ function removeStep(index: number) {
 async function fetchData() {
   loading.value = true
   try {
-    const [workflowRes, roleRes, userRes, groupRes, connectionRes] = await Promise.all([
+    const results = await Promise.allSettled([
       axios.get<Workflow[]>('/api/workflows'),
       axios.get<Role[]>('/api/roles'),
       axios.get<User[]>('/api/admin/users'),
       axios.get<Group[]>('/api/folders'),
       axios.get<Connection[]>('/api/connections'),
     ])
-    workflows.value = workflowRes.data || []
-    roles.value = roleRes.data || []
-    users.value = userRes.data || []
-    groups.value = groupRes.data || []
-    connections.value = connectionRes.data || []
+
+    const errors: string[] = []
+    const [workflowRes, roleRes, userRes, groupRes, connectionRes] = results
+
+    if (workflowRes.status === 'fulfilled') {
+      workflows.value = workflowRes.value.data || []
+    } else {
+      workflows.value = []
+      errors.push(workflowRes.reason?.response?.data?.error || 'workflows')
+    }
+
+    if (roleRes.status === 'fulfilled') {
+      roles.value = roleRes.value.data || []
+    } else {
+      roles.value = []
+      errors.push(roleRes.reason?.response?.data?.error || 'roles')
+    }
+
+    if (userRes.status === 'fulfilled') {
+      users.value = userRes.value.data || []
+    } else {
+      users.value = []
+      errors.push(userRes.reason?.response?.data?.error || 'users')
+    }
+
+    if (groupRes.status === 'fulfilled') {
+      groups.value = groupRes.value.data || []
+    } else {
+      groups.value = []
+      errors.push(groupRes.reason?.response?.data?.error || 'groups')
+    }
+
+    if (connectionRes.status === 'fulfilled') {
+      connections.value = connectionRes.value.data || []
+    } else {
+      connections.value = []
+      errors.push(connectionRes.reason?.response?.data?.error || 'connections')
+    }
+
+    if (errors.length > 0) {
+      toast.error(`Workflow page loaded partially. Failed: ${errors.join(', ')}`)
+    }
   } catch (error: any) {
     toast.error(error.response?.data?.error || 'Failed to load workflows')
   } finally {

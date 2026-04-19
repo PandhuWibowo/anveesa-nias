@@ -1,9 +1,13 @@
 package handlers
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode"
@@ -24,6 +28,7 @@ type Claims struct {
 	UserID   int64  `json:"user_id"`
 	Username string `json:"username"`
 	Role     string `json:"role"`
+	SessionID string `json:"session_id"`
 	jwt.RegisteredClaims
 }
 
@@ -58,25 +63,33 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 			hash        string
 			role        string
 			username    string
+			isActive    int
 			totpEnabled int
 			totpSecret  string
 		)
 		
 		// Use appropriate parameter placeholder for database
-		query := `SELECT id, username, password, role, COALESCE(totp_enabled, 0), COALESCE(totp_secret, '') FROM users WHERE username = ?`
+		query := `SELECT id, username, password, role, COALESCE(is_active, 1), COALESCE(totp_enabled, 0), COALESCE(totp_secret, '') FROM users WHERE username = ?`
 		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
-			query = `SELECT id, username, password, role, COALESCE(totp_enabled, 0), COALESCE(totp_secret, '') FROM users WHERE username = $1`
+			query = `SELECT id, username, password, role, COALESCE(is_active, 1), COALESCE(totp_enabled, 0), COALESCE(totp_secret, '') FROM users WHERE username = $1`
 		}
 		
-		err := appdb.DB.QueryRow(query, body.Username).Scan(&id, &username, &hash, &role, &totpEnabled, &totpSecret)
+		err := appdb.DB.QueryRow(query, body.Username).Scan(&id, &username, &hash, &role, &isActive, &totpEnabled, &totpSecret)
 		if err != nil {
+			_ = appdb.RecordLoginEvent(nil, body.Username, clientIP(r), r.UserAgent(), false, "invalid_credentials")
 			// Use constant-time comparison to prevent timing attacks
 			bcrypt.CompareHashAndPassword([]byte("$2a$12$dummy.hash.for.timing"), []byte(body.Password))
 			http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 			return
 		}
 		if err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(body.Password)); err != nil {
+			_ = appdb.RecordLoginEvent(&id, username, clientIP(r), r.UserAgent(), false, "invalid_credentials")
 			http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
+			return
+		}
+		if isActive != 1 {
+			_ = appdb.RecordLoginEvent(&id, username, clientIP(r), r.UserAgent(), false, "account_locked")
+			http.Error(w, `{"error":"account is locked"}`, http.StatusLocked)
 			return
 		}
 
@@ -113,20 +126,29 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 				}
 				
 				if !valid {
+					_ = appdb.RecordLoginEvent(&id, username, clientIP(r), r.UserAgent(), false, "invalid_2fa")
 					http.Error(w, `{"error":"invalid 2FA code"}`, http.StatusUnauthorized)
 					return
 				}
 			}
 		}
 
+		sessionID := newSessionID()
+		expiresAt := time.Now().Add(time.Duration(cfg.JWTExpiry) * time.Hour)
+		if err := appdb.CreateAuthSession(id, sessionID, clientIP(r), r.UserAgent(), expiresAt); err != nil {
+			http.Error(w, `{"error":"session error"}`, http.StatusInternalServerError)
+			return
+		}
+
 		token := jwt.NewWithClaims(jwt.SigningMethodHS256, &Claims{
 			UserID:   id,
 			Username: username,
 			Role:     role,
+			SessionID: sessionID,
 			RegisteredClaims: jwt.RegisteredClaims{
 				Issuer:    "anveesa-nias",
 				Subject:   username,
-				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(cfg.JWTExpiry) * time.Hour)),
+				ExpiresAt: jwt.NewNumericDate(expiresAt),
 				IssuedAt:  jwt.NewNumericDate(time.Now()),
 				NotBefore: jwt.NewNumericDate(time.Now()),
 			},
@@ -137,10 +159,17 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 			return
 		}
 
+		perms, err := appdb.GetUserAppPermissions(id)
+		if err != nil {
+			http.Error(w, `{"error":"permissions error"}`, http.StatusInternalServerError)
+			return
+		}
+
 		json.NewEncoder(w).Encode(map[string]any{
 			"token": tokenStr,
-			"user":  map[string]any{"id": id, "username": username, "role": role},
+			"user":  map[string]any{"id": id, "username": username, "role": role, "permissions": perms},
 		})
+		_ = appdb.RecordLoginEvent(&id, username, clientIP(r), r.UserAgent(), true, "")
 	}
 }
 
@@ -292,10 +321,250 @@ func MeHandler() http.HandlerFunc {
 			return
 		}
 
+		active, err := appdb.IsUserActive(claims.UserID)
+		if err != nil {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		if !active {
+			http.Error(w, `{"error":"account is locked"}`, http.StatusLocked)
+			return
+		}
+		if claims.SessionID == "" {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		sessionActive, err := appdb.IsSessionActive(claims.SessionID)
+		if err != nil || !sessionActive {
+			http.Error(w, `{"error":"session revoked"}`, http.StatusUnauthorized)
+			return
+		}
+		_ = appdb.TouchSession(claims.SessionID)
+
+		perms, err := appdb.GetUserAppPermissions(claims.UserID)
+		if err != nil {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+
 		json.NewEncoder(w).Encode(map[string]any{
-			"id":       claims.UserID,
-			"username": claims.Username,
-			"role":     claims.Role,
+			"id":          claims.UserID,
+			"username":    claims.Username,
+			"role":        claims.Role,
+			"permissions": perms,
 		})
 	}
+}
+
+func LogoutHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, err := claimsFromRequest(r)
+		if err != nil {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		if err := appdb.RevokeSession(claims.SessionID, claims.UserID); err != nil {
+			http.Error(w, `{"error":"failed to logout"}`, http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func ListSessionsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		claims, err := claimsFromRequest(r)
+		if err != nil {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		sessions, err := appdb.ListUserSessions(claims.UserID)
+		if err != nil {
+			http.Error(w, `{"error":"failed to load sessions"}`, http.StatusInternalServerError)
+			return
+		}
+		for i := range sessions {
+			sessions[i].Current = sessions[i].TokenID == claims.SessionID
+		}
+		json.NewEncoder(w).Encode(sessions)
+	}
+}
+
+func RevokeSessionHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, err := claimsFromRequest(r)
+		if err != nil {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		tokenID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/auth/sessions/"), "/revoke")
+		if tokenID == "" {
+			http.Error(w, `{"error":"invalid session"}`, http.StatusBadRequest)
+			return
+		}
+		if err := appdb.RevokeSession(tokenID, claims.UserID); err != nil {
+			http.Error(w, `{"error":"failed to revoke session"}`, http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func RevokeAllSessionsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, err := claimsFromRequest(r)
+		if err != nil {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		if err := appdb.RevokeAllUserSessions(claims.UserID, claims.SessionID); err != nil {
+			http.Error(w, `{"error":"failed to revoke sessions"}`, http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func ChangePasswordHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, err := claimsFromRequest(r)
+		if err != nil {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		var body struct {
+			CurrentPassword string `json:"current_password"`
+			NewPassword     string `json:"new_password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+			return
+		}
+		if err := validatePassword(body.NewPassword); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		var currentHash string
+		if err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT password FROM users WHERE id = ?`), claims.UserID).Scan(&currentHash); err != nil {
+			http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
+			return
+		}
+		if err := bcrypt.CompareHashAndPassword([]byte(currentHash), []byte(body.CurrentPassword)); err != nil {
+			http.Error(w, `{"error":"current password is incorrect"}`, http.StatusUnauthorized)
+			return
+		}
+		newHash, err := bcrypt.GenerateFromPassword([]byte(body.NewPassword), bcryptCost)
+		if err != nil {
+			http.Error(w, `{"error":"failed to update password"}`, http.StatusInternalServerError)
+			return
+		}
+		if _, err := appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET password = ? WHERE id = ?`), string(newHash), claims.UserID); err != nil {
+			http.Error(w, `{"error":"failed to update password"}`, http.StatusInternalServerError)
+			return
+		}
+		_ = appdb.RevokeAllUserSessions(claims.UserID, claims.SessionID)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func ResetPasswordHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			NewPassword string `json:"new_password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+			return
+		}
+		if err := validatePassword(body.NewPassword); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		idStr := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/admin/users/"), "/reset-password")
+		userID, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			http.Error(w, `{"error":"invalid user id"}`, http.StatusBadRequest)
+			return
+		}
+		newHash, err := bcrypt.GenerateFromPassword([]byte(body.NewPassword), bcryptCost)
+		if err != nil {
+			http.Error(w, `{"error":"failed to reset password"}`, http.StatusInternalServerError)
+			return
+		}
+		if _, err := appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET password = ? WHERE id = ?`), string(newHash), userID); err != nil {
+			http.Error(w, `{"error":"failed to reset password"}`, http.StatusInternalServerError)
+			return
+		}
+		_ = appdb.RevokeAllUserSessions(userID, "")
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func LoginActivityHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		claims, err := claimsFromRequest(r)
+		if err != nil {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		events, err := appdb.ListLoginEvents(claims.UserID)
+		if err != nil {
+			http.Error(w, `{"error":"failed to load activity"}`, http.StatusInternalServerError)
+			return
+		}
+		suspicious := 0
+		for _, event := range events {
+			if !event.Success {
+				suspicious++
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"events":            events,
+			"suspicious_events": suspicious,
+		})
+	}
+}
+
+func claimsFromRequest(r *http.Request) (*Claims, error) {
+	auth := r.Header.Get("Authorization")
+	if len(auth) < 8 || auth[:7] != "Bearer " {
+		return nil, errors.New("unauthorized")
+	}
+	tokenStr := auth[7:]
+	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("invalid signing method")
+		}
+		return jwtSecret, nil
+	})
+	if err != nil || !token.Valid {
+		return nil, errors.New("unauthorized")
+	}
+	claims, ok := token.Claims.(*Claims)
+	if !ok {
+		return nil, errors.New("unauthorized")
+	}
+	return claims, nil
+}
+
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+	if host, _, found := strings.Cut(r.RemoteAddr, ":"); found {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+func newSessionID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }

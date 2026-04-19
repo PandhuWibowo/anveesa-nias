@@ -108,8 +108,19 @@ const (
 	PermConnectionsDelete = "connections.delete"
 	PermQueryExecute      = "query.execute"
 	PermQueryApprove      = "query.approve"
+	PermSavedQueriesManage = "savedqueries.manage"
+	PermSnippetsManage    = "snippets.manage"
+	PermNotificationsView = "notifications.view"
 	PermSchemaBrowse      = "schema.browse"
+	PermSchemaDiffView    = "schema.diff.view"
 	PermAuditView         = "audit.view"
+	PermAIUse             = "ai.use"
+	PermAIManage          = "ai.manage"
+	PermSecuritySelf      = "security.self"
+	PermBackupsManage     = "backups.manage"
+	PermSchedulesManage   = "schedules.manage"
+	PermHealthView        = "health.view"
+	PermRowHistoryView    = "rowhistory.view"
 	PermUsersManage       = "users.manage"
 	PermFoldersManage     = "folders.manage"
 	PermRolesManage       = "roles.manage"
@@ -124,8 +135,19 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermConnectionsDelete, Label: "Delete Connections", Group: "Connections"},
 	{Key: PermQueryExecute, Label: "Execute Queries", Group: "Query"},
 	{Key: PermQueryApprove, Label: "Approve Query Requests", Group: "Query"},
+	{Key: PermSavedQueriesManage, Label: "Manage Saved Queries", Group: "Query"},
+	{Key: PermSnippetsManage, Label: "Manage Snippets", Group: "Query"},
 	{Key: PermSchemaBrowse, Label: "Browse Schema", Group: "Schema"},
+	{Key: PermSchemaDiffView, Label: "View Schema Diff", Group: "Schema"},
 	{Key: PermAuditView, Label: "View Audit Logs", Group: "Audit"},
+	{Key: PermAIUse, Label: "Use AI Assistant", Group: "AI"},
+	{Key: PermAIManage, Label: "Manage AI Settings", Group: "AI"},
+	{Key: PermSecuritySelf, Label: "Manage Own Security", Group: "Security"},
+	{Key: PermNotificationsView, Label: "View Notifications", Group: "Operations"},
+	{Key: PermBackupsManage, Label: "Manage Backups", Group: "Operations"},
+	{Key: PermSchedulesManage, Label: "Manage Schedules", Group: "Operations"},
+	{Key: PermHealthView, Label: "View Health", Group: "Operations"},
+	{Key: PermRowHistoryView, Label: "View Row History", Group: "Operations"},
 	{Key: PermUsersManage, Label: "Manage Users", Group: "Administration"},
 	{Key: PermFoldersManage, Label: "Manage Folders", Group: "Administration"},
 	{Key: PermRolesManage, Label: "Manage Roles", Group: "Administration"},

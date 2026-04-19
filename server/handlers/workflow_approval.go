@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -19,17 +20,6 @@ func currentUserFromHeaders(r *http.Request) (int64, string, string) {
 
 // appdb.ConvertQuery converts SQLite ? placeholders to PostgreSQL $1, $2, ... if needed
 
-func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	if !isAuthEnabled() {
-		return true
-	}
-	if r.Header.Get("X-User-Role") == "admin" {
-		return true
-	}
-	http.Error(w, `{"error":"admin access required"}`, http.StatusForbidden)
-	return false
-}
-
 func boolInt(v bool) int {
 	if v {
 		return 1
@@ -41,11 +31,13 @@ func parseSQLBool(v int) bool { return v == 1 }
 
 func ListWorkflows() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !requireAdmin(w, r) {
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
-		rows, err := appdb.DB.Query(`
+		
+		// Use a reasonable timeout for the entire operation
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		
+		rows, err := appdb.DB.QueryContext(ctx, `
 			SELECT id, name, description, is_active, assign_all_groups, assign_all_connections, created_at, updated_at
 			FROM approval_workflow
 			ORDER BY id ASC
@@ -79,34 +71,37 @@ func ListWorkflows() http.HandlerFunc {
 		// Close rows before making additional queries to release lock
 		rows.Close()
 		
-		// Load related data for each workflow (after closing main query)
+		// If no workflows, return empty array
+		if len(workflows) == 0 {
+			json.NewEncoder(w).Encode([]ApprovalWorkflow{})
+			return
+		}
+		
+		// Load all related data in batch queries to avoid N+1 problem
+		stepsMap, _ := listAllWorkflowSteps(ctx, workflowIDs)
+		groupsMap, _ := listAllWorkflowAccessGroups(ctx, workflowIDs)
+		connsMap, _ := listAllWorkflowConnections(ctx, workflowIDs)
+		
+		// Assign related data to workflows
 		for i := range workflows {
-			workflows[i].Steps, _ = listWorkflowSteps(workflows[i].ID)
-			workflows[i].AccessGroups, _ = listWorkflowAccessGroups(workflows[i].ID)
-			workflows[i].Connections, _ = listWorkflowConnections(workflows[i].ID)
-			if workflows[i].Steps == nil {
-				workflows[i].Steps = []WorkflowStep{}
+			wfID := workflows[i].ID
+			if steps, ok := stepsMap[wfID]; ok {
+				workflows[i].Steps = steps
 			}
-			if workflows[i].AccessGroups == nil {
-				workflows[i].AccessGroups = []WorkflowAccessGroup{}
+			if groups, ok := groupsMap[wfID]; ok {
+				workflows[i].AccessGroups = groups
 			}
-			if workflows[i].Connections == nil {
-				workflows[i].Connections = []WorkflowConnection{}
+			if conns, ok := connsMap[wfID]; ok {
+				workflows[i].Connections = conns
 			}
 		}
 		
-		if workflows == nil {
-			workflows = []ApprovalWorkflow{}
-		}
 		json.NewEncoder(w).Encode(workflows)
 	}
 }
 
 func GetWorkflow() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !requireAdmin(w, r) {
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
 		id, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/api/workflows/"), 10, 64)
 		if err != nil {
@@ -124,9 +119,6 @@ func GetWorkflow() http.HandlerFunc {
 
 func CreateWorkflow() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !requireAdmin(w, r) {
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
 
 		var req CreateWorkflowRequest
@@ -196,9 +188,6 @@ func CreateWorkflow() http.HandlerFunc {
 
 func UpdateWorkflow() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !requireAdmin(w, r) {
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
 		id, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/api/workflows/"), 10, 64)
 		if err != nil {
@@ -255,9 +244,6 @@ func UpdateWorkflow() http.HandlerFunc {
 
 func ToggleWorkflowActive() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !requireAdmin(w, r) {
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
 		path := strings.TrimPrefix(r.URL.Path, "/api/workflows/")
 		path = strings.TrimSuffix(path, "/active")
@@ -284,9 +270,6 @@ func ToggleWorkflowActive() http.HandlerFunc {
 
 func DeleteWorkflow() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !requireAdmin(w, r) {
-			return
-		}
 		id, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/api/workflows/"), 10, 64)
 		if err != nil {
 			http.Error(w, jsonError("invalid workflow id"), http.StatusBadRequest)
@@ -330,6 +313,11 @@ func ListApplicableWorkflows() http.HandlerFunc {
 func ListApprovalRequests() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		
+		// Add timeout for the entire operation
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		
 		userID, _, role := currentUserFromHeaders(r)
 
 		query := `
@@ -349,7 +337,7 @@ func ListApprovalRequests() http.HandlerFunc {
 		var err error
 		if !isAuthEnabled() || role == "admin" {
 			query += ` ORDER BY q.created_at DESC`
-			rows, err = appdb.DB.Query(query)
+			rows, err = appdb.DB.QueryContext(ctx, query)
 		} else {
 			query += `
 				WHERE q.creator_id = ?
@@ -368,7 +356,7 @@ func ListApprovalRequests() http.HandlerFunc {
 				ORDER BY q.created_at DESC
 			`
 			query = appdb.ConvertQuery(query)
-			rows, err = appdb.DB.Query(query, userID, userID, role)
+			rows, err = appdb.DB.QueryContext(ctx, query, userID, userID, role)
 		}
 		if err != nil {
 			http.Error(w, jsonError("failed to list approval requests"), http.StatusInternalServerError)
@@ -427,6 +415,10 @@ func CreateApprovalRequest() http.HandlerFunc {
 		body.Statement = strings.TrimSpace(body.Statement)
 		if body.Title == "" || body.Statement == "" || body.ConnID <= 0 {
 			http.Error(w, jsonError("title, statement, and conn_id are required"), http.StatusBadRequest)
+			return
+		}
+		if !CheckReadPermission(r, body.ConnID) {
+			http.Error(w, jsonError("connection access denied"), http.StatusForbidden)
 			return
 		}
 
@@ -522,6 +514,10 @@ func UpdateApprovalRequest() http.HandlerFunc {
 			http.Error(w, jsonError("title, statement, and conn_id are required"), http.StatusBadRequest)
 			return
 		}
+		if !CheckReadPermission(r, body.ConnID) {
+			http.Error(w, jsonError("connection access denied"), http.StatusForbidden)
+			return
+		}
 
 		resolveRole := role
 		var creatorRole string
@@ -559,6 +555,12 @@ func UpdateApprovalRequest() http.HandlerFunc {
 func GetApprovalProgress() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		
+		// Add timeout for the entire operation
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		r = r.WithContext(ctx)
+		
 		path := strings.TrimPrefix(r.URL.Path, "/api/approval-requests/")
 		path = strings.TrimSuffix(path, "/approval-progress")
 		id, err := strconv.ParseInt(path, 10, 64)
@@ -859,6 +861,180 @@ func listWorkflowSteps(workflowID int64) ([]WorkflowStep, error) {
 		steps = append(steps, step)
 	}
 	return steps, rows.Err()
+}
+
+// Batch query helper functions to avoid N+1 queries
+func listAllWorkflowSteps(ctx context.Context, workflowIDs []int64) (map[int64][]WorkflowStep, error) {
+	if len(workflowIDs) == 0 {
+		return make(map[int64][]WorkflowStep), nil
+	}
+	
+	// Build IN clause
+	placeholders := make([]string, len(workflowIDs))
+	args := make([]interface{}, len(workflowIDs))
+	for i, id := range workflowIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`
+		SELECT id, workflow_id, step_order, name, required_approvals
+		FROM workflow_step
+		WHERE workflow_id IN (%s)
+		ORDER BY workflow_id, step_order ASC
+	`, strings.Join(placeholders, ","))
+	
+	rows, err := appdb.DB.QueryContext(ctx, appdb.ConvertQuery(query), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	stepsMap := make(map[int64][]WorkflowStep)
+	var stepIDs []int64
+	
+	for rows.Next() {
+		var step WorkflowStep
+		if err := rows.Scan(&step.ID, &step.WorkflowID, &step.StepOrder, &step.Name, &step.RequiredApprovals); err != nil {
+			return nil, err
+		}
+		stepIDs = append(stepIDs, step.ID)
+		stepsMap[step.WorkflowID] = append(stepsMap[step.WorkflowID], step)
+	}
+	
+	// Load approvers for all steps in batch
+	if len(stepIDs) > 0 {
+		approversMap, _ := listAllStepApprovers(ctx, stepIDs)
+		for wfID := range stepsMap {
+			for i := range stepsMap[wfID] {
+				stepID := stepsMap[wfID][i].ID
+				if approvers, ok := approversMap[stepID]; ok {
+					stepsMap[wfID][i].Approvers = approvers
+				} else {
+					stepsMap[wfID][i].Approvers = []StepApprover{}
+				}
+			}
+		}
+	}
+	
+	return stepsMap, rows.Err()
+}
+
+func listAllStepApprovers(ctx context.Context, stepIDs []int64) (map[int64][]StepApprover, error) {
+	if len(stepIDs) == 0 {
+		return make(map[int64][]StepApprover), nil
+	}
+	
+	placeholders := make([]string, len(stepIDs))
+	args := make([]interface{}, len(stepIDs))
+	for i, id := range stepIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`
+		SELECT sa.id, sa.step_id, sa.approver_type, sa.approver_id,
+			CASE
+				WHEN sa.approver_type = 'role' THEN COALESCE(r.name, 'unknown')
+				WHEN sa.approver_type = 'user' THEN COALESCE(u.username, 'unknown')
+				ELSE 'unknown'
+			END
+		FROM step_approver sa
+		LEFT JOIN roles r ON sa.approver_type = 'role' AND sa.approver_id = r.id
+		LEFT JOIN users u ON sa.approver_type = 'user' AND sa.approver_id = u.id
+		WHERE sa.step_id IN (%s)
+	`, strings.Join(placeholders, ","))
+	
+	rows, err := appdb.DB.QueryContext(ctx, appdb.ConvertQuery(query), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	approversMap := make(map[int64][]StepApprover)
+	for rows.Next() {
+		var approver StepApprover
+		if err := rows.Scan(&approver.ID, &approver.StepID, &approver.ApproverType, &approver.ApproverID, &approver.ApproverName); err != nil {
+			return nil, err
+		}
+		approversMap[approver.StepID] = append(approversMap[approver.StepID], approver)
+	}
+	
+	return approversMap, rows.Err()
+}
+
+func listAllWorkflowAccessGroups(ctx context.Context, workflowIDs []int64) (map[int64][]WorkflowAccessGroup, error) {
+	if len(workflowIDs) == 0 {
+		return make(map[int64][]WorkflowAccessGroup), nil
+	}
+	
+	placeholders := make([]string, len(workflowIDs))
+	args := make([]interface{}, len(workflowIDs))
+	for i, id := range workflowIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`
+		SELECT wf.workflow_id, wf.folder_id, COALESCE(f.name, 'unknown')
+		FROM workflow_folder wf
+		LEFT JOIN connection_folders f ON f.id = wf.folder_id
+		WHERE wf.workflow_id IN (%s)
+		ORDER BY f.name ASC
+	`, strings.Join(placeholders, ","))
+	
+	rows, err := appdb.DB.QueryContext(ctx, appdb.ConvertQuery(query), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	groupsMap := make(map[int64][]WorkflowAccessGroup)
+	for rows.Next() {
+		var workflowID int64
+		var group WorkflowAccessGroup
+		if err := rows.Scan(&workflowID, &group.GroupID, &group.GroupName); err != nil {
+			return nil, err
+		}
+		groupsMap[workflowID] = append(groupsMap[workflowID], group)
+	}
+	
+	return groupsMap, rows.Err()
+}
+
+func listAllWorkflowConnections(ctx context.Context, workflowIDs []int64) (map[int64][]WorkflowConnection, error) {
+	if len(workflowIDs) == 0 {
+		return make(map[int64][]WorkflowConnection), nil
+	}
+	
+	placeholders := make([]string, len(workflowIDs))
+	args := make([]interface{}, len(workflowIDs))
+	for i, id := range workflowIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`
+		SELECT wc.workflow_id, wc.conn_id, COALESCE(c.name, 'unknown'), COALESCE(c.driver, ''), COALESCE(c.environment, 'development')
+		FROM workflow_connection wc
+		LEFT JOIN connections c ON c.id = wc.conn_id
+		WHERE wc.workflow_id IN (%s)
+		ORDER BY c.name ASC
+	`, strings.Join(placeholders, ","))
+	
+	rows, err := appdb.DB.QueryContext(ctx, appdb.ConvertQuery(query), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	connsMap := make(map[int64][]WorkflowConnection)
+	for rows.Next() {
+		var workflowID int64
+		var conn WorkflowConnection
+		if err := rows.Scan(&workflowID, &conn.ConnID, &conn.Name, &conn.Driver, &conn.Environment); err != nil {
+			return nil, err
+		}
+		connsMap[workflowID] = append(connsMap[workflowID], conn)
+	}
+	
+	return connsMap, rows.Err()
 }
 
 func listStepApprovers(stepID int64) ([]StepApprover, error) {

@@ -3,12 +3,22 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConnections } from '@/composables/useConnections'
+import { useAuth } from '@/composables/useAuth'
 
 const toast = useToast()
 const { connections, fetchConnections } = useConnections()
+const { hasPermission } = useAuth()
 
 // ── Tab State ──
 const activeTab = ref<'roles' | 'groups' | 'users'>('roles')
+const canManageRoles = computed(() => hasPermission('roles.manage'))
+const canManageGroups = computed(() => hasPermission('folders.manage'))
+const canManageUsers = computed(() => hasPermission('users.manage'))
+const availableTabs = computed(() => [
+  ...(canManageRoles.value ? ['roles' as const] : []),
+  ...(canManageGroups.value ? ['groups' as const] : []),
+  ...(canManageUsers.value ? ['users' as const] : []),
+])
 
 // ── ROLES MODULE ──
 
@@ -271,6 +281,7 @@ const userForm = reactive({
   username: '',
   password: '',
   role_id: 2,
+  is_active: true,
   connection_assignments: [] as Array<{
     conn_id: number
     permissions: string[]
@@ -366,6 +377,7 @@ async function openUserForm(user: User | null = null) {
     userForm.username = user.username
     userForm.password = ''
     userForm.role_id = user.role_id
+    userForm.is_active = user.is_active
     
     // Load user's direct connection assignments
     try {
@@ -392,6 +404,7 @@ async function openUserForm(user: User | null = null) {
     userForm.username = ''
     userForm.password = ''
     userForm.role_id = 2
+    userForm.is_active = true
     userForm.connection_assignments = []
   }
   showUserForm.value = true
@@ -415,7 +428,7 @@ async function saveUser() {
     if (editingUser.value) {
       // Update existing user
       userId = editingUser.value.id
-      const payload: any = { role_id: userForm.role_id }
+      const payload: any = { role_id: userForm.role_id, is_active: userForm.is_active }
       if (userForm.password.trim()) {
         payload.password = userForm.password
       }
@@ -511,13 +524,22 @@ function getPermissionLabel(permKey: string): string {
 // ── Init ──
 
 onMounted(async () => {
-  await Promise.all([
-    fetchRoles(),
-    fetchPermissions(),
-    fetchGroups(),
-    fetchConnections(),
-    fetchUsers(),
-  ])
+  activeTab.value = availableTabs.value[0] ?? 'roles'
+
+  const tasks: Promise<unknown>[] = []
+  if (canManageRoles.value) {
+    tasks.push(fetchRoles(), fetchPermissions())
+  }
+  if (canManageGroups.value) {
+    tasks.push(fetchGroups())
+  }
+  if (canManageUsers.value) {
+    tasks.push(fetchUsers(), fetchConnections())
+    if (!canManageRoles.value) {
+      tasks.push(fetchRoles())
+    }
+  }
+  await Promise.all(tasks)
 })
 </script>
 
@@ -536,6 +558,7 @@ onMounted(async () => {
       <!-- Tabs -->
       <div class="page-tabs perm-tabs">
         <button
+          v-if="canManageRoles"
           class="page-tab perm-tab"
           :class="{ 'is-active': activeTab === 'roles' }"
           @click="activeTab = 'roles'"
@@ -549,6 +572,7 @@ onMounted(async () => {
           Roles
         </button>
         <button
+          v-if="canManageGroups"
           class="page-tab perm-tab"
           :class="{ 'is-active': activeTab === 'groups' }"
           @click="activeTab = 'groups'"
@@ -559,6 +583,7 @@ onMounted(async () => {
           Access Groups
         </button>
         <button
+          v-if="canManageUsers"
           class="page-tab perm-tab"
           :class="{ 'is-active': activeTab === 'users' }"
           @click="activeTab = 'users'"
@@ -915,6 +940,12 @@ onMounted(async () => {
             <label class="perm-label">Assign Role <span class="perm-required">*</span></label>
             <select class="perm-select" v-model="userForm.role_id">
               <option v-for="role in roles" :key="role.id" :value="role.id">{{ role.name }}</option>
+            </select>
+
+            <label v-if="editingUser" class="perm-label">Account Status</label>
+            <select v-if="editingUser" class="perm-select" v-model="userForm.is_active">
+              <option :value="true">Active</option>
+              <option :value="false">Locked</option>
             </select>
 
             <label class="perm-label">Direct Connection Permissions</label>

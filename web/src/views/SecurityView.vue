@@ -9,6 +9,15 @@ const toast = useToast()
 const loading = ref(false)
 const enabled = ref(false)
 const backupCodesCount = ref(0)
+const sessions = ref<Array<{ id: number; token_id: string; ip_address: string; user_agent: string; last_seen_at: string; expires_at: string; current: boolean; revoked_at?: string | null }>>([])
+const activity = ref<Array<{ id: number; username: string; ip_address: string; user_agent: string; success: boolean; failure_reason: string; created_at: string }>>([])
+const suspiciousEvents = ref(0)
+const passwordForm = ref({
+  current_password: '',
+  new_password: '',
+  confirm_password: '',
+})
+const passwordLoading = ref(false)
 
 // Setup state
 const showSetup = ref(false)
@@ -28,6 +37,13 @@ async function fetchStatus() {
     const { data } = await axios.get('/api/auth/2fa/status')
     enabled.value = data.enabled
     backupCodesCount.value = data.backup_codes_count || 0
+    const [sessionsResp, activityResp] = await Promise.all([
+      axios.get('/api/auth/sessions'),
+      axios.get('/api/auth/activity'),
+    ])
+    sessions.value = sessionsResp.data || []
+    activity.value = activityResp.data?.events || []
+    suspiciousEvents.value = activityResp.data?.suspicious_events || 0
   } catch (error: any) {
     toast.error(error.response?.data?.error || 'Failed to load 2FA status')
   } finally {
@@ -106,6 +122,48 @@ function downloadBackupCodes() {
   toast.success('Backup codes downloaded')
 }
 
+async function changePassword() {
+  if (!passwordForm.value.current_password || !passwordForm.value.new_password) {
+    toast.error('Please complete both password fields')
+    return
+  }
+  if (passwordForm.value.new_password !== passwordForm.value.confirm_password) {
+    toast.error('New password confirmation does not match')
+    return
+  }
+  passwordLoading.value = true
+  try {
+    await axios.post('/api/auth/password/change', passwordForm.value)
+    toast.success('Password updated. Other sessions were signed out.')
+    passwordForm.value = { current_password: '', new_password: '', confirm_password: '' }
+    await fetchStatus()
+  } catch (error: any) {
+    toast.error(error.response?.data?.error || 'Failed to change password')
+  } finally {
+    passwordLoading.value = false
+  }
+}
+
+async function revokeSession(tokenId: string) {
+  try {
+    await axios.post(`/api/auth/sessions/${tokenId}/revoke`)
+    toast.success('Session revoked')
+    await fetchStatus()
+  } catch (error: any) {
+    toast.error(error.response?.data?.error || 'Failed to revoke session')
+  }
+}
+
+async function revokeAllSessions() {
+  try {
+    await axios.post('/api/auth/sessions/revoke-all')
+    toast.success('Other sessions revoked')
+    await fetchStatus()
+  } catch (error: any) {
+    toast.error(error.response?.data?.error || 'Failed to revoke sessions')
+  }
+}
+
 onMounted(fetchStatus)
 </script>
 
@@ -181,6 +239,81 @@ onMounted(fetchStatus)
           <button v-else class="base-btn base-btn--ghost" style="color:#f87171" @click="showDisable = true">
             Disable 2FA
           </button>
+        </div>
+      </div>
+
+      <div v-if="!loading" class="page-card sec-card">
+        <div class="sec-card-header">
+          <div class="sec-card-meta">
+            <h3 class="sec-card-title">Password</h3>
+            <p class="sec-card-desc">Change your password and invalidate your other active sessions.</p>
+          </div>
+        </div>
+        <div class="sec-card-body sec-form-grid">
+          <input v-model="passwordForm.current_password" class="base-input" type="password" placeholder="Current password" autocomplete="current-password" />
+          <input v-model="passwordForm.new_password" class="base-input" type="password" placeholder="New password" autocomplete="new-password" />
+          <input v-model="passwordForm.confirm_password" class="base-input" type="password" placeholder="Confirm new password" autocomplete="new-password" />
+        </div>
+        <div class="sec-card-footer">
+          <button class="base-btn base-btn--primary" @click="changePassword" :disabled="passwordLoading">
+            {{ passwordLoading ? 'Updating...' : 'Change Password' }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="!loading" class="page-card sec-card">
+        <div class="sec-card-header">
+          <div class="sec-card-meta">
+            <h3 class="sec-card-title">Active Sessions</h3>
+            <p class="sec-card-desc">Review recent devices and revoke access you no longer trust.</p>
+          </div>
+          <div class="sec-card-status">
+            <span class="sec-badge sec-badge--enabled">{{ sessions.length }} active</span>
+          </div>
+        </div>
+        <div class="sec-card-body sec-list">
+          <div v-if="sessions.length === 0" class="sec-empty">No sessions found.</div>
+          <div v-for="session in sessions" :key="session.token_id" class="sec-list-item">
+            <div>
+              <div class="sec-list-title">
+                {{ session.current ? 'Current Session' : 'Signed-in Session' }}
+                <span v-if="session.current" class="sec-badge sec-badge--enabled">Current</span>
+              </div>
+              <div class="sec-list-sub">{{ session.ip_address || 'Unknown IP' }} · {{ session.user_agent || 'Unknown agent' }}</div>
+              <div class="sec-list-sub">Last seen {{ new Date(session.last_seen_at).toLocaleString() }} · Expires {{ new Date(session.expires_at).toLocaleString() }}</div>
+            </div>
+            <button v-if="!session.current" class="base-btn base-btn--ghost base-btn--sm" @click="revokeSession(session.token_id)">Revoke</button>
+          </div>
+        </div>
+        <div class="sec-card-footer">
+          <button class="base-btn base-btn--ghost" @click="revokeAllSessions">Sign Out Other Sessions</button>
+        </div>
+      </div>
+
+      <div v-if="!loading" class="page-card sec-card">
+        <div class="sec-card-header">
+          <div class="sec-card-meta">
+            <h3 class="sec-card-title">Login Activity</h3>
+            <p class="sec-card-desc">Recent successful and failed sign-in attempts for your account.</p>
+          </div>
+          <div class="sec-card-status">
+            <span class="sec-badge" :class="suspiciousEvents ? 'sec-badge--disabled' : 'sec-badge--enabled'">{{ suspiciousEvents }} suspicious</span>
+          </div>
+        </div>
+        <div class="sec-card-body sec-list">
+          <div v-if="activity.length === 0" class="sec-empty">No login activity yet.</div>
+          <div v-for="event in activity" :key="event.id" class="sec-list-item">
+            <div>
+              <div class="sec-list-title">
+                {{ event.success ? 'Successful sign-in' : 'Failed sign-in' }}
+                <span class="sec-badge" :class="event.success ? 'sec-badge--enabled' : 'sec-badge--disabled'">
+                  {{ event.success ? 'OK' : (event.failure_reason || 'Failed') }}
+                </span>
+              </div>
+              <div class="sec-list-sub">{{ event.ip_address || 'Unknown IP' }} · {{ event.user_agent || 'Unknown agent' }}</div>
+            </div>
+            <div class="sec-list-sub">{{ new Date(event.created_at).toLocaleString() }}</div>
+          </div>
         </div>
       </div>
       </div>
@@ -446,6 +579,42 @@ onMounted(fetchStatus)
   border-top: 1px solid var(--border);
   display: flex;
   justify-content: flex-end;
+}
+.sec-form-grid {
+  display: grid;
+  gap: 12px;
+}
+.sec-list {
+  display: grid;
+  gap: 12px;
+}
+.sec-list-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.sec-list-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.sec-list-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.sec-list-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.sec-empty {
+  font-size: 13px;
+  color: var(--text-muted);
 }
 
 /* Modal */

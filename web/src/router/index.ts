@@ -34,43 +34,43 @@ const router = createRouter({
           path: 'users',
           name: 'users',
           component: () => import('@/views/UsersView.vue'),
-          meta: { requiresAdmin: true },
+          meta: { requiredPermissionsAny: ['users.manage'] },
         },
         {
           path: 'audit',
           name: 'audit',
           component: () => import('@/views/AuditLogView.vue'),
-          meta: { requiresAdmin: false },
+          meta: { requiredPermissionsAny: ['audit.view'] },
         },
         {
           path: 'diff',
           name: 'diff',
           component: () => import('@/views/SchemaDiffView.vue'),
-          meta: { requiresAdmin: true },
+          meta: { requiredPermissionsAny: ['schema.diff.view'] },
         },
         {
           path: 'scheduler',
           name: 'scheduler',
           component: () => import('@/views/SchedulerView.vue'),
-          meta: { requiresAdmin: true },
+          meta: { requiredPermissionsAny: ['schedules.manage'] },
         },
         {
           path: 'backup',
           name: 'backup',
           component: () => import('@/views/BackupView.vue'),
-          meta: { requiresAdmin: true },
+          meta: { requiredPermissionsAny: ['backups.manage'] },
         },
         {
           path: 'health',
           name: 'health',
           component: () => import('@/views/HealthView.vue'),
-          meta: { requiresAdmin: true },
+          meta: { requiredPermissionsAny: ['health.view'] },
         },
         {
           path: 'watcher',
           name: 'watcher',
           component: () => import('@/views/WatcherView.vue'),
-          meta: { requiresAdmin: true },
+          meta: { requiredPermissionsAny: ['query.execute'] },
         },
         {
           path: 'query',
@@ -80,44 +80,49 @@ const router = createRouter({
           path: 'schema',
           name: 'schema',
           component: () => import('@/views/SchemaView.vue'),
+          meta: { requiredPermissionsAny: ['schema.browse'] },
         },
         {
           path: 'data',
           name: 'data',
           component: () => import('@/views/DataView.vue'),
+          meta: { requiredPermissionsAny: ['connections.view', 'query.execute', 'schema.browse'] },
         },
         {
           path: 'connections',
           name: 'connections',
           component: () => import('@/views/ConnectionsView.vue'),
-          meta: { requiresAdmin: false },
+          meta: { requiredPermissionsAny: ['connections.view'] },
         },
         {
           path: 'er',
           name: 'er',
           component: () => import('@/views/ERDiagramView.vue'),
+          meta: { requiredPermissionsAny: ['schema.browse'] },
         },
         {
           path: 'saved-queries',
           name: 'saved-queries',
           component: () => import('@/views/SavedQueriesView.vue'),
+          meta: { requiredPermissionsAny: ['savedqueries.manage'] },
         },
         {
           path: 'approvals',
           name: 'approvals',
           component: () => import('@/views/ApprovalRequestsView.vue'),
+          meta: { requiredPermissionsAny: ['query.execute', 'query.approve'] },
         },
         {
           path: 'permissions',
           name: 'permissions',
           component: () => import('@/views/PermissionsView.vue'),
-          meta: { requiresAdmin: true },
+          meta: { requiredPermissionsAny: ['roles.manage', 'folders.manage', 'users.manage'] },
         },
         {
           path: 'workflows',
           name: 'workflows',
           component: () => import('@/views/ApprovalWorkflowsView.vue'),
-          meta: { requiresAdmin: true },
+          meta: { requiredPermissionsAny: ['workflows.manage'] },
         },
         {
           path: 'rbac',
@@ -127,13 +132,13 @@ const router = createRouter({
           path: 'row-history',
           name: 'row-history',
           component: () => import('@/views/RowHistoryView.vue'),
-          meta: { requiresAdmin: true },
+          meta: { requiredPermissionsAny: ['rowhistory.view'] },
         },
         {
           path: 'security',
           name: 'security',
           component: () => import('@/views/SecurityView.vue'),
-          meta: { requiresAdmin: false },
+          meta: { requiredPermissionsAny: ['security.self'] },
         },
       ],
     },
@@ -145,7 +150,7 @@ const router = createRouter({
 })
 
 router.beforeEach((to) => {
-  const { isAuthenticated, authEnabled, user } = useAuth()
+  const { isAuthenticated, authEnabled, hasAnyPermission } = useAuth()
 
   // Skip auth check if auth is not enabled
   if (!authEnabled.value) {
@@ -165,13 +170,12 @@ router.beforeEach((to) => {
     return { name: 'login' }
   }
 
-  // Admin-only routes - require admin role
-  if (to.meta.requiresAdmin && authEnabled.value) {
+  const requiredPermissions = to.meta.requiredPermissionsAny as string[] | undefined
+  if (requiredPermissions?.length && authEnabled.value) {
     if (!isAuthenticated.value) {
       return { name: 'login' }
     }
-    if (user.value?.role !== 'admin') {
-      // Non-admin users trying to access admin routes - redirect to home
+    if (!hasAnyPermission(requiredPermissions)) {
       return { name: 'welcome' }
     }
   }

@@ -14,7 +14,7 @@ const emit = defineEmits<{
 
 const route = useRoute()
 const router = useRouter()
-const { user, authEnabled, logout } = useAuth()
+const { user, authEnabled, logout, hasAnyPermission } = useAuth()
 const { mode, toggleTheme } = useTheme()
 const { connections } = useConnections()
 
@@ -24,16 +24,6 @@ const activeConn = computed(() =>
 )
 const driverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', sqlite: '#0f80cc', mssql: '#cc2927' }
 const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', sqlite: 'SQ', mssql: 'MS' }
-
-// Check if user has permission
-const hasPermission = (permission: string): boolean => {
-  if (!authEnabled.value || !user.value) return true // No auth = full access
-  if (user.value.role === 'admin') return true // Admin has all permissions
-  // For now, just check role-based access
-  return false
-}
-
-const isAdmin = computed(() => !authEnabled.value || user.value?.role === 'admin')
 
 // Nav group dropdown (data / admin / tools / monitor)
 const openMenu = ref<string | null>(null)
@@ -56,34 +46,32 @@ const allMenuGroups = [
     label: 'Data',
     icon: 'table',
     items: [
-      { name: 'dashboard',     label: 'Dashboard',     desc: 'Database statistics & overview',       icon: 'dashboard' },
-      { name: 'data',          label: 'Data Browser',  desc: 'Browse data, schema & run SQL queries', icon: 'table'   },
-      { name: 'connections',   label: 'Connections',   desc: 'Manage your database connections',     icon: 'plug'      },
-      { name: 'er',            label: 'ER Diagram',    desc: 'Entity relationship visualization',    icon: 'er'        },
-      { name: 'saved-queries', label: 'Saved Queries', desc: 'Your saved SQL queries',               icon: 'saved'     },
-      { name: 'approvals',     label: 'Approvals',     desc: 'Review and execute SQL approval requests', icon: 'workflow' },
+      { name: 'dashboard',     label: 'Dashboard',     desc: 'Database statistics & overview',       icon: 'dashboard', permissionsAny: ['connections.view'] },
+      { name: 'data',          label: 'Data Browser',  desc: 'Browse data, schema & run SQL queries', icon: 'table', permissionsAny: ['connections.view', 'query.execute', 'schema.browse'] },
+      { name: 'connections',   label: 'Connections',   desc: 'Manage your database connections',     icon: 'plug', permissionsAny: ['connections.view'] },
+      { name: 'er',            label: 'ER Diagram',    desc: 'Entity relationship visualization',    icon: 'er', permissionsAny: ['schema.browse'] },
+      { name: 'saved-queries', label: 'Saved Queries', desc: 'Your saved SQL queries',               icon: 'saved', permissionsAny: ['savedqueries.manage'] },
+      { name: 'approvals',     label: 'Approvals',     desc: 'Review and execute SQL approval requests', icon: 'workflow', permissionsAny: ['query.execute', 'query.approve'] },
     ],
   },
   {
     id: 'admin',
     label: 'Administration',
     icon: 'settings',
-    requiresAdmin: true,
     items: [
-      { name: 'permissions', label: 'Permissions', desc: 'Roles, access groups & permissions',  icon: 'rbac'  },
-      { name: 'workflows',   label: 'Workflows',   desc: 'Configure approval workflows',        icon: 'workflow' },
+      { name: 'permissions', label: 'Permissions', desc: 'Roles, access groups & permissions',  icon: 'rbac', permissionsAny: ['roles.manage', 'folders.manage', 'users.manage'] },
+      { name: 'workflows',   label: 'Workflows',   desc: 'Configure approval workflows',        icon: 'workflow', permissionsAny: ['workflows.manage'] },
     ],
   },
   {
     id: 'tools',
     label: 'Tools',
     icon: 'wrench',
-    requiresAdmin: true,
     items: [
-      { name: 'diff',      label: 'Schema Diff',  desc: 'Compare schemas across connections', icon: 'diff'      },
-      { name: 'backup',    label: 'Backup',       desc: 'Backup & restore databases',         icon: 'backup'    },
-      { name: 'scheduler', label: 'Scheduler',    desc: 'Schedule automated queries',         icon: 'scheduler' },
-      { name: 'watcher',   label: 'Watcher',      desc: 'Monitor live table changes',         icon: 'watcher'   },
+      { name: 'diff',      label: 'Schema Diff',  desc: 'Compare schemas across connections', icon: 'diff', permissionsAny: ['schema.diff.view'] },
+      { name: 'backup',    label: 'Backup',       desc: 'Backup & restore databases',         icon: 'backup', permissionsAny: ['backups.manage'] },
+      { name: 'scheduler', label: 'Scheduler',    desc: 'Schedule automated queries',         icon: 'scheduler', permissionsAny: ['schedules.manage'] },
+      { name: 'watcher',   label: 'Watcher',      desc: 'Monitor live table changes',         icon: 'watcher', permissionsAny: ['query.execute'] },
     ],
   },
   {
@@ -91,9 +79,9 @@ const allMenuGroups = [
     label: 'Monitoring',
     icon: 'activity',
     items: [
-      { name: 'audit',       label: 'Audit Log',   desc: 'Query execution history & errors',  icon: 'audit',      requiresAdmin: false },
-      { name: 'health',      label: 'Health',      desc: 'Connection pool & server status',   icon: 'health',     requiresAdmin: true },
-      { name: 'row-history', label: 'Row History', desc: 'Track INSERT / UPDATE / DELETE',    icon: 'rowhistory', requiresAdmin: true },
+      { name: 'audit',       label: 'Audit Log',   desc: 'Query execution history & errors',  icon: 'audit', permissionsAny: ['audit.view'] },
+      { name: 'health',      label: 'Health',      desc: 'Connection pool & server status',   icon: 'health', permissionsAny: ['health.view'] },
+      { name: 'row-history', label: 'Row History', desc: 'Track INSERT / UPDATE / DELETE',    icon: 'rowhistory', permissionsAny: ['rowhistory.view'] },
     ],
   },
 ]
@@ -103,18 +91,12 @@ const menuGroups = computed(() => {
   return allMenuGroups.map(group => {
     // Filter items within the group
     const filteredItems = group.items.filter((item: any) => {
-      // If item requires admin and user is not admin, hide it
-      if (item.requiresAdmin && !isAdmin.value) {
+      if (item.permissionsAny?.length && !hasAnyPermission(item.permissionsAny)) {
         return false
       }
       return true
     })
-    
-    // If group requires admin and user is not admin, hide entire group
-    if (group.requiresAdmin && !isAdmin.value) {
-      return null
-    }
-    
+
     // If all items are filtered out, hide the group
     if (filteredItems.length === 0) {
       return null
@@ -142,9 +124,9 @@ function navigate(name: string) {
   router.push({ name })
 }
 
-function handleLogout() {
+async function handleLogout() {
   userMenuOpen.value = false
-  logout()
+  await logout()
   router.push({ name: 'login' })
 }
 

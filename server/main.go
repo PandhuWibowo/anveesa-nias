@@ -19,6 +19,7 @@ import (
 	appdb "github.com/anveesa/nias/db"
 	"github.com/anveesa/nias/handlers"
 	mw "github.com/anveesa/nias/middleware"
+	"github.com/joho/godotenv"
 )
 
 var (
@@ -29,6 +30,14 @@ var (
 
 func main() {
 	startTime = time.Now()
+	
+	// Load .env file from parent directory (if exists)
+	if err := godotenv.Load("../.env"); err != nil {
+		log.Println("No .env file found in parent directory, using environment variables")
+	} else {
+		log.Println("✓ Loaded configuration from .env")
+	}
+	
 	cfg := config.Load()
 
 	// Validate configuration
@@ -117,13 +126,17 @@ func main() {
 
 	log.Printf("Received signal %v, shutting down...", sig)
 
-	// Give active connections 30 seconds to complete
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Give active connections 60 seconds to complete
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// Stop accepting new requests
-	if err := server.Shutdown(ctx); err != nil {
-		log.Printf("Server shutdown error: %v", err)
+	// Stop accepting new requests and force-close if the grace window expires.
+	shutdownErr := server.Shutdown(ctx)
+	if shutdownErr != nil {
+		log.Printf("Server shutdown error: %v", shutdownErr)
+		if closeErr := server.Close(); closeErr != nil && closeErr != http.ErrServerClosed {
+			log.Printf("Server force close error: %v", closeErr)
+		}
 	}
 
 	// Stop background jobs
@@ -134,10 +147,16 @@ func main() {
 		log.Printf("Database close error: %v", err)
 	}
 
-	log.Println("Server stopped gracefully")
+	if shutdownErr != nil {
+		log.Println("Server stopped after forced close")
+	} else {
+		log.Println("Server stopped gracefully")
+	}
 }
 
 func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
+	requireAny := mw.RequireAnyAppPermissionHeader
+
 	// ── Health & Info ────────────────────────────────────────────
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/ready", readyHandler)
@@ -146,23 +165,63 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	// ── Auth (with rate limiting for sensitive endpoints) ─────────
 	mux.HandleFunc("/api/auth/setup", handlers.SetupHandler(cfg))
 	mux.HandleFunc("/api/auth/login", mw.RateLimitLogin(handlers.LoginHandler(cfg)))
-	mux.HandleFunc("/api/auth/register", mw.RateLimitLogin(handlers.RegisterHandler(cfg)))
+	mux.HandleFunc("/api/auth/register", mw.RateLimitLogin(requireAny(handlers.PermUsersManage)(handlers.RegisterHandler(cfg))))
 	mux.HandleFunc("/api/auth/me", handlers.MeHandler())
+	mux.HandleFunc("/api/auth/logout", handlers.LogoutHandler())
+	mux.HandleFunc("/api/auth/password/change", requireAny(handlers.PermSecuritySelf)(handlers.ChangePasswordHandler()))
+	mux.HandleFunc("/api/auth/sessions", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermSecuritySelf)(handlers.ListSessionsHandler())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/auth/sessions/revoke-all", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			requireAny(handlers.PermSecuritySelf)(handlers.RevokeAllSessionsHandler())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/auth/sessions/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/revoke") && r.Method == http.MethodPost {
+			requireAny(handlers.PermSecuritySelf)(handlers.RevokeSessionHandler())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/auth/activity", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			requireAny(handlers.PermSecuritySelf)(handlers.LoginActivityHandler())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
 
 	// ── 2FA ────────────────────────────────────────────────────────
-	mux.HandleFunc("/api/auth/2fa/status", handlers.Get2FAStatus())
-	mux.HandleFunc("/api/auth/2fa/setup", handlers.Setup2FA())
-	mux.HandleFunc("/api/auth/2fa/enable", handlers.Enable2FA())
-	mux.HandleFunc("/api/auth/2fa/disable", handlers.Disable2FA())
+	mux.HandleFunc("/api/auth/2fa/status", requireAny(handlers.PermSecuritySelf)(handlers.Get2FAStatus()))
+	mux.HandleFunc("/api/auth/2fa/setup", requireAny(handlers.PermSecuritySelf)(handlers.Setup2FA()))
+	mux.HandleFunc("/api/auth/2fa/enable", requireAny(handlers.PermSecuritySelf)(handlers.Enable2FA()))
+	mux.HandleFunc("/api/auth/2fa/disable", requireAny(handlers.PermSecuritySelf)(handlers.Disable2FA()))
 	mux.HandleFunc("/api/auth/2fa/verify", handlers.Verify2FA())
 
 	// ── Connections (list + create) ───────────────────────────────
 	mux.HandleFunc("/api/connections", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			handlers.ListConnections()(w, r)
+			requireAny(
+				handlers.PermConnectionsView,
+				handlers.PermUsersManage,
+				handlers.PermWorkflowsManage,
+				handlers.PermSchemaDiffView,
+				handlers.PermBackupsManage,
+				handlers.PermSchedulesManage,
+				handlers.PermHealthView,
+				handlers.PermRowHistoryView,
+			)(handlers.ListConnections())(w, r)
 		case http.MethodPost:
-			handlers.CreateConnection()(w, r)
+			requireAny(handlers.PermConnectionsCreate)(handlers.CreateConnection())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -177,19 +236,28 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 
 		// GET /api/connections/{id}
 		if len(parts) == 1 && r.Method == http.MethodGet {
-			handlers.GetConnection()(w, r)
+			requireAny(
+				handlers.PermConnectionsView,
+				handlers.PermUsersManage,
+				handlers.PermWorkflowsManage,
+				handlers.PermSchemaDiffView,
+				handlers.PermBackupsManage,
+				handlers.PermSchedulesManage,
+				handlers.PermHealthView,
+				handlers.PermRowHistoryView,
+			)(handlers.GetConnection())(w, r)
 			return
 		}
 
 		// PUT /api/connections/{id}
 		if len(parts) == 1 && r.Method == http.MethodPut {
-			handlers.UpdateConnection()(w, r)
+			requireAny(handlers.PermConnectionsEdit)(handlers.UpdateConnection())(w, r)
 			return
 		}
 
 		// DELETE /api/connections/{id}
 		if len(parts) == 1 && r.Method == http.MethodDelete {
-			handlers.DeleteConnection()(w, r)
+			requireAny(handlers.PermConnectionsDelete)(handlers.DeleteConnection())(w, r)
 			return
 		}
 
@@ -197,9 +265,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			sub := parts[1]
 			switch {
 			case sub == "folder" && r.Method == http.MethodPatch:
-				handlers.UpdateConnectionFolder()(w, r)
+				requireAny(handlers.PermConnectionsEdit)(handlers.UpdateConnectionFolder())(w, r)
 			case sub == "visibility" && r.Method == http.MethodPatch:
-				handlers.UpdateConnectionVisibility()(w, r)
+				requireAny(handlers.PermConnectionsEdit)(handlers.UpdateConnectionVisibility())(w, r)
 			case sub == "query" && r.Method == http.MethodPost:
 				handlers.ExecuteQuery()(w, r)
 			case sub == "explain" && r.Method == http.MethodPost:
@@ -211,9 +279,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			case sub == "ping" && r.Method == http.MethodGet:
 				handlers.PingConnection()(w, r)
 			case sub == "backup" && r.Method == http.MethodGet:
-				handlers.GetBackup()(w, r)
+				requireAny(handlers.PermBackupsManage)(handlers.GetBackup())(w, r)
 			case sub == "restore" && r.Method == http.MethodPost:
-				handlers.RestoreBackup()(w, r)
+				requireAny(handlers.PermBackupsManage)(handlers.RestoreBackup())(w, r)
 			case sub == "transaction":
 				action := ""
 				if len(parts) >= 3 {
@@ -232,9 +300,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 					http.NotFound(w, r)
 				}
 			case sub == "databases" && r.Method == http.MethodGet:
-				handlers.ListDatabases()(w, r)
+				requireAny(handlers.PermSchemaBrowse)(handlers.ListDatabases())(w, r)
 			case sub == "schema" && r.Method == http.MethodGet && len(parts) == 2:
-				handlers.GetSchema()(w, r)
+				requireAny(handlers.PermSchemaBrowse)(handlers.GetSchema())(w, r)
 			case sub == "schema" && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/tables"):
 				handlers.CreateTable()(w, r)
 			case sub == "schema" && r.Method == http.MethodPatch && !strings.Contains(parts[len(parts)-1], "/"):
@@ -242,13 +310,13 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			case sub == "schema" && r.Method == http.MethodDelete && strings.Count(r.URL.Path, "/") == 6:
 				handlers.DropTable()(w, r)
 			case sub == "schema" && strings.HasSuffix(r.URL.Path, "/columns") && r.Method == http.MethodGet:
-				handlers.GetTableColumns()(w, r)
+				requireAny(handlers.PermSchemaBrowse)(handlers.GetTableColumns())(w, r)
 			case sub == "schema" && strings.HasSuffix(r.URL.Path, "/columns") && r.Method == http.MethodPost:
 				handlers.AddColumn()(w, r)
 			case sub == "schema" && strings.Contains(r.URL.Path, "/columns/") && r.Method == http.MethodDelete:
 				handlers.DropColumn()(w, r)
 			case sub == "schema" && strings.HasSuffix(r.URL.Path, "/data"):
-				handlers.GetTableData()(w, r)
+				requireAny(handlers.PermSchemaBrowse)(handlers.GetTableData())(w, r)
 			case sub == "schema" && strings.HasSuffix(r.URL.Path, "/import") && r.Method == http.MethodPost:
 				handlers.ImportRows()(w, r)
 			case sub == "schema" && strings.HasSuffix(r.URL.Path, "/rows"):
@@ -263,9 +331,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 					http.NotFound(w, r)
 				}
 			case sub == "er" && r.Method == http.MethodGet:
-				handlers.GetERDiagram()(w, r)
+				requireAny(handlers.PermSchemaBrowse)(handlers.GetERDiagram())(w, r)
 			case sub == "dashboard" && r.Method == http.MethodGet:
-				handlers.GetDashboard()(w, r)
+				requireAny(handlers.PermConnectionsView)(handlers.GetDashboard())(w, r)
 			case sub == "history" && r.Method == http.MethodGet:
 				handlers.GetHistory()(w, r)
 			case sub == "history" && r.Method == http.MethodPost:
@@ -275,13 +343,13 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			case sub == "script" && r.Method == http.MethodPost:
 				handlers.RunScript()(w, r)
 			case sub == "folder" && r.Method == http.MethodPatch:
-				handlers.MoveConnectionToFolder()(w, r)
+				requireAny(handlers.PermConnectionsEdit)(handlers.MoveConnectionToFolder())(w, r)
 			case sub == "visibility" && r.Method == http.MethodPatch:
-				handlers.SetConnectionVisibility()(w, r)
+				requireAny(handlers.PermConnectionsEdit)(handlers.SetConnectionVisibility())(w, r)
 			case sub == "row-history" && r.Method == http.MethodGet:
-				handlers.ListRowHistory()(w, r)
+				requireAny(handlers.PermRowHistoryView)(handlers.ListRowHistory())(w, r)
 			case sub == "row-history" && r.Method == http.MethodPost:
-				handlers.UndoRowChange()(w, r)
+				requireAny(handlers.PermRowHistoryView)(handlers.UndoRowChange())(w, r)
 			default:
 				http.NotFound(w, r)
 			}
@@ -295,9 +363,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/saved-queries", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			handlers.ListSavedQueries()(w, r)
+			requireAny(handlers.PermSavedQueriesManage)(handlers.ListSavedQueries())(w, r)
 		case http.MethodPost:
-			handlers.CreateSavedQuery()(w, r)
+			requireAny(handlers.PermSavedQueriesManage)(handlers.CreateSavedQuery())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -305,22 +373,28 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/saved-queries/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPut:
-			handlers.UpdateSavedQuery()(w, r)
+			requireAny(handlers.PermSavedQueriesManage)(handlers.UpdateSavedQuery())(w, r)
 		case http.MethodDelete:
-			handlers.DeleteSavedQuery()(w, r)
+			requireAny(handlers.PermSavedQueriesManage)(handlers.DeleteSavedQuery())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
 	})
 
 	// ── Admin: users ──────────────────────────────────────────────
-	mux.HandleFunc("/api/admin/users", handlers.ListUsers())
+	mux.HandleFunc("/api/admin/users", requireAny(handlers.PermUsersManage, handlers.PermWorkflowsManage)(handlers.ListUsers()))
 	mux.HandleFunc("/api/admin/users/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
+		case http.MethodPost:
+			if strings.HasSuffix(r.URL.Path, "/reset-password") {
+				requireAny(handlers.PermUsersManage)(handlers.ResetPasswordHandler())(w, r)
+				return
+			}
+			http.NotFound(w, r)
 		case http.MethodPut:
-			handlers.UpdateUser()(w, r)
+			requireAny(handlers.PermUsersManage)(handlers.UpdateUser())(w, r)
 		case http.MethodDelete:
-			handlers.DeleteUser()(w, r)
+			requireAny(handlers.PermUsersManage)(handlers.DeleteUser())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -334,9 +408,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		if len(parts) >= 2 && parts[1] == "connections" {
 			switch r.Method {
 			case http.MethodGet:
-				handlers.GetUserConnections()(w, r)
+				requireAny(handlers.PermUsersManage)(handlers.GetUserConnections())(w, r)
 			case http.MethodPost:
-				handlers.SetUserConnections()(w, r)
+				requireAny(handlers.PermUsersManage)(handlers.SetUserConnections())(w, r)
 			default:
 				http.NotFound(w, r)
 			}
@@ -350,24 +424,24 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/workflows", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			handlers.ListWorkflows()(w, r)
+			requireAny(handlers.PermWorkflowsManage)(handlers.ListWorkflows())(w, r)
 		case http.MethodPost:
-			handlers.CreateWorkflow()(w, r)
+			requireAny(handlers.PermWorkflowsManage)(handlers.CreateWorkflow())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
 	})
-	mux.HandleFunc("/api/workflows/applicable", handlers.ListApplicableWorkflows())
+	mux.HandleFunc("/api/workflows/applicable", requireAny(handlers.PermQueryExecute)(handlers.ListApplicableWorkflows()))
 	mux.HandleFunc("/api/workflows/", func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/active") && r.Method == http.MethodPut:
-			handlers.ToggleWorkflowActive()(w, r)
+			requireAny(handlers.PermWorkflowsManage)(handlers.ToggleWorkflowActive())(w, r)
 		case r.Method == http.MethodGet:
-			handlers.GetWorkflow()(w, r)
+			requireAny(handlers.PermWorkflowsManage)(handlers.GetWorkflow())(w, r)
 		case r.Method == http.MethodPut:
-			handlers.UpdateWorkflow()(w, r)
+			requireAny(handlers.PermWorkflowsManage)(handlers.UpdateWorkflow())(w, r)
 		case r.Method == http.MethodDelete:
-			handlers.DeleteWorkflow()(w, r)
+			requireAny(handlers.PermWorkflowsManage)(handlers.DeleteWorkflow())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -377,9 +451,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/approval-requests", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			handlers.ListApprovalRequests()(w, r)
+			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove)(handlers.ListApprovalRequests())(w, r)
 		case http.MethodPost:
-			handlers.CreateApprovalRequest()(w, r)
+			requireAny(handlers.PermQueryExecute)(handlers.CreateApprovalRequest())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -387,15 +461,15 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/approval-requests/", func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/approval-progress") && r.Method == http.MethodGet:
-			handlers.GetApprovalProgress()(w, r)
+			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove)(handlers.GetApprovalProgress())(w, r)
 		case strings.HasSuffix(r.URL.Path, "/approve-step") && r.Method == http.MethodPost:
-			handlers.ApproveApprovalStep()(w, r)
+			requireAny(handlers.PermQueryApprove)(handlers.ApproveApprovalStep())(w, r)
 		case strings.HasSuffix(r.URL.Path, "/execute") && r.Method == http.MethodPost:
-			handlers.ExecuteApprovalRequest()(w, r)
+			requireAny(handlers.PermQueryExecute)(handlers.ExecuteApprovalRequest())(w, r)
 		case r.Method == http.MethodPut:
-			handlers.UpdateApprovalRequest()(w, r)
+			requireAny(handlers.PermQueryExecute)(handlers.UpdateApprovalRequest())(w, r)
 		case r.Method == http.MethodGet:
-			handlers.GetApprovalRequest()(w, r)
+			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove)(handlers.GetApprovalRequest())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -405,29 +479,29 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	handlers.StartScheduler()
 
 	// ── Schema diff ───────────────────────────────────────────────
-	mux.HandleFunc("/api/diff", handlers.GetSchemaDiff())
+	mux.HandleFunc("/api/diff", requireAny(handlers.PermSchemaDiffView)(handlers.GetSchemaDiff()))
 
 	// ── Audit log ─────────────────────────────────────────────────
 	mux.HandleFunc("/api/admin/audit", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			handlers.ListAuditLog()(w, r)
+			requireAny(handlers.PermAuditView)(handlers.ListAuditLog())(w, r)
 		case http.MethodDelete:
-			handlers.ClearAuditLog()(w, r)
+			requireAny(handlers.PermAuditView)(handlers.ClearAuditLog())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
 	})
-	mux.HandleFunc("/api/admin/audit/stats", handlers.GetAuditStats())
+	mux.HandleFunc("/api/admin/audit/stats", requireAny(handlers.PermAuditView)(handlers.GetAuditStats()))
 	mux.HandleFunc("/api/audit/access", handlers.LogFeatureAccess())
 
 	// ── Schedules ────────────────────────────────────────────────
 	mux.HandleFunc("/api/schedules", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			handlers.ListSchedules()(w, r)
+			requireAny(handlers.PermSchedulesManage)(handlers.ListSchedules())(w, r)
 		case http.MethodPost:
-			handlers.CreateSchedule()(w, r)
+			requireAny(handlers.PermSchedulesManage)(handlers.CreateSchedule())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -438,16 +512,16 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		if len(parts) == 1 {
 			switch r.Method {
 			case http.MethodPut:
-				handlers.UpdateSchedule()(w, r)
+				requireAny(handlers.PermSchedulesManage)(handlers.UpdateSchedule())(w, r)
 			case http.MethodDelete:
-				handlers.DeleteSchedule()(w, r)
+				requireAny(handlers.PermSchedulesManage)(handlers.DeleteSchedule())(w, r)
 			default:
 				http.NotFound(w, r)
 			}
 		} else if len(parts) == 2 && parts[1] == "run" {
-			handlers.RunScheduleNow()(w, r)
+			requireAny(handlers.PermSchedulesManage)(handlers.RunScheduleNow())(w, r)
 		} else if len(parts) == 2 && parts[1] == "runs" {
-			handlers.GetScheduleRuns()(w, r)
+			requireAny(handlers.PermSchedulesManage)(handlers.GetScheduleRuns())(w, r)
 		} else {
 			http.NotFound(w, r)
 		}
@@ -457,9 +531,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/snippets", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			handlers.ListSnippets()(w, r)
+			requireAny(handlers.PermSnippetsManage)(handlers.ListSnippets())(w, r)
 		case http.MethodPost:
-			handlers.CreateSnippet()(w, r)
+			requireAny(handlers.PermSnippetsManage)(handlers.CreateSnippet())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -467,9 +541,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/snippets/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPut:
-			handlers.UpdateSnippet()(w, r)
+			requireAny(handlers.PermSnippetsManage)(handlers.UpdateSnippet())(w, r)
 		case http.MethodDelete:
-			handlers.DeleteSnippet()(w, r)
+			requireAny(handlers.PermSnippetsManage)(handlers.DeleteSnippet())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -479,28 +553,28 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/schema/search", handlers.SearchSchema())
 
 	// ── Health ping ───────────────────────────────────────────────
-	mux.HandleFunc("/api/health", handlers.PingAllConnections())
+	mux.HandleFunc("/api/health", requireAny(handlers.PermHealthView)(handlers.PingAllConnections()))
 
 	// ── Notifications ─────────────────────────────────────────────
 	mux.HandleFunc("/api/notifications", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			handlers.ListNotifications()(w, r)
+			requireAny(handlers.PermNotificationsView)(handlers.ListNotifications())(w, r)
 		case http.MethodPut:
-			handlers.MarkNotificationsRead()(w, r)
+			requireAny(handlers.PermNotificationsView)(handlers.MarkNotificationsRead())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
 	})
-	mux.HandleFunc("/api/notifications/unread", handlers.UnreadCount())
+	mux.HandleFunc("/api/notifications/unread", requireAny(handlers.PermNotificationsView)(handlers.UnreadCount()))
 
 	// ── Connection folders ────────────────────────────────────────
 	mux.HandleFunc("/api/folders", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			handlers.ListFolders()(w, r)
+			requireAny(handlers.PermFoldersManage, handlers.PermWorkflowsManage)(handlers.ListFolders())(w, r)
 		case http.MethodPost:
-			handlers.CreateFolder()(w, r)
+			requireAny(handlers.PermFoldersManage)(handlers.CreateFolder())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -508,9 +582,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/folders/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPut:
-			handlers.UpdateFolder()(w, r)
+			requireAny(handlers.PermFoldersManage)(handlers.UpdateFolder())(w, r)
 		case http.MethodDelete:
-			handlers.DeleteFolder()(w, r)
+			requireAny(handlers.PermFoldersManage)(handlers.DeleteFolder())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -520,9 +594,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/roles", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			handlers.ListRoles()(w, r)
+			requireAny(handlers.PermRolesManage, handlers.PermUsersManage, handlers.PermWorkflowsManage)(handlers.ListRoles())(w, r)
 		case http.MethodPost:
-			handlers.CreateRole()(w, r)
+			requireAny(handlers.PermRolesManage)(handlers.CreateRole())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -530,11 +604,11 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/roles/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			handlers.GetRole()(w, r)
+			requireAny(handlers.PermRolesManage, handlers.PermUsersManage, handlers.PermWorkflowsManage)(handlers.GetRole())(w, r)
 		case http.MethodPut:
-			handlers.UpdateRole()(w, r)
+			requireAny(handlers.PermRolesManage)(handlers.UpdateRole())(w, r)
 		case http.MethodDelete:
-			handlers.DeleteRole()(w, r)
+			requireAny(handlers.PermRolesManage)(handlers.DeleteRole())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -543,15 +617,14 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	// ── RBAC: Permissions ─────────────────────────────────────────
 	mux.HandleFunc("/api/app-permissions", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			handlers.ListAppPermissions()(w, r)
+			requireAny(handlers.PermRolesManage)(handlers.ListAppPermissions())(w, r)
 		} else {
 			http.NotFound(w, r)
 		}
 	})
 	mux.HandleFunc("/api/my-permissions", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			// TODO: Implement GetMyPermissions handler
-			http.Error(w, "not implemented yet", http.StatusNotImplemented)
+			handlers.GetMyPermissions()(w, r)
 		} else {
 			http.NotFound(w, r)
 		}
@@ -580,16 +653,16 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/ai/settings", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			handlers.GetAISettings()(w, r)
+			requireAny(handlers.PermAIManage)(handlers.GetAISettings())(w, r)
 		case http.MethodPost:
-			handlers.SaveAISettings()(w, r)
+			requireAny(handlers.PermAIManage)(handlers.SaveAISettings())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
 	})
 	mux.HandleFunc("/api/ai/chat", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			handlers.AIChat()(w, r)
+			requireAny(handlers.PermAIUse)(handlers.AIChat())(w, r)
 		} else {
 			http.NotFound(w, r)
 		}

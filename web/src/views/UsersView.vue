@@ -6,6 +6,7 @@ interface User {
   id: number
   username: string
   role: string
+  is_active: boolean
   created_at: string
 }
 
@@ -32,12 +33,14 @@ onMounted(load)
 const editTarget = ref<User | null>(null)
 const editRole = ref('')
 const editPassword = ref('')
+const editActive = ref(true)
 const editSaving = ref(false)
 
 function openEdit(u: User) {
   editTarget.value = u
   editRole.value = u.role
   editPassword.value = ''
+  editActive.value = u.is_active
 }
 
 async function saveEdit() {
@@ -46,6 +49,7 @@ async function saveEdit() {
   try {
     await axios.put(`/api/admin/users/${editTarget.value.id}`, {
       role: editRole.value,
+      is_active: editActive.value,
       password: editPassword.value || undefined,
     })
     editTarget.value = null
@@ -105,6 +109,7 @@ const roleColors: Record<string, string> = {
                 <th>ID</th>
                 <th>Username</th>
                 <th>Role</th>
+                <th>Status</th>
                 <th>Created</th>
                 <th></th>
               </tr>
@@ -118,6 +123,7 @@ const roleColors: Record<string, string> = {
                     {{ u.role }}
                   </span>
                 </td>
+                <td class="u-td-dim">{{ u.is_active ? 'Active' : 'Locked' }}</td>
                 <td class="u-td-dim">{{ new Date(u.created_at).toLocaleDateString() }}</td>
                 <td>
                   <div class="u-row-actions">
@@ -127,7 +133,7 @@ const roleColors: Record<string, string> = {
                 </td>
               </tr>
               <tr v-if="users.length === 0">
-                <td colspan="5" class="u-empty">No users found</td>
+                <td colspan="6" class="u-empty">No users found</td>
               </tr>
             </tbody>
           </table>
@@ -150,6 +156,12 @@ const roleColors: Record<string, string> = {
 
           <label class="u-label" style="margin-top:12px">New Password <span style="color:var(--text-muted);font-weight:400">(leave blank to keep)</span></label>
           <input class="u-input" type="password" v-model="editPassword" placeholder="New password…" autocomplete="new-password" />
+
+          <label class="u-label" style="margin-top:12px">Account Status</label>
+          <select class="u-select" v-model="editActive">
+            <option :value="true">Active</option>
+            <option :value="false">Locked</option>
+          </select>
 
           <div class="u-dialog-actions">
             <button class="base-btn base-btn--ghost base-btn--sm" @click="editTarget=null">Cancel</button>

@@ -45,14 +45,15 @@ func GetUserRole(userID int64) (string, error) {
 // GetUserAppPermissions returns the effective application permissions for a user
 func GetUserAppPermissions(userID int64) ([]string, error) {
 	var rolePerms, userPerms string
-	err := DB.QueryRow(`
+	query := ConvertQuery(`
 		SELECT 
 			COALESCE(r.permissions, '[]'),
 			COALESCE(u.permissions, '[]')
 		FROM users u
 		LEFT JOIN roles r ON r.id = u.role_id
 		WHERE u.id = ?
-	`, userID).Scan(&rolePerms, &userPerms)
+	`)
+	err := DB.QueryRow(query, userID).Scan(&rolePerms, &userPerms)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return []string{}, nil
@@ -78,6 +79,24 @@ func GetUserAppPermissions(userID int64) ([]string, error) {
 		}
 	}
 
+	// Compatibility expansion for older roles created before newer feature
+	// permissions existed. This avoids breaking screens after permission
+	// hardening while preserving deny-by-default for unrelated admin features.
+	if permsMap["query.execute"] {
+		permsMap["savedqueries.manage"] = true
+		permsMap["snippets.manage"] = true
+		permsMap["ai.use"] = true
+	}
+	if permsMap["connections.view"] || permsMap["query.execute"] {
+		permsMap["notifications.view"] = true
+	}
+	if len(permsMap) > 0 {
+		permsMap["security.self"] = true
+	}
+	if permsMap["users.manage"] || permsMap["roles.manage"] {
+		permsMap["ai.manage"] = true
+	}
+
 	result := make([]string, 0, len(permsMap))
 	for p := range permsMap {
 		result = append(result, p)
@@ -97,6 +116,23 @@ func HasUserAppPermission(userID int64, perm string) bool {
 		}
 	}
 	return false
+}
+
+// IsUserActive returns whether the user account is active.
+func IsUserActive(userID int64) (bool, error) {
+	var isActive int
+	err := DB.QueryRow(ConvertQuery(`
+		SELECT COALESCE(is_active, 1)
+		FROM users
+		WHERE id = ?
+	`), userID).Scan(&isActive)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	return isActive == 1, nil
 }
 
 // ── Connection Access Resolution ──

@@ -16,6 +16,7 @@ type ConnectionFolder struct {
 	ParentID   *int64 `json:"parent_id"`
 	OwnerID    int64  `json:"owner_id"`
 	Visibility string `json:"visibility"` // "private" | "shared"
+	IsActive   bool   `json:"is_active"`
 	Color      string `json:"color"`
 	SortOrder  int    `json:"sort_order"`
 	CreatedAt  string `json:"created_at"`
@@ -34,7 +35,7 @@ func ListFolders() http.HandlerFunc {
 		// Admin or no auth enabled: see all folders
 		if userRole == "admin" || !isAuthEnabled() {
 			rows, err = appdb.DB.Query(
-				`SELECT id, name, parent_id, owner_id, visibility, color, COALESCE(sort_order,0), created_at
+				`SELECT id, name, parent_id, owner_id, visibility, COALESCE(is_active,1), color, COALESCE(sort_order,0), created_at
 				 FROM connection_folders ORDER BY sort_order, name`,
 			)
 		} else {
@@ -44,7 +45,7 @@ func ListFolders() http.HandlerFunc {
 				userID, _ = strconv.ParseInt(userIDStr, 10, 64)
 			}
 			rows, err = appdb.DB.Query(
-				`SELECT DISTINCT cf.id, cf.name, cf.parent_id, cf.owner_id, cf.visibility, cf.color, COALESCE(cf.sort_order,0), cf.created_at
+				`SELECT DISTINCT cf.id, cf.name, cf.parent_id, cf.owner_id, cf.visibility, COALESCE(cf.is_active,1), cf.color, COALESCE(cf.sort_order,0), cf.created_at
 				 FROM connection_folders cf
 				 LEFT JOIN folder_members fm ON cf.id = fm.folder_id AND fm.user_id = ?
 				 WHERE cf.visibility='shared' OR cf.owner_id=? OR fm.folder_id IS NOT NULL
@@ -61,7 +62,9 @@ func ListFolders() http.HandlerFunc {
 		var folders []ConnectionFolder
 		for rows.Next() {
 			var f ConnectionFolder
-			rows.Scan(&f.ID, &f.Name, &f.ParentID, &f.OwnerID, &f.Visibility, &f.Color, &f.SortOrder, &f.CreatedAt)
+			var isActive int
+			rows.Scan(&f.ID, &f.Name, &f.ParentID, &f.OwnerID, &f.Visibility, &isActive, &f.Color, &f.SortOrder, &f.CreatedAt)
+			f.IsActive = isActive == 1
 			folders = append(folders, f)
 		}
 		if folders == nil {

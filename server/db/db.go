@@ -75,16 +75,18 @@ func Init(cfg *config.Config) error {
 			return fmt.Errorf("open sqlite: %w", err)
 		}
 
-		// Configure connection pool to prevent too many concurrent writes
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
+		// Configure connection pool - allow more connections for read operations
+		// WAL mode supports concurrent reads
+		db.SetMaxOpenConns(10)
+		db.SetMaxIdleConns(5)
 		db.SetConnMaxLifetime(0)
 
 		// Enable WAL mode and set busy timeout
 		if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 			return fmt.Errorf("enable WAL mode: %w", err)
 		}
-		if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		// Increase busy timeout to 10 seconds for better handling of concurrent access
+		if _, err := db.Exec("PRAGMA busy_timeout=10000"); err != nil {
 			return fmt.Errorf("set busy timeout: %w", err)
 		}
 	}
@@ -304,6 +306,31 @@ func migrate() error {
 			read       INTEGER DEFAULT 0,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE TABLE IF NOT EXISTS auth_sessions (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id      INTEGER NOT NULL,
+			token_id     TEXT NOT NULL UNIQUE,
+			ip_address   TEXT DEFAULT '',
+			user_agent   TEXT DEFAULT '',
+			last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			expires_at   DATETIME NOT NULL,
+			revoked_at   DATETIME DEFAULT NULL,
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_auth_sessions_token ON auth_sessions(token_id)`,
+		`CREATE TABLE IF NOT EXISTS login_events (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id        INTEGER DEFAULT NULL,
+			username       TEXT NOT NULL DEFAULT '',
+			ip_address     TEXT DEFAULT '',
+			user_agent     TEXT DEFAULT '',
+			success        INTEGER NOT NULL DEFAULT 0,
+			failure_reason TEXT DEFAULT '',
+			created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_login_events_user_time ON login_events(user_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_login_events_username_time ON login_events(username, created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS row_changes (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			conn_id     INTEGER NOT NULL,
@@ -497,10 +524,10 @@ func migrate() error {
 		// Seed system roles
 		`INSERT OR IGNORE INTO roles (name, description, permissions, is_system) VALUES
 			('admin', 'Full system access',
-			 '["connections.view","connections.create","connections.edit","connections.delete","query.execute","schema.browse","audit.view","users.manage","folders.manage","roles.manage"]',
+			 '["connections.view","connections.create","connections.edit","connections.delete","query.execute","query.approve","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","audit.view","ai.use","ai.manage","security.self","notifications.view","backups.manage","schedules.manage","health.view","rowhistory.view","users.manage","folders.manage","roles.manage","workflows.manage"]',
 			 1),
 			('user', 'Standard user access',
-			 '["connections.view","query.execute","schema.browse"]',
+			 '["connections.view","query.execute","savedqueries.manage","snippets.manage","schema.browse","ai.use","security.self","notifications.view"]',
 			 1)`,
 
 		// Add role_id and per-user permission overrides
@@ -510,7 +537,8 @@ func migrate() error {
 
 		// Set existing users to active
 		`UPDATE users SET is_active = 1 WHERE is_active IS NULL`,
-		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","query.execute","query.approve","schema.browse","audit.view","users.manage","folders.manage","roles.manage","workflows.manage"]' WHERE name = 'admin'`,
+		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","query.execute","query.approve","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","audit.view","ai.use","ai.manage","security.self","notifications.view","backups.manage","schedules.manage","health.view","rowhistory.view","users.manage","folders.manage","roles.manage","workflows.manage"]' WHERE name = 'admin'`,
+		`UPDATE roles SET permissions = '["connections.view","query.execute","savedqueries.manage","snippets.manage","schema.browse","ai.use","security.self","notifications.view"]' WHERE name = 'user'`,
 		`ALTER TABLE query_approval_request ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE query_approval ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
 	}

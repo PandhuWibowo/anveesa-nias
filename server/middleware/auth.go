@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/anveesa/nias/db"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -12,6 +13,7 @@ type Claims struct {
 	UserID   int64  `json:"user_id"`
 	Username string `json:"username"`
 	Role     string `json:"role"`
+	SessionID string `json:"session_id"`
 	jwt.RegisteredClaims
 }
 
@@ -34,6 +36,21 @@ func RequireAuth(secret string) func(http.Handler) http.Handler {
 			
 			// Extract claims and set as headers for downstream handlers
 			if claims, ok := token.Claims.(*Claims); ok {
+				active, err := db.IsUserActive(claims.UserID)
+				if err != nil || !active {
+					http.Error(w, `{"error":"account is locked"}`, http.StatusUnauthorized)
+					return
+				}
+				if claims.SessionID == "" {
+					http.Error(w, `{"error":"invalid session"}`, http.StatusUnauthorized)
+					return
+				}
+				sessionActive, err := db.IsSessionActive(claims.SessionID)
+				if err != nil || !sessionActive {
+					http.Error(w, `{"error":"session revoked"}`, http.StatusUnauthorized)
+					return
+				}
+				_ = db.TouchSession(claims.SessionID)
 				r.Header.Set("X-User-ID", strconv.FormatInt(claims.UserID, 10))
 				r.Header.Set("X-Username", claims.Username)
 				r.Header.Set("X-User-Role", claims.Role)

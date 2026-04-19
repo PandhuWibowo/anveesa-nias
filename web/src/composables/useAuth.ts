@@ -5,6 +5,7 @@ interface User {
   id: number
   username: string
   role: string
+  permissions: string[]
 }
 
 const STORAGE_KEY = 'nias-token'
@@ -47,7 +48,7 @@ axios.interceptors.request.use((config) => {
 axios.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    if (error.response?.status === 401 || error.response?.status === 423) {
       // Clear invalid token
       token.value = ''
       user.value = null
@@ -61,6 +62,19 @@ axios.interceptors.response.use(
 export function useAuth() {
   const isAuthenticated = computed(() => !!user.value || !authEnabled.value)
   const isAdmin = computed(() => user.value?.role === 'admin')
+  const permissions = computed(() => user.value?.permissions ?? [])
+
+  function hasPermission(permission: string): boolean {
+    if (!authEnabled.value) return true
+    if (user.value?.role === 'admin') return true
+    return permissions.value.includes(permission)
+  }
+
+  function hasAnyPermission(required: string[]): boolean {
+    if (!authEnabled.value) return true
+    if (user.value?.role === 'admin') return true
+    return required.some((permission) => permissions.value.includes(permission))
+  }
 
   async function fetchMe() {
     try {
@@ -69,7 +83,10 @@ export function useAuth() {
 
       if (authEnabled.value && token.value) {
         const me = await axios.get('/api/auth/me')
-        user.value = me.data
+        user.value = {
+          ...me.data,
+          permissions: Array.isArray(me.data?.permissions) ? me.data.permissions : [],
+        }
       }
     } catch {
       // Token invalid or expired
@@ -93,7 +110,10 @@ export function useAuth() {
       
       // Successful login
       token.value = data.token
-      user.value = data.user
+      user.value = {
+        ...data.user,
+        permissions: Array.isArray(data.user?.permissions) ? data.user.permissions : [],
+      }
       localStorage.setItem(STORAGE_KEY, data.token)
       sessionStorage.removeItem(LEGACY_STORAGE_KEY)
       return { success: true }
@@ -102,7 +122,14 @@ export function useAuth() {
     }
   }
 
-  function logout() {
+  async function logout() {
+    try {
+      if (token.value) {
+        await axios.post('/api/auth/logout')
+      }
+    } catch {
+      // Best-effort logout; local token should still be cleared.
+    }
     token.value = ''
     user.value = null
     localStorage.removeItem(STORAGE_KEY)
@@ -116,6 +143,9 @@ export function useAuth() {
     authEnabled,
     isAuthenticated,
     isAdmin,
+    permissions,
+    hasPermission,
+    hasAnyPermission,
     fetchMe,
     login,
     logout,

@@ -3,8 +3,11 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+
+	appdb "github.com/anveesa/nias/db"
 )
 
 type ForeignKey struct {
@@ -28,12 +31,13 @@ type ERDiagram struct {
 
 // GetERDiagram returns tables + columns + FK relationships for SVG rendering.
 // Path: /api/connections/{id}/er/{db}
+// Also accepts /api/connections/{id}/er and falls back to the connection's configured database.
 func GetERDiagram() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/connections/"), "/")
-		if len(parts) < 3 {
+		if len(parts) < 2 {
 			http.Error(w, `{"error":"path must be /api/connections/{id}/er/{db}"}`, http.StatusBadRequest)
 			return
 		}
@@ -42,7 +46,18 @@ func GetERDiagram() http.HandlerFunc {
 			http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
 			return
 		}
-		dbName := parts[2]
+
+		var dbName string
+		if len(parts) >= 3 {
+			dbName, _ = url.PathUnescape(strings.Join(parts[2:], "/"))
+		}
+		if strings.TrimSpace(dbName) == "" {
+			err = appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT database FROM connections WHERE id = ?`), connID).Scan(&dbName)
+			if err != nil || strings.TrimSpace(dbName) == "" {
+				http.Error(w, `{"error":"database name is required"}`, http.StatusBadRequest)
+				return
+			}
+		}
 
 		db, driver, err := GetDB(connID)
 		if err != nil {

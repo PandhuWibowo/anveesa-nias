@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/anveesa/nias/db"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -24,9 +25,14 @@ func InjectUserContext(jwtSecret string) func(http.Handler) http.Handler {
 				// If token is valid, extract claims and set headers
 				if err == nil && token.Valid {
 					if claims, ok := token.Claims.(*Claims); ok {
-						r.Header.Set("X-User-ID", strconv.FormatInt(claims.UserID, 10))
-						r.Header.Set("X-Username", claims.Username)
-						r.Header.Set("X-User-Role", claims.Role)
+						active, activeErr := db.IsUserActive(claims.UserID)
+						sessionActive, sessionErr := db.IsSessionActive(claims.SessionID)
+						if activeErr == nil && active && claims.SessionID != "" && sessionErr == nil && sessionActive {
+							_ = db.TouchSession(claims.SessionID)
+							r.Header.Set("X-User-ID", strconv.FormatInt(claims.UserID, 10))
+							r.Header.Set("X-Username", claims.Username)
+							r.Header.Set("X-User-Role", claims.Role)
+						}
 					}
 				}
 			}

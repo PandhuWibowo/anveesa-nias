@@ -197,6 +197,30 @@ func ListAppPermissions() http.HandlerFunc {
 	}
 }
 
+// GetMyPermissions returns the effective application permissions for the current user.
+func GetMyPermissions() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		userID, err := strconv.ParseInt(r.Header.Get("X-User-ID"), 10, 64)
+		if err != nil || userID == 0 {
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+
+		perms, err := db.GetUserAppPermissions(userID)
+		if err != nil {
+			http.Error(w, "failed to load permissions", http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"permissions": perms,
+			"role":        r.Header.Get("X-User-Role"),
+		})
+	}
+}
+
 // ── User Connection Assignments ──
 
 // GetUserConnections returns all connection assignments for a user

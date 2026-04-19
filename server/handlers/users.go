@@ -64,6 +64,7 @@ func UpdateUser() http.HandlerFunc {
 	var body struct {
 		Role        string   `json:"role"`
 		RoleID      *int64   `json:"role_id"`
+		IsActive    *bool    `json:"is_active"`
 		Password    string   `json:"password"`
 		Connections []int64  `json:"connections"`
 	}
@@ -90,6 +91,14 @@ func UpdateUser() http.HandlerFunc {
 		if err == nil {
 			appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET password = ? WHERE id = ?`), string(hash), id)
 		}
+	}
+
+	if body.IsActive != nil {
+		isActive := 0
+		if *body.IsActive {
+			isActive = 1
+		}
+		appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET is_active = ? WHERE id = ?`), isActive, id)
 	}
 
 	// Update connection assignments
