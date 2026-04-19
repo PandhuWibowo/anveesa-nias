@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import axios from 'axios'
+import { parseServerTimestamp } from '@/utils/datetime'
 
 export interface QueryResult {
   columns: string[]
@@ -103,7 +104,7 @@ export function useQuery() {
       return data.map((h) => ({
         id: h.id,
         sql: h.sql,
-        time: new Date(h.executed_at),
+        time: parseServerTimestamp(h.executed_at),
         connId,
         duration_ms: h.duration_ms,
         row_count: h.row_count,

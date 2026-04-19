@@ -72,6 +72,10 @@ func ListAuditLog() http.HandlerFunc {
 		}
 		filter := r.URL.Query().Get("q")
 		eventType := r.URL.Query().Get("event_type")
+		connID := r.URL.Query().Get("conn_id")
+		sinceHours := r.URL.Query().Get("since_hours")
+		hasError := r.URL.Query().Get("has_error")
+		minDurationMs := r.URL.Query().Get("min_duration_ms")
 
 		query := `SELECT id, COALESCE(event_type,'query_execution'), COALESCE(action,''), COALESCE(target,''), COALESCE(details,''), username, conn_id, conn_name, sql, duration_ms, row_count, COALESCE(error,''), executed_at
 		           FROM audit_log`
@@ -87,6 +91,32 @@ func ListAuditLog() http.HandlerFunc {
 		if eventType != "" && eventType != "all" {
 			whereClause = append(whereClause, "event_type = ?")
 			args = append(args, eventType)
+		}
+
+		if connID != "" && connID != "all" {
+			if n, err := strconv.ParseInt(connID, 10, 64); err == nil && n > 0 {
+				whereClause = append(whereClause, "conn_id = ?")
+				args = append(args, n)
+			}
+		}
+
+		if sinceHours != "" {
+			if n, err := strconv.Atoi(sinceHours); err == nil && n > 0 {
+				since := time.Now().Add(-time.Duration(n) * time.Hour).Format("2006-01-02 15:04:05")
+				whereClause = append(whereClause, "executed_at >= ?")
+				args = append(args, since)
+			}
+		}
+
+		if hasError == "1" || strings.EqualFold(hasError, "true") {
+			whereClause = append(whereClause, "COALESCE(error, '') != ''")
+		}
+
+		if minDurationMs != "" {
+			if n, err := strconv.ParseInt(minDurationMs, 10, 64); err == nil && n >= 0 {
+				whereClause = append(whereClause, "duration_ms >= ?")
+				args = append(args, n)
+			}
 		}
 
 		if filter != "" {

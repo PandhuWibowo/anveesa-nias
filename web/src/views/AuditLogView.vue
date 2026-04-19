@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import axios from 'axios'
+import { formatServerTimestamp, parseServerTimestamp } from '@/utils/datetime'
 
 interface AuditEntry {
   id: number
@@ -69,8 +70,12 @@ const sortedEntries = computed(() => {
   if (!sortKey.value) return entries.value
   const sorted = [...entries.value]
   sorted.sort((a, b) => {
-    const aVal = a[sortKey.value as keyof AuditEntry]
-    const bVal = b[sortKey.value as keyof AuditEntry]
+    let aVal = a[sortKey.value as keyof AuditEntry]
+    let bVal = b[sortKey.value as keyof AuditEntry]
+    if (sortKey.value === 'executed_at') {
+      aVal = parseServerTimestamp(String(aVal)).getTime()
+      bVal = parseServerTimestamp(String(bVal)).getTime()
+    }
     if (aVal === bVal) return 0
     if (aVal == null) return sortDir.value === 'asc' ? -1 : 1
     if (bVal == null) return sortDir.value === 'asc' ? 1 : -1
@@ -220,7 +225,7 @@ onMounted(load)
           <tbody>
             <template v-for="e in sortedEntries" :key="e.id">
               <tr class="al-row" :class="{ 'al-row--err': e.error, 'al-row--open': expanded === e.id }" @click="expanded = expanded === e.id ? null : e.id">
-                <td v-if="visibleColumns.has('time')" class="al-td-dim al-td-nowrap">{{ new Date(e.executed_at).toLocaleTimeString() }}</td>
+                <td v-if="visibleColumns.has('time')" class="al-td-dim al-td-nowrap">{{ parseServerTimestamp(e.executed_at).toLocaleTimeString() }}</td>
                 <td v-if="visibleColumns.has('user')" class="al-td-user">{{ e.username || '—' }}</td>
                 <td v-if="visibleColumns.has('type')">
                   <span class="al-badge" :class="e.event_type === 'feature_access' ? 'al-badge--feature' : 'al-badge--query'">
@@ -243,7 +248,7 @@ onMounted(load)
                     <div v-if="e.error" class="al-detail-error">{{ e.error }}</div>
                     <pre class="al-detail-sql">{{ e.event_type === 'feature_access' ? `${e.action}\n${e.target}\n${e.details}`.trim() : e.sql }}</pre>
                     <div class="al-detail-meta">
-                      {{ new Date(e.executed_at).toLocaleString() }}
+                      {{ formatServerTimestamp(e.executed_at) }}
                       <template v-if="e.event_type === 'query_execution'">
                         · {{ e.duration_ms }}ms
                         · {{ e.row_count }} rows

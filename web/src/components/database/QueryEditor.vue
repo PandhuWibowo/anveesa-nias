@@ -7,6 +7,7 @@ import { sql } from '@codemirror/lang-sql'
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, indentOnInput } from '@codemirror/language'
 import { closeBrackets, autocompletion, closeBracketsKeymap, completionKeymap, type CompletionSource } from '@codemirror/autocomplete'
 import { oneDark } from '@codemirror/theme-one-dark'
+import { getActiveFunctionHint } from '@/utils/sqlFunctionHelp'
 
 const props = defineProps<{
   modelValue: string
@@ -21,6 +22,7 @@ const emit = defineEmits<{
 }>()
 
 const editorEl = ref<HTMLElement>()
+const functionHint = ref<string | null>(null)
 let view: EditorView | null = null
 const themeCompartment = new Compartment()
 
@@ -82,6 +84,12 @@ function makeExtensions(dark: boolean) {
       if (update.docChanged) {
         emit('update:modelValue', update.state.doc.toString())
       }
+      if (update.docChanged || update.selectionSet) {
+        functionHint.value = getActiveFunctionHint(
+          update.state.doc.toString(),
+          update.state.selection.main.head,
+        )
+      }
     }),
     EditorView.lineWrapping,
   ]
@@ -97,6 +105,7 @@ onMounted(() => {
     }),
     parent: editorEl.value,
   })
+  functionHint.value = getActiveFunctionHint(props.modelValue, view.state.selection.main.head)
 })
 
 onBeforeUnmount(() => {
@@ -111,6 +120,7 @@ watch(() => props.modelValue, (newVal) => {
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert: newVal },
     })
+    functionHint.value = getActiveFunctionHint(newVal, view.state.selection.main.head)
   }
 })
 
@@ -124,10 +134,20 @@ watch(() => props.darkMode, (dark) => {
 </script>
 
 <template>
-  <div ref="editorEl" class="cm-host" />
+  <div class="cm-shell">
+    <div ref="editorEl" class="cm-host" />
+    <div v-if="functionHint" class="cm-hintbar">{{ functionHint }}</div>
+  </div>
 </template>
 
 <style scoped>
+.cm-shell {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .cm-host {
   flex: 1;
   min-height: 0;
@@ -143,5 +163,19 @@ watch(() => props.darkMode, (dark) => {
 .cm-host :deep(.cm-scroller) {
   flex: 1;
   min-height: 0;
+}
+.cm-hintbar {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.9);
+  color: #e2e8f0;
+  font-size: 11px;
+  font-family: var(--mono, "JetBrains Mono", monospace);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  pointer-events: none;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.18);
 }
 </style>

@@ -43,6 +43,18 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['audit.view'] },
         },
         {
+          path: 'query-performance',
+          name: 'query-performance',
+          component: () => import('@/views/QueryPerformanceView.vue'),
+          meta: { requiredPermissionsAny: ['audit.view'] },
+        },
+        {
+          path: 'database-audit',
+          name: 'database-audit',
+          component: () => import('@/views/DatabaseAuditView.vue'),
+          meta: { requiredPermissionsAny: ['audit.view'] },
+        },
+        {
           path: 'diff',
           name: 'diff',
           component: () => import('@/views/SchemaDiffView.vue'),

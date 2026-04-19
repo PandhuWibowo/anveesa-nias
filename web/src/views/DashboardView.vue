@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
+import { formatServerTimestamp } from '@/utils/datetime'
 
 const props = defineProps<{ activeConnId?: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -16,6 +17,22 @@ interface TableStat {
   size_bytes: number
 }
 
+interface SlowQueryStat {
+  sql: string
+  duration_ms: number
+  row_count: number
+  error: string
+  executed_at: string
+}
+
+interface SlowQuerySummary {
+  threshold_ms: number
+  count: number
+  avg_duration_ms: number
+  max_duration_ms: number
+  queries: SlowQueryStat[]
+}
+
 interface DashboardData {
   driver: string
   database: string
@@ -24,6 +41,7 @@ interface DashboardData {
   table_count: number
   view_count: number
   tables: TableStat[]
+  slow_queries: SlowQuerySummary
 }
 
 interface ConnState {
@@ -41,6 +59,16 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
   if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB'
   return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB'
+}
+
+function truncateSql(sql: string, max = 120): string {
+  const compact = sql.replace(/\s+/g, ' ').trim()
+  if (compact.length <= max) return compact
+  return compact.slice(0, max - 1) + '…'
+}
+
+function formatExecutedAt(value: string): string {
+  return formatServerTimestamp(value)
 }
 
 const driverColors: Record<string, string> = {
@@ -87,6 +115,12 @@ const totalTables = computed(() =>
 )
 const totalSize = computed(() =>
   Object.values(states.value).reduce((s, v) => s + (v.data?.size_bytes ?? 0), 0)
+)
+const totalSlowQueries = computed(() =>
+  Object.values(states.value).reduce((s, v) => s + (v.data?.slow_queries.count ?? 0), 0)
+)
+const worstSlowQueryMs = computed(() =>
+  Object.values(states.value).reduce((max, v) => Math.max(max, v.data?.slow_queries.max_duration_ms ?? 0), 0)
 )
 const loadedCount = computed(() =>
   Object.values(states.value).filter(v => v.data).length
@@ -150,6 +184,24 @@ onMounted(loadAll)
             <div class="dash-agg-card__value">{{ loadedCount }} / {{ connections.length }}</div>
           </div>
         </div>
+        <div class="page-panel dash-agg-card">
+          <div class="dash-agg-card__icon" style="background:#ef444422;color:#ef4444">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+          </div>
+          <div>
+            <div class="dash-agg-card__label">Slow Queries</div>
+            <div class="dash-agg-card__value">{{ totalSlowQueries.toLocaleString() }}</div>
+          </div>
+        </div>
+        <div class="page-panel dash-agg-card">
+          <div class="dash-agg-card__icon" style="background:#dc262622;color:#dc2626">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v6"/><path d="M12 22v-6"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="M2 12h6"/><path d="M22 12h-6"/><path d="m4.93 19.07 4.24-4.24"/><path d="m14.83 9.17 4.24-4.24"/></svg>
+          </div>
+          <div>
+            <div class="dash-agg-card__label">Worst Query</div>
+            <div class="dash-agg-card__value">{{ worstSlowQueryMs ? `${worstSlowQueryMs} ms` : '—' }}</div>
+          </div>
+        </div>
         </div>
 
       <div v-if="connections.length === 0" class="page-panel dash-empty">
@@ -208,6 +260,46 @@ onMounted(loadAll)
               </div>
             </div>
             <div class="dash-conn-card__version">{{ states[conn.id].data!.version }}</div>
+
+            <div class="dash-perf-block">
+              <div class="dash-perf-block__header">
+                <span>Slow query monitor</span>
+                <span>≥ {{ states[conn.id].data!.slow_queries.threshold_ms }}ms</span>
+              </div>
+              <div class="dash-perf-stats">
+                <div class="dash-perf-stat">
+                  <div class="dash-perf-stat__val">{{ states[conn.id].data!.slow_queries.count.toLocaleString() }}</div>
+                  <div class="dash-perf-stat__lbl">Count</div>
+                </div>
+                <div class="dash-perf-stat">
+                  <div class="dash-perf-stat__val">{{ states[conn.id].data!.slow_queries.avg_duration_ms }}ms</div>
+                  <div class="dash-perf-stat__lbl">Avg</div>
+                </div>
+                <div class="dash-perf-stat">
+                  <div class="dash-perf-stat__val">{{ states[conn.id].data!.slow_queries.max_duration_ms }}ms</div>
+                  <div class="dash-perf-stat__lbl">Max</div>
+                </div>
+              </div>
+
+              <div v-if="states[conn.id].data!.slow_queries.queries.length > 0" class="dash-slow-list">
+                <div
+                  v-for="(q, idx) in states[conn.id].data!.slow_queries.queries"
+                  :key="`${q.executed_at}-${idx}`"
+                  class="dash-slow-item"
+                >
+                  <div class="dash-slow-item__top">
+                    <span class="dash-slow-item__duration">{{ q.duration_ms }}ms</span>
+                    <span class="dash-slow-item__meta">{{ q.row_count.toLocaleString() }} rows</span>
+                    <span class="dash-slow-item__meta">{{ formatExecutedAt(q.executed_at) }}</span>
+                  </div>
+                  <div class="dash-slow-item__sql">{{ truncateSql(q.sql) }}</div>
+                  <div v-if="q.error" class="dash-slow-item__error">{{ q.error }}</div>
+                </div>
+              </div>
+              <div v-else class="dash-slow-empty">
+                No slow queries captured yet for this connection.
+              </div>
+            </div>
 
             <!-- Top tables (expandable) -->
             <div v-if="states[conn.id].data!.tables.length > 0">
@@ -349,6 +441,95 @@ onMounted(loadAll)
   font-size: 11px; color: var(--text-muted);
   font-family: var(--mono, monospace);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.dash-perf-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(239, 68, 68, 0.06), rgba(239, 68, 68, 0.01));
+}
+.dash-perf-block__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+}
+.dash-perf-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.dash-perf-stat {
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.45);
+  border: 1px solid var(--border);
+}
+.dash-perf-stat__val {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.dash-perf-stat__lbl {
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.35px;
+  color: var(--text-muted);
+}
+.dash-slow-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dash-slow-item {
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+}
+.dash-slow-item__top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.dash-slow-item__duration {
+  color: #dc2626;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.dash-slow-item__meta {
+  font-variant-numeric: tabular-nums;
+}
+.dash-slow-item__sql {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  font-family: var(--mono, monospace);
+  word-break: break-word;
+}
+.dash-slow-item__error {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--error, #f87171);
+}
+.dash-slow-empty {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 /* Expand top tables */

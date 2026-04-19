@@ -3,9 +3,12 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
+
+	appdb "github.com/anveesa/nias/db"
 )
 
 type TableStat struct {
@@ -14,14 +17,70 @@ type TableStat struct {
 	SizeBytes int64 `json:"size_bytes"`
 }
 
+type SlowQueryStat struct {
+	SQL        string `json:"sql"`
+	DurationMs int64  `json:"duration_ms"`
+	RowCount   int    `json:"row_count"`
+	Error      string `json:"error"`
+	ExecutedAt string `json:"executed_at"`
+}
+
+type SlowQuerySummary struct {
+	ThresholdMs   int64           `json:"threshold_ms"`
+	Count         int             `json:"count"`
+	AvgDurationMs int64           `json:"avg_duration_ms"`
+	MaxDurationMs int64           `json:"max_duration_ms"`
+	Queries       []SlowQueryStat `json:"queries"`
+}
+
 type DashboardData struct {
-	Driver      string      `json:"driver"`
-	Database    string      `json:"database"`
-	Version     string      `json:"version"`
-	SizeBytes   int64       `json:"size_bytes"`
-	TableCount  int         `json:"table_count"`
-	ViewCount   int         `json:"view_count"`
-	Tables      []TableStat `json:"tables"`
+	Driver      string           `json:"driver"`
+	Database    string           `json:"database"`
+	Version     string           `json:"version"`
+	SizeBytes   int64            `json:"size_bytes"`
+	TableCount  int              `json:"table_count"`
+	ViewCount   int              `json:"view_count"`
+	Tables      []TableStat      `json:"tables"`
+	SlowQueries SlowQuerySummary `json:"slow_queries"`
+}
+
+const slowQueryThresholdMs int64 = 1000
+
+func loadSlowQueries(connID int64) SlowQuerySummary {
+	summary := SlowQuerySummary{
+		ThresholdMs: slowQueryThresholdMs,
+		Queries:     []SlowQueryStat{},
+	}
+
+	var avgDuration float64
+	_ = appdb.DB.QueryRow(appdb.ConvertQuery(`
+		SELECT COUNT(*), COALESCE(AVG(duration_ms), 0), COALESCE(MAX(duration_ms), 0)
+		FROM query_history
+		WHERE conn_id = ? AND duration_ms >= ?
+	`), connID, slowQueryThresholdMs).Scan(&summary.Count, &avgDuration, &summary.MaxDurationMs)
+	summary.AvgDurationMs = int64(math.Round(avgDuration))
+
+	rows, err := appdb.DB.Query(appdb.ConvertQuery(`
+		SELECT sql, duration_ms, row_count, COALESCE(error, ''), executed_at
+		FROM query_history
+		WHERE conn_id = ? AND duration_ms >= ?
+		ORDER BY duration_ms DESC, executed_at DESC
+		LIMIT 5
+	`), connID, slowQueryThresholdMs)
+	if err != nil {
+		return summary
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var q SlowQueryStat
+		if err := rows.Scan(&q.SQL, &q.DurationMs, &q.RowCount, &q.Error, &q.ExecutedAt); err != nil {
+			continue
+		}
+		summary.Queries = append(summary.Queries, q)
+	}
+
+	return summary
 }
 
 func GetDashboard() http.HandlerFunc {
@@ -41,7 +100,11 @@ func GetDashboard() http.HandlerFunc {
 			return
 		}
 
-		data := DashboardData{Driver: driver, Tables: []TableStat{}}
+		data := DashboardData{
+			Driver:      driver,
+			Tables:      []TableStat{},
+			SlowQueries: loadSlowQueries(connID),
+		}
 
 		switch driver {
 		case "postgres":

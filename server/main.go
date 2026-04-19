@@ -529,6 +529,27 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 	mux.HandleFunc("/api/admin/audit/stats", requireAny(handlers.PermAuditView)(handlers.GetAuditStats()))
+	mux.HandleFunc("/api/query-performance/native", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			requireAny(handlers.PermAuditView)(handlers.ListNativeQueryPerformance())(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/api/database-audit/native", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			requireAny(handlers.PermAuditView)(handlers.ListNativeDatabaseAudit())(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/api/database-audit/history/native", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			requireAny(handlers.PermAuditView)(handlers.ListNativeDatabaseAuditHistory())(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
 	mux.HandleFunc("/api/audit/access", handlers.LogFeatureAccess())
 
 	// ── Schedules ────────────────────────────────────────────────

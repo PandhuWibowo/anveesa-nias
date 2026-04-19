@@ -80,6 +80,8 @@ const allMenuGroups = [
     label: 'Monitoring',
     icon: 'activity',
     items: [
+      { name: 'query-performance', label: 'Query Performance', desc: 'Standalone slow-query and error-query view', icon: 'performance', permissionsAny: ['audit.view'] },
+      { name: 'database-audit', label: 'Database Audit', desc: 'Trace native database sessions and outside access signals', icon: 'shieldlog', permissionsAny: ['audit.view'] },
       { name: 'audit',       label: 'Audit Log',   desc: 'Query execution history & errors',  icon: 'audit', permissionsAny: ['audit.view'] },
       { name: 'health',      label: 'Health',      desc: 'Connection pool & server status',   icon: 'health', permissionsAny: ['health.view'] },
       { name: 'row-history', label: 'Row History', desc: 'Track INSERT / UPDATE / DELETE',    icon: 'rowhistory', permissionsAny: ['rowhistory.view'] },
@@ -276,6 +278,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
               <svg v-else-if="item.icon === 'scheduler'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
               <svg v-else-if="item.icon === 'watcher'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
               <svg v-else-if="item.icon === 'audit'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+              <svg v-else-if="item.icon === 'performance'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 1 18 0"/><path d="M12 12l4-4"/><path d="M12 12l-2 5"/><path d="M7 17h10"/></svg>
+              <svg v-else-if="item.icon === 'shieldlog'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6l7-3z"/><path d="M9 12h6"/><path d="M12 9v6"/></svg>
               <svg v-else-if="item.icon === 'health'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
               <svg v-else-if="item.icon === 'rowhistory'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h18v4H3z"/><path d="M3 10h18v4H3z"/><path d="M3 17h18v4H3z"/></svg>
             </div>

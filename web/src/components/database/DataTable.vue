@@ -32,8 +32,10 @@ const emit = defineEmits<{
   (e: 'sort', col: string, dir: 'asc' | 'desc'): void
   (e: 'cell-click', payload: { row: number; col: string; value: unknown }): void
   (e: 'save-row', payload: { pkValue: unknown; updates: Record<string, unknown> }): void
+  (e: 'save-all-rows', payload: Array<{ pkValue: unknown; updates: Record<string, unknown> }>): void
   (e: 'delete-row', payload: { pkValue: unknown }): void
   (e: 'add-row', payload: { values: Record<string, unknown> }): void
+  (e: 'dirty-change', dirty: boolean): void
 }>()
 
 const sortCol = ref<string>('')
@@ -72,8 +74,16 @@ const inspector = ref({ show: false, column: '', value: undefined as unknown, ro
 
 // Edit state: Map of rowIndex -> edited cells
 const editedRows = ref<Map<number, Record<string, unknown>>>(new Map())
+const editHistory = ref<Array<{ rowIndex: number; column: string; previous: unknown; next: unknown }>>([])
 const newRowValues = ref<Record<string, unknown>>({})
 const showNewRow = ref(false)
+const editedRowCount = computed(() => editedRows.value.size)
+const hasPendingEdits = computed(() => editedRowCount.value > 0)
+const hasDraftChanges = computed(() => hasPendingEdits.value || showNewRow.value)
+
+watch(hasDraftChanges, (dirty) => {
+  emit('dirty-change', dirty)
+}, { immediate: true })
 
 const totalPages = computed(() =>
   props.totalRows > 0 ? Math.ceil(props.totalRows / props.pageSize) : 1,
@@ -120,10 +130,29 @@ function getCellValue(rIdx: number, col: string, originalVal: unknown): unknown 
 
 function onCellEdit(rIdx: number, col: string, event: Event) {
   const target = event.target as HTMLInputElement
+  const currentVal = getCellValue(rIdx, col, props.rows[rIdx]?.[props.columns.indexOf(col)])
+  if (currentVal === target.value) return
   if (!editedRows.value.has(rIdx)) {
     editedRows.value.set(rIdx, {})
   }
   editedRows.value.get(rIdx)![col] = target.value
+  editHistory.value.push({ rowIndex: rIdx, column: col, previous: currentVal, next: target.value })
+
+  const originalVal = props.rows[rIdx]?.[props.columns.indexOf(col)]
+  if (target.value === String(originalVal ?? '')) {
+    delete editedRows.value.get(rIdx)![col]
+    if (!Object.keys(editedRows.value.get(rIdx) ?? {}).length) {
+      editedRows.value.delete(rIdx)
+    }
+  }
+}
+
+function isCellEdited(rIdx: number, col: string): boolean {
+  return Object.prototype.hasOwnProperty.call(editedRows.value.get(rIdx) ?? {}, col)
+}
+
+function rowLabel(rIdx: number): string {
+  return editedRows.value.has(rIdx) ? 'Edited' : ''
 }
 
 function saveRow(rIdx: number, row: unknown[]) {
@@ -133,10 +162,51 @@ function saveRow(rIdx: number, row: unknown[]) {
   const pkValue = pkIdx >= 0 ? row[pkIdx] : null
   emit('save-row', { pkValue, updates: edits })
   editedRows.value.delete(rIdx)
+  editHistory.value = editHistory.value.filter((entry) => entry.rowIndex !== rIdx)
+}
+
+function saveAllRows() {
+  const payload = [...editedRows.value.entries()].map(([rIdx, updates]) => {
+    const row = props.rows[rIdx]
+    const pkIdx = props.columns.indexOf(props.pkColumn)
+    const pkValue = pkIdx >= 0 ? row?.[pkIdx] : null
+    return { pkValue, updates }
+  }).filter((item) => item.pkValue !== null && Object.keys(item.updates).length > 0)
+  if (!payload.length) return
+  emit('save-all-rows', payload)
+  editedRows.value.clear()
+  editHistory.value = []
 }
 
 function cancelEdit(rIdx: number) {
   editedRows.value.delete(rIdx)
+  editHistory.value = editHistory.value.filter((entry) => entry.rowIndex !== rIdx)
+}
+
+function undoLastEdit() {
+  const last = editHistory.value.pop()
+  if (!last) return
+  const rowMap = editedRows.value.get(last.rowIndex) ?? {}
+  const originalVal = props.rows[last.rowIndex]?.[props.columns.indexOf(last.column)]
+
+  if (last.previous === originalVal || String(last.previous ?? '') === String(originalVal ?? '')) {
+    delete rowMap[last.column]
+  } else {
+    rowMap[last.column] = last.previous
+  }
+
+  if (Object.keys(rowMap).length) {
+    editedRows.value.set(last.rowIndex, rowMap)
+  } else {
+    editedRows.value.delete(last.rowIndex)
+  }
+}
+
+function clearAllEdits() {
+  editedRows.value.clear()
+  editHistory.value = []
+  showNewRow.value = false
+  newRowValues.value = {}
 }
 
 function deleteRow(rIdx: number, row: unknown[]) {
@@ -154,10 +224,18 @@ function addRow() {
   newRowValues.value = {}
   showNewRow.value = false
 }
+
+function handleKeydown(event: KeyboardEvent) {
+  if (!props.editable) return
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+    event.preventDefault()
+    undoLastEdit()
+  }
+}
 </script>
 
 <template>
-  <div style="display:flex;flex-direction:column;height:100%;overflow:hidden">
+  <div style="display:flex;flex-direction:column;height:100%;overflow:hidden" @keydown.capture="handleKeydown">
     <!-- Loading -->
     <div v-if="loading" style="display:flex;align-items:center;gap:8px;padding:16px;color:var(--text-muted);font-size:13px">
       <svg class="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
@@ -174,6 +252,18 @@ function addRow() {
 
     <!-- Table -->
     <div v-else class="data-table-wrap">
+      <div v-if="editable" class="edit-toolbar" :class="{ 'edit-toolbar--active': hasPendingEdits }">
+        <div class="edit-toolbar__status">
+          <span class="edit-toolbar__badge">{{ editedRowCount }}</span>
+          <span>{{ editedRowCount === 0 ? 'No pending row changes' : `${editedRowCount} row${editedRowCount > 1 ? 's' : ''} pending` }}</span>
+        </div>
+        <div class="edit-toolbar__actions">
+          <span v-if="editHistory.length" class="edit-toolbar__hint">`Ctrl/Cmd+Z` undo</span>
+          <button class="base-btn base-btn--ghost base-btn--xs" :disabled="!editHistory.length" @click="undoLastEdit">Undo Last</button>
+          <button class="base-btn base-btn--ghost base-btn--xs" :disabled="!hasPendingEdits" @click="clearAllEdits">Discard All</button>
+          <button class="base-btn base-btn--primary base-btn--xs" :disabled="!hasPendingEdits" @click="saveAllRows">Save All</button>
+        </div>
+      </div>
       <table class="data-table">
         <thead>
           <tr>
@@ -200,6 +290,7 @@ function addRow() {
             <td v-if="editable" class="col-actions">
               <div class="row-btns">
                 <template v-if="editedRows.has(rIdx)">
+                  <span class="row-state-pill">{{ rowLabel(rIdx) }}</span>
                   <button class="rbtn rbtn--save" @click="saveRow(rIdx, row)" title="Save">✓</button>
                   <button class="rbtn rbtn--cancel" @click="cancelEdit(rIdx)" title="Cancel">✕</button>
                 </template>
@@ -213,6 +304,7 @@ function addRow() {
               :key="cIdx"
               v-show="visibleColumns.has(columns[cIdx])"
               :class="cellClass(val)"
+              :data-edited="isCellEdited(rIdx, columns[cIdx])"
               @click="handleCellClick(rIdx, cIdx, val)"
             >
               <input
@@ -314,7 +406,52 @@ function addRow() {
 
 <style scoped>
 .col-actions { width: 70px; text-align: center; padding: 0 4px !important; }
-.row-btns { display: flex; gap: 4px; justify-content: center; }
+.row-btns { display: flex; gap: 4px; justify-content: center; align-items: center; flex-wrap: wrap; }
+.edit-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+.edit-toolbar--active {
+  background: rgba(var(--brand-rgb, 99 102 241), 0.08);
+}
+.edit-toolbar__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.edit-toolbar__badge,
+.row-state-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--brand);
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+}
+.edit-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.edit-toolbar__hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
 .rbtn {
   width: 22px; height: 22px;
   border-radius: 4px;
@@ -346,7 +483,11 @@ function addRow() {
   padding: 0 4px;
   border-radius: 3px;
 }
-.tr-edited td { background: rgba(var(--brand-rgb, 99 102 241), 0.06) !important; }
+.tr-edited td { background: rgba(var(--brand-rgb, 99 102 241), 0.08) !important; }
+.tr-edited td[data-edited="true"] {
+  box-shadow: inset 0 0 0 1px rgba(var(--brand-rgb, 99 102 241), 0.45);
+  background: rgba(var(--brand-rgb, 99 102 241), 0.14) !important;
+}
 .tr-new td { background: rgba(74, 222, 128, 0.05) !important; }
 .add-row-bar {
   padding: 6px 12px;

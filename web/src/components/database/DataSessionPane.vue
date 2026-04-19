@@ -40,6 +40,8 @@ const sortDir = ref<'asc' | 'desc'>('asc')
 const loading = ref(false)
 const editMode = ref(false)
 const pkColumn = ref('')
+const hasUnsavedTableEdits = ref(false)
+let suppressSubTabGuard = false
 
 watch(() => props.connId, () => {
   selected.value = null
@@ -55,7 +57,16 @@ async function loadData() {
   loading.value = false
 }
 
+function confirmDiscardPendingEdits(actionLabel = 'continue') {
+  if (!hasUnsavedTableEdits.value) return true
+  return window.confirm(`You have unsaved row edits. Discard them and ${actionLabel}?`)
+}
+
 async function handleSelectTable(payload: { db: string; table: string }) {
+  if (selected.value && (selected.value.db !== payload.db || selected.value.table !== payload.table) && !confirmDiscardPendingEdits('open another table')) {
+    return
+  }
+  hasUnsavedTableEdits.value = false
   selected.value = payload
   editMode.value = false; pkColumn.value = ''; page.value = 1
   loadData()
@@ -68,16 +79,60 @@ async function handleSelectTable(payload: { db: string; table: string }) {
   emit('table-selected', payload.db, payload.table)
 }
 
-function handleSort(col: string, dir: 'asc' | 'desc') { sortBy.value = col; sortDir.value = dir; page.value = 1; loadData() }
-function handlePageChange(p: number) { page.value = p; loadData() }
-function handlePageSizeChange(size: number) { pageSize.value = size; page.value = 1; loadData() }
+function handleSort(col: string, dir: 'asc' | 'desc') {
+  if (!confirmDiscardPendingEdits('change sorting')) return
+  hasUnsavedTableEdits.value = false
+  sortBy.value = col; sortDir.value = dir; page.value = 1; loadData()
+}
+function handlePageChange(p: number) {
+  if (!confirmDiscardPendingEdits('change page')) return
+  hasUnsavedTableEdits.value = false
+  page.value = p; loadData()
+}
+function handlePageSizeChange(size: number) {
+  if (!confirmDiscardPendingEdits('change page size')) return
+  hasUnsavedTableEdits.value = false
+  pageSize.value = size; page.value = 1; loadData()
+}
+function handleRefreshData() {
+  if (!confirmDiscardPendingEdits('refresh the table')) return
+  hasUnsavedTableEdits.value = false
+  loadData()
+}
+function handleToggleEditMode() {
+  if (editMode.value && !confirmDiscardPendingEdits('exit edit mode')) return
+  if (editMode.value) {
+    hasUnsavedTableEdits.value = false
+  }
+  editMode.value = !editMode.value
+}
 
 async function handleSaveRow(payload: { pkValue: unknown; updates: Record<string, unknown> }) {
   if (!selected.value || !props.connId) return
   try {
     await axios.put(`/api/connections/${props.connId}/schema/${selected.value.db}/tables/${selected.value.table}/rows`, { pk_column: pkColumn.value, pk_value: payload.pkValue, updates: payload.updates })
+    hasUnsavedTableEdits.value = false
     toast.success('Row updated'); loadData()
   } catch (e: any) { toast.error(e.response?.data?.error ?? 'Update failed') }
+}
+
+async function handleSaveAllRows(payload: Array<{ pkValue: unknown; updates: Record<string, unknown> }>) {
+  if (!selected.value || !props.connId || !payload.length) return
+  const currentSelection = selected.value
+  try {
+    await Promise.all(payload.map((item) =>
+      axios.put(`/api/connections/${props.connId}/schema/${currentSelection.db}/tables/${currentSelection.table}/rows`, {
+        pk_column: pkColumn.value,
+        pk_value: item.pkValue,
+        updates: item.updates,
+      }),
+    ))
+    hasUnsavedTableEdits.value = false
+    toast.success(`${payload.length} row${payload.length > 1 ? 's' : ''} updated`)
+    loadData()
+  } catch (e: any) {
+    toast.error(e.response?.data?.error ?? 'Bulk update failed')
+  }
 }
 
 async function handleDeleteRow(payload: { pkValue: unknown }) {
@@ -279,6 +334,17 @@ watch(activeSubTab, (tab) => {
   else if (tab === 'data' && schemaSelected.value) handleSelectTable({ db: schemaSelected.value.db, table: schemaSelected.value.table })
 })
 
+watch(activeSubTab, (tab, previous) => {
+  if (suppressSubTabGuard || previous !== 'data' || tab === 'data') return
+  if (confirmDiscardPendingEdits(`switch to ${tab === 'schema' ? 'Schema' : tab === 'explorer' ? 'Explorer' : 'another tab'}`)) {
+    hasUnsavedTableEdits.value = false
+    return
+  }
+  suppressSubTabGuard = true
+  activeSubTab.value = previous
+  setTimeout(() => { suppressSubTabGuard = false }, 0)
+})
+
 function openSqlTab(preloadSQL?: string) {
   const id = `sql-${++sqlTabCounter}`
   sqlViewTabs.value.push({ id, label: `SQL ${sqlTabCounter}`, result: null, activeResultTab: 'query', sqlHeight: 260, pinnedResults: [], diffLeft: '', diffRight: '' })
@@ -321,7 +387,11 @@ function onSqlResizeMove(e: MouseEvent) {
   if (tab) { const delta = resizeStart.value.y - e.clientY; tab.sqlHeight = Math.max(140, Math.min(700, resizeStart.value.h + delta)) }
 }
 function onSqlResizeEnd() { resizingTabId.value = null; window.removeEventListener('mousemove', onSqlResizeMove); window.removeEventListener('mouseup', onSqlResizeEnd) }
-onBeforeUnmount(() => { window.removeEventListener('mousemove', onSqlResizeMove); window.removeEventListener('mouseup', onSqlResizeEnd) })
+onBeforeUnmount(() => {
+  window.removeEventListener('mousemove', onSqlResizeMove)
+  window.removeEventListener('mouseup', onSqlResizeEnd)
+  window.removeEventListener('beforeunload', handleBeforeUnload)
+})
 
 // Column profiler
 const profilerShow = ref(false)
@@ -330,11 +400,18 @@ function openSchemaTableInSQL(table: string) { openSqlTab(`SELECT *\nFROM ${tabl
 
 // Open with initial SQL if provided; restore last selected table
 onMounted(() => {
+  window.addEventListener('beforeunload', handleBeforeUnload)
   if (props.initialSQL) openSqlTab(props.initialSQL)
   if (props.initialDb && props.initialTable) {
     handleSelectTable({ db: props.initialDb, table: props.initialTable })
   }
 })
+
+function handleBeforeUnload(event: BeforeUnloadEvent) {
+  if (!hasUnsavedTableEdits.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
 
 function driverColor(d: string) { return ({ postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', sqlite: '#7bc8f6', mssql: '#cc2927' } as Record<string,string>)[d] ?? '#555' }
 function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', sqlite: 'SQ', mssql: 'MS' } as Record<string,string>)[d] ?? '??' }
@@ -399,11 +476,11 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
               <span v-if="totalRows" class="browse-toolbar__meta">{{ totalRows.toLocaleString() }} rows</span>
             </div>
             <div class="browse-toolbar__actions">
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="loadData">
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="handleRefreshData">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.43"/></svg>
                 Refresh
               </button>
-              <button class="base-btn base-btn--sm" :class="editMode ? 'base-btn--primary' : 'base-btn--ghost'" @click="editMode = !editMode">{{ editMode ? 'Editing' : 'Edit' }}</button>
+              <button class="base-btn base-btn--sm" :class="editMode ? 'base-btn--primary' : 'base-btn--ghost'" @click="handleToggleEditMode">{{ editMode ? 'Editing' : 'Edit' }}</button>
               <button class="base-btn base-btn--ghost base-btn--sm" @click="openImport">Import</button>
               <button class="base-btn base-btn--ghost base-btn--sm" @click="exportCsv" :disabled="!rows.length">CSV</button>
               <button class="base-btn base-btn--ghost base-btn--sm" @click="exportJson" :disabled="!rows.length">JSON</button>
@@ -416,7 +493,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           <span v-else class="browse-toolbar__empty">Select a table to browse data</span>
         </div>
         <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column">
-          <DataTable v-if="selected" :columns="columns" :rows="rows" :loading="loading" :page="page" :page-size="pageSize" :total-rows="totalRows" :editable="editMode" :pk-column="pkColumn" @page-change="handlePageChange" @page-size-change="handlePageSizeChange" @sort="handleSort" @save-row="handleSaveRow" @delete-row="handleDeleteRow" @add-row="handleAddRow" />
+          <DataTable v-if="selected" :columns="columns" :rows="rows" :loading="loading" :page="page" :page-size="pageSize" :total-rows="totalRows" :editable="editMode" :pk-column="pkColumn" @page-change="handlePageChange" @page-size-change="handlePageSizeChange" @sort="handleSort" @save-row="handleSaveRow" @save-all-rows="handleSaveAllRows" @delete-row="handleDeleteRow" @add-row="handleAddRow" @dirty-change="hasUnsavedTableEdits = $event" />
           <div v-else class="empty-state">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="color:var(--text-muted)"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
             Select a table from the left to browse its data.
