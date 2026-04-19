@@ -662,11 +662,11 @@ func seedDefaultAdmin() error {
 
 	// Get default credentials from environment
 	username := getEnvOrDefault("DEFAULT_ADMIN_USERNAME", "admin")
-	password := getEnvOrDefault("DEFAULT_ADMIN_PASSWORD", "Admin123!")
+	password := getEnvOrDefault("DEFAULT_ADMIN_PASSWORD", "<CHANGE_ME_ADMIN_PASSWORD>")
 
 	// Skip if using default insecure password in production
 	env := getEnvOrDefault("NIAS_ENV", "development")
-	if env == "production" && password == "Admin123!" {
+	if env == "production" && password == "<CHANGE_ME_ADMIN_PASSWORD>" {
 		return fmt.Errorf("DEFAULT_ADMIN_PASSWORD must be set in production")
 	}
 
@@ -691,7 +691,7 @@ func seedDefaultAdmin() error {
 
 	fmt.Printf("✓ Default admin account created: %s\n", username)
 	fmt.Printf("  Username: %s\n", username)
-	if password == "Admin123!" {
+	if password == "<CHANGE_ME_ADMIN_PASSWORD>" {
 		fmt.Printf("  Password: %s (CHANGE THIS IMMEDIATELY!)\n", password)
 	} else {
 		fmt.Printf("  Password: %s\n", password)

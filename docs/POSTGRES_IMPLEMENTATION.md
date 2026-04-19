@@ -56,11 +56,11 @@ cp .env.postgres.example .env
 POSTGRES_PASSWORD=your-strong-postgres-password-here
 
 # Security
-JWT_SECRET=your-super-secure-jwt-secret-min-32-chars
+JWT_SECRET=<CHANGE_ME_JWT_SECRET_MIN_32_CHARS>
 NIAS_ENCRYPTION_KEY=your-32-byte-encryption-key-here
 
 # Default Admin
-DEFAULT_ADMIN_PASSWORD=YourSecurePassword123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 
 # CORS (your domain)
 CORS_ORIGIN=https://yourdomain.com
@@ -175,7 +175,7 @@ NIAS_ENCRYPTION_KEY=$(openssl rand -hex 16)
 ### 2. **SSL/TLS**
 ```bash
 # For production, use SSL
-DATABASE_URL=postgres://user:pass@host:5432/db?sslmode=require
+DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/<db-name>?sslmode=require
 ```
 
 ### 3. **Environment Variables**

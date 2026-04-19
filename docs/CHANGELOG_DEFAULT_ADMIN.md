@@ -90,7 +90,7 @@ Added comprehensive guides:
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
 | `DEFAULT_ADMIN_USERNAME` | `admin` | No | Default admin username |
-| `DEFAULT_ADMIN_PASSWORD` | `Admin123!` | **Yes (production)** | Default admin password |
+| `DEFAULT_ADMIN_PASSWORD` | `<CHANGE_ME_ADMIN_PASSWORD>` | **Yes (production)** | Default admin password |
 
 ### Production Requirements
 
@@ -100,7 +100,7 @@ Added comprehensive guides:
 # MUST be set - application will fail to start without these
 JWT_SECRET=<minimum-32-characters>
 NIAS_ENCRYPTION_KEY=<exactly-32-characters>
-DEFAULT_ADMIN_PASSWORD=<not-Admin123!>
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 ```
 
 ## 🚀 How It Works
@@ -154,7 +154,7 @@ graph TD
 
 ```go
 // Production mode validation
-if env == "production" && password == "Admin123!" {
+if env == "production" && password == "<CHANGE_ME_ADMIN_PASSWORD>" {
     return fmt.Errorf("DEFAULT_ADMIN_PASSWORD must be set in production")
 }
 ```
@@ -204,7 +204,7 @@ docker-compose up -d
 
 # Expected: Admin created with default credentials
 # Username: admin
-# Password: Admin123!
+# Password: <CHANGE_ME_ADMIN_PASSWORD>
 ```
 
 #### ✅ Test 2: First Install with Custom Credentials
@@ -212,13 +212,13 @@ docker-compose up -d
 ```bash
 # Set in .env
 DEFAULT_ADMIN_USERNAME=myadmin
-DEFAULT_ADMIN_PASSWORD=SecurePass123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 
 docker-compose up -d
 
 # Expected: Admin created with custom credentials
 # Username: myadmin
-# Password: SecurePass123!
+# Password: <YOUR_ADMIN_PASSWORD>
 ```
 
 #### ✅ Test 3: Production Mode with Default Password (Should Fail)
@@ -226,7 +226,7 @@ docker-compose up -d
 ```bash
 # Set in .env
 NIAS_ENV=production
-DEFAULT_ADMIN_PASSWORD=Admin123!  # Default password
+DEFAULT_ADMIN_PASSWORD=<CHANGE_ME_ADMIN_PASSWORD>  # Default password
 
 docker-compose up -d
 

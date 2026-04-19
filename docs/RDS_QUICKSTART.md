@@ -52,12 +52,12 @@ nano .env
 
 ```bash
 # Replace with your actual RDS endpoint
-RDS_DATABASE_URL=postgres://nias_admin:YOUR_PASSWORD@anveesa-nias.xxxxx.us-east-1.rds.amazonaws.com:5432/nias?sslmode=require
+RDS_DATABASE_URL=postgres://nias_admin:<db-password>@<db-host>:5432/nias?sslmode=require
 
 # Generate secrets
 JWT_SECRET=$(openssl rand -hex 32)
 NIAS_ENCRYPTION_KEY=$(openssl rand -hex 16)
-DEFAULT_ADMIN_PASSWORD=YourSecurePass123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 ```
 
 ### Step 5: Start Application
@@ -95,7 +95,7 @@ mv .env.rds-mysql .env
 nano .env
 
 # RDS_DATABASE_URL format:
-# mysql://nias_admin:YOUR_PASSWORD@anveesa-nias.xxxxx.us-east-1.rds.amazonaws.com:3306/nias?tls=custom&parseTime=true
+# mysql://nias_admin:<db-password>@<db-host>:3306/nias?tls=custom&parseTime=true
 
 # 4. Use MySQL docker-compose
 curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.rds-mysql.yml

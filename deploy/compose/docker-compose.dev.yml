@@ -16,7 +16,7 @@ services:
       - NIAS_ENV=development
       - PORT=8080
       - DB_PATH=/data/nias.db
-      - JWT_SECRET=dev-secret-not-for-production
+      - JWT_SECRET=<DEV_ONLY_JWT_SECRET_PLACEHOLDER>
       - CORS_ORIGIN=http://localhost:5173
     command: ["go", "run", "."]
 

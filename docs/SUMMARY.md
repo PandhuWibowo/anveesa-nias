@@ -373,7 +373,7 @@ docker buildx build \
 docker run -p 8080:8080 \
   -e JWT_SECRET=$(openssl rand -hex 32) \
   -e NIAS_ENCRYPTION_KEY=$(openssl rand -hex 16) \
-  -e DEFAULT_ADMIN_PASSWORD=Test123! \
+  -e DEFAULT_ADMIN_PASSWORD=<TEST_ADMIN_PASSWORD> \
   your-username/nias:latest
 ```
 

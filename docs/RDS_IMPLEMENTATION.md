@@ -223,14 +223,14 @@ DB_PATH=data.db
 ### 2. Self-hosted PostgreSQL
 ```bash
 DB_DRIVER=postgres
-DATABASE_URL=postgres://user:pass@localhost:5432/nias
+DATABASE_URL=postgres://<db-user>:<db-password>@localhost:5432/nias
 ```
 **Use case:** Docker deployments with bundled PostgreSQL
 
 ### 3. RDS PostgreSQL (Recommended)
 ```bash
 DB_DRIVER=postgres
-DATABASE_URL=postgres://user:pass@mydb.xxxxx.rds.amazonaws.com:5432/nias?sslmode=require
+DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=require
 DB_SSL_MODE=require
 ```
 **Use case:** Production AWS deployments
@@ -238,7 +238,7 @@ DB_SSL_MODE=require
 ### 4. RDS MySQL/MariaDB
 ```bash
 DB_DRIVER=mysql
-DATABASE_URL=mysql://user:pass@mydb.xxxxx.rds.amazonaws.com:3306/nias?tls=custom&parseTime=true
+DATABASE_URL=mysql://<db-user>:<db-password>@<db-host>:3306/nias?tls=custom&parseTime=true
 DB_SSL_ROOT_CERT=/app/certs/rds-ca-bundle.pem
 ```
 **Use case:** Existing MySQL infrastructure, Aurora MySQL
@@ -282,7 +282,7 @@ DB_SSL_ROOT_CERT=/app/certs/rds-ca-bundle.pem
 ```bash
 DB_DRIVER=sqlite
 DB_PATH=data.db
-JWT_SECRET=dev-secret-key
+JWT_SECRET=<DEV_ONLY_JWT_SECRET_PLACEHOLDER>
 ```
 
 ### Production with RDS PostgreSQL
@@ -293,7 +293,7 @@ DATABASE_URL=postgres://nias_admin:SecurePass@mydb.xxxxx.us-east-1.rds.amazonaws
 DB_SSL_MODE=require
 JWT_SECRET=$(openssl rand -hex 32)
 NIAS_ENCRYPTION_KEY=$(openssl rand -hex 16)
-DEFAULT_ADMIN_PASSWORD=SecureAdminPass123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 CORS_ORIGIN=https://db.mycompany.com
 RATE_LIMIT_ENABLED=true
 ```
@@ -307,7 +307,7 @@ DB_SSL_MODE=require
 DB_SSL_ROOT_CERT=/app/certs/rds-ca-bundle.pem
 JWT_SECRET=$(openssl rand -hex 32)
 NIAS_ENCRYPTION_KEY=$(openssl rand -hex 16)
-DEFAULT_ADMIN_PASSWORD=SecureAdminPass123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 ```
 
 ---

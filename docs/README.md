@@ -116,7 +116,7 @@ anveesa-nias/
 | `JWT_EXPIRY_HOURS`        | `72`                             | Token TTL                          |
 | `AUTH_ENABLED`            | `true`                           | Set `false` to disable login       |
 | `DEFAULT_ADMIN_USERNAME`  | `admin`                          | Default admin username on first install |
-| `DEFAULT_ADMIN_PASSWORD`  | `Admin123!`                      | Default admin password on first install |
+| `DEFAULT_ADMIN_PASSWORD`  | `<CHANGE_ME_ADMIN_PASSWORD>`     | Default admin password on first install |
 | `CORS_ORIGIN`             | `http://localhost:5173`          | Allowed CORS origin                |
 
 ## 📦 Installation Methods
@@ -192,7 +192,7 @@ Anveesa Nias supports **multiple database backends**:
 On first installation, if no users exist in the database, a default admin account is automatically created:
 
 - **Username**: `admin` (or set via `DEFAULT_ADMIN_USERNAME`)
-- **Password**: `Admin123!` (or set via `DEFAULT_ADMIN_PASSWORD`)
+- **Password**: `<CHANGE_ME_ADMIN_PASSWORD>` (or set via `DEFAULT_ADMIN_PASSWORD`)
 
 **⚠️ IMPORTANT**: Change the default password immediately after first login, especially in production!
 
@@ -201,7 +201,7 @@ To set custom credentials before first run:
 ```bash
 # In .env file or deploy/compose/docker-compose.yml
 DEFAULT_ADMIN_USERNAME=youradmin
-DEFAULT_ADMIN_PASSWORD=YourSecurePassword123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 ```
 
 ## Repo Layout
@@ -222,7 +222,7 @@ anveesa-nias/
 | `JWT_SECRET` | **Yes (production)** | - | JWT signing key (min 32 chars) |
 | `NIAS_ENCRYPTION_KEY` | **Yes (production)** | - | Encryption key for credentials (32 chars) |
 | `DEFAULT_ADMIN_USERNAME` | No | `admin` | Initial admin username |
-| `DEFAULT_ADMIN_PASSWORD` | Recommended | `Admin123!` | Initial admin password |
+| `DEFAULT_ADMIN_PASSWORD` | Recommended | `<CHANGE_ME_ADMIN_PASSWORD>` | Initial admin password |
 | `CORS_ORIGIN` | No | `http://localhost:8080` | Allowed CORS origins |
 | `BACKUP_ENABLED` | No | `true` | Enable automatic backups |
 | `BACKUP_HOURS` | No | `24` | Backup interval in hours |

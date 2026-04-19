@@ -54,22 +54,22 @@ docker-compose -f docker-compose.prod.yml up -d
 
 #### Without SSL (Not Recommended)
 ```bash
-DATABASE_URL=postgres://username:password@mydb.123456789.us-east-1.rds.amazonaws.com:5432/nias?sslmode=disable
+DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=disable
 ```
 
 #### With SSL (Recommended)
 ```bash
-DATABASE_URL=postgres://username:password@mydb.123456789.us-east-1.rds.amazonaws.com:5432/nias?sslmode=require
+DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=require
 
 # Or for full verification:
-DATABASE_URL=postgres://username:password@mydb.123456789.us-east-1.rds.amazonaws.com:5432/nias?sslmode=verify-full
+DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=verify-full
 ```
 
 ### MySQL RDS
 
 #### Without SSL
 ```bash
-DATABASE_URL=mysql://username:password@mydb.123456789.us-east-1.rds.amazonaws.com:3306/nias
+DATABASE_URL=mysql://<db-user>:<db-password>@<db-host>:3306/nias
 ```
 
 #### With SSL
@@ -78,7 +78,7 @@ DATABASE_URL=mysql://username:password@mydb.123456789.us-east-1.rds.amazonaws.co
 curl -O https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 
 # Then use:
-DATABASE_URL=mysql://username:password@mydb.123456789.us-east-1.rds.amazonaws.com:3306/nias?tls=custom
+DATABASE_URL=mysql://<db-user>:<db-password>@<db-host>:3306/nias?tls=custom
 DB_SSL_ROOT_CERT=/path/to/global-bundle.pem
 ```
 
@@ -87,7 +87,7 @@ DB_SSL_ROOT_CERT=/path/to/global-bundle.pem
 Same as MySQL:
 
 ```bash
-DATABASE_URL=mysql://username:password@mydb.123456789.us-east-1.rds.amazonaws.com:3306/nias?tls=custom
+DATABASE_URL=mysql://<db-user>:<db-password>@<db-host>:3306/nias?tls=custom
 DB_SSL_ROOT_CERT=/path/to/global-bundle.pem
 ```
 
@@ -103,13 +103,13 @@ NIAS_ENV=production
 
 # Database - RDS PostgreSQL
 DB_DRIVER=postgres
-DATABASE_URL=postgres://admin:PASSWORD@mydb.xxxxx.us-east-1.rds.amazonaws.com:5432/nias?sslmode=require
+DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=require
 DB_SSL_MODE=require
 
 # Security - REQUIRED
-JWT_SECRET=your-secure-jwt-secret-min-32-characters-here
+JWT_SECRET=<CHANGE_ME_JWT_SECRET_MIN_32_CHARS>
 NIAS_ENCRYPTION_KEY=your-32-byte-encryption-key-here
-DEFAULT_ADMIN_PASSWORD=YourSecurePassword123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 
 # Application
 PORT=8080
@@ -129,14 +129,14 @@ NIAS_ENV=production
 
 # Database - RDS MySQL/MariaDB
 DB_DRIVER=mysql
-DATABASE_URL=mysql://admin:PASSWORD@mydb.xxxxx.us-east-1.rds.amazonaws.com:3306/nias?tls=custom&parseTime=true
+DATABASE_URL=mysql://<db-user>:<db-password>@<db-host>:3306/nias?tls=custom&parseTime=true
 DB_SSL_MODE=require
 DB_SSL_ROOT_CERT=/app/certs/rds-ca-bundle.pem
 
 # Security - REQUIRED
-JWT_SECRET=your-secure-jwt-secret-min-32-characters-here
+JWT_SECRET=<CHANGE_ME_JWT_SECRET_MIN_32_CHARS>
 NIAS_ENCRYPTION_KEY=your-32-byte-encryption-key-here
-DEFAULT_ADMIN_PASSWORD=YourSecurePassword123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 
 # Application
 PORT=8080
@@ -161,7 +161,7 @@ services:
     environment:
       # Override database settings for RDS
       - DB_DRIVER=postgres
-      - DATABASE_URL=postgres://user:pass@mydb.xxxxx.us-east-1.rds.amazonaws.com:5432/nias?sslmode=require
+      - DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=require
       - DB_SSL_MODE=require
 ```
 
@@ -177,10 +177,10 @@ docker-compose -f docker-compose.prod.yml -f docker-compose.override.yml up -d
 docker run -d \
   -p 8080:8080 \
   -e DB_DRIVER=postgres \
-  -e DATABASE_URL="postgres://user:pass@mydb.xxxxx.rds.amazonaws.com:5432/nias?sslmode=require" \
-  -e JWT_SECRET="your-secret" \
-  -e NIAS_ENCRYPTION_KEY="your-key" \
-  -e DEFAULT_ADMIN_PASSWORD="YourPass123!" \
+  -e DATABASE_URL="postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=require" \
+  -e JWT_SECRET="<CHANGE_ME_JWT_SECRET_MIN_32_CHARS>" \
+  -e NIAS_ENCRYPTION_KEY="<CHANGE_ME_32_CHAR_ENCRYPTION_KEY>" \
+  -e DEFAULT_ADMIN_PASSWORD="<YOUR_ADMIN_PASSWORD>" \
   anveesa/nias:latest
 ```
 
@@ -226,7 +226,7 @@ For PostgreSQL RDS with IAM (no password needed):
 curl -O https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 
 # Use in connection string
-DATABASE_URL=postgres://user:pass@host:5432/nias?sslmode=verify-full&sslrootcert=/path/to/global-bundle.pem
+DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=verify-full&sslrootcert=/path/to/global-bundle.pem
 ```
 
 #### MySQL/MariaDB RDS
@@ -237,7 +237,7 @@ curl -O https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 
 # Configure in .env
 DB_SSL_ROOT_CERT=/path/to/global-bundle.pem
-DATABASE_URL=mysql://user:pass@host:3306/nias?tls=custom&parseTime=true
+DATABASE_URL=mysql://<db-user>:<db-password>@<db-host>:3306/nias?tls=custom&parseTime=true
 ```
 
 ### 4. Network Isolation
@@ -376,7 +376,7 @@ mysql -h mydb.xxxxx.rds.amazonaws.com -u nias_admin -p nias < backup.sql
 ```bash
 # Update .env
 DB_DRIVER=postgres  # or mysql
-DATABASE_URL=postgres://user:pass@mydb.xxxxx.rds.amazonaws.com:5432/nias?sslmode=require
+DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=require
 
 # Restart application
 docker-compose -f docker-compose.prod.yml restart
@@ -432,10 +432,10 @@ Then use:
 
 ```bash
 # Set environment variables
-export RDS_DATABASE_URL="postgres://user:pass@mydb.xxxxx.rds.amazonaws.com:5432/nias?sslmode=require"
-export JWT_SECRET="your-secret"
+export RDS_DATABASE_URL="postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=require"
+export JWT_SECRET="<CHANGE_ME_JWT_SECRET_MIN_32_CHARS>"
 export NIAS_ENCRYPTION_KEY="your-key"
-export DEFAULT_ADMIN_PASSWORD="YourPass123!"
+export DEFAULT_ADMIN_PASSWORD="<YOUR_ADMIN_PASSWORD>"
 
 # Start
 docker-compose -f docker-compose.rds.yml up -d
@@ -474,7 +474,7 @@ volumes:
 3. **Configure:**
 
 ```bash
-DATABASE_URL=mysql://user:pass@mydb.xxxxx.rds.amazonaws.com:3306/nias?tls=custom&parseTime=true
+DATABASE_URL=mysql://<db-user>:<db-password>@<db-host>:3306/nias?tls=custom&parseTime=true
 DB_SSL_ROOT_CERT=/app/certs/rds-ca-bundle.pem
 ```
 
@@ -523,14 +523,14 @@ HOST=0.0.0.0
 
 # Database - RDS PostgreSQL
 DB_DRIVER=postgres
-DATABASE_URL=postgres://nias_admin:MySecurePass123@anveesa-nias.c9xyz12345.us-east-1.rds.amazonaws.com:5432/nias?sslmode=require
+DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=require
 DB_SSL_MODE=require
 
 # Security
-JWT_SECRET=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6
-NIAS_ENCRYPTION_KEY=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
+JWT_SECRET=<EXAMPLE_GENERATED_JWT_SECRET>
+NIAS_ENCRYPTION_KEY=<EXAMPLE_32_CHAR_ENCRYPTION_KEY>
 DEFAULT_ADMIN_USERNAME=admin
-DEFAULT_ADMIN_PASSWORD=AdminSecure123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 
 # Application
 CORS_ORIGIN=https://db.yourdomain.com
@@ -550,14 +550,14 @@ PORT=8080
 
 # Database - RDS MySQL
 DB_DRIVER=mysql
-DATABASE_URL=mysql://nias_admin:MySecurePass123@anveesa-nias.c9xyz12345.ap-southeast-1.rds.amazonaws.com:3306/nias?tls=custom&parseTime=true&charset=utf8mb4
+DATABASE_URL=mysql://<db-user>:<db-password>@<db-host>:3306/nias?tls=custom&parseTime=true&charset=utf8mb4
 DB_SSL_MODE=require
 DB_SSL_ROOT_CERT=/app/certs/rds-ca-bundle.pem
 
 # Security
-JWT_SECRET=your-jwt-secret-min-32-characters
-NIAS_ENCRYPTION_KEY=your-32-character-encryption-key
-DEFAULT_ADMIN_PASSWORD=SecurePass123!
+JWT_SECRET=<CHANGE_ME_JWT_SECRET_MIN_32_CHARS>
+NIAS_ENCRYPTION_KEY=<CHANGE_ME_32_CHAR_ENCRYPTION_KEY>
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 
 # Application
 CORS_ORIGIN=*
@@ -570,7 +570,7 @@ LOG_LEVEL=info
 ```bash
 # Same as MySQL, just different engine on RDS
 DB_DRIVER=mysql
-DATABASE_URL=mysql://user:pass@mydb.xxxxx.rds.amazonaws.com:3306/nias?tls=custom&parseTime=true
+DATABASE_URL=mysql://<db-user>:<db-password>@<db-host>:3306/nias?tls=custom&parseTime=true
 ```
 
 ---
@@ -635,10 +635,10 @@ aws rds describe-db-instances \
 # Create .env with RDS endpoint
 cat > .env <<EOF
 DB_DRIVER=postgres
-DATABASE_URL=postgres://nias_admin:YOUR_PASSWORD@YOUR_RDS_ENDPOINT:5432/nias?sslmode=require
+DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=require
 JWT_SECRET=$(openssl rand -hex 32)
 NIAS_ENCRYPTION_KEY=$(openssl rand -hex 16)
-DEFAULT_ADMIN_PASSWORD=SecureAdmin123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 CORS_ORIGIN=https://yourdomain.com
 EOF
 ```
@@ -790,7 +790,7 @@ mysql -h mydb.xxxxx.rds.amazonaws.com -u nias_admin -p -D nias
 curl -O https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 
 # Add to DATABASE_URL
-DATABASE_URL=postgres://user:pass@host:5432/nias?sslmode=verify-full&sslrootcert=/path/to/global-bundle.pem
+DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=verify-full&sslrootcert=/path/to/global-bundle.pem
 ```
 
 ### Connection Pool Exhausted
@@ -898,12 +898,12 @@ Issues? Check:
 ```bash
 # Environment variables for RDS PostgreSQL
 DB_DRIVER=postgres
-DATABASE_URL=postgres://user:pass@mydb.xxxxx.rds.amazonaws.com:5432/nias?sslmode=require
+DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=require
 DB_SSL_MODE=require
 
 # Environment variables for RDS MySQL
 DB_DRIVER=mysql
-DATABASE_URL=mysql://user:pass@mydb.xxxxx.rds.amazonaws.com:3306/nias?tls=custom&parseTime=true
+DATABASE_URL=mysql://<db-user>:<db-password>@<db-host>:3306/nias?tls=custom&parseTime=true
 DB_SSL_ROOT_CERT=/app/certs/rds-ca-bundle.pem
 
 # Test connection

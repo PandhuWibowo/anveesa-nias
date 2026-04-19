@@ -32,7 +32,7 @@ nano .env
 # Set these values:
 JWT_SECRET=$(openssl rand -hex 32)
 NIAS_ENCRYPTION_KEY=$(openssl rand -hex 16)
-DEFAULT_ADMIN_PASSWORD=YourSecurePassword123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 
 # For PostgreSQL, also set:
 POSTGRES_PASSWORD=$(openssl rand -hex 32)
@@ -168,14 +168,14 @@ These **must** be set before starting:
 ```bash
 # JWT Secret (32+ characters)
 # Generate with: openssl rand -hex 32
-JWT_SECRET=your-generated-secret-here
+JWT_SECRET=<YOUR_GENERATED_JWT_SECRET>
 
 # Encryption Key (exactly 32 characters)  
 # Generate with: openssl rand -hex 16
 NIAS_ENCRYPTION_KEY=your-generated-key-here
 
 # Default Admin Password
-DEFAULT_ADMIN_PASSWORD=YourSecurePassword123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 
 # PostgreSQL Password (if using PostgreSQL)
 POSTGRES_PASSWORD=your-postgres-password-here
@@ -200,7 +200,7 @@ echo "POSTGRES_PASSWORD=$(openssl rand -hex 32)"
 # Required
 JWT_SECRET=a1b2c3d4e5f6...  # 64 characters
 NIAS_ENCRYPTION_KEY=a1b2c3d4e5f6...  # 32 characters
-DEFAULT_ADMIN_PASSWORD=MySecurePassword123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 
 # Optional
 NIAS_ENV=production
@@ -219,7 +219,7 @@ LOG_LEVEL=info
 # Required
 JWT_SECRET=a1b2c3d4e5f6...  # 64 characters
 NIAS_ENCRYPTION_KEY=a1b2c3d4e5f6...  # 32 characters
-DEFAULT_ADMIN_PASSWORD=MySecurePassword123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 POSTGRES_PASSWORD=secure-postgres-password-here
 
 # PostgreSQL

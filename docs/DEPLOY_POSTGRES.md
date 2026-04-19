@@ -49,10 +49,10 @@ If you have an existing PostgreSQL database:
 ```bash
 # 1. Set environment variables
 export DB_DRIVER=postgres
-export DATABASE_URL="postgres://user:password@localhost:5432/nias?sslmode=disable"
-export JWT_SECRET="your-secure-secret-min-32-chars"
+export DATABASE_URL="postgres://<db-user>:<db-password>@localhost:5432/nias?sslmode=disable"
+export JWT_SECRET="<CHANGE_ME_JWT_SECRET_MIN_32_CHARS>"
 export NIAS_ENCRYPTION_KEY="your-32-byte-key"
-export DEFAULT_ADMIN_PASSWORD="SecurePass123!"
+export DEFAULT_ADMIN_PASSWORD="<YOUR_ADMIN_PASSWORD>"
 
 # 2. Run the application
 ./nias-server
@@ -65,30 +65,30 @@ export DEFAULT_ADMIN_PASSWORD="SecurePass123!"
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `DB_DRIVER` | Database type | `postgres` |
-| `DATABASE_URL` | PostgreSQL connection string | `postgres://user:pass@host:5432/db` |
+| `DATABASE_URL` | PostgreSQL connection string | `postgres://<db-user>:<db-password>@<db-host>:5432/<db-name>` |
 | `JWT_SECRET` | JWT signing key (32+ chars) | Generated with `openssl rand -hex 32` |
 | `NIAS_ENCRYPTION_KEY` | Credential encryption key (32 chars) | Generated with `openssl rand -hex 16` |
-| `DEFAULT_ADMIN_PASSWORD` | Initial admin password | `YourSecurePassword123!` |
+| `DEFAULT_ADMIN_PASSWORD` | Initial admin password | `<YOUR_ADMIN_PASSWORD>` |
 
 ### PostgreSQL Connection URL Format
 
 ```
-postgres://username:password@hostname:port/database?sslmode=disable
+postgres://<db-user>:<db-password>@<db-host>:<db-port>/<db-name>?sslmode=disable
 ```
 
 Examples:
 ```bash
 # Local PostgreSQL
-DATABASE_URL=postgres://nias:password@localhost:5432/nias?sslmode=disable
+DATABASE_URL=postgres://nias:<db-password>@localhost:5432/nias?sslmode=disable
 
 # Docker Compose (container name as hostname)
-DATABASE_URL=postgres://nias:password@postgres:5432/nias?sslmode=disable
+DATABASE_URL=postgres://nias:<db-password>@postgres:5432/nias?sslmode=disable
 
 # Cloud PostgreSQL (AWS RDS, DigitalOcean, etc.)
-DATABASE_URL=postgres://user:pass@db.example.com:5432/nias?sslmode=require
+DATABASE_URL=postgres://<db-user>:<db-password>@db.example.com:5432/nias?sslmode=require
 
 # With SSL
-DATABASE_URL=postgres://user:pass@host:5432/nias?sslmode=require
+DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=require
 ```
 
 ## 🔄 Migration from SQLite
@@ -239,7 +239,7 @@ ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;"
 POSTGRES_PASSWORD=$(openssl rand -hex 32)
 
 # Enable SSL
-DATABASE_URL=postgres://user:pass@host:5432/nias?sslmode=require
+DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=require
 
 # Use environment variables (never commit credentials)
 # Use secrets management (AWS Secrets Manager, Vault, etc.)

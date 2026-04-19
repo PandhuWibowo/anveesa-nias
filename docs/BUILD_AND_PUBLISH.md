@@ -116,9 +116,9 @@ docker build -t anveesa/nias:v1.0.0 .
 # Test image locally
 docker run -d \
   -p 8080:8080 \
-  -e JWT_SECRET=test-secret-min-32-characters-here \
+  -e JWT_SECRET=<TEST_JWT_SECRET_MIN_32_CHARS> \
   -e NIAS_ENCRYPTION_KEY=test-key-exactly-32-chars-here \
-  -e DEFAULT_ADMIN_PASSWORD=TestPass123! \
+  -e DEFAULT_ADMIN_PASSWORD=<TEST_ADMIN_PASSWORD> \
   anveesa/nias:v1.0.0
 
 # Verify
@@ -253,7 +253,7 @@ docker run -d \
   -p 8080:8080 \
   -e JWT_SECRET=$(openssl rand -hex 32) \
   -e NIAS_ENCRYPTION_KEY=$(openssl rand -hex 16) \
-  -e DEFAULT_ADMIN_PASSWORD=TestPass123! \
+  -e DEFAULT_ADMIN_PASSWORD=<TEST_ADMIN_PASSWORD> \
   anveesa/nias:latest
 
 # Test
@@ -287,7 +287,7 @@ docker run -d \
   -e DATABASE_URL=postgres://nias:testpass@postgres:5432/nias?sslmode=disable \
   -e JWT_SECRET=$(openssl rand -hex 32) \
   -e NIAS_ENCRYPTION_KEY=$(openssl rand -hex 16) \
-  -e DEFAULT_ADMIN_PASSWORD=TestPass123! \
+  -e DEFAULT_ADMIN_PASSWORD=<TEST_ADMIN_PASSWORD> \
   anveesa/nias:latest
 
 # Test
@@ -392,7 +392,7 @@ Modern database management studio for PostgreSQL, MySQL, SQLite, and SQL Server.
 docker run -d -p 8080:8080 \
   -e JWT_SECRET=$(openssl rand -hex 32) \
   -e NIAS_ENCRYPTION_KEY=$(openssl rand -hex 16) \
-  -e DEFAULT_ADMIN_PASSWORD=YourPassword123! \
+  -e DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD> \
   anveesa/nias:latest
 ```
 

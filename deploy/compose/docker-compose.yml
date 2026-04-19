@@ -18,7 +18,7 @@ services:
       - BACKUP_ENABLED=true
       - BACKUP_DIR=/app/backups
       - BACKUP_HOURS=24
-      - JWT_SECRET=${JWT_SECRET:-change-this-in-production-min-32-chars}
+      - JWT_SECRET=${JWT_SECRET:-<CHANGE_ME_JWT_SECRET_MIN_32_CHARS>}
       - JWT_EXPIRY_HOURS=72
       - AUTH_ENABLED=true
       - NIAS_ENCRYPTION_KEY=${NIAS_ENCRYPTION_KEY:-change-this-32-byte-key-in-prod}
@@ -28,7 +28,7 @@ services:
       - RATE_LIMIT_WINDOW=60
       - LOG_LEVEL=info
       - DEFAULT_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME:-admin}
-      - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-Admin123!}
+      - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-<CHANGE_ME_ADMIN_PASSWORD>}
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 30s

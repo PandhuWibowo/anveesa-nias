@@ -25,7 +25,7 @@ NIAS_ENCRYPTION_KEY=$(openssl rand -hex 16)
 
 # Set your admin credentials
 DEFAULT_ADMIN_USERNAME=admin
-DEFAULT_ADMIN_PASSWORD=YourSecurePassword123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 
 # Set your domain (if using reverse proxy)
 CORS_ORIGIN=https://yourdomain.com
@@ -49,7 +49,7 @@ docker-compose logs nias | grep -A 4 "Default admin"
 ```
 ✓ Default admin account created: admin
   Username: admin
-  Password: YourSecurePassword123!
+  Password: <YOUR_ADMIN_PASSWORD>
   Please change the password after first login!
 ```
 
@@ -63,7 +63,7 @@ docker-compose logs nias | grep -A 4 "Default admin"
 
 - [ ] Changed `JWT_SECRET` from default
 - [ ] Changed `NIAS_ENCRYPTION_KEY` from default  
-- [ ] Set secure `DEFAULT_ADMIN_PASSWORD` (not `Admin123!`)
+- [ ] Set secure `DEFAULT_ADMIN_PASSWORD` (not `<CHANGE_ME_ADMIN_PASSWORD>`)
 - [ ] Changed admin password after first login
 - [ ] Configured `CORS_ORIGIN` to your actual domain
 - [ ] Using HTTPS with reverse proxy (production)
@@ -77,9 +77,9 @@ You must set these environment variables:
 
 ```env
 NIAS_ENV=production
-JWT_SECRET=<min-32-characters>
+JWT_SECRET=<CHANGE_ME_JWT_SECRET_MIN_32_CHARS>
 NIAS_ENCRYPTION_KEY=<exactly-32-characters>
-DEFAULT_ADMIN_PASSWORD=<not-Admin123!>
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 ```
 
 ## 🐛 Troubleshooting
@@ -103,7 +103,7 @@ docker-compose restart nias
 **Solution:** Set a secure password in your `.env` file:
 
 ```env
-DEFAULT_ADMIN_PASSWORD=YourSecurePassword123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 ```
 
 ### Reset Everything (⚠️ Deletes all data)

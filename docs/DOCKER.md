@@ -29,12 +29,12 @@ Edit `.env` and set the following **required** production variables:
 NIAS_ENV=production
 
 # Security - REQUIRED in production
-JWT_SECRET=your-super-secure-jwt-secret-min-32-chars
+JWT_SECRET=<CHANGE_ME_JWT_SECRET_MIN_32_CHARS>
 NIAS_ENCRYPTION_KEY=your-32-byte-encryption-key-here
 
 # Default Admin Account - CHANGE THESE!
 DEFAULT_ADMIN_USERNAME=admin
-DEFAULT_ADMIN_PASSWORD=YourSecurePassword123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 
 # CORS (adjust to your domain)
 CORS_ORIGIN=https://yourdomain.com
@@ -86,7 +86,7 @@ Example output:
 ```
 ✓ Default admin account created: admin
   Username: admin
-  Password: Admin123! (CHANGE THIS IMMEDIATELY!)
+  Password: <CHANGE_ME_ADMIN_PASSWORD> (CHANGE THIS IMMEDIATELY!)
   Please change the password after first login!
 ```
 
@@ -96,7 +96,7 @@ Example output:
 
 ```env
 DEFAULT_ADMIN_USERNAME=myadmin
-DEFAULT_ADMIN_PASSWORD=MySecurePassword123!
+DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 ```
 
 Or via Docker Compose:
@@ -104,12 +104,12 @@ Or via Docker Compose:
 ```yaml
 environment:
   - DEFAULT_ADMIN_USERNAME=myadmin
-  - DEFAULT_ADMIN_PASSWORD=MySecurePassword123!
+  - DEFAULT_ADMIN_PASSWORD=<YOUR_ADMIN_PASSWORD>
 ```
 
 **⚠️ IMPORTANT:**
 - In **production**, you **MUST** set a secure `DEFAULT_ADMIN_PASSWORD`
-- The default password `Admin123!` will cause startup failure in production if not changed
+- The default password `<CHANGE_ME_ADMIN_PASSWORD>` will cause startup failure in production if not changed
 - Change the admin password immediately after first login
 
 ## Environment Variables Reference
@@ -120,7 +120,7 @@ environment:
 |----------|-------------|---------|
 | `JWT_SECRET` | JWT signing key (min 32 chars) | `$(openssl rand -hex 32)` |
 | `NIAS_ENCRYPTION_KEY` | Credentials encryption key (32 chars) | `$(openssl rand -hex 16)` |
-| `DEFAULT_ADMIN_PASSWORD` | Initial admin password | `SecurePass123!` |
+| `DEFAULT_ADMIN_PASSWORD` | Initial admin password | `<YOUR_ADMIN_PASSWORD>` |
 
 ### Optional Configuration
 

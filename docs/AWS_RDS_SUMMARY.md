@@ -104,7 +104,7 @@ mv .env.rds-postgres .env
 
 # 3. Edit .env with your RDS endpoint
 nano .env
-# Set: RDS_DATABASE_URL=postgres://user:pass@your-rds-endpoint.rds.amazonaws.com:5432/nias?sslmode=require
+# Set: RDS_DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=require
 
 # 4. Download docker-compose
 curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.rds-postgres.yml
@@ -131,7 +131,7 @@ mv .env.rds-mysql .env
 
 # 4. Edit .env with your RDS endpoint
 nano .env
-# Set: RDS_DATABASE_URL=mysql://user:pass@your-rds-endpoint.rds.amazonaws.com:3306/nias?tls=custom&parseTime=true
+# Set: RDS_DATABASE_URL=mysql://<db-user>:<db-password>@<db-host>:3306/nias?tls=custom&parseTime=true
 
 # 5. Download docker-compose
 curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.rds-mysql.yml
@@ -195,13 +195,13 @@ docker-compose -f docker-compose.rds-mysql.yml up -d
 
 **PostgreSQL:**
 ```bash
-DATABASE_URL=postgres://user:pass@host:5432/nias?sslmode=require
+DATABASE_URL=postgres://<db-user>:<db-password>@<db-host>:5432/nias?sslmode=require
 DB_SSL_MODE=require  # or verify-full for stricter validation
 ```
 
 **MySQL:**
 ```bash
-DATABASE_URL=mysql://user:pass@host:3306/nias?tls=custom&parseTime=true
+DATABASE_URL=mysql://<db-user>:<db-password>@<db-host>:3306/nias?tls=custom&parseTime=true
 DB_SSL_ROOT_CERT=/app/certs/rds-ca-bundle.pem
 ```
 
@@ -290,7 +290,7 @@ psql -h your-rds-endpoint.rds.amazonaws.com -U nias_admin -d nias < backup.sql
 
 # 4. Update .env
 DB_DRIVER=postgres
-DATABASE_URL=postgres://nias_admin:pass@your-rds-endpoint.rds.amazonaws.com:5432/nias?sslmode=require
+DATABASE_URL=postgres://nias_admin:<db-password>@<db-host>:5432/nias?sslmode=require
 
 # 5. Restart application
 docker-compose -f docker-compose.rds-postgres.yml restart
@@ -309,7 +309,7 @@ docker exec anveesa-nias-postgres pg_dump -U nias > backup.sql
 psql -h your-rds-endpoint.rds.amazonaws.com -U nias_admin -d nias < backup.sql
 
 # 4. Update .env
-DATABASE_URL=postgres://nias_admin:pass@your-rds-endpoint.rds.amazonaws.com:5432/nias?sslmode=require
+DATABASE_URL=postgres://nias_admin:<db-password>@<db-host>:5432/nias?sslmode=require
 
 # 5. Update docker-compose (remove local postgres)
 # Use docker-compose.rds-postgres.yml
