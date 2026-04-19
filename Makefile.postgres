@@ -1,5 +1,7 @@
 # Makefile for development with PostgreSQL
 
+COMPOSE_FILE := deploy/compose/docker-compose.dev-postgres.yml
+
 .PHONY: help
 help:
 	@echo "Anveesa Nias - Development with PostgreSQL"
@@ -14,7 +16,7 @@ help:
 .PHONY: postgres-start
 postgres-start:
 	@echo "Starting PostgreSQL container..."
-	docker-compose -f docker-compose.dev-postgres.yml up -d
+	docker-compose -f $(COMPOSE_FILE) up -d
 	@echo "Waiting for PostgreSQL to be ready..."
 	@sleep 3
 	@echo "✅ PostgreSQL ready!"
@@ -22,12 +24,12 @@ postgres-start:
 .PHONY: postgres-stop
 postgres-stop:
 	@echo "Stopping PostgreSQL..."
-	docker-compose -f docker-compose.dev-postgres.yml down
+	docker-compose -f $(COMPOSE_FILE) down
 
 .PHONY: postgres-clean
 postgres-clean:
 	@echo "⚠️  Removing PostgreSQL data..."
-	docker-compose -f docker-compose.dev-postgres.yml down -v
+	docker-compose -f $(COMPOSE_FILE) down -v
 	@echo "✅ PostgreSQL data removed"
 
 .PHONY: dev-postgres

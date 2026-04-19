@@ -16,10 +16,10 @@ mv .env.production .env
 
 # Download docker-compose file (choose one)
 # For SQLite (simple, single container):
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.prod.yml
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.prod.yml
 
 # OR for PostgreSQL (recommended for production):
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.prod-postgres.yml
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.prod-postgres.yml
 ```
 
 ### Step 2: Configure Security
@@ -78,7 +78,7 @@ docker logs -f anveesa-nias
 ```bash
 # Download config
 curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/.env.production -o .env
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.prod.yml
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.prod.yml
 
 # Configure
 nano .env  # Set JWT_SECRET, NIAS_ENCRYPTION_KEY, DEFAULT_ADMIN_PASSWORD
@@ -105,7 +105,7 @@ docker-compose -f docker-compose.prod.yml up -d
 ```bash
 # Download config
 curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/.env.production -o .env
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.prod-postgres.yml
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.prod-postgres.yml
 
 # Configure
 nano .env  # Set all required passwords
@@ -143,10 +143,10 @@ curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/.env.rds-my
 mv .env.rds-mysql .env
 
 # 3. Download docker-compose
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.rds-postgres.yml
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.rds-postgres.yml
 
 # OR for MySQL:
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.rds-mysql.yml
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.rds-mysql.yml
 
 # 4. Configure with your RDS endpoint
 nano .env  # Set RDS_DATABASE_URL with your RDS endpoint

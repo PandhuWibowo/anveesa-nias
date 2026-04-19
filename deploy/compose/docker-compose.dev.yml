@@ -4,14 +4,14 @@ services:
   # Backend server with hot reload
   server:
     build:
-      context: ./server
+      context: ../../server
       dockerfile: Dockerfile.dev
     container_name: nias-server-dev
     ports:
       - "8080:8080"
     volumes:
-      - ./server:/app
-      - ./data:/data
+      - ../../server:/app
+      - ../../data:/data
     environment:
       - NIAS_ENV=development
       - PORT=8080
@@ -28,7 +28,7 @@ services:
     ports:
       - "5173:5173"
     volumes:
-      - ./web:/app
+      - ../../web:/app
     environment:
       - VITE_API_URL=http://localhost:8080
     command: ["bun", "run", "dev", "--host", "0.0.0.0"]

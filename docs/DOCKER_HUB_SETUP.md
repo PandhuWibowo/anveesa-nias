@@ -129,7 +129,7 @@ mkdir anveesa-nias && cd anveesa-nias
 
 # 2. Download config
 curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/.env.production -o .env
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.prod.yml
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.prod.yml
 
 # 3. Edit .env - set required values
 nano .env
@@ -146,7 +146,7 @@ open http://localhost:8080
 
 ```bash
 # Download PostgreSQL compose file
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.prod-postgres.yml
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.prod-postgres.yml
 
 # Edit .env - also set POSTGRES_PASSWORD
 nano .env

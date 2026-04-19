@@ -12,6 +12,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
+COMPOSE_FILE="deploy/compose/docker-compose.yml"
 
 # Test 1: Check if code compiles
 echo "📦 Test 1: Checking if Go code compiles..."
@@ -28,7 +29,7 @@ echo ""
 
 # Test 2: Check Docker Compose configuration
 echo "🐳 Test 2: Validating Docker Compose configuration..."
-if docker-compose config > /dev/null 2>&1; then
+if docker-compose -f "$COMPOSE_FILE" config > /dev/null 2>&1; then
     echo -e "${GREEN}✓${NC} Docker Compose configuration is valid"
 else
     echo -e "${RED}✗${NC} Docker Compose configuration is invalid"
@@ -38,14 +39,14 @@ echo ""
 
 # Test 3: Check required environment variables in docker-compose.yml
 echo "🔧 Test 3: Checking environment variables..."
-if docker-compose config | grep -q "DEFAULT_ADMIN_USERNAME"; then
+if docker-compose -f "$COMPOSE_FILE" config | grep -q "DEFAULT_ADMIN_USERNAME"; then
     echo -e "${GREEN}✓${NC} DEFAULT_ADMIN_USERNAME is configured"
 else
     echo -e "${RED}✗${NC} DEFAULT_ADMIN_USERNAME is missing"
     exit 1
 fi
 
-if docker-compose config | grep -q "DEFAULT_ADMIN_PASSWORD"; then
+if docker-compose -f "$COMPOSE_FILE" config | grep -q "DEFAULT_ADMIN_PASSWORD"; then
     echo -e "${GREEN}✓${NC} DEFAULT_ADMIN_PASSWORD is configured"
 else
     echo -e "${RED}✗${NC} DEFAULT_ADMIN_PASSWORD is missing"
@@ -70,19 +71,19 @@ echo ""
 
 # Test 5: Check documentation
 echo "📚 Test 5: Checking documentation..."
-if [ -f "DOCKER.md" ]; then
+if [ -f "docs/DOCKER.md" ]; then
     echo -e "${GREEN}✓${NC} DOCKER.md exists"
 else
     echo -e "${YELLOW}⚠${NC} DOCKER.md not found"
 fi
 
-if [ -f "FIRST_INSTALL.md" ]; then
+if [ -f "docs/FIRST_INSTALL.md" ]; then
     echo -e "${GREEN}✓${NC} FIRST_INSTALL.md exists"
 else
     echo -e "${YELLOW}⚠${NC} FIRST_INSTALL.md not found"
 fi
 
-if grep -q "Default Admin Account" README.md; then
+if grep -q "docs/README.md" README.md || grep -q "Default Admin Account" docs/README.md; then
     echo -e "${GREEN}✓${NC} README.md documents default admin account"
 else
     echo -e "${YELLOW}⚠${NC} Default admin not documented in README.md"
@@ -118,12 +119,12 @@ echo -e "${GREEN}✓ All tests passed!${NC}"
 echo ""
 echo "📋 Next Steps:"
 echo "1. Set secure credentials in .env file"
-echo "2. Run: docker-compose up -d"
-echo "3. Check logs: docker-compose logs -f nias"
+echo "2. Run: docker-compose -f $COMPOSE_FILE up -d"
+echo "3. Check logs: docker-compose -f $COMPOSE_FILE logs -f nias"
 echo "4. Look for: '✓ Default admin account created'"
 echo "5. Login with the credentials from logs"
 echo ""
 echo "📖 Documentation:"
-echo "- Quick Start: FIRST_INSTALL.md"
-echo "- Docker Guide: DOCKER.md"
-echo "- Full Changelog: CHANGELOG_DEFAULT_ADMIN.md"
+echo "- Quick Start: docs/FIRST_INSTALL.md"
+echo "- Docker Guide: docs/DOCKER.md"
+echo "- Full Changelog: docs/CHANGELOG_DEFAULT_ADMIN.md"

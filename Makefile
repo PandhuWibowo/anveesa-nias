@@ -1,5 +1,7 @@
 .PHONY: dev build clean install test lint docker docker-build docker-up docker-down docker-logs
 
+COMPOSE_FILE := deploy/compose/docker-compose.yml
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Development
 # ══════════════════════════════════════════════════════════════════════════════
@@ -82,15 +84,15 @@ docker-build:
 
 # Start with Docker Compose
 docker-up:
-	@docker-compose up -d
+	@docker-compose -f $(COMPOSE_FILE) up -d
 
 # Stop Docker Compose
 docker-down:
-	@docker-compose down
+	@docker-compose -f $(COMPOSE_FILE) down
 
 # View Docker logs
 docker-logs:
-	@docker-compose logs -f
+	@docker-compose -f $(COMPOSE_FILE) logs -f
 
 # Full Docker rebuild and restart
 docker-restart: docker-down docker-build docker-up

@@ -356,7 +356,7 @@ Verified functionality:
 # 1. Create RDS instance in AWS Console
 # 2. Download config and compose
 curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/.env.rds-postgres
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.rds-postgres.yml
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.rds-postgres.yml
 # 3. Edit .env with your RDS endpoint
 nano .env.rds-postgres
 # 4. Start
@@ -371,7 +371,7 @@ curl -O https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 mkdir -p certs && mv global-bundle.pem certs/rds-ca-bundle.pem
 # 3. Download config and compose
 curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/.env.rds-mysql
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.rds-mysql.yml
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.rds-mysql.yml
 # 4. Edit .env with your RDS endpoint
 nano .env.rds-mysql
 # 5. Start

@@ -398,12 +398,12 @@ docker run -d -p 8080:8080 \
 
 ### PostgreSQL (Production)
 
-See: https://github.com/your-org/anveesa-nias/blob/main/INSTALL.md
+See: https://github.com/your-org/anveesa-nias/blob/main/docs/INSTALL.md
 
 ## Documentation
 
-- Installation: https://github.com/your-org/anveesa-nias/blob/main/INSTALL.md
-- PostgreSQL: https://github.com/your-org/anveesa-nias/blob/main/DEPLOY_POSTGRES.md
+- Installation: https://github.com/your-org/anveesa-nias/blob/main/docs/INSTALL.md
+- PostgreSQL: https://github.com/your-org/anveesa-nias/blob/main/docs/DEPLOY_POSTGRES.md
 - GitHub: https://github.com/your-org/anveesa-nias
 ```
 

@@ -116,7 +116,7 @@ docker buildx build \
 
 ```bash
 curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/.env.production -o .env
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.prod.yml
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.prod.yml
 
 nano .env  # Set JWT_SECRET, NIAS_ENCRYPTION_KEY, DEFAULT_ADMIN_PASSWORD
 
@@ -127,7 +127,7 @@ docker-compose -f docker-compose.prod.yml up -d
 
 ```bash
 curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/.env.production -o .env
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.prod-postgres.yml
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.prod-postgres.yml
 
 nano .env  # Set all passwords
 

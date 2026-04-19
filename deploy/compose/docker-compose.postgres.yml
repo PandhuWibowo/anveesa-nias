@@ -22,7 +22,7 @@ services:
 
   nias:
     build:
-      context: .
+      context: ../..
       dockerfile: Dockerfile
     container_name: anveesa-nias
     restart: unless-stopped

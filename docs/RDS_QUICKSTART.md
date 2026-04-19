@@ -64,7 +64,7 @@ DEFAULT_ADMIN_PASSWORD=YourSecurePass123!
 
 ```bash
 # Download docker-compose
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.rds-postgres.yml
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.rds-postgres.yml
 
 # Start
 docker-compose -f docker-compose.rds-postgres.yml up -d
@@ -98,7 +98,7 @@ nano .env
 # mysql://nias_admin:YOUR_PASSWORD@anveesa-nias.xxxxx.us-east-1.rds.amazonaws.com:3306/nias?tls=custom&parseTime=true
 
 # 4. Use MySQL docker-compose
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.rds-mysql.yml
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.rds-mysql.yml
 
 # 5. Start
 docker-compose -f docker-compose.rds-mysql.yml up -d
@@ -141,11 +141,11 @@ Once you have RDS created and `.env` configured:
 
 ```bash
 # PostgreSQL RDS
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.rds-postgres.yml && \
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.rds-postgres.yml && \
 docker-compose -f docker-compose.rds-postgres.yml up -d
 
 # MySQL RDS
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.rds-mysql.yml && \
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.rds-mysql.yml && \
 docker-compose -f docker-compose.rds-mysql.yml up -d
 ```
 

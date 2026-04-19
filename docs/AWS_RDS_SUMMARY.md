@@ -107,7 +107,7 @@ nano .env
 # Set: RDS_DATABASE_URL=postgres://user:pass@your-rds-endpoint.rds.amazonaws.com:5432/nias?sslmode=require
 
 # 4. Download docker-compose
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.rds-postgres.yml
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.rds-postgres.yml
 
 # 5. Start application
 docker-compose -f docker-compose.rds-postgres.yml up -d
@@ -134,7 +134,7 @@ nano .env
 # Set: RDS_DATABASE_URL=mysql://user:pass@your-rds-endpoint.rds.amazonaws.com:3306/nias?tls=custom&parseTime=true
 
 # 5. Download docker-compose
-curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/docker-compose.rds-mysql.yml
+curl -O https://raw.githubusercontent.com/your-org/anveesa-nias/main/deploy/compose/docker-compose.rds-mysql.yml
 
 # 6. Start application
 docker-compose -f docker-compose.rds-mysql.yml up -d
