@@ -25,7 +25,7 @@ const activeConn = computed(() =>
 const driverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', sqlite: '#0f80cc', mssql: '#cc2927' }
 const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', sqlite: 'SQ', mssql: 'MS' }
 
-// Nav group dropdown (data / admin / tools / monitor)
+// Nav group dropdown
 const openMenu = ref<string | null>(null)
 // Connections panel — kept separate so outside-click logic doesn't conflict
 const connPanelOpen = ref(false)
@@ -37,54 +37,66 @@ const connBtnRef = ref<HTMLElement | null>(null)
 
 // ── Navigation structure ─────────────────────────────────────────
 // Direct links (no dropdown)
-const directLinks: any[] = []
+const directLinks = computed(() => {
+  const links = [
+    {
+      name: 'dashboard',
+      label: 'Overview',
+      icon: 'grid',
+      permissionsAny: ['connections.view'],
+    },
+  ]
+
+  return links.filter((link) => !link.permissionsAny?.length || hasAnyPermission(link.permissionsAny))
+})
 
 // Grouped dropdown menus (filtered by permissions)
 const allMenuGroups = [
   {
-    id: 'data',
-    label: 'Data',
+    id: 'explore',
+    label: 'Explore',
     icon: 'table',
     items: [
-      { name: 'dashboard',     label: 'Dashboard',     desc: 'Database statistics & overview',       icon: 'dashboard', permissionsAny: ['connections.view'] },
-      { name: 'data',          label: 'Data Browser',  desc: 'Browse data, schema & run SQL queries', icon: 'table', permissionsAny: ['connections.view', 'query.execute', 'schema.browse'] },
-      { name: 'connections',   label: 'Connections',   desc: 'Manage your database connections',     icon: 'plug', permissionsAny: ['connections.view'] },
-      { name: 'er',            label: 'ER Diagram',    desc: 'Entity relationship visualization',    icon: 'er', permissionsAny: ['schema.browse'] },
-      { name: 'saved-queries', label: 'Saved Queries', desc: 'Your saved SQL queries',               icon: 'saved', permissionsAny: ['savedqueries.manage'] },
-      { name: 'approvals',     label: 'Approvals',     desc: 'Review and execute SQL approval requests', icon: 'workflow', permissionsAny: ['query.execute', 'query.approve'] },
-      { name: 'change-sets',   label: 'Change Sets',   desc: 'Plan, validate, approve, and run database changes', icon: 'changeset', permissionsAny: ['query.execute', 'query.approve'] },
-    ],
-  },
-  {
-    id: 'admin',
-    label: 'Administration',
-    icon: 'settings',
-    items: [
-      { name: 'permissions', label: 'Permissions', desc: 'Roles, access groups & permissions',  icon: 'rbac', permissionsAny: ['roles.manage', 'folders.manage', 'users.manage'] },
-      { name: 'workflows',   label: 'Workflows',   desc: 'Configure approval workflows',        icon: 'workflow', permissionsAny: ['workflows.manage'] },
-    ],
-  },
-  {
-    id: 'tools',
-    label: 'Tools',
-    icon: 'wrench',
-    items: [
-      { name: 'diff',      label: 'Schema Diff',  desc: 'Compare schemas across connections', icon: 'diff', permissionsAny: ['schema.diff.view'] },
-      { name: 'backup',    label: 'Backup',       desc: 'Backup & restore databases',         icon: 'backup', permissionsAny: ['backups.manage'] },
-      { name: 'scheduler', label: 'Scheduler',    desc: 'Schedule automated queries',         icon: 'scheduler', permissionsAny: ['schedules.manage'] },
-      { name: 'watcher',   label: 'Watcher',      desc: 'Monitor live table changes',         icon: 'watcher', permissionsAny: ['query.execute'] },
+      { name: 'data',          label: 'Query & Data',  desc: 'Browse tables, inspect schema, and run SQL', icon: 'table', permissionsAny: ['connections.view', 'query.execute', 'schema.browse'] },
+      { name: 'saved-queries', label: 'Saved Queries', desc: 'Reusable SQL and team query library', icon: 'saved', permissionsAny: ['savedqueries.manage'] },
+      { name: 'er',            label: 'ER Diagram',    desc: 'Visualize relationships between tables', icon: 'er', permissionsAny: ['schema.browse'] },
     ],
   },
   {
     id: 'monitor',
-    label: 'Monitoring',
+    label: 'Monitor',
     icon: 'activity',
     items: [
-      { name: 'query-performance', label: 'Query Performance', desc: 'Standalone slow-query and error-query view', icon: 'performance', permissionsAny: ['audit.view'] },
-      { name: 'database-audit', label: 'Database Audit', desc: 'Trace native database sessions and outside access signals', icon: 'shieldlog', permissionsAny: ['audit.view'] },
-      { name: 'audit',       label: 'Audit Log',   desc: 'Query execution history & errors',  icon: 'audit', permissionsAny: ['audit.view'] },
-      { name: 'health',      label: 'Health',      desc: 'Connection pool & server status',   icon: 'health', permissionsAny: ['health.view'] },
-      { name: 'row-history', label: 'Row History', desc: 'Track INSERT / UPDATE / DELETE',    icon: 'rowhistory', permissionsAny: ['rowhistory.view'] },
+      { name: 'query-performance', label: 'Query Performance', desc: 'Slow queries, errors, and execution trends', icon: 'performance', permissionsAny: ['audit.view'] },
+      { name: 'database-audit', label: 'Database Audit', desc: 'Live sessions and external access signals', icon: 'shieldlog', permissionsAny: ['audit.view'] },
+      { name: 'audit',       label: 'Audit Log',   desc: 'Track access, actions, and query events', icon: 'audit', permissionsAny: ['audit.view'] },
+      { name: 'row-history', label: 'Row History', desc: 'See row-level INSERT, UPDATE, DELETE changes', icon: 'rowhistory', permissionsAny: ['rowhistory.view'] },
+      { name: 'watcher',     label: 'Watchers',    desc: 'Monitor important table or query activity', icon: 'watcher', permissionsAny: ['query.execute'] },
+      { name: 'health',      label: 'Health',      desc: 'Connection and service health status', icon: 'health', permissionsAny: ['health.view'] },
+    ],
+  },
+  {
+    id: 'change',
+    label: 'Change',
+    icon: 'wrench',
+    items: [
+      { name: 'approvals',   label: 'Approvals',   desc: 'Review and approve controlled SQL changes', icon: 'workflow', permissionsAny: ['query.execute', 'query.approve'] },
+      { name: 'change-sets', label: 'Change Sets', desc: 'Plan, validate, and run database changes', icon: 'changeset', permissionsAny: ['query.execute', 'query.approve'] },
+      { name: 'data-scripts', label: 'Data Scripts', desc: 'Preview programmable data updates before approval', icon: 'changeset', permissionsAny: ['query.execute', 'query.approve'] },
+      { name: 'diff',        label: 'Schema Diff', desc: 'Compare schema structure across environments', icon: 'diff', permissionsAny: ['schema.diff.view'] },
+      { name: 'backup',      label: 'Backup',      desc: 'Backup and restore databases safely', icon: 'backup', permissionsAny: ['backups.manage'] },
+      { name: 'scheduler',   label: 'Scheduler',   desc: 'Schedule recurring queries and jobs', icon: 'scheduler', permissionsAny: ['schedules.manage'] },
+    ],
+  },
+  {
+    id: 'admin',
+    label: 'Admin',
+    icon: 'settings',
+    items: [
+      { name: 'connections', label: 'Connections', desc: 'Manage environments and database access points', icon: 'plug', permissionsAny: ['connections.view'] },
+      { name: 'users',       label: 'Users',       desc: 'Manage users who can access the app', icon: 'users', permissionsAny: ['users.manage'] },
+      { name: 'permissions', label: 'Permissions', desc: 'Roles, folders, and permission policy', icon: 'rbac', permissionsAny: ['roles.manage', 'folders.manage', 'users.manage'] },
+      { name: 'workflows',   label: 'Workflows',   desc: 'Configure approval workflows and routing', icon: 'workflow', permissionsAny: ['workflows.manage'] },
     ],
   },
 ]
@@ -113,7 +125,7 @@ const menuGroups = computed(() => {
 })
 
 // Is any item in a group active?
-function groupActive(group: typeof allMenuGroups[0]) {
+function groupActive(group: { items: Array<{ name: string }> }) {
   return group.items.some(i => i.name === route.name)
 }
 

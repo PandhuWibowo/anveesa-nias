@@ -511,6 +511,48 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 
+	// ── Data Scripts ──────────────────────────────────────────────
+	mux.HandleFunc("/api/data-scripts", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove)(handlers.ListDataScripts())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermQueryExecute)(handlers.CreateDataScript())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/data-scripts/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/versions") && r.Method == http.MethodGet:
+			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove)(handlers.ListDataScriptVersions())(w, r)
+		case strings.HasSuffix(r.URL.Path, "/versions") && r.Method == http.MethodPost:
+			requireAny(handlers.PermQueryExecute)(handlers.CreateDataScriptVersion())(w, r)
+		case strings.HasSuffix(r.URL.Path, "/preview") && r.Method == http.MethodPost:
+			requireAny(handlers.PermQueryExecute)(handlers.PreviewDataScript())(w, r)
+		case strings.HasSuffix(r.URL.Path, "/plans") && r.Method == http.MethodGet:
+			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove)(handlers.ListDataScriptPlans())(w, r)
+		case r.Method == http.MethodGet:
+			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove)(handlers.GetDataScript())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/data-change-plans/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/submit") && r.Method == http.MethodPost:
+			requireAny(handlers.PermQueryExecute)(handlers.SubmitDataChangePlan())(w, r)
+		case strings.HasSuffix(r.URL.Path, "/review") && r.Method == http.MethodPost:
+			requireAny(handlers.PermQueryApprove)(handlers.ReviewDataChangePlan())(w, r)
+		case strings.HasSuffix(r.URL.Path, "/execute") && r.Method == http.MethodPost:
+			requireAny(handlers.PermQueryExecute)(handlers.ExecuteDataChangePlan())(w, r)
+		case r.Method == http.MethodGet:
+			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove)(handlers.GetDataChangePlan())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
 	// Start background scheduler
 	handlers.StartScheduler()
 
