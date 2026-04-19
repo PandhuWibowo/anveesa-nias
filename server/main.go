@@ -30,14 +30,14 @@ var (
 
 func main() {
 	startTime = time.Now()
-	
+
 	// Load .env file from parent directory (if exists)
 	if err := godotenv.Load("../.env"); err != nil {
 		log.Println("No .env file found in parent directory, using environment variables")
 	} else {
 		log.Println("✓ Loaded configuration from .env")
 	}
-	
+
 	cfg := config.Load()
 
 	// Validate configuration
@@ -470,6 +470,38 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			requireAny(handlers.PermQueryExecute)(handlers.UpdateApprovalRequest())(w, r)
 		case r.Method == http.MethodGet:
 			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove)(handlers.GetApprovalRequest())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	// ── Change Sets ───────────────────────────────────────────────
+	mux.HandleFunc("/api/change-sets", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove)(handlers.ListChangeSets())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermQueryExecute)(handlers.CreateChangeSet())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/change-sets/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/validate") && r.Method == http.MethodPost:
+			requireAny(handlers.PermQueryExecute)(handlers.ValidateChangeSet())(w, r)
+		case strings.HasSuffix(r.URL.Path, "/submit") && r.Method == http.MethodPost:
+			requireAny(handlers.PermQueryExecute)(handlers.SubmitChangeSet())(w, r)
+		case strings.HasSuffix(r.URL.Path, "/approval-progress") && r.Method == http.MethodGet:
+			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove)(handlers.GetChangeSetApprovalProgress())(w, r)
+		case strings.HasSuffix(r.URL.Path, "/approve-step") && r.Method == http.MethodPost:
+			requireAny(handlers.PermQueryApprove)(handlers.ApproveChangeSetStep())(w, r)
+		case strings.HasSuffix(r.URL.Path, "/execute") && r.Method == http.MethodPost:
+			requireAny(handlers.PermQueryExecute)(handlers.ExecuteChangeSet())(w, r)
+		case r.Method == http.MethodPut:
+			requireAny(handlers.PermQueryExecute)(handlers.UpdateChangeSet())(w, r)
+		case r.Method == http.MethodGet:
+			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove)(handlers.GetChangeSet())(w, r)
 		default:
 			http.NotFound(w, r)
 		}

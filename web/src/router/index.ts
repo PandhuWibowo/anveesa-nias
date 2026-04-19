@@ -113,6 +113,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['query.execute', 'query.approve'] },
         },
         {
+          path: 'change-sets',
+          name: 'change-sets',
+          component: () => import('@/views/ChangeSetsView.vue'),
+          meta: { requiredPermissionsAny: ['query.execute', 'query.approve'] },
+        },
+        {
           path: 'permissions',
           name: 'permissions',
           component: () => import('@/views/PermissionsView.vue'),

@@ -13,8 +13,8 @@ import (
 	"github.com/anveesa/nias/config"
 	"github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
-	_ "modernc.org/sqlite"
 	"golang.org/x/crypto/bcrypt"
+	_ "modernc.org/sqlite"
 )
 
 var DB *sql.DB
@@ -108,7 +108,7 @@ func registerMySQLTLS(certPath string) error {
 	if ok := rootCertPool.AppendCertsFromPEM(pem); !ok {
 		return fmt.Errorf("failed to append PEM")
 	}
-	
+
 	return mysql.RegisterTLSConfig("custom", &tls.Config{
 		RootCAs: rootCertPool,
 	})
@@ -129,22 +129,22 @@ func ConvertQuery(query string) string {
 	if !IsPostgreSQL() && !IsMySQL() {
 		return query // SQLite uses ?, no conversion needed
 	}
-	
+
 	// Handle INSERT OR IGNORE (SQLite-specific)
 	hasInsertOrIgnore := strings.Contains(query, "INSERT OR IGNORE")
 	if hasInsertOrIgnore {
 		query = strings.Replace(query, "INSERT OR IGNORE", "INSERT", 1)
 	}
-	
+
 	// Convert ? to $1, $2, $3, etc.
 	result := ""
 	paramCount := 1
 	inQuote := false
 	quoteChar := byte(0)
-	
+
 	for i := 0; i < len(query); i++ {
 		ch := query[i]
-		
+
 		// Track if we're inside a string literal
 		if (ch == '\'' || ch == '"') && (i == 0 || query[i-1] != '\\') {
 			if !inQuote {
@@ -154,7 +154,7 @@ func ConvertQuery(query string) string {
 				inQuote = false
 			}
 		}
-		
+
 		// Only replace ? outside of string literals
 		if ch == '?' && !inQuote {
 			result += "$" + strconv.Itoa(paramCount)
@@ -163,12 +163,12 @@ func ConvertQuery(query string) string {
 			result += string(ch)
 		}
 	}
-	
+
 	// Add ON CONFLICT DO NOTHING for PostgreSQL/MySQL if original had INSERT OR IGNORE
 	if hasInsertOrIgnore && (IsPostgreSQL() || IsMySQL()) {
 		result += " ON CONFLICT DO NOTHING"
 	}
-	
+
 	return result
 }
 
@@ -179,7 +179,7 @@ func convertSQL(stmt string) string {
 		stmt = strings.ReplaceAll(stmt, "INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
 		stmt = strings.ReplaceAll(stmt, "AUTOINCREMENT", "")
 		stmt = strings.ReplaceAll(stmt, "DATETIME", "TIMESTAMP")
-		
+
 		// Handle INSERT OR IGNORE for migrations
 		if strings.Contains(stmt, "INSERT OR IGNORE") {
 			// Convert to INSERT ... ON CONFLICT DO NOTHING
@@ -194,22 +194,22 @@ func convertSQL(stmt string) string {
 				stmt += " ON CONFLICT DO NOTHING"
 			}
 		}
-		
+
 		// Handle ON DELETE CASCADE for foreign keys
 		// PostgreSQL is stricter about REFERENCES syntax
 		return stmt
-		
+
 	} else if IsMySQL() {
 		// MySQL/MariaDB conversions (for RDS MySQL/MariaDB)
 		stmt = strings.ReplaceAll(stmt, "INTEGER PRIMARY KEY AUTOINCREMENT", "INT PRIMARY KEY AUTO_INCREMENT")
 		stmt = strings.ReplaceAll(stmt, "AUTOINCREMENT", "AUTO_INCREMENT")
 		stmt = strings.ReplaceAll(stmt, "DATETIME", "DATETIME")
-		
+
 		// Handle INSERT OR IGNORE for MySQL
 		if strings.Contains(stmt, "INSERT OR IGNORE") {
 			stmt = strings.Replace(stmt, "INSERT OR IGNORE", "INSERT IGNORE", 1)
 		}
-		
+
 		// MySQL uses different check constraint syntax (5.7 doesn't support CHECK)
 		// For compatibility, we'll keep CHECK but it may be ignored in older MySQL
 		return stmt
@@ -498,6 +498,45 @@ func migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_query_approval_request_status ON query_approval_request(status, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_query_approval_request_conn ON query_approval_request(conn_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_query_approval_request_creator ON query_approval_request(creator_id, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS change_sets (
+			id                INTEGER PRIMARY KEY AUTOINCREMENT,
+			title             TEXT NOT NULL,
+			description       TEXT NOT NULL DEFAULT '',
+			conn_id           INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+			database_name     TEXT NOT NULL DEFAULT '',
+			statement         TEXT NOT NULL,
+			rollback_sql      TEXT NOT NULL DEFAULT '',
+			impact_summary    TEXT NOT NULL DEFAULT '',
+			status            TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','pending_review','approved','rejected','executing','done','failed')),
+			creator_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			reviewer_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			review_note       TEXT NOT NULL DEFAULT '',
+			workflow_id       INTEGER REFERENCES approval_workflow(id) ON DELETE SET NULL,
+			current_step      INTEGER NOT NULL DEFAULT 0,
+			revision          INTEGER NOT NULL DEFAULT 1,
+			validation_status TEXT NOT NULL DEFAULT 'pending' CHECK(validation_status IN ('pending','passed','failed')),
+			validation_message TEXT NOT NULL DEFAULT '',
+			validated_at      DATETIME NULL,
+			execute_error     TEXT NOT NULL DEFAULT '',
+			executed_at       DATETIME NULL,
+			created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS change_set_approval (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			change_set_id INTEGER NOT NULL REFERENCES change_sets(id) ON DELETE CASCADE,
+			step_id    INTEGER NOT NULL REFERENCES workflow_step(id),
+			revision   INTEGER NOT NULL DEFAULT 1,
+			user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			username   TEXT NOT NULL DEFAULT '',
+			action     TEXT NOT NULL CHECK(action IN ('approved', 'rejected')),
+			note       TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_change_sets_status ON change_sets(status, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_change_sets_conn ON change_sets(conn_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_change_sets_creator ON change_sets(creator_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_change_set_approval_change_set ON change_set_approval(change_set_id, revision)`,
 		`CREATE INDEX IF NOT EXISTS idx_workflow_step_workflow ON workflow_step(workflow_id, step_order)`,
 		`CREATE INDEX IF NOT EXISTS idx_step_approver_step ON step_approver(step_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_step_approver_type_id ON step_approver(approver_type, approver_id)`,
@@ -550,7 +589,7 @@ func migrate() error {
 			// SQLite: "duplicate column name"
 			// MySQL: "Duplicate column name"
 			errMsg := strings.ToLower(err.Error())
-			if isAlterAdd(s) && (strings.Contains(errMsg, "duplicate column") || 
+			if isAlterAdd(s) && (strings.Contains(errMsg, "duplicate column") ||
 				strings.Contains(errMsg, "already exists")) {
 				continue
 			}
@@ -644,7 +683,7 @@ func seedDefaultAdmin() error {
 	} else {
 		query = `INSERT INTO users (username, password, role, role_id, is_active) VALUES (?, ?, 'admin', 1, 1)`
 	}
-	
+
 	_, err = DB.Exec(query, username, hash)
 	if err != nil {
 		return fmt.Errorf("create default admin: %w", err)

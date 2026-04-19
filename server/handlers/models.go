@@ -102,29 +102,29 @@ func DetectRequiredPerm(statement string) DbPerm {
 
 // Application permission keys
 const (
-	PermConnectionsView   = "connections.view"
-	PermConnectionsCreate = "connections.create"
-	PermConnectionsEdit   = "connections.edit"
-	PermConnectionsDelete = "connections.delete"
-	PermQueryExecute      = "query.execute"
-	PermQueryApprove      = "query.approve"
+	PermConnectionsView    = "connections.view"
+	PermConnectionsCreate  = "connections.create"
+	PermConnectionsEdit    = "connections.edit"
+	PermConnectionsDelete  = "connections.delete"
+	PermQueryExecute       = "query.execute"
+	PermQueryApprove       = "query.approve"
 	PermSavedQueriesManage = "savedqueries.manage"
-	PermSnippetsManage    = "snippets.manage"
-	PermNotificationsView = "notifications.view"
-	PermSchemaBrowse      = "schema.browse"
-	PermSchemaDiffView    = "schema.diff.view"
-	PermAuditView         = "audit.view"
-	PermAIUse             = "ai.use"
-	PermAIManage          = "ai.manage"
-	PermSecuritySelf      = "security.self"
-	PermBackupsManage     = "backups.manage"
-	PermSchedulesManage   = "schedules.manage"
-	PermHealthView        = "health.view"
-	PermRowHistoryView    = "rowhistory.view"
-	PermUsersManage       = "users.manage"
-	PermFoldersManage     = "folders.manage"
-	PermRolesManage       = "roles.manage"
-	PermWorkflowsManage   = "workflows.manage"
+	PermSnippetsManage     = "snippets.manage"
+	PermNotificationsView  = "notifications.view"
+	PermSchemaBrowse       = "schema.browse"
+	PermSchemaDiffView     = "schema.diff.view"
+	PermAuditView          = "audit.view"
+	PermAIUse              = "ai.use"
+	PermAIManage           = "ai.manage"
+	PermSecuritySelf       = "security.self"
+	PermBackupsManage      = "backups.manage"
+	PermSchedulesManage    = "schedules.manage"
+	PermHealthView         = "health.view"
+	PermRowHistoryView     = "rowhistory.view"
+	PermUsersManage        = "users.manage"
+	PermFoldersManage      = "folders.manage"
+	PermRolesManage        = "roles.manage"
+	PermWorkflowsManage    = "workflows.manage"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -435,6 +435,67 @@ type ApprovalProgress struct {
 type ApproveStepRequest struct {
 	Action string `json:"action"`
 	Note   string `json:"note"`
+}
+
+type ChangeSetValidationStatus string
+
+const (
+	ChangeSetValidationPending ChangeSetValidationStatus = "pending"
+	ChangeSetValidationPassed  ChangeSetValidationStatus = "passed"
+	ChangeSetValidationFailed  ChangeSetValidationStatus = "failed"
+)
+
+type ChangeSet struct {
+	ID                int64                     `json:"id"`
+	Title             string                    `json:"title"`
+	Description       string                    `json:"description"`
+	ConnID            int64                     `json:"conn_id"`
+	Connection        string                    `json:"connection"`
+	Driver            string                    `json:"driver"`
+	Environment       string                    `json:"environment"`
+	Database          string                    `json:"database"`
+	Statement         string                    `json:"statement"`
+	RollbackSQL       string                    `json:"rollback_sql"`
+	ImpactSummary     string                    `json:"impact_summary"`
+	Status            QueryApprovalStatus       `json:"status"`
+	CreatorID         int64                     `json:"creator_id"`
+	CreatorName       string                    `json:"creator_name"`
+	ReviewerID        *int64                    `json:"reviewer_id,omitempty"`
+	ReviewerName      string                    `json:"reviewer_name,omitempty"`
+	ReviewNote        string                    `json:"review_note,omitempty"`
+	WorkflowID        int64                     `json:"workflow_id"`
+	CurrentStep       int                       `json:"current_step"`
+	Revision          int                       `json:"revision"`
+	ValidationStatus  ChangeSetValidationStatus `json:"validation_status"`
+	ValidationMessage string                    `json:"validation_message"`
+	ValidatedAt       *time.Time                `json:"validated_at,omitempty"`
+	Approvers         []string                  `json:"approvers,omitempty"`
+	ExecuteError      string                    `json:"execute_error,omitempty"`
+	ExecutedAt        *time.Time                `json:"executed_at,omitempty"`
+	CreatedAt         time.Time                 `json:"created_at"`
+	UpdatedAt         time.Time                 `json:"updated_at"`
+}
+
+type CreateChangeSetRequest struct {
+	Title         string `json:"title"`
+	Description   string `json:"description"`
+	ConnID        int64  `json:"conn_id"`
+	Database      string `json:"database"`
+	Statement     string `json:"statement"`
+	RollbackSQL   string `json:"rollback_sql"`
+	ImpactSummary string `json:"impact_summary"`
+	WorkflowID    int64  `json:"workflow_id"`
+}
+
+type UpdateChangeSetRequest struct {
+	Title         string `json:"title"`
+	Description   string `json:"description"`
+	ConnID        int64  `json:"conn_id"`
+	Database      string `json:"database"`
+	Statement     string `json:"statement"`
+	RollbackSQL   string `json:"rollback_sql"`
+	ImpactSummary string `json:"impact_summary"`
+	WorkflowID    int64  `json:"workflow_id"`
 }
 
 // ── Helper Functions for Backward Compatibility ──
