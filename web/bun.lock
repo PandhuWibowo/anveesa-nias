@@ -12,6 +12,7 @@
         "codemirror": "^6.0.2",
         "naive-ui": "^2.40",
         "pinia": "^2.3",
+        "qrcode.vue": "^3.8.1",
         "sql-formatter": "^15.7.3",
         "vue": "^3.5",
         "vue-router": "^4.5",
@@ -331,6 +332,8 @@
     "postcss": ["postcss@8.5.9", "", { "dependencies": { "nanoid": "^3.3.11", "picocolors": "^1.1.1", "source-map-js": "^1.2.1" } }, "sha512-7a70Nsot+EMX9fFU3064K/kdHWZqGVY+BADLyXc8Dfv+mTLLVl6JzJpPaCZ2kQL9gIJvKXSLMHhqdRRjwQeFtw=="],
 
     "proxy-from-env": ["proxy-from-env@2.1.0", "", {}, "sha512-cJ+oHTW1VAEa8cJslgmUZrc+sjRKgAKl3Zyse6+PV38hZe/V6Z14TbCuXcan9F9ghlz4QrFr2c92TNF82UkYHA=="],
+
+    "qrcode.vue": ["qrcode.vue@3.8.1", "", { "peerDependencies": { "vue": "^3.0.0" } }, "sha512-kJORXcI5Uml5GtzcfFkchpljFgaXKQB/3ZUt+Hwnw7Y1F7FiA01U2yyO5Vscwv3bVxPkm/KLKXUOXsHbTsYrTw=="],
 
     "railroad-diagrams": ["railroad-diagrams@1.0.0", "", {}, "sha512-cz93DjNeLY0idrCNOH6PviZGRN9GJhsdm9hpn1YCS879fj4W+x5IFJhhkRZcwVgMmFF7R82UA/7Oh+R8lLZg6A=="],
 

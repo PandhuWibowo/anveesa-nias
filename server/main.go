@@ -594,6 +594,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			http.NotFound(w, r)
 		}
 	})
+
+	// Serve the built frontend when running the production image.
+	registerStaticRoutes(mux)
 }
 
 // Health check handlers
@@ -627,6 +630,38 @@ func versionHandler(w http.ResponseWriter, _ *http.Request) {
 		"version":    version,
 		"build_time": buildTime,
 		"go_version": runtime.Version(),
+	})
+}
+
+func registerStaticRoutes(mux *http.ServeMux) {
+	staticDir := "/app/static"
+	indexPath := filepath.Join(staticDir, "index.html")
+
+	if _, err := os.Stat(indexPath); err != nil {
+		log.Printf("Static UI not available at %s: %v", indexPath, err)
+		return
+	}
+
+	fileServer := http.FileServer(http.Dir(staticDir))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+
+		cleanPath := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/"))
+		if cleanPath == "." || cleanPath == "" {
+			http.ServeFile(w, r, indexPath)
+			return
+		}
+
+		candidate := filepath.Join(staticDir, cleanPath)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+
+		http.ServeFile(w, r, indexPath)
 	})
 }
 

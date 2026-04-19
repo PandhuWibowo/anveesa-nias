@@ -26,7 +26,14 @@ func ListDatabases() http.HandlerFunc {
 		var dbs []string
 		switch driver {
 		case "postgres":
-			rows, err := db.QueryContext(r.Context(), `SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname`)
+			rows, err := db.QueryContext(r.Context(), `
+				SELECT schema_name
+				FROM information_schema.schemata
+				WHERE schema_name NOT IN ('information_schema', 'pg_catalog')
+				  AND schema_name NOT LIKE 'pg_toast%'
+				  AND schema_name NOT LIKE 'pg_temp_%'
+				ORDER BY schema_name
+			`)
 			if err == nil {
 				defer rows.Close()
 				for rows.Next() {

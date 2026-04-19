@@ -19,6 +19,7 @@ func ImportRows() http.HandlerFunc {
 			return
 		}
 		connID, _ := strconv.ParseInt(parts[0], 10, 64)
+		dbName := parts[2]
 		tableName := parts[4]
 
 		var body struct {
@@ -51,10 +52,7 @@ func ImportRows() http.HandlerFunc {
 			}
 		}
 
-		tableRef := quoteIdent(driver, tableName)
-		if driver == "postgres" {
-			tableRef = `"public".` + tableRef
-		}
+		tableRef := qualifiedTableName(driver, dbName, tableName)
 
 		stmt := fmt.Sprintf(
 			`INSERT INTO %s (%s) VALUES (%s)`,

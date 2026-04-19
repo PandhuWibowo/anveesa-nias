@@ -53,10 +53,12 @@ func GetSchema() http.HandlerFunc {
 		switch driver {
 		case "postgres":
 			rows, err := db.Query(
-				`SELECT table_catalog, table_name, table_type
+				`SELECT table_schema, table_name, table_type
 				 FROM information_schema.tables
-				 WHERE table_schema = 'public'
-				 ORDER BY table_name`,
+				 WHERE table_schema NOT IN ('information_schema', 'pg_catalog')
+				   AND table_schema NOT LIKE 'pg_toast%'
+				   AND table_schema NOT LIKE 'pg_temp_%'
+				 ORDER BY table_schema, table_name`,
 			)
 			if err != nil {
 				http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
@@ -65,16 +67,16 @@ func GetSchema() http.HandlerFunc {
 			defer rows.Close()
 			dbMap := map[string]*SchemaDatabase{}
 			for rows.Next() {
-				var dbName, tableName, tableType string
-				rows.Scan(&dbName, &tableName, &tableType)
+				var schemaName, tableName, tableType string
+				rows.Scan(&schemaName, &tableName, &tableType)
 				tType := "table"
 				if tableType == "VIEW" {
 					tType = "view"
 				}
-				if _, ok := dbMap[dbName]; !ok {
-					dbMap[dbName] = &SchemaDatabase{Name: dbName}
+				if _, ok := dbMap[schemaName]; !ok {
+					dbMap[schemaName] = &SchemaDatabase{Name: schemaName}
 				}
-				dbMap[dbName].Tables = append(dbMap[dbName].Tables, SchemaTable{Name: tableName, Type: tType})
+				dbMap[schemaName].Tables = append(dbMap[schemaName].Tables, SchemaTable{Name: tableName, Type: tType})
 			}
 			for _, d := range dbMap {
 				dbs = append(dbs, *d)
@@ -187,6 +189,10 @@ func GetTableColumns() http.HandlerFunc {
 
 		switch driver {
 		case "postgres":
+			schemaName := dbName
+			if schemaName == "" {
+				schemaName = "public"
+			}
 			rows, err := db.Query(`
 				SELECT
 					c.column_name,
@@ -198,13 +204,14 @@ func GetTableColumns() http.HandlerFunc {
 				LEFT JOIN information_schema.key_column_usage kcu
 					ON kcu.table_name = c.table_name
 					AND kcu.column_name = c.column_name
+					AND kcu.table_schema = c.table_schema
 					AND kcu.constraint_name IN (
 						SELECT constraint_name FROM information_schema.table_constraints
-						WHERE constraint_type = 'PRIMARY KEY' AND table_name = $1
+						WHERE constraint_type = 'PRIMARY KEY' AND table_name = $1 AND table_schema = $2
 					)
-				WHERE c.table_catalog = $2 AND c.table_name = $1 AND c.table_schema = 'public'
+				WHERE c.table_name = $1 AND c.table_schema = $2
 				ORDER BY c.ordinal_position
-			`, tableName, dbName)
+			`, tableName, schemaName)
 			if err != nil {
 				http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 				return
@@ -322,6 +329,22 @@ func quoteIdent(driver, name string) string {
 	}
 }
 
+func qualifiedTableName(driver, namespace, table string) string {
+	switch driver {
+	case "postgres":
+		if namespace == "" {
+			namespace = "public"
+		}
+		return fmt.Sprintf(`%s.%s`, quoteIdent(driver, namespace), quoteIdent(driver, table))
+	case "mysql":
+		return fmt.Sprintf("%s.%s", quoteIdent(driver, namespace), quoteIdent(driver, table))
+	case "sqlserver":
+		return fmt.Sprintf("%s.[dbo].%s", quoteIdent(driver, namespace), quoteIdent(driver, table))
+	default:
+		return quoteIdent(driver, table)
+	}
+}
+
 // isValidSortDirection checks if the orderDir is valid
 func isValidSortDirection(dir string) bool {
 	upper := strings.ToUpper(strings.TrimSpace(dir))
@@ -376,16 +399,16 @@ func GetTableData() http.HandlerFunc {
 		var tableRef, countSQL string
 		switch driver {
 		case "postgres":
-			tableRef = fmt.Sprintf(`"public".%s`, quoteIdent(driver, tableName))
+			tableRef = qualifiedTableName(driver, dbName, tableName)
 			countSQL = fmt.Sprintf(`SELECT COUNT(*) FROM %s`, tableRef)
 		case "mysql":
-			tableRef = fmt.Sprintf("%s.%s", quoteIdent(driver, dbName), quoteIdent(driver, tableName))
+			tableRef = qualifiedTableName(driver, dbName, tableName)
 			countSQL = fmt.Sprintf("SELECT COUNT(*) FROM %s", tableRef)
 		case "sqlite":
 			tableRef = quoteIdent(driver, tableName)
 			countSQL = fmt.Sprintf(`SELECT COUNT(*) FROM %s`, tableRef)
 		case "sqlserver":
-			tableRef = fmt.Sprintf("%s.[dbo].%s", quoteIdent(driver, dbName), quoteIdent(driver, tableName))
+			tableRef = qualifiedTableName(driver, dbName, tableName)
 			countSQL = fmt.Sprintf("SELECT COUNT(*) FROM %s", tableRef)
 		default:
 			tableRef = quoteIdent(driver, tableName)

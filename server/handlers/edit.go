@@ -18,6 +18,7 @@ func UpdateRow() http.HandlerFunc {
 			return
 		}
 		connID, _ := strconv.ParseInt(parts[0], 10, 64)
+		dbName := parts[2]
 		tableName := parts[4]
 
 		var body struct {
@@ -49,8 +50,8 @@ func UpdateRow() http.HandlerFunc {
 		case "postgres":
 			// Convert ? to $1, $2 ...
 			query = fmt.Sprintf(
-				`UPDATE "public".%s SET %s WHERE %s = $%d`,
-				quoteIdent(driver, tableName),
+				`UPDATE %s SET %s WHERE %s = $%d`,
+				qualifiedTableName(driver, dbName, tableName),
 				strings.Join(setClauses, ", "),
 				quoteIdent(driver, body.PKColumn),
 				len(setClauses)+1,
@@ -59,8 +60,8 @@ func UpdateRow() http.HandlerFunc {
 				setClauses[i] = strings.Replace(setClauses[i], "?", fmt.Sprintf("$%d", i+1), 1)
 			}
 			query = fmt.Sprintf(
-				`UPDATE "public".%s SET %s WHERE %s = $%d`,
-				quoteIdent(driver, tableName),
+				`UPDATE %s SET %s WHERE %s = $%d`,
+				qualifiedTableName(driver, dbName, tableName),
 				strings.Join(setClauses, ", "),
 				quoteIdent(driver, body.PKColumn),
 				len(setClauses)+1,
@@ -94,6 +95,7 @@ func InsertRow() http.HandlerFunc {
 			return
 		}
 		connID, _ := strconv.ParseInt(parts[0], 10, 64)
+		dbName := parts[2]
 		tableName := parts[4]
 
 		var body struct {
@@ -125,10 +127,7 @@ func InsertRow() http.HandlerFunc {
 			args = append(args, val)
 		}
 
-		tableRef := quoteIdent(driver, tableName)
-		if driver == "postgres" {
-			tableRef = `"public".` + tableRef
-		}
+		tableRef := qualifiedTableName(driver, dbName, tableName)
 		query := fmt.Sprintf(
 			`INSERT INTO %s (%s) VALUES (%s)`,
 			tableRef, strings.Join(cols, ", "), strings.Join(placeholders, ", "),
@@ -154,6 +153,7 @@ func DeleteRow() http.HandlerFunc {
 			return
 		}
 		connID, _ := strconv.ParseInt(parts[0], 10, 64)
+		dbName := parts[2]
 		tableName := parts[4]
 
 		var body struct {
@@ -171,10 +171,9 @@ func DeleteRow() http.HandlerFunc {
 			return
 		}
 
-		tableRef := quoteIdent(driver, tableName)
+		tableRef := qualifiedTableName(driver, dbName, tableName)
 		placeholder := "?"
 		if driver == "postgres" {
-			tableRef = `"public".` + tableRef
 			placeholder = "$1"
 		}
 		query := fmt.Sprintf(`DELETE FROM %s WHERE %s = %s`,

@@ -26,6 +26,7 @@ func CreateTable() http.HandlerFunc {
 			return
 		}
 		connID, _ := strconv.ParseInt(parts[0], 10, 64)
+		dbName := parts[2]
 
 		var body struct {
 			TableName string      `json:"table_name"`
@@ -69,7 +70,8 @@ func CreateTable() http.HandlerFunc {
 			colDefs = append(colDefs, fmt.Sprintf("  PRIMARY KEY (%s)", strings.Join(pkCols, ", ")))
 		}
 
-		ddl := fmt.Sprintf("CREATE TABLE %s (\n%s\n)", quoteIdent(driver, body.TableName), strings.Join(colDefs, ",\n"))
+		tableRef := qualifiedTableName(driver, dbName, body.TableName)
+		ddl := fmt.Sprintf("CREATE TABLE %s (\n%s\n)", tableRef, strings.Join(colDefs, ",\n"))
 
 		if _, err := db.ExecContext(r.Context(), ddl); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
@@ -89,6 +91,7 @@ func DropTable() http.HandlerFunc {
 			return
 		}
 		connID, _ := strconv.ParseInt(parts[0], 10, 64)
+		dbName := parts[2]
 		tableName := parts[4]
 
 		db, driver, err := GetDB(connID)
@@ -97,7 +100,7 @@ func DropTable() http.HandlerFunc {
 			return
 		}
 
-		ddl := fmt.Sprintf("DROP TABLE IF EXISTS %s", quoteIdent(driver, tableName))
+		ddl := fmt.Sprintf("DROP TABLE IF EXISTS %s", qualifiedTableName(driver, dbName, tableName))
 		if _, err := db.ExecContext(r.Context(), ddl); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
@@ -116,6 +119,7 @@ func AddColumn() http.HandlerFunc {
 			return
 		}
 		connID, _ := strconv.ParseInt(parts[0], 10, 64)
+		dbName := parts[2]
 		tableName := parts[4]
 
 		var col ColumnDef
@@ -138,7 +142,7 @@ func AddColumn() http.HandlerFunc {
 			colDef += " DEFAULT " + col.Default
 		}
 
-		ddl := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", quoteIdent(driver, tableName), colDef)
+		ddl := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", qualifiedTableName(driver, dbName, tableName), colDef)
 		if _, err := db.ExecContext(r.Context(), ddl); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
@@ -157,6 +161,7 @@ func DropColumn() http.HandlerFunc {
 			return
 		}
 		connID, _ := strconv.ParseInt(parts[0], 10, 64)
+		dbName := parts[2]
 		tableName := parts[4]
 		colName := parts[6]
 
@@ -171,7 +176,7 @@ func DropColumn() http.HandlerFunc {
 			return
 		}
 
-		ddl := fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", quoteIdent(driver, tableName), quoteIdent(driver, colName))
+		ddl := fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", qualifiedTableName(driver, dbName, tableName), quoteIdent(driver, colName))
 		if _, err := db.ExecContext(r.Context(), ddl); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
@@ -190,6 +195,7 @@ func RenameTable() http.HandlerFunc {
 			return
 		}
 		connID, _ := strconv.ParseInt(parts[0], 10, 64)
+		dbName := parts[2]
 		oldName := parts[4]
 
 		var body struct {
@@ -210,11 +216,11 @@ func RenameTable() http.HandlerFunc {
 		var ddl string
 		switch driver {
 		case "mysql":
-			ddl = fmt.Sprintf("RENAME TABLE %s TO %s", quoteIdent(driver, oldName), quoteIdent(driver, body.NewName))
+			ddl = fmt.Sprintf("RENAME TABLE %s TO %s", qualifiedTableName(driver, dbName, oldName), qualifiedTableName(driver, dbName, body.NewName))
 		case "sqlserver":
 			ddl = fmt.Sprintf("EXEC sp_rename '%s', '%s'", oldName, body.NewName)
 		default:
-			ddl = fmt.Sprintf("ALTER TABLE %s RENAME TO %s", quoteIdent(driver, oldName), quoteIdent(driver, body.NewName))
+			ddl = fmt.Sprintf("ALTER TABLE %s RENAME TO %s", qualifiedTableName(driver, dbName, oldName), quoteIdent(driver, body.NewName))
 		}
 
 		if _, err := db.ExecContext(r.Context(), ddl); err != nil {
