@@ -112,6 +112,110 @@ const schemaColumnRows = computed(() =>
   schemaColumns.value.map((c: any) => [c.name, c.data_type, c.is_nullable ? 'YES' : 'NO', c.is_primary_key ? '✓' : '', c.default_value ?? ''])
 )
 
+// ── Schema Explorer state (full metadata) ────────────────────────
+import SchemaExplorerTree from '@/components/database/SchemaExplorerTree.vue'
+import { useSchema as useSchemaExplorer } from '@/composables/useSchema'
+
+const { 
+  databases, 
+  loadingSchema, 
+  metadata, 
+  objectDetail, 
+  fetchSchema: fetchSchemaList, 
+  fetchMetadata, 
+  fetchObjectDetail 
+} = useSchemaExplorer()
+
+const activeDatabase = ref('')
+const selectedObjectKey = ref('')
+const detailLoading = ref(false)
+
+watch(() => props.connId, async (id) => {
+  metadata.value = null
+  objectDetail.value = null
+  selectedObjectKey.value = ''
+  activeDatabase.value = ''
+  if (!id) return
+  await fetchSchemaList(id)
+  activeDatabase.value = databases.value[0]?.name ?? ''
+}, { immediate: true })
+
+watch(activeDatabase, async (dbName) => {
+  metadata.value = null
+  objectDetail.value = null
+  selectedObjectKey.value = ''
+  if (!props.connId || !dbName) return
+  const catalog = await fetchMetadata(props.connId, dbName)
+  const firstItem = catalog?.groups.find(group => group.items.length > 0)?.items[0]
+  if (firstItem) {
+    await selectSchemaObject({ type: firstItem.type, name: firstItem.name })
+  }
+})
+
+async function selectSchemaObject(payload: { type: string; name: string }) {
+  if (!props.connId || !activeDatabase.value) return
+  selectedObjectKey.value = `${payload.type}:${payload.name}`
+  detailLoading.value = true
+  await fetchObjectDetail(props.connId, activeDatabase.value, payload.type, payload.name)
+  detailLoading.value = false
+}
+
+function rowsForProperties(properties: any[]) {
+  return properties.map((property) => [property.label, property.value])
+}
+
+const indexRows = computed(() => (objectDetail.value?.indexes ?? []).map((index) => [
+  index.name,
+  index.table_name,
+  index.method,
+  index.is_unique ? 'YES' : 'NO',
+  index.is_primary ? 'YES' : '',
+  (index.columns ?? []).join(', '),
+]))
+
+const constraintRows = computed(() => (objectDetail.value?.constraints ?? []).map((constraint) => [
+  constraint.name,
+  constraint.constraint_type,
+  (constraint.columns ?? []).join(', '),
+  constraint.referenced_table ?? '',
+  constraint.definition,
+]))
+
+const triggerRows = computed(() => (objectDetail.value?.triggers ?? []).map((trigger) => [
+  trigger.name,
+  trigger.table_name,
+  trigger.timing,
+  trigger.events,
+]))
+
+const sequenceRows = computed(() => (objectDetail.value?.sequences ?? []).map((sequence) => [
+  sequence.name,
+  sequence.start_value,
+  sequence.increment_by,
+  sequence.cache_size,
+  sequence.cycle ? 'YES' : 'NO',
+  sequence.owned_by ?? '',
+]))
+
+const copiedDDL = ref(false)
+async function copyDDL(text: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    copiedDDL.value = true
+    setTimeout(() => { copiedDDL.value = false }, 1500)
+  } catch {
+    toast.error('Failed to copy')
+  }
+}
+
+const columnDetailRows = computed(() => (objectDetail.value?.columns ?? []).map((column) => [
+  column.name,
+  column.data_type,
+  column.is_nullable ? 'YES' : 'NO',
+  column.is_primary_key ? 'YES' : '',
+  column.default_value ?? '',
+]))
+
 // ── Import ────────────────────────────────────────────────────────
 const importOpen = ref(false)
 const importColumns = ref<string[]>([])
@@ -244,7 +348,11 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
       <div class="sp-tabs">
         <button class="sp-tab" :class="{ 'sp-tab--active': activeSubTab === 'data' }" @click="activeSubTab = 'data'">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
-          Data Browser
+          Browse
+        </button>
+        <button class="sp-tab" :class="{ 'sp-tab--active': activeSubTab === 'explorer' }" @click="activeSubTab = 'explorer'">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+          Explorer
         </button>
         <button class="sp-tab" :class="{ 'sp-tab--active': activeSubTab === 'schema' }" @click="activeSubTab = 'schema'">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
@@ -275,7 +383,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 
     <!-- DATA BROWSER -->
     <div v-else v-show="activeSubTab === 'data'" style="display:flex;flex:1;min-height:0;overflow:hidden">
-      <div style="width:220px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--bg-surface);overflow:hidden">
+      <div class="sidebar-panel">
         <div class="panel-header">
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ activeConn.name }}</span>
           <span class="driver-badge" :style="{ background: driverColor(activeConn.driver) }">{{ driverLabel(activeConn.driver) }}</span>
@@ -283,26 +391,29 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
         <SchemaTree :connId="connId" @select-table="handleSelectTable" />
       </div>
       <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden">
-        <div style="padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg-surface);display:flex;align-items:center;gap:10px;flex-shrink:0">
+        <div class="browse-toolbar">
           <template v-if="selected">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--brand)"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
-            <span style="font-size:13px;font-weight:600;color:var(--text-primary)">{{ selected.db }}.{{ selected.table }}</span>
-            <span v-if="totalRows" style="font-size:11px;color:var(--text-muted)">{{ totalRows.toLocaleString() }} rows</span>
-            <div style="flex:1"/>
-            <button class="base-btn base-btn--ghost base-btn--sm" @click="loadData">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.43"/></svg>
-              Refresh
-            </button>
-            <button class="base-btn base-btn--sm" :class="editMode ? 'base-btn--primary' : 'base-btn--ghost'" @click="editMode = !editMode">{{ editMode ? 'Editing' : 'Edit' }}</button>
-            <button class="base-btn base-btn--ghost base-btn--sm" @click="openImport">Import</button>
-            <button class="base-btn base-btn--ghost base-btn--sm" @click="exportCsv" :disabled="!rows.length">CSV</button>
-            <button class="base-btn base-btn--ghost base-btn--sm" @click="exportJson" :disabled="!rows.length">JSON</button>
-            <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!columns.length" @click="profilerShow=true">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-              Profile
-            </button>
+            <div class="browse-toolbar__info">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--brand)"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+              <span class="browse-toolbar__title">{{ selected.db }}.{{ selected.table }}</span>
+              <span v-if="totalRows" class="browse-toolbar__meta">{{ totalRows.toLocaleString() }} rows</span>
+            </div>
+            <div class="browse-toolbar__actions">
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="loadData">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.43"/></svg>
+                Refresh
+              </button>
+              <button class="base-btn base-btn--sm" :class="editMode ? 'base-btn--primary' : 'base-btn--ghost'" @click="editMode = !editMode">{{ editMode ? 'Editing' : 'Edit' }}</button>
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="openImport">Import</button>
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportCsv" :disabled="!rows.length">CSV</button>
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportJson" :disabled="!rows.length">JSON</button>
+              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!columns.length" @click="profilerShow=true">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                Profile
+              </button>
+            </div>
           </template>
-          <span v-else style="font-size:13px;color:var(--text-muted)">Select a table to browse data</span>
+          <span v-else class="browse-toolbar__empty">Select a table to browse data</span>
         </div>
         <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column">
           <DataTable v-if="selected" :columns="columns" :rows="rows" :loading="loading" :page="page" :page-size="pageSize" :total-rows="totalRows" :editable="editMode" :pk-column="pkColumn" @page-change="handlePageChange" @page-size-change="handlePageSizeChange" @sort="handleSort" @save-row="handleSaveRow" @delete-row="handleDeleteRow" @add-row="handleAddRow" />
@@ -316,7 +427,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 
     <!-- SCHEMA -->
     <div v-if="activeConn" v-show="activeSubTab === 'schema'" style="display:flex;flex:1;min-height:0;overflow:hidden">
-      <div style="width:260px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--bg-surface);overflow:hidden">
+      <div class="sidebar-panel">
         <div class="panel-header">
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ activeConn.name }}</span>
           <span class="driver-badge" :style="{ background: driverColor(activeConn.driver) }">{{ driverLabel(activeConn.driver) }}</span>
@@ -352,6 +463,235 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="color:var(--text-muted)"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
           Select a table from the left to inspect its columns.
         </div>
+      </div>
+    </div>
+
+    <!-- EXPLORER (Full Schema Metadata) -->
+    <div v-if="activeConn" v-show="activeSubTab === 'explorer'" class="explorer-view">
+      <div class="explorer-sidebar">
+        <div class="explorer-sidebar__head">
+          <select v-model="activeDatabase" class="explorer-db-select" :disabled="!databases.length">
+            <option value="" disabled>Select database…</option>
+            <option v-for="database in databases" :key="database.name" :value="database.name">{{ database.name }}</option>
+          </select>
+        </div>
+        <div v-if="loadingSchema" class="explorer-empty">Loading…</div>
+        <div v-else-if="!activeDatabase" class="explorer-empty">Choose a database</div>
+        <SchemaExplorerTree
+          v-else
+          :catalog="metadata"
+          :selected-key="selectedObjectKey"
+          @select-object="selectSchemaObject"
+        />
+      </div>
+
+      <div class="explorer-detail">
+        <div v-if="detailLoading" class="explorer-empty">Loading object detail…</div>
+        <div v-else-if="!objectDetail" class="explorer-empty">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" style="opacity:0.3"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+          <p>Select an object to view details</p>
+        </div>
+        <template v-else>
+          <div class="explorer-hero">
+            <div class="explorer-hero__kicker">{{ objectDetail.type }}</div>
+            <div class="explorer-hero__title">{{ objectDetail.name }}</div>
+            <div class="explorer-hero__sub">{{ objectDetail.database }}</div>
+          </div>
+
+          <div class="explorer-panels">
+            <div class="explorer-panel">
+              <div class="explorer-panel__header">
+                <span>Properties</span>
+                <span class="explorer-panel__count">{{ rowsForProperties(objectDetail.properties).length }}</span>
+              </div>
+              <div class="ex-table-scroll">
+                <table class="ex-table">
+                  <thead>
+                    <tr><th>Property</th><th>Value</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(row, i) in rowsForProperties(objectDetail.properties)" :key="i">
+                      <td class="ex-table__key">{{ row[0] }}</td>
+                      <td>{{ row[1] }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div v-if="objectDetail.enum_values?.length" class="explorer-panel">
+              <div class="explorer-panel__header">
+                <span>Enum Values</span>
+                <span class="explorer-panel__count">{{ objectDetail.enum_values.length }}</span>
+              </div>
+              <div class="ex-table-scroll">
+                <table class="ex-table">
+                  <thead><tr><th>Value</th></tr></thead>
+                  <tbody>
+                    <tr v-for="(value, i) in objectDetail.enum_values" :key="i">
+                      <td><code class="ex-code-inline">{{ value }}</code></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="explorer-panel explorer-panel--code">
+            <div class="explorer-panel__header explorer-panel__header--with-action">
+              <span>DDL</span>
+              <button
+                v-if="objectDetail.ddl"
+                class="explorer-copy-btn"
+                @click="copyDDL(objectDetail.ddl)"
+                :title="copiedDDL ? 'Copied!' : 'Copy DDL'"
+              >
+                <svg v-if="!copiedDDL" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                {{ copiedDDL ? 'Copied' : 'Copy' }}
+              </button>
+            </div>
+            <pre class="explorer-code">{{ objectDetail.ddl || '-- definition unavailable' }}</pre>
+          </div>
+
+          <div v-if="objectDetail.routine" class="explorer-panel">
+            <div class="explorer-panel__header">Routine</div>
+            <div class="ex-table-scroll">
+              <table class="ex-table">
+                <thead><tr><th>Field</th><th>Value</th></tr></thead>
+                <tbody>
+                  <tr><td class="ex-table__key">Type</td><td>{{ objectDetail.routine.routine_type }}</td></tr>
+                  <tr><td class="ex-table__key">Identity</td><td>{{ objectDetail.routine.identity }}</td></tr>
+                  <tr><td class="ex-table__key">Return Type</td><td>{{ objectDetail.routine.return_type || '—' }}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div v-if="objectDetail.columns?.length" class="explorer-panel">
+            <div class="explorer-panel__header">
+              <span>Columns</span>
+              <span class="explorer-panel__count">{{ objectDetail.columns.length }}</span>
+            </div>
+            <div class="ex-table-scroll">
+              <table class="ex-table ex-table--cols">
+                <thead>
+                  <tr>
+                    <th>Name</th><th>Type</th><th>Nullable</th><th>PK</th><th>Default</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(col, i) in objectDetail.columns" :key="i">
+                    <td class="ex-table__key">{{ col.name }}</td>
+                    <td><code class="ex-code-inline">{{ col.data_type }}</code></td>
+                    <td>
+                      <span class="ex-pill" :class="col.is_nullable ? 'ex-pill--muted' : 'ex-pill--solid'">
+                        {{ col.is_nullable ? 'YES' : 'NO' }}
+                      </span>
+                    </td>
+                    <td>
+                      <span v-if="col.is_primary_key" class="ex-pill ex-pill--brand">PK</span>
+                      <span v-else class="ex-table__dim">—</span>
+                    </td>
+                    <td><code v-if="col.default_value" class="ex-code-inline">{{ col.default_value }}</code><span v-else class="ex-table__dim">—</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div v-if="objectDetail.indexes?.length" class="explorer-panel">
+            <div class="explorer-panel__header">
+              <span>Indexes</span>
+              <span class="explorer-panel__count">{{ objectDetail.indexes.length }}</span>
+            </div>
+            <div class="ex-table-scroll">
+              <table class="ex-table">
+                <thead>
+                  <tr>
+                    <th>Name</th><th>Table</th><th>Method</th><th>Unique</th><th>Primary</th><th>Columns</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(idx, i) in objectDetail.indexes" :key="i">
+                    <td class="ex-table__key">{{ idx.name }}</td>
+                    <td>{{ idx.table_name }}</td>
+                    <td><code class="ex-code-inline">{{ idx.method }}</code></td>
+                    <td><span v-if="idx.is_unique" class="ex-pill ex-pill--solid">YES</span><span v-else class="ex-table__dim">—</span></td>
+                    <td><span v-if="idx.is_primary" class="ex-pill ex-pill--brand">PK</span><span v-else class="ex-table__dim">—</span></td>
+                    <td><code class="ex-code-inline">{{ (idx.columns ?? []).join(', ') || '—' }}</code></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div v-if="objectDetail.constraints?.length" class="explorer-panel">
+            <div class="explorer-panel__header">
+              <span>Constraints</span>
+              <span class="explorer-panel__count">{{ objectDetail.constraints.length }}</span>
+            </div>
+            <div class="ex-table-scroll">
+              <table class="ex-table">
+                <thead>
+                  <tr>
+                    <th>Name</th><th>Type</th><th>Columns</th><th>References</th><th>Definition</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(c, i) in objectDetail.constraints" :key="i">
+                    <td class="ex-table__key">{{ c.name }}</td>
+                    <td><span class="ex-pill ex-pill--muted">{{ c.constraint_type }}</span></td>
+                    <td><code class="ex-code-inline">{{ (c.columns ?? []).join(', ') || '—' }}</code></td>
+                    <td>{{ c.referenced_table || '—' }}</td>
+                    <td><code class="ex-code-inline ex-code-inline--def">{{ c.definition || '—' }}</code></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div v-if="objectDetail.triggers?.length" class="explorer-panel">
+            <div class="explorer-panel__header">
+              <span>Triggers</span>
+              <span class="explorer-panel__count">{{ objectDetail.triggers.length }}</span>
+            </div>
+            <div class="ex-table-scroll">
+              <table class="ex-table">
+                <thead><tr><th>Name</th><th>Table</th><th>Timing</th><th>Events</th></tr></thead>
+                <tbody>
+                  <tr v-for="(t, i) in objectDetail.triggers" :key="i">
+                    <td class="ex-table__key">{{ t.name }}</td>
+                    <td>{{ t.table_name }}</td>
+                    <td><span class="ex-pill ex-pill--muted">{{ t.timing }}</span></td>
+                    <td><code class="ex-code-inline">{{ t.events }}</code></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div v-if="objectDetail.sequences?.length" class="explorer-panel">
+            <div class="explorer-panel__header">
+              <span>Sequences</span>
+              <span class="explorer-panel__count">{{ objectDetail.sequences.length }}</span>
+            </div>
+            <div class="ex-table-scroll">
+              <table class="ex-table">
+                <thead><tr><th>Name</th><th>Start</th><th>Increment</th><th>Cache</th><th>Cycle</th><th>Owned By</th></tr></thead>
+                <tbody>
+                  <tr v-for="(s, i) in objectDetail.sequences" :key="i">
+                    <td class="ex-table__key">{{ s.name }}</td>
+                    <td>{{ s.start_value }}</td>
+                    <td>{{ s.increment_by }}</td>
+                    <td>{{ s.cache_size }}</td>
+                    <td><span v-if="s.cycle" class="ex-pill ex-pill--solid">YES</span><span v-else class="ex-table__dim">—</span></td>
+                    <td>{{ s.owned_by || '—' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </template>
       </div>
     </div>
 
@@ -505,20 +845,153 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 </template>
 
 <style scoped>
-.sp-toolbar { display:flex;align-items:center;padding:0 12px;border-bottom:1px solid var(--border);background:var(--bg-surface);flex-shrink:0;min-height:36px;overflow:visible;position:relative;z-index:5; }
-.sp-tabs { display:flex;align-items:stretch;flex:1;overflow-x:auto;scrollbar-width:none;gap:0; }
-.sp-tabs::-webkit-scrollbar { display:none; }
-.sp-tab { display:flex;align-items:center;gap:6px;padding:0 12px;height:36px;border:none;border-right:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:12px;font-weight:500;cursor:pointer;white-space:nowrap;transition:color .12s,background .12s;border-bottom:2px solid transparent;flex-shrink:0; }
-.sp-tab:hover { color:var(--text-primary);background:var(--bg-elevated); }
-.sp-tab--active { color:var(--text-primary);background:var(--bg-body);border-bottom-color:var(--brand); }
-.sp-tab__close { display:flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:3px;font-size:14px;color:var(--text-muted);line-height:1;transition:background .1s,color .1s; }
-.sp-tab__close:hover { background:var(--bg-elevated);color:var(--text-primary); }
-.sp-tab-new { display:flex;align-items:center;gap:5px;padding:0 10px;height:36px;border:none;border-right:1px solid var(--border);background:transparent;color:var(--brand);font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;transition:background .12s;flex-shrink:0; }
-.sp-tab-new:hover { background:var(--brand-dim); }
-.sp-no-conn { flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px; }
-.panel-header { display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text-secondary);flex-shrink:0; }
-.driver-badge { display:inline-flex;align-items:center;justify-content:center;width:22px;height:16px;border-radius:3px;font-size:9px;font-weight:700;color:#fff;letter-spacing:.3px; }
-.schema-type-badge { display:inline-flex;align-items:center;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;background:var(--bg-elevated);color:var(--text-muted);border:1px solid var(--border);text-transform:uppercase;letter-spacing:.3px; }
+.sp-toolbar { 
+  display: flex;
+  align-items: center;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(to bottom, var(--bg-surface), color-mix(in srgb, var(--bg-surface) 98%, transparent));
+  flex-shrink: 0;
+  min-height: 48px;
+  overflow: visible;
+  position: relative;
+  z-index: 5;
+  box-shadow: 0 1px 3px rgba(0,0,0,.03);
+}
+
+.sp-tabs { 
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  overflow-x: auto;
+  scrollbar-width: none;
+  gap: 6px;
+}
+
+.sp-tabs::-webkit-scrollbar { display: none; }
+
+.sp-tab { 
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  height: 36px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all .2s ease;
+  border-radius: 8px;
+  flex-shrink: 0;
+  position: relative;
+  letter-spacing: 0.01em;
+}
+
+.sp-tab:hover { 
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--bg-elevated) 70%, transparent);
+  transform: translateY(-1px);
+}
+
+.sp-tab--active { 
+  color: var(--text-primary);
+  background: var(--bg-body);
+  box-shadow: 0 2px 8px rgba(0,0,0,.08), inset 0 0 0 1px var(--border);
+}
+
+.sp-tab svg { 
+  opacity: 0.65;
+  transition: all .2s ease;
+}
+
+.sp-tab:hover svg {
+  opacity: 0.85;
+}
+
+.sp-tab--active svg { 
+  opacity: 1;
+  color: var(--brand);
+}
+
+.sp-tab__close { 
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  font-size: 15px;
+  color: var(--text-muted);
+  line-height: 1;
+  transition: all .15s ease;
+}
+
+.sp-tab__close:hover { 
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  transform: scale(1.1);
+}
+
+.sp-tab-new { 
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 14px;
+  height: 36px;
+  border: none;
+  background: transparent;
+  color: var(--brand);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all .2s ease;
+  flex-shrink: 0;
+  border-radius: 8px;
+  letter-spacing: 0.02em;
+}
+
+.sp-tab-new:hover { 
+  background: var(--brand-dim);
+  transform: translateY(-1px);
+}
+
+.sp-no-conn { 
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+.panel-header { display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text-secondary);flex-shrink:0;background:color-mix(in srgb,var(--bg-surface) 95%,transparent); }
+.driver-badge { display:inline-flex;align-items:center;justify-content:center;width:24px;height:18px;border-radius:4px;font-size:9px;font-weight:700;color:#fff;letter-spacing:.4px; }
+.schema-type-badge { display:inline-flex;align-items:center;padding:2px 8px;border-radius:5px;font-size:10px;font-weight:700;background:var(--bg-elevated);color:var(--text-muted);border:1px solid var(--border);text-transform:uppercase;letter-spacing:.5px; }
+.empty-state { display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;min-height:240px;text-align:center;color:var(--text-muted);padding:32px;font-size:13px; }
+.empty-state svg { opacity:.4; }
+
+/* ── Browse Toolbar (Modern & Spacious) ───────────────────────── */
+.browse-toolbar { padding:12px 18px;border-bottom:1px solid var(--border);background:var(--bg-surface);display:flex;align-items:center;justify-content:space-between;gap:16px;flex-shrink:0;min-height:48px; }
+.browse-toolbar__info { display:flex;align-items:center;gap:10px;flex:1;min-width:0; }
+.browse-toolbar__title { font-size:14px;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+.browse-toolbar__meta { font-size:11px;color:var(--text-muted);background:var(--bg-elevated);padding:2px 8px;border-radius:4px;font-weight:600; }
+.browse-toolbar__actions { display:flex;align-items:center;gap:8px; }
+.browse-toolbar__empty { font-size:13px;color:var(--text-muted); }
+
+/* ── Sidebar Panel (Consistent Width & Styling) ───────────────── */
+.sidebar-panel { 
+  width: 260px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  overflow: hidden;
+  box-shadow: 2px 0 12px rgba(0,0,0,.03);
+}
 .sql-resize-handle { flex-shrink:0;height:6px;cursor:ns-resize;background:var(--bg-surface);border-top:1px solid var(--border);display:flex;align-items:center;justify-content:center;user-select:none;transition:background .15s; }
 .sql-resize-handle:hover,.sql-resize-handle--active { background:var(--brand-dim); }
 .sql-resize-handle__bar { width:32px;height:3px;border-radius:2px;background:var(--border); }
@@ -562,5 +1035,425 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 .imp-table { width:100%;border-collapse:collapse;font-size:12px; }
 .imp-table th { padding:6px 12px;background:var(--bg-surface);border-bottom:1px solid var(--border);font-weight:600;text-align:left;color:var(--text-muted);white-space:nowrap; }
 .imp-table td { padding:5px 12px;border-bottom:1px solid var(--border);color:var(--text-primary);font-family:var(--mono,monospace);white-space:nowrap; }
+
+/* ── Explorer View (Modern & Minimalist) ──────────────────────── */
+.explorer-view { 
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  height: 0; /* force grid children to respect parent height so scroll works */
+  overflow: hidden;
+  background: var(--bg-body);
+}
+
+.explorer-sidebar { 
+  border-right: 1px solid var(--border);
+  background: var(--bg-surface);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  box-shadow: 2px 0 16px rgba(0,0,0,.04);
+  height: 100%;
+}
+
+.explorer-sidebar__head { 
+  padding: 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  background: linear-gradient(to bottom, var(--bg-surface), color-mix(in srgb, var(--bg-surface) 98%, transparent));
+}
+
+.explorer-db-select {
+  width: 100%;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all .15s ease;
+}
+
+.explorer-db-select:hover {
+  border-color: color-mix(in srgb, var(--border) 65%, var(--brand) 35%);
+  background: var(--bg-body);
+}
+
+.explorer-db-select:focus {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 18%, transparent);
+}
+
+.explorer-detail { 
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  background: var(--bg-body);
+}
+
+.explorer-detail::-webkit-scrollbar {
+  width: 8px;
+}
+
+.explorer-detail::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.explorer-detail::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 6px;
+  border: 2px solid var(--bg-body);
+}
+
+.explorer-detail::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--border) 60%, var(--brand) 40%);
+}
+
+.explorer-empty { 
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  min-height: 300px;
+  text-align: center;
+  color: var(--text-muted);
+  padding: 40px;
+  font-size: 14px;
+}
+
+.explorer-empty p {
+  font-weight: 500;
+  opacity: 0.8;
+}
+
+.explorer-hero { 
+  padding: 28px 32px;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, var(--brand) 40%);
+  border-radius: 16px;
+  background: 
+    radial-gradient(circle at top right, color-mix(in srgb, var(--brand) 8%, transparent), transparent 50%),
+    linear-gradient(135deg, 
+      color-mix(in srgb, var(--bg-elevated) 95%, var(--brand) 5%),
+      var(--bg-elevated)
+    );
+  box-shadow: 0 4px 16px rgba(0,0,0,.06);
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.explorer-hero::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 200px;
+  height: 200px;
+  background: radial-gradient(circle, color-mix(in srgb, var(--brand) 10%, transparent), transparent 70%);
+  pointer-events: none;
+}
+
+.explorer-hero__kicker { 
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  font-weight: 800;
+  color: var(--brand);
+  opacity: 0.9;
+  position: relative;
+  z-index: 1;
+}
+
+.explorer-hero__title { 
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin-top: 8px;
+  position: relative;
+  z-index: 1;
+  letter-spacing: -0.02em;
+}
+
+.explorer-hero__sub { 
+  color: var(--text-muted);
+  margin-top: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  position: relative;
+  z-index: 1;
+}
+
+.explorer-panels { 
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+  flex-shrink: 0;
+}
+
+.explorer-panel { 
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,.03);
+  transition: box-shadow .2s ease, border-color .2s ease;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0; /* prevent flex-parent from squishing panel content */
+}
+
+.explorer-panel:hover {
+  box-shadow: 0 4px 16px rgba(0,0,0,.06);
+  border-color: color-mix(in srgb, var(--border) 70%, var(--brand) 30%);
+}
+
+.explorer-panel__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 12%, transparent);
+  border-radius: 9px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* ── Native explorer tables (no DataTable component) ──────────── */
+.ex-table-scroll {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 420px;
+}
+
+.ex-table-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.ex-table-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ex-table-scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 6px;
+  border: 2px solid var(--bg-elevated);
+}
+
+.ex-table-scroll::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--border) 60%, var(--brand) 40%);
+}
+
+.ex-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  background: var(--bg-elevated);
+}
+
+.ex-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  padding: 10px 16px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--bg-surface) 60%, var(--bg-elevated));
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.ex-table tbody td {
+  padding: 11px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  color: var(--text-primary);
+  vertical-align: top;
+  line-height: 1.5;
+}
+
+.ex-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.ex-table tbody tr {
+  transition: background .12s ease;
+}
+
+.ex-table tbody tr:hover {
+  background: color-mix(in srgb, var(--brand) 4%, transparent);
+}
+
+.ex-table__key {
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.ex-table__dim {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.ex-code-inline {
+  display: inline-block;
+  padding: 2px 8px;
+  font-family: var(--mono, 'SF Mono', 'Monaco', 'Cascadia Code', monospace);
+  font-size: 12px;
+  background: color-mix(in srgb, var(--bg-app) 60%, var(--bg-surface));
+  color: var(--text-primary);
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+.ex-code-inline--def {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 360px;
+}
+
+.ex-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 9px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  border-radius: 6px;
+  text-transform: uppercase;
+}
+
+.ex-pill--solid {
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+  color: var(--text-primary);
+}
+
+.ex-pill--muted {
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+  color: var(--text-muted);
+}
+
+.ex-pill--brand {
+  background: color-mix(in srgb, var(--brand) 18%, transparent);
+  color: var(--brand);
+}
+
+.explorer-panel__header { 
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: linear-gradient(to bottom, 
+    color-mix(in srgb, var(--bg-surface) 70%, transparent),
+    transparent
+  );
+}
+
+.explorer-panel__header--with-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px 8px 18px;
+}
+
+.explorer-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+
+.explorer-copy-btn:hover {
+  background: var(--bg-surface);
+  color: var(--brand);
+  border-color: color-mix(in srgb, var(--border) 60%, var(--brand) 40%);
+}
+
+.explorer-panel--code {
+  display: flex;
+  flex-direction: column;
+}
+
+.explorer-code { 
+  margin: 0;
+  padding: 18px 20px;
+  white-space: pre;
+  overflow: auto;
+  max-height: 480px;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--bg-app) 97%, var(--bg-surface) 3%);
+  font-size: 12.5px;
+  line-height: 1.6;
+  font-family: var(--mono, 'SF Mono', 'Monaco', 'Cascadia Code', monospace);
+  border-radius: 0;
+  tab-size: 2;
+}
+
+.explorer-code::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.explorer-code::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--bg-app) 90%, transparent);
+}
+
+.explorer-code::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.explorer-code::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--border) 60%, var(--brand) 40%);
+  background-clip: content-box;
+}
+
+.explorer-code::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 @keyframes spin { to { transform:rotate(360deg); } }
+@media (max-width: 960px) {
+  .explorer-view { grid-template-columns:1fr; }
+  .explorer-panels { grid-template-columns:1fr; }
+}
 </style>

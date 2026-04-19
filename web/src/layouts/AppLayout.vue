@@ -45,7 +45,7 @@ function handleConnSelect(id: number) {
 
 function handleSearchNavigate({ connId, table, type }: { connId: number; table: string; type: string }) {
   activeConnId.value = connId
-  router.push({ name: type === 'table' ? 'data' : 'schema' })
+  router.push({ name: 'data' })
 }
 </script>
 

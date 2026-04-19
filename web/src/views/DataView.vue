@@ -16,9 +16,10 @@ interface Session {
   initialSQL: string | null
   initialDb?: string
   initialTable?: string
+  initialTab?: 'data' | 'explorer'
 }
 
-interface PersistedSession { connId: number; db?: string; table?: string }
+interface PersistedSession { connId: number; db?: string; table?: string; tab?: 'data' | 'explorer' }
 interface PersistedState { sessions: PersistedSession[]; activeConnId: number | null }
 
 const LS_KEY = 'dv_state'
@@ -31,7 +32,7 @@ function persistState() {
   const state: PersistedState = {
     sessions: sessions.value
       .filter(s => s.connId != null)
-      .map(s => ({ connId: s.connId as number, db: s.initialDb, table: s.initialTable })),
+      .map(s => ({ connId: s.connId as number, db: s.initialDb, table: s.initialTable, tab: s.initialTab })),
     activeConnId: sessions.value.find(s => s.id === activeSessionId.value)?.connId ?? null,
   }
   localStorage.setItem(LS_KEY, JSON.stringify(state))
@@ -47,6 +48,7 @@ const sessions = ref<Session[]>(
     initialSQL: null,
     initialDb: s.db,
     initialTable: s.table,
+    initialTab: s.tab,
   }))
 )
 const activeSessionId = ref<string>(
@@ -237,9 +239,12 @@ function handleTableSelected(sessionId: string, db: string, table: string) {
     </div>
 
     <!-- Session panes (kept alive while hidden) -->
-    <div v-if="sessions.length === 0" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:var(--text-muted)">
-      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
-      <p style="font-size:13px;margin:0">Click <strong>+ DB</strong> to open a database session</p>
+    <div v-if="sessions.length === 0" class="data-empty-state">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" style="opacity:0.3"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+      <div class="data-empty-state__text">
+        <p style="font-size:14px;font-weight:600;margin:0;color:var(--text-primary)">No database sessions open</p>
+        <p style="font-size:13px;margin:6px 0 0;color:var(--text-muted)">Click <strong style="color:var(--brand)">+ DB</strong> to open a database connection</p>
+      </div>
     </div>
 
     <template v-for="s in sessions" :key="s.id">
@@ -265,10 +270,10 @@ function handleTableSelected(sessionId: string, db: string, table: string) {
 .sess-bar {
   display: flex;
   align-items: center;
-  background: var(--bg-elevated);
+  background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  min-height: 40px;
+  min-height: 42px;
   overflow: visible;
   position: relative;
 }
@@ -279,31 +284,33 @@ function handleTableSelected(sessionId: string, db: string, table: string) {
   flex: 1;
   overflow-x: auto;
   scrollbar-width: none;
+  gap: 2px;
+  padding: 0 4px;
 }
 .sess-tabs::-webkit-scrollbar { display: none; }
 
 .sess-tab {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 14px;
+  gap: 9px;
+  padding: 0 15px;
   min-width: 0;
-  max-width: 220px;
-  height: 40px;
+  max-width: 240px;
+  height: 38px;
   border: none;
-  border-right: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
-  font-size: 12.5px;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
-  transition: color .12s, background .12s;
-  border-bottom: 3px solid transparent;
+  transition: all .15s ease;
+  border-radius: 6px;
   flex-shrink: 0;
+  position: relative;
 }
-.sess-tab:hover { color: var(--text-primary); background: var(--bg-surface); }
-.sess-tab--active { color: var(--text-primary); background: var(--bg-body); border-bottom-color: var(--brand); }
+.sess-tab:hover { color: var(--text-primary); background: var(--bg-elevated); }
+.sess-tab--active { color: var(--text-primary); background: var(--bg-body); box-shadow: 0 1px 3px rgba(0,0,0,.06), inset 0 0 0 1px var(--border); }
 
 .sess-tab__badge {
   display: inline-flex;
@@ -343,18 +350,19 @@ function handleTableSelected(sessionId: string, db: string, table: string) {
 .sess-add {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 0 14px;
-  height: 40px;
+  gap: 6px;
+  padding: 0 15px;
+  height: 38px;
   border: none;
-  border-right: 1px solid var(--border);
   background: transparent;
   color: var(--brand);
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 700;
   cursor: pointer;
   white-space: nowrap;
-  transition: background .12s;
+  transition: all .15s ease;
+  border-radius: 6px;
+  margin-left: 4px;
 }
 .sess-add:hover { background: var(--brand-dim); }
 
@@ -367,43 +375,44 @@ function handleTableSelected(sessionId: string, db: string, table: string) {
 
 /* ── Connection picker dropdown (teleported to body) ────────────── */
 .sess-picker {
-  width: 280px;
+  width: 300px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 12px 32px rgba(0,0,0,.4);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0,0,0,.35), 0 4px 16px rgba(0,0,0,.25);
   overflow: hidden;
 }
 
 .sess-picker__header {
-  padding: 10px 12px 6px;
+  padding: 12px 14px 8px;
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.6px;
   color: var(--text-muted);
+  background: color-mix(in srgb, var(--bg-surface) 50%, transparent);
 }
 
 .sess-picker__list {
-  max-height: 260px;
+  max-height: 280px;
   overflow-y: auto;
-  padding: 4px;
+  padding: 6px;
 }
 
 .sess-picker__item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
   width: 100%;
-  padding: 8px 10px;
+  padding: 10px 12px;
   background: none;
   border: none;
-  border-radius: 6px;
+  border-radius: 7px;
   cursor: pointer;
   text-align: left;
-  transition: background .1s;
+  transition: all .12s ease;
 }
-.sess-picker__item:hover { background: var(--bg-surface); }
+.sess-picker__item:hover { background: var(--bg-surface); transform: translateX(2px); }
 
 .sess-picker__badge {
   display: inline-flex;
@@ -416,5 +425,21 @@ function handleTableSelected(sessionId: string, db: string, table: string) {
   font-weight: 700;
   color: #fff;
   flex-shrink: 0;
+}
+
+/* ── Empty State ──────────────────────────────────────────────── */
+.data-empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  color: var(--text-muted);
+  padding: 40px;
+  text-align: center;
+}
+.data-empty-state__text {
+  max-width: 400px;
 }
 </style>

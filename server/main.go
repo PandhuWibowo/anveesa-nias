@@ -309,6 +309,10 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				handlers.RenameTable()(w, r)
 			case sub == "schema" && r.Method == http.MethodDelete && strings.Count(r.URL.Path, "/") == 6:
 				handlers.DropTable()(w, r)
+			case sub == "schema" && strings.HasSuffix(r.URL.Path, "/metadata") && r.Method == http.MethodGet:
+				requireAny(handlers.PermSchemaBrowse)(handlers.ListSchemaMetadata())(w, r)
+			case sub == "schema" && strings.HasSuffix(r.URL.Path, "/object-detail") && r.Method == http.MethodGet:
+				requireAny(handlers.PermSchemaBrowse)(handlers.GetSchemaObjectDetail())(w, r)
 			case sub == "schema" && strings.HasSuffix(r.URL.Path, "/columns") && r.Method == http.MethodGet:
 				requireAny(handlers.PermSchemaBrowse)(handlers.GetTableColumns())(w, r)
 			case sub == "schema" && strings.HasSuffix(r.URL.Path, "/columns") && r.Method == http.MethodPost:

@@ -78,9 +78,7 @@ const router = createRouter({
         },
         {
           path: 'schema',
-          name: 'schema',
-          component: () => import('@/views/SchemaView.vue'),
-          meta: { requiredPermissionsAny: ['schema.browse'] },
+          redirect: { name: 'data' },
         },
         {
           path: 'data',

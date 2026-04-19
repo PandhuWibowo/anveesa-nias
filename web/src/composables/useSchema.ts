@@ -7,12 +7,97 @@ export interface SchemaTable {
   row_count?: number
 }
 
+export interface SchemaObjectItem {
+  name: string
+  type: string
+  parent_name?: string
+  summary?: string
+}
+
+export interface SchemaObjectGroup {
+  key: string
+  label: string
+  items: SchemaObjectItem[]
+}
+
+export interface SchemaMetadataCatalog {
+  database: string
+  groups: SchemaObjectGroup[]
+}
+
 export interface SchemaColumn {
   name: string
   data_type: string
   is_nullable: boolean
   is_primary_key: boolean
   default_value?: string
+}
+
+export interface SchemaProperty {
+  label: string
+  value: string
+}
+
+export interface SchemaIndexDetail {
+  name: string
+  table_name: string
+  method: string
+  is_unique: boolean
+  is_primary: boolean
+  columns: string[]
+  definition: string
+}
+
+export interface SchemaConstraintDetail {
+  name: string
+  constraint_type: string
+  columns: string[]
+  definition: string
+  referenced_table?: string
+}
+
+export interface SchemaTriggerDetail {
+  name: string
+  table_name: string
+  timing: string
+  events: string
+  definition: string
+}
+
+export interface SchemaSequenceDetail {
+  name: string
+  start_value: string
+  increment_by: string
+  min_value: string
+  max_value: string
+  cache_size: string
+  cycle: boolean
+  owned_by?: string
+  definition?: string
+}
+
+export interface SchemaRoutineDetail {
+  name: string
+  routine_type: string
+  identity: string
+  return_type?: string
+  definition: string
+}
+
+export interface SchemaObjectDetail {
+  type: string
+  name: string
+  database: string
+  ddl: string
+  properties: SchemaProperty[]
+  columns: SchemaColumn[]
+  indexes: SchemaIndexDetail[]
+  constraints: SchemaConstraintDetail[]
+  triggers: SchemaTriggerDetail[]
+  sequences: SchemaSequenceDetail[]
+  routine?: SchemaRoutineDetail
+  enum_values?: string[]
+  dependencies: SchemaProperty[]
 }
 
 export interface SchemaDatabase {
@@ -25,6 +110,8 @@ export function useSchema() {
   const databases = ref<SchemaDatabase[]>([])
   const loadingSchema = ref(false)
   const columns = ref<SchemaColumn[]>([])
+  const metadata = ref<SchemaMetadataCatalog | null>(null)
+  const objectDetail = ref<SchemaObjectDetail | null>(null)
 
   async function fetchSchema(connId: number) {
     loadingSchema.value = true
@@ -38,12 +125,40 @@ export function useSchema() {
 
   async function fetchColumns(connId: number, db: string, table: string) {
     try {
-      const { data } = await axios.get<SchemaColumn[]>(
-        `/api/connections/${connId}/schema/${db}/tables/${table}/columns`,
-      )
-      columns.value = data
-    } catch {
+      const url = `/api/connections/${connId}/schema/${db}/tables/${table}/columns`
+      const { data } = await axios.get<SchemaColumn[]>(url)
+      columns.value = Array.isArray(data) ? data : []
+    } catch (err: any) {
+      console.error('[useSchema] fetchColumns failed', { connId, db, table, err })
       columns.value = []
+    }
+  }
+
+  async function fetchMetadata(connId: number, db: string) {
+    try {
+      const { data } = await axios.get<SchemaMetadataCatalog>(
+        `/api/connections/${connId}/schema/${encodeURIComponent(db)}/metadata`,
+      )
+      metadata.value = data
+      return data
+    } catch {
+      metadata.value = null
+      return null
+    }
+  }
+
+  async function fetchObjectDetail(connId: number, db: string, type: string, name: string) {
+    try {
+      const { data } = await axios.get<SchemaObjectDetail>(
+        `/api/connections/${connId}/schema/${encodeURIComponent(db)}/object-detail`,
+        { params: { type, name } },
+      )
+      objectDetail.value = data
+      return data
+    } catch (err) {
+      console.error('[useSchema] fetchObjectDetail failed', { connId, db, type, name, err })
+      objectDetail.value = null
+      return null
     }
   }
 
@@ -81,8 +196,12 @@ export function useSchema() {
     databases,
     loadingSchema,
     columns,
+    metadata,
+    objectDetail,
     fetchSchema,
     fetchColumns,
+    fetchMetadata,
+    fetchObjectDetail,
     fetchTableData,
     fetchTableColumns,
   }
