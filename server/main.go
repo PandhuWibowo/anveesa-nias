@@ -530,10 +530,20 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			requireAny(handlers.PermQueryExecute)(handlers.CreateDataScriptVersion())(w, r)
 		case strings.HasSuffix(r.URL.Path, "/preview") && r.Method == http.MethodPost:
 			requireAny(handlers.PermQueryExecute)(handlers.PreviewDataScript())(w, r)
+		case strings.HasSuffix(r.URL.Path, "/submit") && r.Method == http.MethodPost:
+			requireAny(handlers.PermQueryExecute)(handlers.SubmitDataScript())(w, r)
 		case strings.HasSuffix(r.URL.Path, "/plans") && r.Method == http.MethodGet:
 			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove)(handlers.ListDataScriptPlans())(w, r)
 		case r.Method == http.MethodGet:
 			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove)(handlers.GetDataScript())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/data-change-plans", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove)(handlers.ListAllDataChangePlans())(w, r)
 		default:
 			http.NotFound(w, r)
 		}

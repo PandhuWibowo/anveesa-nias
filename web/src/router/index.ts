@@ -135,6 +135,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['query.execute', 'query.approve'] },
         },
         {
+          path: 'data-script-requests',
+          name: 'data-script-requests',
+          component: () => import('@/views/DataScriptRequestsView.vue'),
+          meta: { requiredPermissionsAny: ['query.execute', 'query.approve'] },
+        },
+        {
           path: 'permissions',
           name: 'permissions',
           component: () => import('@/views/PermissionsView.vue'),

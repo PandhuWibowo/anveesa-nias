@@ -83,6 +83,7 @@ const allMenuGroups = [
       { name: 'approvals',   label: 'Approvals',   desc: 'Review and approve controlled SQL changes', icon: 'workflow', permissionsAny: ['query.execute', 'query.approve'] },
       { name: 'change-sets', label: 'Change Sets', desc: 'Plan, validate, and run database changes', icon: 'changeset', permissionsAny: ['query.execute', 'query.approve'] },
       { name: 'data-scripts', label: 'Data Scripts', desc: 'Preview programmable data updates before approval', icon: 'changeset', permissionsAny: ['query.execute', 'query.approve'] },
+      { name: 'data-script-requests', label: 'Script Requests', desc: 'Global queue of data script plans and approvals', icon: 'workflow', permissionsAny: ['query.execute', 'query.approve'] },
       { name: 'diff',        label: 'Schema Diff', desc: 'Compare schema structure across environments', icon: 'diff', permissionsAny: ['schema.diff.view'] },
       { name: 'backup',      label: 'Backup',      desc: 'Backup and restore databases safely', icon: 'backup', permissionsAny: ['backups.manage'] },
       { name: 'scheduler',   label: 'Scheduler',   desc: 'Schedule recurring queries and jobs', icon: 'scheduler', permissionsAny: ['schedules.manage'] },

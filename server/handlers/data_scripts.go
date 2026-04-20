@@ -13,34 +13,38 @@ import (
 )
 
 type DataScript struct {
-	ID              int64              `json:"id"`
-	Name            string             `json:"name"`
-	Description     string             `json:"description"`
-	Language        string             `json:"language"`
-	CreatedBy       int64              `json:"created_by"`
-	LatestVersionID int64              `json:"latest_version_id"`
-	LatestVersionNo int                `json:"latest_version_no"`
-	LatestSource    string             `json:"latest_source"`
-	CreatedAt       time.Time          `json:"created_at"`
-	UpdatedAt       time.Time          `json:"updated_at"`
-	Plans           []DataChangePlan   `json:"plans,omitempty"`
+	ID              int64            `json:"id"`
+	Name            string           `json:"name"`
+	Description     string           `json:"description"`
+	Language        string           `json:"language"`
+	CreatedBy       int64            `json:"created_by"`
+	LatestVersionID int64            `json:"latest_version_id"`
+	LatestVersionNo int              `json:"latest_version_no"`
+	LatestSource    string           `json:"latest_source"`
+	CreatedAt       time.Time        `json:"created_at"`
+	UpdatedAt       time.Time        `json:"updated_at"`
+	Plans           []DataChangePlan `json:"plans,omitempty"`
 }
 
 type DataScriptVersion struct {
-	ID          int64     `json:"id"`
-	ScriptID    int64     `json:"script_id"`
-	VersionNo   int       `json:"version_no"`
-	SourceCode  string    `json:"source_code"`
-	ParamsSchema string   `json:"params_schema"`
-	SDKVersion  string    `json:"sdk_version"`
-	CreatedBy   int64     `json:"created_by"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID           int64     `json:"id"`
+	ScriptID     int64     `json:"script_id"`
+	VersionNo    int       `json:"version_no"`
+	SourceCode   string    `json:"source_code"`
+	ParamsSchema string    `json:"params_schema"`
+	SDKVersion   string    `json:"sdk_version"`
+	CreatedBy    int64     `json:"created_by"`
+	CreatedAt    time.Time `json:"created_at"`
+	Language     string    `json:"language,omitempty"`
 }
 
 type DataChangePlan struct {
 	ID              int64                `json:"id"`
 	ScriptID        int64                `json:"script_id"`
+	ScriptName      string               `json:"script_name,omitempty"`
+	ScriptLanguage  string               `json:"script_language,omitempty"`
 	ScriptVersionID int64                `json:"script_version_id"`
+	ScriptVersionNo int                  `json:"script_version_no,omitempty"`
 	ConnID          int64                `json:"conn_id"`
 	Connection      string               `json:"connection"`
 	DatabaseName    string               `json:"database_name"`
@@ -63,22 +67,22 @@ type DataChangePlan struct {
 }
 
 type DataChangePlanItem struct {
-	ID        int64                  `json:"id"`
-	PlanID     int64                 `json:"plan_id"`
-	SeqNo      int                   `json:"seq_no"`
-	OpType     string                `json:"op_type"`
-	TableName  string                `json:"table_name"`
-	PK         map[string]any        `json:"pk"`
-	Before     map[string]any        `json:"before"`
-	After      map[string]any        `json:"after"`
-	CreatedAt  time.Time             `json:"created_at"`
+	ID        int64          `json:"id"`
+	PlanID    int64          `json:"plan_id"`
+	SeqNo     int            `json:"seq_no"`
+	OpType    string         `json:"op_type"`
+	TableName string         `json:"table_name"`
+	PK        map[string]any `json:"pk"`
+	Before    map[string]any `json:"before"`
+	After     map[string]any `json:"after"`
+	CreatedAt time.Time      `json:"created_at"`
 }
 
 type DataPlanSummary struct {
-	Updates int                       `json:"updates"`
-	Inserts int                       `json:"inserts"`
-	Deletes int                       `json:"deletes"`
-	Tables  []DataPlanTableBreakdown  `json:"tables"`
+	Updates int                      `json:"updates"`
+	Inserts int                      `json:"inserts"`
+	Deletes int                      `json:"deletes"`
+	Tables  []DataPlanTableBreakdown `json:"tables"`
 }
 
 type DataPlanTableBreakdown struct {
@@ -109,6 +113,13 @@ type PreviewDataScriptRequest struct {
 	ScriptVersionID int64  `json:"script_version_id"`
 	ConnID          int64  `json:"conn_id"`
 	Database        string `json:"database"`
+}
+
+type SubmitDataScriptRequest struct {
+	ScriptVersionID int64  `json:"script_version_id"`
+	ConnID          int64  `json:"conn_id"`
+	Database        string `json:"database"`
+	WorkflowID      int64  `json:"workflow_id"`
 }
 
 type ReviewDataPlanRequest struct {
@@ -254,9 +265,10 @@ func ListDataScriptVersions() http.HandlerFunc {
 			return
 		}
 		rows, err := appdb.DB.Query(appdb.ConvertQuery(`
-			SELECT id, script_id, version_no, source_code, params_schema, sdk_version, created_by, created_at
-			FROM data_script_versions
-			WHERE script_id = ?
+			SELECT dsv.id, dsv.script_id, dsv.version_no, dsv.source_code, dsv.params_schema, dsv.sdk_version, dsv.created_by, dsv.created_at, COALESCE(ds.language, 'javascript')
+			FROM data_script_versions dsv
+			LEFT JOIN data_scripts ds ON ds.id = dsv.script_id
+			WHERE dsv.script_id = ?
 			ORDER BY version_no DESC, id DESC
 		`), id)
 		if err != nil {
@@ -267,7 +279,7 @@ func ListDataScriptVersions() http.HandlerFunc {
 		versions := []DataScriptVersion{}
 		for rows.Next() {
 			var v DataScriptVersion
-			if err := rows.Scan(&v.ID, &v.ScriptID, &v.VersionNo, &v.SourceCode, &v.ParamsSchema, &v.SDKVersion, &v.CreatedBy, &v.CreatedAt); err != nil {
+			if err := rows.Scan(&v.ID, &v.ScriptID, &v.VersionNo, &v.SourceCode, &v.ParamsSchema, &v.SDKVersion, &v.CreatedBy, &v.CreatedAt, &v.Language); err != nil {
 				http.Error(w, jsonError("failed to read versions"), http.StatusInternalServerError)
 				return
 			}
@@ -352,7 +364,7 @@ func PreviewDataScript() http.HandlerFunc {
 			http.Error(w, jsonError("script version not found"), http.StatusNotFound)
 			return
 		}
-		ops, err := parseDataScriptOperations(version.SourceCode)
+		ops, err := buildDataScriptOperations(version, body.ConnID, strings.TrimSpace(body.Database))
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
@@ -367,7 +379,87 @@ func PreviewDataScript() http.HandlerFunc {
 			http.Error(w, jsonError("failed to create preview plan"), http.StatusInternalServerError)
 			return
 		}
-		plan, _ := getDataChangePlanByID(planID)
+		plan, err := getDataChangePlanByID(planID)
+		if err != nil || plan == nil {
+			http.Error(w, jsonError("preview plan created but failed to load details"), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(plan)
+	}
+}
+
+func SubmitDataScript() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		userID, _, role := currentUserFromHeaders(r)
+		id, err := parseDataScriptActionID(r.URL.Path, "/submit")
+		if err != nil {
+			http.Error(w, jsonError("invalid script id"), http.StatusBadRequest)
+			return
+		}
+		var body SubmitDataScriptRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, jsonError("invalid request"), http.StatusBadRequest)
+			return
+		}
+		if body.ConnID <= 0 || body.ScriptVersionID <= 0 {
+			http.Error(w, jsonError("conn_id and script_version_id are required"), http.StatusBadRequest)
+			return
+		}
+		if !CheckReadPermission(r, body.ConnID) {
+			http.Error(w, jsonError("connection access denied"), http.StatusForbidden)
+			return
+		}
+
+		version, err := getDataScriptVersionByID(body.ScriptVersionID)
+		if err != nil || version == nil || version.ScriptID != id {
+			http.Error(w, jsonError("script version not found"), http.StatusNotFound)
+			return
+		}
+		ops, err := buildDataScriptOperations(version, body.ConnID, strings.TrimSpace(body.Database))
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		if len(ops) == 0 {
+			http.Error(w, jsonError("no plan operations found; use plan.insert/update/delete(...) lines"), http.StatusBadRequest)
+			return
+		}
+		resolveRole := role
+		if resolveRole == "" {
+			var currentRole string
+			_ = appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT role FROM users WHERE id = ?`), userID).Scan(&currentRole)
+			resolveRole = currentRole
+		}
+		workflowID, err := resolveWorkflowID(userID, resolveRole, body.ConnID, body.WorkflowID)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		if workflowID == 0 {
+			http.Error(w, jsonError("no applicable workflow found"), http.StatusBadRequest)
+			return
+		}
+
+		planID, err := createDataChangePlan(id, version.ID, body.ConnID, strings.TrimSpace(body.Database), userID, ops)
+		if err != nil {
+			http.Error(w, jsonError("failed to create request plan"), http.StatusInternalServerError)
+			return
+		}
+		_, err = appdb.DB.Exec(appdb.ConvertQuery(`
+			UPDATE data_change_plans
+			SET status = 'pending_review', workflow_id = ?, current_step = 1, review_note = '', reviewer_id = NULL, updated_at = ?
+			WHERE id = ?
+		`), workflowID, time.Now().UTC().Format("2006-01-02 15:04:05"), planID)
+		if err != nil {
+			http.Error(w, jsonError("failed to submit request"), http.StatusInternalServerError)
+			return
+		}
+		plan, err := getDataChangePlanByID(planID)
+		if err != nil || plan == nil {
+			http.Error(w, jsonError("request created but failed to load details"), http.StatusInternalServerError)
+			return
+		}
 		json.NewEncoder(w).Encode(plan)
 	}
 }
@@ -383,6 +475,18 @@ func ListDataScriptPlans() http.HandlerFunc {
 		plans, err := listDataChangePlans(id)
 		if err != nil {
 			http.Error(w, jsonError("failed to list plans"), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(plans)
+	}
+}
+
+func ListAllDataChangePlans() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		plans, err := listAllDataChangePlans()
+		if err != nil {
+			http.Error(w, jsonError("failed to list data script plans"), http.StatusInternalServerError)
 			return
 		}
 		json.NewEncoder(w).Encode(plans)
@@ -428,13 +532,19 @@ func SubmitDataChangePlan() http.HandlerFunc {
 			http.Error(w, jsonError("only draft or rejected plans can be submitted"), http.StatusBadRequest)
 			return
 		}
+		var body struct {
+			WorkflowID int64 `json:"workflow_id"`
+		}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&body)
+		}
 		resolveRole := role
 		if resolveRole == "" {
 			var creatorRole string
 			_ = appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT role FROM users WHERE id = ?`), plan.CreatorID).Scan(&creatorRole)
 			resolveRole = creatorRole
 		}
-		workflowID, err := resolveWorkflowID(userID, resolveRole, plan.ConnID, 0)
+		workflowID, err := resolveWorkflowID(userID, resolveRole, plan.ConnID, body.WorkflowID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
@@ -667,11 +777,13 @@ func getDataScriptByID(id int64) (*DataScript, error) {
 
 func getDataScriptVersionByID(id int64) (*DataScriptVersion, error) {
 	row := appdb.DB.QueryRow(appdb.ConvertQuery(`
-		SELECT id, script_id, version_no, source_code, params_schema, sdk_version, created_by, created_at
-		FROM data_script_versions WHERE id = ?
+		SELECT dsv.id, dsv.script_id, dsv.version_no, dsv.source_code, dsv.params_schema, dsv.sdk_version, dsv.created_by, dsv.created_at, COALESCE(ds.language, 'javascript')
+		FROM data_script_versions dsv
+		LEFT JOIN data_scripts ds ON ds.id = dsv.script_id
+		WHERE dsv.id = ?
 	`), id)
 	var v DataScriptVersion
-	if err := row.Scan(&v.ID, &v.ScriptID, &v.VersionNo, &v.SourceCode, &v.ParamsSchema, &v.SDKVersion, &v.CreatedBy, &v.CreatedAt); err != nil {
+	if err := row.Scan(&v.ID, &v.ScriptID, &v.VersionNo, &v.SourceCode, &v.ParamsSchema, &v.SDKVersion, &v.CreatedBy, &v.CreatedAt, &v.Language); err != nil {
 		return nil, err
 	}
 	return &v, nil
@@ -753,10 +865,12 @@ func createDataChangePlan(scriptID, versionID, connID int64, database string, us
 func listDataChangePlans(scriptID int64) ([]DataChangePlan, error) {
 	rows, err := appdb.DB.Query(appdb.ConvertQuery(`
 		SELECT
-			p.id, p.script_id, p.script_version_id, p.conn_id, COALESCE(c.name, ''), p.database_name, p.status,
+			p.id, p.script_id, COALESCE(ds.name, ''), COALESCE(ds.language, ''), p.script_version_id, COALESCE(dsv.version_no, 0), p.conn_id, COALESCE(c.name, ''), p.database_name, p.status,
 			p.summary_json, p.risk_json, p.creator_id, COALESCE(u1.username, ''), p.reviewer_id, COALESCE(u2.username, ''),
 			p.review_note, COALESCE(p.workflow_id, 0), p.current_step, p.revision, p.execute_error, p.executed_at, p.created_at, p.updated_at
 		FROM data_change_plans p
+		LEFT JOIN data_scripts ds ON ds.id = p.script_id
+		LEFT JOIN data_script_versions dsv ON dsv.id = p.script_version_id
 		LEFT JOIN connections c ON c.id = p.conn_id
 		LEFT JOIN users u1 ON u1.id = p.creator_id
 		LEFT JOIN users u2 ON u2.id = p.reviewer_id
@@ -773,10 +887,12 @@ func listDataChangePlans(scriptID int64) ([]DataChangePlan, error) {
 func getDataChangePlanByID(id int64) (*DataChangePlan, error) {
 	rows, err := appdb.DB.Query(appdb.ConvertQuery(`
 		SELECT
-			p.id, p.script_id, p.script_version_id, p.conn_id, COALESCE(c.name, ''), p.database_name, p.status,
+			p.id, p.script_id, COALESCE(ds.name, ''), COALESCE(ds.language, ''), p.script_version_id, COALESCE(dsv.version_no, 0), p.conn_id, COALESCE(c.name, ''), p.database_name, p.status,
 			p.summary_json, p.risk_json, p.creator_id, COALESCE(u1.username, ''), p.reviewer_id, COALESCE(u2.username, ''),
 			p.review_note, COALESCE(p.workflow_id, 0), p.current_step, p.revision, p.execute_error, p.executed_at, p.created_at, p.updated_at
 		FROM data_change_plans p
+		LEFT JOIN data_scripts ds ON ds.id = p.script_id
+		LEFT JOIN data_script_versions dsv ON dsv.id = p.script_version_id
 		LEFT JOIN connections c ON c.id = p.conn_id
 		LEFT JOIN users u1 ON u1.id = p.creator_id
 		LEFT JOIN users u2 ON u2.id = p.reviewer_id
@@ -793,6 +909,27 @@ func getDataChangePlanByID(id int64) (*DataChangePlan, error) {
 	return &plans[0], nil
 }
 
+func listAllDataChangePlans() ([]DataChangePlan, error) {
+	rows, err := appdb.DB.Query(appdb.ConvertQuery(`
+		SELECT
+			p.id, p.script_id, COALESCE(ds.name, ''), COALESCE(ds.language, ''), p.script_version_id, COALESCE(dsv.version_no, 0), p.conn_id, COALESCE(c.name, ''), p.database_name, p.status,
+			p.summary_json, p.risk_json, p.creator_id, COALESCE(u1.username, ''), p.reviewer_id, COALESCE(u2.username, ''),
+			p.review_note, COALESCE(p.workflow_id, 0), p.current_step, p.revision, p.execute_error, p.executed_at, p.created_at, p.updated_at
+		FROM data_change_plans p
+		LEFT JOIN data_scripts ds ON ds.id = p.script_id
+		LEFT JOIN data_script_versions dsv ON dsv.id = p.script_version_id
+		LEFT JOIN connections c ON c.id = p.conn_id
+		LEFT JOIN users u1 ON u1.id = p.creator_id
+		LEFT JOIN users u2 ON u2.id = p.reviewer_id
+		ORDER BY p.created_at DESC, p.id DESC
+	`))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanDataChangePlans(rows, false)
+}
+
 func scanDataChangePlans(rows *sql.Rows, withItems bool) ([]DataChangePlan, error) {
 	plans := []DataChangePlan{}
 	for rows.Next() {
@@ -802,7 +939,7 @@ func scanDataChangePlans(rows *sql.Rows, withItems bool) ([]DataChangePlan, erro
 		var reviewerName sql.NullString
 		var executedAt sql.NullTime
 		if err := rows.Scan(
-			&item.ID, &item.ScriptID, &item.ScriptVersionID, &item.ConnID, &item.Connection, &item.DatabaseName, &item.Status,
+			&item.ID, &item.ScriptID, &item.ScriptName, &item.ScriptLanguage, &item.ScriptVersionID, &item.ScriptVersionNo, &item.ConnID, &item.Connection, &item.DatabaseName, &item.Status,
 			&summaryJSON, &riskJSON, &item.CreatorID, &item.CreatorName, &reviewerID, &reviewerName,
 			&item.ReviewNote, &item.WorkflowID, &item.CurrentStep, &item.Revision, &item.ExecuteError, &executedAt, &item.CreatedAt, &item.UpdatedAt,
 		); err != nil {
