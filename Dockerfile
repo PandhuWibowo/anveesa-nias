@@ -36,8 +36,14 @@ FROM alpine:3.19
 
 WORKDIR /app
 
-# Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata
+# Install runtime dependencies required by the app and native data-script runtimes
+RUN apk add --no-cache \
+    ca-certificates \
+    tzdata \
+    nodejs \
+    npm \
+    python3 \
+    php83-cli
 
 # Create non-root user
 RUN adduser -D -u 1000 nias
@@ -54,9 +60,11 @@ USER nias
 ENV NIAS_ENV=production
 ENV PORT=8080
 ENV HOST=0.0.0.0
-ENV DB_PATH=/app/data/nias.db
 ENV BACKUP_DIR=/app/backups
 ENV BACKUP_ENABLED=true
+ENV DATA_SCRIPT_NODE_BIN=/usr/bin/node
+ENV DATA_SCRIPT_PYTHON_BIN=/usr/bin/python3
+ENV DATA_SCRIPT_PHP_BIN=/usr/bin/php
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
