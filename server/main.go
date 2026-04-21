@@ -510,6 +510,28 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			http.NotFound(w, r)
 		}
 	})
+	mux.HandleFunc("/api/backup-download-requests", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove, handlers.PermBackupsManage)(handlers.ListBackupDownloadRequests())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermQueryExecute, handlers.PermBackupsManage)(handlers.CreateBackupDownloadRequestHandler())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/backup-download-requests/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/review") && r.Method == http.MethodPost:
+			requireAny(handlers.PermQueryApprove)(handlers.ReviewBackupDownloadRequestHandler())(w, r)
+		case strings.HasSuffix(r.URL.Path, "/download") && r.Method == http.MethodGet:
+			requireAny(handlers.PermQueryExecute, handlers.PermBackupsManage)(handlers.DownloadApprovedBackupRequest())(w, r)
+		case r.Method == http.MethodGet:
+			requireAny(handlers.PermQueryExecute, handlers.PermQueryApprove, handlers.PermBackupsManage)(handlers.GetBackupDownloadRequest())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
 
 	// ── Data Scripts ──────────────────────────────────────────────
 	mux.HandleFunc("/api/data-scripts", func(w http.ResponseWriter, r *http.Request) {

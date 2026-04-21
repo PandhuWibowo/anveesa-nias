@@ -75,7 +75,7 @@ const router = createRouter({
           path: 'backup',
           name: 'backup',
           component: () => import('@/views/BackupView.vue'),
-          meta: { requiredPermissionsAny: ['backups.manage'] },
+          meta: { requiredPermissionsAny: ['backups.manage', 'query.execute', 'query.approve'] },
         },
         {
           path: 'health',

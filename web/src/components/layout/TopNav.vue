@@ -90,7 +90,7 @@ const allMenuGroups = [
       { name: 'data-scripts', label: 'Data Scripts', desc: 'Preview programmable data updates before approval', icon: 'changeset', permissionsAny: ['query.execute', 'query.approve'] },
       { name: 'data-script-requests', label: 'Script Requests', desc: 'Global queue of data script plans and approvals', icon: 'workflow', permissionsAny: ['query.execute', 'query.approve'] },
       { name: 'diff',        label: 'Schema Diff', desc: 'Compare schema structure across environments', icon: 'diff', permissionsAny: ['schema.diff.view'] },
-      { name: 'backup',      label: 'Backup',      desc: 'Backup and restore databases safely', icon: 'backup', permissionsAny: ['backups.manage'] },
+      { name: 'backup',      label: 'Backup',      desc: 'Request database downloads or use direct backup and restore', icon: 'backup', permissionsAny: ['backups.manage', 'query.execute', 'query.approve'] },
       { name: 'scheduler',   label: 'Scheduler',   desc: 'Schedule recurring queries and jobs', icon: 'scheduler', permissionsAny: ['schedules.manage'] },
     ],
   },

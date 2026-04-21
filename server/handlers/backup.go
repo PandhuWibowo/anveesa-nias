@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -68,97 +71,10 @@ func GetBackup() http.HandlerFunc {
 		filename := fmt.Sprintf("backup_%s_%s.sql", dbName, time.Now().Format("20060102_150405"))
 		w.Header().Set("Content-Type", "application/sql")
 		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
-
-		fmt.Fprintf(w, "-- Anveesa Nias Database Dump\n")
-		fmt.Fprintf(w, "-- Driver: %s | Database: %s\n", driver, dbName)
-		fmt.Fprintf(w, "-- Generated: %s\n\n", time.Now().Format(time.RFC3339))
-		fmt.Fprintf(w, "SET FOREIGN_KEY_CHECKS=0;\n\n")
-
-		// Get tables
-		var tableQ string
-		switch driver {
-		case "postgres":
-			schema := "public"
-			tableQ = fmt.Sprintf(`SELECT table_name FROM information_schema.tables WHERE table_schema='%s' AND table_type='BASE TABLE' ORDER BY table_name`, schema)
-		case "mysql":
-			tableQ = `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME`
-		case "sqlite":
-			tableQ = `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
-		default:
-			tableQ = `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME`
-		}
-
-		rows, err := db.QueryContext(r.Context(), tableQ)
-		if err != nil {
-			fmt.Fprintf(w, "-- ERROR fetching tables\n")
+		if err := writeBackupDump(r.Context(), w, db, driver, dbName); err != nil {
+			http.Error(w, "backup generation failed", http.StatusInternalServerError)
 			return
 		}
-		var tables []string
-		for rows.Next() {
-			var t string
-			rows.Scan(&t)
-			tables = append(tables, t)
-		}
-		rows.Close()
-
-		for _, table := range tables {
-			if err := r.Context().Err(); err != nil {
-				return
-			}
-
-			tbl := quoteIdent(driver, table)
-
-			// DDL
-			if driver == "sqlite" {
-				var ddl string
-				db.QueryRowContext(r.Context(), `SELECT sql FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&ddl)
-				if ddl != "" {
-					fmt.Fprintf(w, "DROP TABLE IF EXISTS %s;\n", tbl)
-					fmt.Fprintf(w, "%s;\n\n", ddl)
-				}
-			} else {
-				fmt.Fprintf(w, "-- Table: %s\n", table)
-			}
-
-			// Data
-			dataRows, err := db.QueryContext(r.Context(), fmt.Sprintf(`SELECT * FROM %s`, tbl))
-			if err != nil {
-				fmt.Fprintf(w, "-- ERROR dumping %s\n\n", table)
-				continue
-			}
-			cols, _ := dataRows.Columns()
-			colList := make([]string, len(cols))
-			for i, c := range cols {
-				colList[i] = quoteIdent(driver, c)
-			}
-
-			rowCount := 0
-			for dataRows.Next() {
-				vals := make([]interface{}, len(cols))
-				ptrs := make([]interface{}, len(cols))
-				for i := range vals {
-					ptrs[i] = &vals[i]
-				}
-				if err := dataRows.Scan(ptrs...); err != nil {
-					continue
-				}
-				sqlVals := make([]string, len(vals))
-				for i, v := range vals {
-					sqlVals[i] = sqlLiteral(v)
-				}
-				fmt.Fprintf(w, "INSERT INTO %s (%s) VALUES (%s);\n",
-					tbl,
-					strings.Join(colList, ", "),
-					strings.Join(sqlVals, ", "),
-				)
-				rowCount++
-			}
-			dataRows.Close()
-			fmt.Fprintf(w, "-- %d rows dumped from %s\n\n", rowCount, table)
-		}
-
-		fmt.Fprintf(w, "SET FOREIGN_KEY_CHECKS=1;\n")
-		fmt.Fprintf(w, "-- End of dump\n")
 	}
 }
 
@@ -266,6 +182,94 @@ func sqlLiteral(v interface{}) string {
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbName string) error {
+	fmt.Fprintf(w, "-- Anveesa Nias Database Dump\n")
+	fmt.Fprintf(w, "-- Driver: %s | Database: %s\n", driver, dbName)
+	fmt.Fprintf(w, "-- Generated: %s\n\n", time.Now().Format(time.RFC3339))
+	fmt.Fprintf(w, "SET FOREIGN_KEY_CHECKS=0;\n\n")
+
+	var tableQ string
+	switch driver {
+	case "postgres":
+		schema := "public"
+		tableQ = fmt.Sprintf(`SELECT table_name FROM information_schema.tables WHERE table_schema='%s' AND table_type='BASE TABLE' ORDER BY table_name`, schema)
+	case "mysql":
+		tableQ = `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME`
+	case "sqlite":
+		tableQ = `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+	default:
+		tableQ = `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME`
+	}
+
+	rows, err := db.QueryContext(ctx, tableQ)
+	if err != nil {
+		return err
+	}
+	var tables []string
+	for rows.Next() {
+		var t string
+		if scanErr := rows.Scan(&t); scanErr != nil {
+			rows.Close()
+			return scanErr
+		}
+		tables = append(tables, t)
+	}
+	rows.Close()
+
+	for _, table := range tables {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		tbl := quoteIdent(driver, table)
+		if driver == "sqlite" {
+			var ddl string
+			_ = db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&ddl)
+			if ddl != "" {
+				fmt.Fprintf(w, "DROP TABLE IF EXISTS %s;\n", tbl)
+				fmt.Fprintf(w, "%s;\n\n", ddl)
+			}
+		} else {
+			fmt.Fprintf(w, "-- Table: %s\n", table)
+		}
+
+		dataRows, err := db.QueryContext(ctx, fmt.Sprintf(`SELECT * FROM %s`, tbl))
+		if err != nil {
+			fmt.Fprintf(w, "-- ERROR dumping %s\n\n", table)
+			continue
+		}
+		cols, _ := dataRows.Columns()
+		colList := make([]string, len(cols))
+		for i, c := range cols {
+			colList[i] = quoteIdent(driver, c)
+		}
+
+		rowCount := 0
+		for dataRows.Next() {
+			vals := make([]interface{}, len(cols))
+			ptrs := make([]interface{}, len(cols))
+			for i := range vals {
+				ptrs[i] = &vals[i]
+			}
+			if err := dataRows.Scan(ptrs...); err != nil {
+				continue
+			}
+			sqlVals := make([]string, len(vals))
+			for i, v := range vals {
+				sqlVals[i] = sqlLiteral(v)
+			}
+			fmt.Fprintf(w, "INSERT INTO %s (%s) VALUES (%s);\n", tbl, strings.Join(colList, ", "), strings.Join(sqlVals, ", "))
+			rowCount++
+		}
+		dataRows.Close()
+		fmt.Fprintf(w, "-- %d rows dumped from %s\n\n", rowCount, table)
+	}
+
+	fmt.Fprintf(w, "SET FOREIGN_KEY_CHECKS=1;\n")
+	fmt.Fprintf(w, "-- End of dump\n")
+	return nil
 }
 
 func splitSQL(sql string) []string {

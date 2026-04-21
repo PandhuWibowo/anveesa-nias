@@ -1,10 +1,10 @@
-function triggerDownload(blob: Blob, filename: string) {
+export function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
   a.download = filename
   a.click()
-  URL.revokeObjectURL(url)
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 export function downloadCSV(columns: string[], rows: unknown[][], name = 'export') {
@@ -21,7 +21,7 @@ export function downloadCSV(columns: string[], rows: unknown[][], name = 'export
     lines.push((row as unknown[]).map(escape).join(','))
   }
   const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
-  triggerDownload(blob, `${name}.csv`)
+  downloadBlob(blob, `${name}.csv`)
 }
 
 export function downloadJSON(columns: string[], rows: unknown[][], name = 'export') {
@@ -31,5 +31,5 @@ export function downloadJSON(columns: string[], rows: unknown[][], name = 'expor
     return obj
   })
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-  triggerDownload(blob, `${name}.json`)
+  downloadBlob(blob, `${name}.json`)
 }
