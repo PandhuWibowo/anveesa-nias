@@ -1,7 +1,7 @@
 .PHONY: dev build clean install test lint docker docker-build docker-tag docker-push docker-up docker-down docker-logs
 
 COMPOSE_FILE := deploy/compose/docker-compose.yml
-IMAGE_NAME ?= anveesa/nias
+IMAGE_NAME ?= pandhu612/anveesa-nias
 IMAGE_TAG ?= latest
 PUSH_LATEST ?= 0
 
@@ -154,7 +154,7 @@ help:
 	@echo "  start        Run the compiled binary"
 	@echo ""
 	@echo "Docker:"
-	@echo "  docker-build Build Docker image (IMAGE_NAME=anveesa/nias IMAGE_TAG=v1.0.0)"
+	@echo "  docker-build Build Docker image (IMAGE_NAME=pandhu612/anveesa-nias IMAGE_TAG=v1.0.0)"
 	@echo "  docker-tag   Tag an existing image as latest"
 	@echo "  docker-push  Build and push image (set PUSH_LATEST=1 to also push latest)"
 	@echo "  docker-up    Start with Docker Compose"

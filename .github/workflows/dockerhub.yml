@@ -20,7 +20,7 @@ on:
         type: boolean
 
 env:
-  IMAGE_NAME: anveesa/nias
+  IMAGE_NAME: pandhu612/anveesa-nias
 
 jobs:
   docker:
