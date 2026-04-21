@@ -73,10 +73,10 @@ function formatExecutedAt(value: string): string {
 
 const driverColors: Record<string, string> = {
   postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b',
-  sqlite: '#0f80cc', mssql: '#cc2927',
+  mssql: '#cc2927',
 }
 const driverLabels: Record<string, string> = {
-  postgres: 'PG', mysql: 'MY', mariadb: 'MB', sqlite: 'SQ', mssql: 'MS',
+  postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS',
 }
 
 async function loadOne(id: number) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"strings"
 	"time"
 
@@ -34,12 +35,17 @@ type ScheduleRun struct {
 }
 
 type Notification struct {
-	ID        int64  `json:"id"`
-	Type      string `json:"type"`
-	Title     string `json:"title"`
-	Message   string `json:"message"`
-	Read      bool   `json:"read"`
-	CreatedAt string `json:"created_at"`
+	ID         int64  `json:"id"`
+	EventID    int64  `json:"event_id"`
+	EventType  string `json:"event_type"`
+	Type       string `json:"type"`
+	Severity   string `json:"severity"`
+	Title      string `json:"title"`
+	Message    string `json:"message"`
+	EntityType string `json:"entity_type"`
+	EntityID   int64  `json:"entity_id"`
+	Read       bool   `json:"read"`
+	CreatedAt  string `json:"created_at"`
 }
 
 func ListSchedules() http.HandlerFunc {
@@ -179,7 +185,14 @@ func GetScheduleRuns() http.HandlerFunc {
 func ListNotifications() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		rows, err := appdb.DB.Query(`SELECT id, type, title, message, read, created_at FROM notifications ORDER BY id DESC LIMIT 100`)
+		userID, _, _ := currentUserFromHeaders(r)
+		rows, err := appdb.DB.Query(appdb.ConvertQuery(`
+			SELECT id, event_id, event_type, type, severity, title, message, entity_type, entity_id, read, created_at
+			FROM notifications
+			WHERE target_user_id = 0 OR target_user_id = ?
+			ORDER BY id DESC
+			LIMIT 100
+		`), userID)
 		if err != nil {
 			json.NewEncoder(w).Encode([]Notification{})
 			return
@@ -189,7 +202,7 @@ func ListNotifications() http.HandlerFunc {
 		for rows.Next() {
 			var n Notification
 			var read int
-			rows.Scan(&n.ID, &n.Type, &n.Title, &n.Message, &read, &n.CreatedAt)
+			rows.Scan(&n.ID, &n.EventID, &n.EventType, &n.Type, &n.Severity, &n.Title, &n.Message, &n.EntityType, &n.EntityID, &read, &n.CreatedAt)
 			n.Read = read == 1
 			list = append(list, n)
 		}
@@ -202,7 +215,8 @@ func ListNotifications() http.HandlerFunc {
 
 func MarkNotificationsRead() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		appdb.DB.Exec(`UPDATE notifications SET read=1`)
+		userID, _, _ := currentUserFromHeaders(r)
+		appdb.DB.Exec(appdb.ConvertQuery(`UPDATE notifications SET read=1 WHERE target_user_id = 0 OR target_user_id = ?`), userID)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -210,8 +224,9 @@ func MarkNotificationsRead() http.HandlerFunc {
 func UnreadCount() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		userID, _, _ := currentUserFromHeaders(r)
 		var cnt int64
-		appdb.DB.QueryRow(`SELECT COUNT(*) FROM notifications WHERE read=0`).Scan(&cnt)
+		appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COUNT(*) FROM notifications WHERE read=0 AND (target_user_id = 0 OR target_user_id = ?)`), userID).Scan(&cnt)
 		json.NewEncoder(w).Encode(map[string]any{"count": cnt})
 	}
 }
@@ -241,10 +256,22 @@ func executeSchedule(s Schedule) (map[string]any, error) {
 		alerted = checkAlert(s.AlertCondition, s.AlertThreshold, rowCount)
 		if alerted {
 			msg := fmt.Sprintf("Schedule '%s' triggered: %d rows returned (threshold %.0f)", s.Name, rowCount, s.AlertThreshold)
-			appdb.DB.Exec(
-				`INSERT INTO notifications (type, title, message, read, created_at) VALUES ('alert', 'Schedule Alert', ?, 0, ?)`,
-				msg, time.Now().Format("2006-01-02 15:04:05"),
-			)
+			EmitNotification(NotificationEventInput{
+				EventType:    "schedule.alert",
+				Category:     "alert",
+				Severity:     "warning",
+				Title:        "Schedule Alert",
+				Message:      msg,
+				EntityType:   "schedule",
+				EntityID:     s.ID,
+				ConnectionID: s.ConnID,
+				Payload: map[string]any{
+					"schedule_id":   s.ID,
+					"schedule_name": s.Name,
+					"row_count":     rowCount,
+					"threshold":     s.AlertThreshold,
+				},
+			})
 		}
 	}
 
@@ -280,9 +307,15 @@ func recordScheduleRun(scheduleID, rowCount int64, errMsg string, alerted bool) 
 }
 
 var schedulerStop chan struct{}
+var schedulerMu sync.Mutex
 
 // StartScheduler runs due schedules in the background.
 func StartScheduler() {
+	schedulerMu.Lock()
+	defer schedulerMu.Unlock()
+	if schedulerStop != nil {
+		return
+	}
 	schedulerStop = make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
@@ -300,8 +333,11 @@ func StartScheduler() {
 
 // StopScheduler stops the background scheduler
 func StopScheduler() {
+	schedulerMu.Lock()
+	defer schedulerMu.Unlock()
 	if schedulerStop != nil {
 		close(schedulerStop)
+		schedulerStop = nil
 	}
 }
 

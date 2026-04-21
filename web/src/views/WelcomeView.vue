@@ -9,7 +9,6 @@ const { connections } = useConnections()
 const providers = [
   { key: 'postgres', label: 'PostgreSQL', sub: 'Open-source relational DB', badge: 'PG' },
   { key: 'mysql',    label: 'MySQL',      sub: 'Popular web database',      badge: 'MY' },
-  { key: 'sqlite',   label: 'SQLite',     sub: 'Embedded file-based DB',    badge: 'SQ' },
   { key: 'mssql',    label: 'SQL Server', sub: 'Microsoft enterprise DB',   badge: 'MS' },
 ]
 
@@ -41,7 +40,7 @@ const driverCounts = computed(() => {
           <p class="wv-sub">
             {{ connections.length
               ? 'Choose a connection from the sidebar, or add a new one below.'
-              : 'A fast, local-first database studio. Connect to PostgreSQL, MySQL, SQLite or SQL Server.' }}
+              : 'A fast database studio. Connect to PostgreSQL, MySQL or SQL Server.' }}
           </p>
           <div class="wv-actions">
             <button class="base-btn base-btn--primary" @click="router.push({ name: 'connections' })">
@@ -227,7 +226,6 @@ const driverCounts = computed(() => {
 }
 .wv-pcard__icon--postgres { background: var(--pg-bg);     color: var(--pg); }
 .wv-pcard__icon--mysql    { background: var(--mysql-bg);  color: var(--mysql); }
-.wv-pcard__icon--sqlite   { background: var(--sqlite-bg); color: var(--sqlite); }
 .wv-pcard__icon--mssql    { background: var(--mssql-bg);  color: var(--mssql); }
 
 .wv-pcard__text {

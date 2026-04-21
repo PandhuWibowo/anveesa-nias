@@ -16,7 +16,7 @@ const activeConn = computed(() =>
 const driverLabel: Record<string, string> = {
   postgres: 'PostgreSQL',
   mysql: 'MySQL',
-  sqlite: 'SQLite',
+  mariadb: 'MariaDB',
   mssql: 'SQL Server',
 }
 </script>

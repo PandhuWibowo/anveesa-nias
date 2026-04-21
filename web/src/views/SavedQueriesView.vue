@@ -60,7 +60,7 @@ function connDriver(connId: number | null) {
 }
 
 const driverColor: Record<string, string> = {
-  postgres: '#336791', mysql: '#f29111', sqlite: '#7bc8f6', mssql: '#cc2927',
+  postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927',
 }
 
 function startEdit(q: SavedQuery) {

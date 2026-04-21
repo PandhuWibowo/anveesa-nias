@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,7 +17,6 @@ import (
 	appdb "github.com/anveesa/nias/db"
 	"github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
-	_ "modernc.org/sqlite"
 )
 
 // allowedDrivers defines valid database drivers
@@ -26,7 +24,6 @@ var allowedDrivers = map[string]bool{
 	"postgres": true,
 	"mysql":    true,
 	"mariadb":  true, // alias → uses MySQL driver
-	"sqlite":   true,
 	"mssql":    true,
 }
 
@@ -52,8 +49,6 @@ func SetEncryptionKey(key string) {
 	}
 	encryptionKey = []byte(key)
 }
-
-// appdb.ConvertQuery converts SQLite ? placeholders to PostgreSQL $1, $2, ... if needed
 
 // encryptCredential encrypts sensitive data using AES-GCM
 func encryptCredential(plaintext string) (string, error) {
@@ -155,14 +150,12 @@ type ConnectionInput struct {
 func validateConnectionInput(in *ConnectionInput) error {
 	// Validate driver
 	if !allowedDrivers[in.Driver] {
-		return fmt.Errorf("invalid driver: must be postgres, mysql, sqlite, or mssql")
+		return fmt.Errorf("invalid driver: must be postgres, mysql, mariadb, or mssql")
 	}
 
 	// Validate port
-	if in.Driver != "sqlite" {
-		if in.Port < 1 || in.Port > 65535 {
-			return fmt.Errorf("invalid port: must be 1-65535")
-		}
+	if in.Port < 1 || in.Port > 65535 {
+		return fmt.Errorf("invalid port: must be 1-65535")
 	}
 
 	// Validate name length
@@ -173,13 +166,6 @@ func validateConnectionInput(in *ConnectionInput) error {
 	// Validate host (no special characters that could be used for injection)
 	if in.Host != "" && !isValidHostname(in.Host) {
 		return fmt.Errorf("invalid host format")
-	}
-
-	// SQLite: validate database path
-	if in.Driver == "sqlite" && in.Database != "" && in.Database != ":memory:" {
-		if err := validateSQLitePath(in.Database); err != nil {
-			return err
-		}
 	}
 
 	// Validate visibility
@@ -201,23 +187,6 @@ func isValidHostname(host string) bool {
 		return false
 	}
 	return true
-}
-
-// validateSQLitePath ensures SQLite path is safe
-func validateSQLitePath(path string) error {
-	// Reject path traversal
-	if strings.Contains(path, "..") {
-		return fmt.Errorf("path traversal not allowed")
-	}
-	// Reject absolute paths outside allowed directories
-	if filepath.IsAbs(path) {
-		// In production, you might want to restrict to specific directories
-		// For now, just ensure it's a valid-looking file path
-		if strings.ContainsAny(path, ";'\"\\`$(){}[]<>|&") {
-			return fmt.Errorf("invalid path characters")
-		}
-	}
-	return nil
 }
 
 func buildDSN(in ConnectionInput) (string, error) {
@@ -255,12 +224,6 @@ func buildDSN(in ConnectionInput) (string, error) {
 			cfg.TLSConfig = "true"
 		}
 		return cfg.FormatDSN(), nil
-	case "sqlite":
-		if in.Database == "" {
-			return ":memory:", nil
-		}
-		// Path already validated
-		return in.Database, nil
 	case "mssql":
 		// URL-encode credentials for SQL Server
 		return fmt.Sprintf("sqlserver://%s:%s@%s:%d?database=%s",
@@ -292,8 +255,6 @@ func driverName(d string) string {
 		return "postgres"
 	case "mysql", "mariadb":
 		return "mysql"
-	case "sqlite":
-		return "sqlite"
 	case "mssql":
 		return "sqlserver"
 	}
@@ -392,12 +353,6 @@ func CreateConnection() http.HandlerFunc {
 			http.Error(w, `{"error":"name and driver are required"}`, http.StatusBadRequest)
 			return
 		}
-		// SQLite must have a path; all other drivers can omit the database
-		if in.Driver == "sqlite" && in.Database == "" {
-			http.Error(w, `{"error":"database path is required for SQLite"}`, http.StatusBadRequest)
-			return
-		}
-
 		// Validate input
 		if err := validateConnectionInput(&in); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
@@ -454,7 +409,6 @@ func CreateConnection() http.HandlerFunc {
 				return
 			}
 		} else {
-			// SQLite uses LastInsertId
 			res, err := appdb.DB.Exec(
 				`INSERT INTO connections (name, driver, host, port, database, username, password, ssl, tags,
 				  ssh_host, ssh_port, ssh_user, ssh_password, ssh_key, folder_id, visibility, owner_id)
@@ -593,11 +547,6 @@ func UpdateConnection() http.HandlerFunc {
 		
 		if in.Name == "" || in.Driver == "" {
 			http.Error(w, `{"error":"name and driver are required"}`, http.StatusBadRequest)
-			return
-		}
-		
-		if in.Driver == "sqlite" && in.Database == "" {
-			http.Error(w, `{"error":"database path is required for SQLite"}`, http.StatusBadRequest)
 			return
 		}
 		

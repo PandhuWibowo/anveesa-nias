@@ -463,6 +463,25 @@ func CreateApprovalRequest() http.HandlerFunc {
 		if req != nil && username != "" {
 			req.CreatorName = username
 		}
+		if req != nil {
+			targetUserIDs := []int64{req.CreatorID}
+			if step, _ := getStepByWorkflowAndOrder(req.WorkflowID, req.CurrentStep); step != nil {
+				targetUserIDs = append(targetUserIDs, getWorkflowApproverUserIDs(step.ID)...)
+			}
+			EmitNotification(NotificationEventInput{
+				EventType:     "approval_request.created",
+				Category:      "approval",
+				Severity:      "info",
+				Title:         "Approval request submitted",
+				Message:       fmt.Sprintf("%s submitted approval request \"%s\"", usernameOrFallback(username, req.CreatorName), req.Title),
+				EntityType:    "approval_request",
+				EntityID:      req.ID,
+				ConnectionID:  req.ConnID,
+				ActorUserID:   req.CreatorID,
+				TargetUserIDs: targetUserIDs,
+				Payload: map[string]any{"status": req.Status, "title": req.Title},
+			})
+		}
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(req)
 	}
@@ -548,6 +567,25 @@ func UpdateApprovalRequest() http.HandlerFunc {
 		}
 
 		updated, _ := getApprovalRequestByID(id)
+		if updated != nil {
+			targetUserIDs := []int64{updated.CreatorID}
+			if step, _ := getStepByWorkflowAndOrder(updated.WorkflowID, updated.CurrentStep); step != nil {
+				targetUserIDs = append(targetUserIDs, getWorkflowApproverUserIDs(step.ID)...)
+			}
+			EmitNotification(NotificationEventInput{
+				EventType:     "approval_request.updated",
+				Category:      "approval",
+				Severity:      "info",
+				Title:         "Approval request updated",
+				Message:       fmt.Sprintf("Approval request \"%s\" was revised and returned to review", updated.Title),
+				EntityType:    "approval_request",
+				EntityID:      updated.ID,
+				ConnectionID:  updated.ConnID,
+				ActorUserID:   userID,
+				TargetUserIDs: targetUserIDs,
+				Payload: map[string]any{"status": updated.Status, "revision": updated.Revision},
+			})
+		}
 		json.NewEncoder(w).Encode(updated)
 	}
 }
@@ -705,6 +743,19 @@ func ApproveApprovalStep() http.HandlerFunc {
 				SET status = 'rejected', reviewer_id = ?, review_note = ?, updated_at = ?
 				WHERE id = ?
 			`), userID, strings.TrimSpace(body.Note), now, id)
+			EmitNotification(NotificationEventInput{
+				EventType:     "approval_request.rejected",
+				Category:      "approval",
+				Severity:      "warning",
+				Title:         "Approval request needs changes",
+				Message:       fmt.Sprintf("%s requested changes on \"%s\"", usernameOrFallback(username, ""), req.Title),
+				EntityType:    "approval_request",
+				EntityID:      req.ID,
+				ConnectionID:  req.ConnID,
+				ActorUserID:   userID,
+				TargetUserIDs: []int64{req.CreatorID},
+				Payload:       map[string]any{"note": strings.TrimSpace(body.Note), "status": "rejected"},
+			})
 			json.NewEncoder(w).Encode(map[string]string{"message": "changes requested"})
 			return
 		}
@@ -718,10 +769,38 @@ func ApproveApprovalStep() http.HandlerFunc {
 					SET status = 'approved', reviewer_id = ?, review_note = ?, current_step = ?, updated_at = ?
 					WHERE id = ?
 				`), userID, strings.TrimSpace(body.Note), req.CurrentStep+1, now, id)
+				EmitNotification(NotificationEventInput{
+					EventType:     "approval_request.approved",
+					Category:      "approval",
+					Severity:      "success",
+					Title:         "Approval request approved",
+					Message:       fmt.Sprintf("%s approved \"%s\"", usernameOrFallback(username, ""), req.Title),
+					EntityType:    "approval_request",
+					EntityID:      req.ID,
+					ConnectionID:  req.ConnID,
+					ActorUserID:   userID,
+					TargetUserIDs: []int64{req.CreatorID},
+					Payload:       map[string]any{"status": "approved"},
+				})
 				json.NewEncoder(w).Encode(map[string]string{"message": "all steps approved, request is approved"})
 				return
 			}
 			_, _ = appdb.DB.Exec(appdb.ConvertQuery(`UPDATE query_approval_request SET current_step = ?, updated_at = ? WHERE id = ?`), req.CurrentStep+1, now, id)
+			if nextStep, _ := getStepByWorkflowAndOrder(req.WorkflowID, req.CurrentStep+1); nextStep != nil {
+				EmitNotification(NotificationEventInput{
+					EventType:     "approval_request.waiting_review",
+					Category:      "approval",
+					Severity:      "info",
+					Title:         "Approval request advanced to next step",
+					Message:       fmt.Sprintf("\"%s\" is waiting for the next approver", req.Title),
+					EntityType:    "approval_request",
+					EntityID:      req.ID,
+					ConnectionID:  req.ConnID,
+					ActorUserID:   userID,
+					TargetUserIDs: append([]int64{req.CreatorID}, getWorkflowApproverUserIDs(nextStep.ID)...),
+					Payload:       map[string]any{"current_step": req.CurrentStep + 1},
+				})
+			}
 			json.NewEncoder(w).Encode(map[string]string{"message": "step approved, moved to next step"})
 			return
 		}
@@ -794,12 +873,38 @@ func ExecuteApprovalRequest() http.HandlerFunc {
 		durationMs := time.Since(start).Milliseconds()
 		if execErr != nil {
 			markApprovalRequestExecution(id, QueryApprovalStatusFailed, sanitizeDBError(execErr))
+			EmitNotification(NotificationEventInput{
+				EventType:     "approval_request.failed",
+				Category:      "approval",
+				Severity:      "error",
+				Title:         "Approval request execution failed",
+				Message:       fmt.Sprintf("Execution failed for approval request \"%s\"", req.Title),
+				EntityType:    "approval_request",
+				EntityID:      req.ID,
+				ConnectionID:  req.ConnID,
+				ActorUserID:   userID,
+				TargetUserIDs: []int64{req.CreatorID},
+				Payload:       map[string]any{"error": sanitizeDBError(execErr)},
+			})
 			http.Error(w, jsonError(sanitizeDBError(execErr)), http.StatusBadRequest)
 			return
 		}
 
 		affected, _ := res.RowsAffected()
 		markApprovalRequestExecution(id, QueryApprovalStatusDone, "")
+		EmitNotification(NotificationEventInput{
+			EventType:     "approval_request.executed",
+			Category:      "approval",
+			Severity:      "success",
+			Title:         "Approval request executed",
+			Message:       fmt.Sprintf("Approval request \"%s\" was executed successfully", req.Title),
+			EntityType:    "approval_request",
+			EntityID:      req.ID,
+			ConnectionID:  req.ConnID,
+			ActorUserID:   userID,
+			TargetUserIDs: []int64{req.CreatorID},
+			Payload:       map[string]any{"affected_rows": affected},
+		})
 		go WriteAuditLog(r.Header.Get("X-Username"), req.ConnID, req.Connection, req.Statement, durationMs, affected, "")
 
 		updated, _ := getApprovalRequestByID(id)

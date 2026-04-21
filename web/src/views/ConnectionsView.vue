@@ -23,7 +23,6 @@ const defaultPorts: Record<DbDriver, number> = {
   postgres: 5432,
   mysql: 3306,
   mariadb: 3306,
-  sqlite: 0,
   mssql: 1433,
 }
 
@@ -50,7 +49,6 @@ const drivers: Array<{ key: DbDriver; label: string; badge: string; sub: string 
   { key: 'postgres', label: 'PostgreSQL', badge: 'PG',  sub: 'v12+' },
   { key: 'mysql',    label: 'MySQL',      badge: 'MY',  sub: 'v8+' },
   { key: 'mariadb',  label: 'MariaDB',    badge: 'MB',  sub: 'v10+' },
-  { key: 'sqlite',   label: 'SQLite',     badge: 'SQ',  sub: 'v3' },
   { key: 'mssql',    label: 'SQL Server', badge: 'MS',  sub: '2019+' },
 ]
 
@@ -121,10 +119,6 @@ async function handleSave() {
     toast.error('Connection name is required')
     return
   }
-  if (form.driver === 'sqlite' && !form.database.trim()) {
-    toast.error('Database path is required for SQLite')
-    return
-  }
   
   saving.value = true
   let conn
@@ -167,7 +161,6 @@ function parseConnectionURL(raw: string) {
     const driverMap: Record<string, DbDriver> = {
       postgres: 'postgres', postgresql: 'postgres',
       mysql: 'mysql', mariadb: 'mariadb',
-      sqlite: 'sqlite', sqlite3: 'sqlite',
       mssql: 'mssql', sqlserver: 'mssql',
     }
     const driver = driverMap[scheme] ?? ('postgres' as DbDriver)
@@ -240,7 +233,7 @@ async function handleDelete(id: number, name: string) {
             class="conn-row"
           >
             <div class="conn-badge" :class="`conn-badge--${conn.driver}`" style="width:36px;height:36px;border-radius:var(--r-sm);font-size:12px">
-              {{ conn.driver === 'postgres' ? 'PG' : conn.driver === 'mysql' ? 'MY' : conn.driver === 'mariadb' ? 'MB' : conn.driver === 'sqlite' ? 'SQ' : 'MS' }}
+              {{ conn.driver === 'postgres' ? 'PG' : conn.driver === 'mysql' ? 'MY' : conn.driver === 'mariadb' ? 'MB' : 'MS' }}
             </div>
             <div style="flex:1;min-width:0">
               <div style="font-size:13px;font-weight:600;color:var(--text-primary);display:flex;align-items:center;gap:6px">
@@ -339,7 +332,7 @@ async function handleDelete(id: number, name: string) {
               <input v-model="form.name" class="base-input" placeholder="My Database" />
             </div>
 
-            <template v-if="form.driver !== 'sqlite'">
+            <template>
               <div class="form-row">
                 <div class="form-group" style="flex:2">
                   <label class="form-label">Host</label>
@@ -370,14 +363,6 @@ async function handleDelete(id: number, name: string) {
               <div style="display:flex;align-items:center;gap:8px">
                 <input id="ssl" type="checkbox" v-model="form.ssl" style="accent-color:var(--brand)" />
                 <label for="ssl" class="form-label" style="cursor:pointer;margin:0">Enable SSL/TLS</label>
-              </div>
-            </template>
-
-            <template v-else>
-              <div class="form-group">
-                <label class="form-label">Database File Path</label>
-                <input v-model="form.database" class="base-input" placeholder="/path/to/database.db" />
-                <span class="form-hint">Leave blank to use an in-memory database.</span>
               </div>
             </template>
 

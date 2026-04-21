@@ -126,6 +126,25 @@ func CreateBackupDownloadRequestHandler() http.HandlerFunc {
 			return
 		}
 		req, _ := getBackupDownloadRequestByID(requestID)
+		if req != nil {
+			targetUserIDs := []int64{req.CreatorID}
+			if step, _ := getStepByWorkflowAndOrder(req.WorkflowID, req.CurrentStep); step != nil {
+				targetUserIDs = append(targetUserIDs, getWorkflowApproverUserIDs(step.ID)...)
+			}
+			EmitNotification(NotificationEventInput{
+				EventType:     "backup_request.created",
+				Category:      "backup",
+				Severity:      "info",
+				Title:         "Backup request submitted",
+				Message:       fmt.Sprintf("Backup request \"%s\" was submitted for review", req.Title),
+				EntityType:    "backup_download_request",
+				EntityID:      req.ID,
+				ConnectionID:  req.ConnID,
+				ActorUserID:   userID,
+				TargetUserIDs: targetUserIDs,
+				Payload:       map[string]any{"status": req.Status, "database": req.DatabaseName},
+			})
+		}
 		json.NewEncoder(w).Encode(req)
 	}
 }
@@ -239,6 +258,40 @@ func ReviewBackupDownloadRequestHandler() http.HandlerFunc {
 			return
 		}
 		updated, _ := getBackupDownloadRequestByID(id)
+		if updated != nil {
+			eventType := "backup_request.waiting_review"
+			severity := "info"
+			title := "Backup request review recorded"
+			message := fmt.Sprintf("Review recorded for backup request \"%s\"", updated.Title)
+			targetUserIDs := []int64{updated.CreatorID}
+			if body.Action == "rejected" {
+				eventType = "backup_request.rejected"
+				severity = "warning"
+				title = "Backup request rejected"
+				message = fmt.Sprintf("%s requested changes on \"%s\"", usernameOrFallback(username, ""), updated.Title)
+			} else if updated.Status == QueryApprovalStatusApproved {
+				eventType = "backup_request.approved"
+				severity = "success"
+				title = "Backup request approved"
+				message = fmt.Sprintf("Backup request \"%s\" is approved and ready to download", updated.Title)
+			} else if step, _ := getStepByWorkflowAndOrder(updated.WorkflowID, updated.CurrentStep); step != nil {
+				targetUserIDs = append(targetUserIDs, getWorkflowApproverUserIDs(step.ID)...)
+				message = fmt.Sprintf("Backup request \"%s\" advanced to the next approval step", updated.Title)
+			}
+			EmitNotification(NotificationEventInput{
+				EventType:     eventType,
+				Category:      "backup",
+				Severity:      severity,
+				Title:         title,
+				Message:       message,
+				EntityType:    "backup_download_request",
+				EntityID:      updated.ID,
+				ConnectionID:  updated.ConnID,
+				ActorUserID:   userID,
+				TargetUserIDs: targetUserIDs,
+				Payload:       map[string]any{"status": updated.Status, "note": body.Note},
+			})
+		}
 		json.NewEncoder(w).Encode(updated)
 	}
 }
@@ -284,6 +337,19 @@ func DownloadApprovedBackupRequest() http.HandlerFunc {
 		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 		if err := writeBackupDump(r.Context(), w, db, driver, req.DatabaseName); err != nil {
 			_, _ = appdb.DB.Exec(appdb.ConvertQuery(`UPDATE backup_download_requests SET status = 'failed', execute_error = ?, updated_at = ? WHERE id = ?`), sanitizeDBError(err), time.Now().UTC().Format("2006-01-02 15:04:05"), id)
+			EmitNotification(NotificationEventInput{
+				EventType:     "backup_request.failed",
+				Category:      "backup",
+				Severity:      "error",
+				Title:         "Backup request failed",
+				Message:       fmt.Sprintf("Backup request \"%s\" failed during download generation", req.Title),
+				EntityType:    "backup_download_request",
+				EntityID:      req.ID,
+				ConnectionID:  req.ConnID,
+				ActorUserID:   userID,
+				TargetUserIDs: []int64{req.CreatorID},
+				Payload:       map[string]any{"error": sanitizeDBError(err)},
+			})
 			return
 		}
 		_, _ = appdb.DB.Exec(appdb.ConvertQuery(`
@@ -291,6 +357,19 @@ func DownloadApprovedBackupRequest() http.HandlerFunc {
 			SET status = 'done', execute_error = '', executed_at = ?, updated_at = ?
 			WHERE id = ?
 		`), now, now, id)
+		EmitNotification(NotificationEventInput{
+			EventType:     "backup_request.download_ready",
+			Category:      "backup",
+			Severity:      "success",
+			Title:         "Backup download completed",
+			Message:       fmt.Sprintf("Backup request \"%s\" was downloaded successfully", req.Title),
+			EntityType:    "backup_download_request",
+			EntityID:      req.ID,
+			ConnectionID:  req.ConnID,
+			ActorUserID:   userID,
+			TargetUserIDs: []int64{req.CreatorID},
+			Payload:       map[string]any{"status": "done"},
+		})
 	}
 }
 

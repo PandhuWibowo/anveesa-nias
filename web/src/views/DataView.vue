@@ -67,13 +67,13 @@ function sessionLabel(s: Session) {
 
 function driverColor(s: Session) {
   const conn = s.connId ? connections.value.find(c => c.id === s.connId) : null
-  const map: Record<string, string> = { postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', sqlite: '#7bc8f6', mssql: '#cc2927' }
+  const map: Record<string, string> = { postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927' }
   return conn ? (map[conn.driver] ?? '#888') : '#888'
 }
 
 function driverLabel(s: Session) {
   const conn = s.connId ? connections.value.find(c => c.id === s.connId) : null
-  const map: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', sqlite: 'SQ', mssql: 'MS' }
+  const map: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS' }
   return conn ? (map[conn.driver] ?? '??') : '??'
 }
 
@@ -223,8 +223,8 @@ function handleTableSelected(sessionId: string, db: string, table: string) {
                 class="sess-picker__item"
                 @click="pickConn(conn.id)"
               >
-                <span class="sess-picker__badge" :style="{ background: ({'postgres':'#336791','mysql':'#f29111','mariadb':'#c0392b','sqlite':'#7bc8f6','mssql':'#cc2927'} as Record<string,string>)[conn.driver] ?? '#888' }">
-                  {{ ({'postgres':'PG','mysql':'MY','mariadb':'MB','sqlite':'SQ','mssql':'MS'} as Record<string,string>)[conn.driver] ?? '??' }}
+                <span class="sess-picker__badge" :style="{ background: ({'postgres':'#336791','mysql':'#f29111','mariadb':'#c0392b','mssql':'#cc2927'} as Record<string,string>)[conn.driver] ?? '#888' }">
+                  {{ ({'postgres':'PG','mysql':'MY','mariadb':'MB','mssql':'MS'} as Record<string,string>)[conn.driver] ?? '??' }}
                 </span>
                 <div>
                   <div style="font-size:13px;font-weight:600;color:var(--text-primary)">{{ conn.name }}</div>

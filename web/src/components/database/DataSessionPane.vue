@@ -413,8 +413,8 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
   event.returnValue = ''
 }
 
-function driverColor(d: string) { return ({ postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', sqlite: '#7bc8f6', mssql: '#cc2927' } as Record<string,string>)[d] ?? '#555' }
-function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', sqlite: 'SQ', mssql: 'MS' } as Record<string,string>)[d] ?? '??' }
+function driverColor(d: string) { return ({ postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927' } as Record<string,string>)[d] ?? '#555' }
+function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS' } as Record<string,string>)[d] ?? '??' }
 </script>
 
 <template>

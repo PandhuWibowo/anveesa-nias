@@ -22,8 +22,7 @@ type Config struct {
 	TLSKeyFile  string
 
 	// Database
-	DBDriver      string // "sqlite" | "postgres" | "mysql"
-	DBPath        string // SQLite: file path
+	DBDriver      string // "postgres" | "mysql"
 	DBURL         string // PostgreSQL/MySQL: connection string
 	DBSSLMode     string // PostgreSQL SSL mode: disable, require, verify-ca, verify-full
 	DBSSLRootCert string // Path to SSL root certificate (for RDS)
@@ -50,7 +49,7 @@ type Config struct {
 	LogFormat string // "text" | "json"
 }
 
-func Load() *Config {
+func Load() (*Config, error) {
 	cfg := &Config{}
 
 	// Environment detection
@@ -66,9 +65,8 @@ func Load() *Config {
 	cfg.TLSCertFile = getEnv("TLS_CERT_FILE", "")
 	cfg.TLSKeyFile = getEnv("TLS_KEY_FILE", "")
 
-	// Database - PostgreSQL only (no more SQLite!)
+	// Database - PostgreSQL/MySQL only
 	cfg.DBDriver = strings.ToLower(getEnv("DB_DRIVER", "postgres"))
-	cfg.DBPath = getEnv("DB_PATH", "")
 	cfg.DBURL = getEnv("DATABASE_URL", "")
 	cfg.DBSSLMode = getEnv("DB_SSL_MODE", "disable")
 	cfg.DBSSLRootCert = getEnv("DB_SSL_ROOT_CERT", "")
@@ -77,14 +75,7 @@ func Load() *Config {
 	cfg.BackupHours = getEnvInt("BACKUP_HOURS", 24)
 
 	// Validate database config
-	if cfg.DBDriver == "sqlite" {
-		log.Fatal("FATAL: SQLite is no longer supported. Please use PostgreSQL or MySQL. Set DB_DRIVER=postgres and DATABASE_URL in .env")
-	}
-	
 	if cfg.DBDriver == "postgres" || cfg.DBDriver == "mysql" {
-		if cfg.DBURL == "" {
-			log.Fatalf("FATAL: DATABASE_URL is required when DB_DRIVER=%s. Please create a .env file with DATABASE_URL", cfg.DBDriver)
-		}
 		// Add SSL mode to URL if not already present
 		if cfg.DBDriver == "postgres" && cfg.DBSSLMode != "disable" && !strings.Contains(cfg.DBURL, "sslmode=") {
 			separator := "?"
@@ -93,8 +84,6 @@ func Load() *Config {
 			}
 			cfg.DBURL = cfg.DBURL + separator + "sslmode=" + cfg.DBSSLMode
 		}
-	} else {
-		log.Fatalf("FATAL: Unsupported DB_DRIVER: %s (must be 'postgres' or 'mysql')", cfg.DBDriver)
 	}
 
 	// Warn about SSL in production
@@ -111,23 +100,19 @@ func Load() *Config {
 	// JWT Secret - require strong secret in production
 	cfg.JWTSecret = getEnv("JWT_SECRET", "")
 	if cfg.JWTSecret == "" {
-		if isProduction {
-			log.Fatal("FATAL: JWT_SECRET must be set in production")
-		}
 		cfg.JWTSecret = "anveesa-nias-dev-secret-change-in-production"
-		log.Println("WARNING: Using default JWT secret. Set JWT_SECRET in production!")
-	} else if isProduction && len(cfg.JWTSecret) < 32 {
-		log.Fatal("FATAL: JWT_SECRET must be at least 32 characters in production")
+		if !isProduction {
+			log.Println("WARNING: Using default JWT secret. Set JWT_SECRET in production!")
+		}
 	}
 
 	// Encryption key for credentials
 	cfg.EncryptionKey = getEnv("NIAS_ENCRYPTION_KEY", "")
 	if cfg.EncryptionKey == "" {
-		if isProduction {
-			log.Fatal("FATAL: NIAS_ENCRYPTION_KEY must be set in production (32 bytes)")
-		}
 		cfg.EncryptionKey = "anveesa-nias-32-byte-secret-key!"
-		log.Println("WARNING: Using default encryption key. Set NIAS_ENCRYPTION_KEY in production!")
+		if !isProduction {
+			log.Println("WARNING: Using default encryption key. Set NIAS_ENCRYPTION_KEY in production!")
+		}
 	}
 
 	// CORS
@@ -140,22 +125,22 @@ func Load() *Config {
 	cfg.RateLimitEnabled = getEnvBool("RATE_LIMIT_ENABLED", isProduction)
 	cfg.RateLimitRequests = getEnvInt("RATE_LIMIT_REQUESTS", 100)
 	cfg.RateLimitWindow = getEnvInt("RATE_LIMIT_WINDOW", 60)
+	if cfg.RateLimitRequests <= 0 {
+		log.Printf("WARNING: Invalid RATE_LIMIT_REQUESTS=%d, using default 100", cfg.RateLimitRequests)
+		cfg.RateLimitRequests = 100
+	}
+	if cfg.RateLimitWindow <= 0 {
+		log.Printf("WARNING: Invalid RATE_LIMIT_WINDOW=%d, using default 60 seconds", cfg.RateLimitWindow)
+		cfg.RateLimitWindow = 60
+	}
 
 	// Logging
 	cfg.LogLevel = getEnv("LOG_LEVEL", "info")
 	cfg.LogFormat = getEnv("LOG_FORMAT", "text")
 
-	// Validate TLS config
-	if cfg.TLSEnabled {
-		if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
-			log.Fatal("FATAL: TLS_CERT_FILE and TLS_KEY_FILE must be set when TLS_ENABLED=true")
-		}
-		if _, err := os.Stat(cfg.TLSCertFile); os.IsNotExist(err) {
-			log.Fatalf("FATAL: TLS certificate file not found: %s", cfg.TLSCertFile)
-		}
-		if _, err := os.Stat(cfg.TLSKeyFile); os.IsNotExist(err) {
-			log.Fatalf("FATAL: TLS key file not found: %s", cfg.TLSKeyFile)
-		}
+	if cfg.BackupHours <= 0 {
+		log.Printf("WARNING: Invalid BACKUP_HOURS=%d, using default 24 hours", cfg.BackupHours)
+		cfg.BackupHours = 24
 	}
 
 	// Create backup directory if needed
@@ -165,7 +150,11 @@ func Load() *Config {
 		}
 	}
 
-	return cfg
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
 }
 
 // Validate performs additional runtime validation
@@ -173,11 +162,28 @@ func (c *Config) Validate() error {
 	if c.Port == "" {
 		return fmt.Errorf("PORT is required")
 	}
-	if c.DBDriver == "sqlite" && c.DBPath == "" {
-		return fmt.Errorf("DB_PATH is required for SQLite")
+	if c.DBDriver != "postgres" && c.DBDriver != "mysql" {
+		return fmt.Errorf("unsupported DB_DRIVER: %s (must be 'postgres' or 'mysql')", c.DBDriver)
 	}
 	if (c.DBDriver == "postgres" || c.DBDriver == "mysql") && c.DBURL == "" {
 		return fmt.Errorf("DATABASE_URL is required for %s", c.DBDriver)
+	}
+	if c.IsProduction() && len(c.JWTSecret) < 32 {
+		return fmt.Errorf("JWT_SECRET must be set and at least 32 characters in production")
+	}
+	if c.IsProduction() && c.EncryptionKey == "anveesa-nias-32-byte-secret-key!" {
+		return fmt.Errorf("NIAS_ENCRYPTION_KEY must be set in production (32 bytes)")
+	}
+	if c.TLSEnabled {
+		if c.TLSCertFile == "" || c.TLSKeyFile == "" {
+			return fmt.Errorf("TLS_CERT_FILE and TLS_KEY_FILE must be set when TLS_ENABLED=true")
+		}
+		if _, err := os.Stat(c.TLSCertFile); err != nil {
+			return fmt.Errorf("TLS certificate file not available: %w", err)
+		}
+		if _, err := os.Stat(c.TLSKeyFile); err != nil {
+			return fmt.Errorf("TLS key file not available: %w", err)
+		}
 	}
 	return nil
 }
@@ -188,12 +194,12 @@ func (c *Config) IsProduction() bool {
 }
 
 // GenerateSecureKey generates a cryptographically secure random key
-func GenerateSecureKey(length int) string {
+func GenerateSecureKey(length int) (string, error) {
 	bytes := make([]byte, length)
 	if _, err := rand.Read(bytes); err != nil {
-		panic(err)
+		return "", fmt.Errorf("generate secure key: %w", err)
 	}
-	return hex.EncodeToString(bytes)
+	return hex.EncodeToString(bytes), nil
 }
 
 // PrintConfig outputs non-sensitive config values for debugging
@@ -204,13 +210,9 @@ func (c *Config) PrintConfig() {
 	log.Printf("  Port: %s", c.Port)
 	log.Printf("  TLS Enabled: %v", c.TLSEnabled)
 	log.Printf("  Database Driver: %s", c.DBDriver)
-	if c.DBDriver == "sqlite" {
-		log.Printf("  Database Path: %s", c.DBPath)
-	} else {
-		log.Printf("  Database URL: %s", maskDBURL(c.DBURL))
-		if c.DBDriver == "postgres" || c.DBDriver == "mysql" {
-			log.Printf("  SSL Mode: %s", c.DBSSLMode)
-		}
+	log.Printf("  Database URL: %s", maskDBURL(c.DBURL))
+	if c.DBDriver == "postgres" || c.DBDriver == "mysql" {
+		log.Printf("  SSL Mode: %s", c.DBSSLMode)
 	}
 	log.Printf("  Auth Enabled: %v", c.AuthEnabled)
 	log.Printf("  Backup Enabled: %v", c.BackupEnabled)

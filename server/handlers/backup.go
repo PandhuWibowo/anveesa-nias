@@ -197,8 +197,6 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 		tableQ = fmt.Sprintf(`SELECT table_name FROM information_schema.tables WHERE table_schema='%s' AND table_type='BASE TABLE' ORDER BY table_name`, schema)
 	case "mysql":
 		tableQ = `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME`
-	case "sqlite":
-		tableQ = `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
 	default:
 		tableQ = `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME`
 	}
@@ -224,16 +222,7 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 		}
 
 		tbl := quoteIdent(driver, table)
-		if driver == "sqlite" {
-			var ddl string
-			_ = db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&ddl)
-			if ddl != "" {
-				fmt.Fprintf(w, "DROP TABLE IF EXISTS %s;\n", tbl)
-				fmt.Fprintf(w, "%s;\n\n", ddl)
-			}
-		} else {
-			fmt.Fprintf(w, "-- Table: %s\n", table)
-		}
+		fmt.Fprintf(w, "-- Table: %s\n", table)
 
 		dataRows, err := db.QueryContext(ctx, fmt.Sprintf(`SELECT * FROM %s`, tbl))
 		if err != nil {
