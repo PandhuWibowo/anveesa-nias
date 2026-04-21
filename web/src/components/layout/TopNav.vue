@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import axios from 'axios'
 import { useAuth } from '@/composables/useAuth'
 import { useTheme } from '@/composables/useTheme'
 import { useConnections } from '@/composables/useConnections'
@@ -30,10 +31,13 @@ const openMenu = ref<string | null>(null)
 // Connections panel — kept separate so outside-click logic doesn't conflict
 const connPanelOpen = ref(false)
 const userMenuOpen = ref(false)
+const notificationUnread = ref(0)
 
 const navRef = ref<HTMLElement | null>(null)
 const userRef = ref<HTMLElement | null>(null)
 const connBtnRef = ref<HTMLElement | null>(null)
+const notificationPoll = ref<number | null>(null)
+const canViewNotifications = computed(() => hasAnyPermission(['notifications.view']))
 
 // ── Navigation structure ─────────────────────────────────────────
 // Direct links (no dropdown)
@@ -148,7 +152,37 @@ function navigate(name: string) {
 async function handleLogout() {
   userMenuOpen.value = false
   await logout()
+  notificationUnread.value = 0
   router.push({ name: 'login' })
+}
+
+async function loadNotificationUnread() {
+  if (!authEnabled.value || !canViewNotifications.value) {
+    notificationUnread.value = 0
+    return
+  }
+  try {
+    const { data } = await axios.get<{ count: number }>('/api/notifications/unread')
+    notificationUnread.value = Number(data?.count || 0)
+  } catch {
+    notificationUnread.value = 0
+  }
+}
+
+function startNotificationPolling() {
+  stopNotificationPolling()
+  if (!authEnabled.value || !canViewNotifications.value) return
+  void loadNotificationUnread()
+  notificationPoll.value = window.setInterval(() => {
+    void loadNotificationUnread()
+  }, 30000)
+}
+
+function stopNotificationPolling() {
+  if (notificationPoll.value !== null) {
+    window.clearInterval(notificationPoll.value)
+    notificationPoll.value = null
+  }
 }
 
 function handleOutside(e: MouseEvent) {
@@ -161,8 +195,18 @@ function handleOutside(e: MouseEvent) {
   if (userRef.value && !userRef.value.contains(t)) userMenuOpen.value = false
 }
 
-onMounted(() => document.addEventListener('mousedown', handleOutside))
-onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
+onMounted(() => {
+  document.addEventListener('mousedown', handleOutside)
+  startNotificationPolling()
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', handleOutside)
+  stopNotificationPolling()
+})
+
+watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () => {
+  startNotificationPolling()
+}, { immediate: true })
 </script>
 
 <template>
@@ -326,6 +370,20 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
       <button class="topnav__action-btn" :title="`Switch to ${mode === 'dark' ? 'light' : 'dark'} mode`" @click="toggleTheme">
         <svg v-if="mode === 'dark'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
         <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+
+      <button
+        v-if="canViewNotifications"
+        class="topnav__action-btn topnav__action-btn--icon"
+        :class="{ 'topnav__action-btn--active': route.name === 'notifications' }"
+        title="Notifications"
+        @click="router.push({ name: 'notifications' })"
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+        </svg>
+        <span v-if="notificationUnread > 0" class="topnav__notif-badge">{{ notificationUnread > 99 ? '99+' : notificationUnread }}</span>
       </button>
 
       <!-- User -->
@@ -655,6 +713,34 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
   transition: color 0.12s, background 0.12s;
 }
 .topnav__action-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+.topnav__action-btn--icon {
+  position: relative;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.topnav__action-btn--active {
+  color: var(--brand);
+  background: var(--brand-dim);
+}
+
+.topnav__notif-badge {
+  position: absolute;
+  top: -3px;
+  right: -2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  border: 2px solid var(--bg-surface);
+}
 
 .topnav__kbd {
   font-size: 10px;
