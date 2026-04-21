@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
 	"math"
 	"net/http"
 	"strconv"
@@ -148,36 +147,6 @@ func GetDashboard() http.HandlerFunc {
 					var s TableStat
 					rows.Scan(&s.Name, &s.RowCount, &s.SizeBytes)
 					data.Tables = append(data.Tables, s)
-				}
-			}
-
-		case "sqlite":
-			data.Database = "main"
-			db.QueryRow(`SELECT sqlite_version()`).Scan(&data.Version)
-			var pageCount, pageSize int64
-			db.QueryRow(`PRAGMA page_count`).Scan(&pageCount)
-			db.QueryRow(`PRAGMA page_size`).Scan(&pageSize)
-			data.SizeBytes = pageCount * pageSize
-
-			tRows, err := db.Query(`SELECT name, type FROM sqlite_master WHERE type IN ('table','view') ORDER BY name`)
-			if err == nil {
-				defer tRows.Close()
-				var tables []string
-				for tRows.Next() {
-					var name, tType string
-					tRows.Scan(&name, &tType)
-					if tType == "table" {
-						data.TableCount++
-						tables = append(tables, name)
-					} else {
-						data.ViewCount++
-					}
-				}
-				tRows.Close()
-				for _, t := range tables {
-					var count int64
-					db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, t)).Scan(&count)
-					data.Tables = append(data.Tables, TableStat{Name: t, RowCount: count})
 				}
 			}
 

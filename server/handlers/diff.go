@@ -106,8 +106,6 @@ func diffFetchSchema(db *sql.DB, driver, dbName string) (map[string][]DiffColumn
 		tableQ = fmt.Sprintf(`SELECT table_name FROM information_schema.tables WHERE table_schema='%s' AND table_type='BASE TABLE' ORDER BY table_name`, schema)
 	case "mysql":
 		tableQ = `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME`
-	case "sqlite":
-		tableQ = `SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`
 	default:
 		tableQ = `SELECT TABLE_NAME FROM information_schema.tables WHERE table_type='BASE TABLE' ORDER BY TABLE_NAME`
 	}
@@ -143,8 +141,6 @@ func diffFetchColumns(db *sql.DB, driver, dbName, table string) ([]DiffColumn, e
 		q = fmt.Sprintf(`SELECT column_name, data_type FROM information_schema.columns WHERE table_schema='%s' AND table_name='%s' ORDER BY ordinal_position`, schema, table)
 	case "mysql":
 		q = fmt.Sprintf(`SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='%s' ORDER BY ORDINAL_POSITION`, table)
-	case "sqlite":
-		q = fmt.Sprintf(`PRAGMA table_info("%s")`, table)
 	default:
 		q = fmt.Sprintf(`SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='%s' ORDER BY ORDINAL_POSITION`, table)
 	}
@@ -156,21 +152,10 @@ func diffFetchColumns(db *sql.DB, driver, dbName, table string) ([]DiffColumn, e
 	defer rows.Close()
 
 	var cols []DiffColumn
-	if driver == "sqlite" {
-		for rows.Next() {
-			var cid int
-			var name, colType string
-			var notNull, pk int
-			var dflt interface{}
-			rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk)
-			cols = append(cols, DiffColumn{Name: name, DataType: colType})
-		}
-	} else {
-		for rows.Next() {
-			var name, dataType string
-			rows.Scan(&name, &dataType)
-			cols = append(cols, DiffColumn{Name: name, DataType: dataType})
-		}
+	for rows.Next() {
+		var name, dataType string
+		rows.Scan(&name, &dataType)
+		cols = append(cols, DiffColumn{Name: name, DataType: dataType})
 	}
 	return cols, nil
 }

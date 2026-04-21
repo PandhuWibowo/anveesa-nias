@@ -90,6 +90,9 @@ func GetUserAppPermissions(userID int64) ([]string, error) {
 	if permsMap["connections.view"] || permsMap["query.execute"] {
 		permsMap["notifications.view"] = true
 	}
+	if permsMap["users.manage"] || permsMap["roles.manage"] || permsMap["workflows.manage"] {
+		permsMap["notifications.manage"] = true
+	}
 	if len(permsMap) > 0 {
 		permsMap["security.self"] = true
 	}

@@ -6,15 +6,25 @@ interface User {
   id: number
   username: string
   role: string
+  role_id: number
   is_active: boolean
   created_at: string
 }
 
+interface Role {
+  id: number
+  name: string
+  description: string
+  is_system: boolean
+  is_active: boolean
+}
+
 const users = ref<User[]>([])
+const roles = ref<Role[]>([])
 const loading = ref(false)
 const error = ref('')
 
-async function load() {
+async function loadUsers() {
   loading.value = true
   error.value = ''
   try {
@@ -27,33 +37,44 @@ async function load() {
   }
 }
 
-onMounted(load)
+async function loadRoles() {
+  try {
+    const { data } = await axios.get<Role[]>('/api/roles')
+    roles.value = data ?? []
+  } catch (e: any) {
+    console.error('Failed to load roles:', e)
+  }
+}
+
+onMounted(async () => {
+  await Promise.all([loadUsers(), loadRoles()])
+})
 
 // Edit modal
 const editTarget = ref<User | null>(null)
-const editRole = ref('')
+const editRoleId = ref<number | null>(null)
 const editPassword = ref('')
 const editActive = ref(true)
 const editSaving = ref(false)
 
 function openEdit(u: User) {
   editTarget.value = u
-  editRole.value = u.role
+  editRoleId.value = u.role_id || (roles.value.find((role) => role.name === u.role)?.id ?? null)
   editPassword.value = ''
   editActive.value = u.is_active
 }
 
 async function saveEdit() {
-  if (!editTarget.value) return
+  if (!editTarget.value || !editRoleId.value) return
   editSaving.value = true
   try {
     await axios.put(`/api/admin/users/${editTarget.value.id}`, {
-      role: editRole.value,
+      role_id: editRoleId.value,
       is_active: editActive.value,
       password: editPassword.value || undefined,
     })
     editTarget.value = null
-    await load()
+    await loadUsers()
   } finally {
     editSaving.value = false
   }
@@ -62,13 +83,15 @@ async function saveEdit() {
 async function deleteUser(u: User) {
   if (!confirm(`Delete user "${u.username}"?`)) return
   await axios.delete(`/api/admin/users/${u.id}`)
-  await load()
+  await loadUsers()
 }
 
 const roleColors: Record<string, string> = {
   admin: '#f59e0b',
+  poweruser: '#a855f7',
   viewer: '#60a5fa',
   editor: '#4ade80',
+  user: '#94a3b8',
 }
 </script>
 
@@ -83,7 +106,7 @@ const roleColors: Record<string, string> = {
             <div class="page-subtitle">Manage user accounts, adjust access roles, and keep the operator roster under control.</div>
           </div>
           <div class="page-hero__actions">
-            <button class="base-btn base-btn--ghost base-btn--sm" @click="load">
+            <button class="base-btn base-btn--ghost base-btn--sm" @click="loadUsers">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.43"/></svg>
               Refresh
             </button>
@@ -148,10 +171,10 @@ const roleColors: Record<string, string> = {
           <div class="u-dialog-title">Edit User: <strong>{{ editTarget.username }}</strong></div>
 
           <label class="u-label">Role</label>
-          <select class="u-select" v-model="editRole">
-            <option value="admin">admin</option>
-            <option value="editor">editor</option>
-            <option value="viewer">viewer</option>
+          <select class="u-select" v-model="editRoleId">
+            <option v-for="role in roles" :key="role.id" :value="role.id">
+              {{ role.name }}{{ role.is_system ? ' (system)' : '' }}
+            </option>
           </select>
 
           <label class="u-label" style="margin-top:12px">New Password <span style="color:var(--text-muted);font-weight:400">(leave blank to keep)</span></label>

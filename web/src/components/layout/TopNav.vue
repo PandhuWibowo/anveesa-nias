@@ -22,8 +22,8 @@ const { connections } = useConnections()
 const activeConn = computed(() =>
   props.activeConnId != null ? connections.value.find(c => c.id === props.activeConnId) ?? null : null
 )
-const driverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', sqlite: '#0f80cc', mssql: '#cc2927' }
-const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', sqlite: 'SQ', mssql: 'MS' }
+const driverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927' }
+const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS' }
 
 // Nav group dropdown
 const openMenu = ref<string | null>(null)
@@ -75,6 +75,7 @@ const allMenuGroups = [
       { name: 'query-performance', label: 'Query Performance', desc: 'Slow queries, errors, and execution trends', icon: 'performance', permissionsAny: ['audit.view'] },
       { name: 'database-audit', label: 'Database Audit', desc: 'Live sessions and external access signals', icon: 'shieldlog', permissionsAny: ['audit.view'] },
       { name: 'audit',       label: 'Audit Log',   desc: 'Track access, actions, and query events', icon: 'audit', permissionsAny: ['audit.view'] },
+      { name: 'notifications', label: 'Notifications', desc: 'Inbox, integrations, routing rules, and delivery logs', icon: 'audit', permissionsAny: ['notifications.view'] },
       { name: 'row-history', label: 'Row History', desc: 'See row-level INSERT, UPDATE, DELETE changes', icon: 'rowhistory', permissionsAny: ['rowhistory.view'] },
       { name: 'watcher',     label: 'Watchers',    desc: 'Monitor important table or query activity', icon: 'watcher', permissionsAny: ['query.execute'] },
       { name: 'health',      label: 'Health',      desc: 'Connection and service health status', icon: 'health', permissionsAny: ['health.view'] },
@@ -100,7 +101,6 @@ const allMenuGroups = [
     icon: 'settings',
     items: [
       { name: 'connections', label: 'Connections', desc: 'Manage environments and database access points', icon: 'plug', permissionsAny: ['connections.view'] },
-      { name: 'users',       label: 'Users',       desc: 'Manage users who can access the app', icon: 'users', permissionsAny: ['users.manage'] },
       { name: 'permissions', label: 'Permissions', desc: 'Roles, folders, and permission policy', icon: 'rbac', permissionsAny: ['roles.manage', 'folders.manage', 'users.manage'] },
       { name: 'workflows',   label: 'Workflows',   desc: 'Configure approval workflows and routing', icon: 'workflow', permissionsAny: ['workflows.manage'] },
     ],

@@ -111,6 +111,7 @@ const (
 	PermSavedQueriesManage = "savedqueries.manage"
 	PermSnippetsManage     = "snippets.manage"
 	PermNotificationsView  = "notifications.view"
+	PermNotificationsManage = "notifications.manage"
 	PermSchemaBrowse       = "schema.browse"
 	PermSchemaDiffView     = "schema.diff.view"
 	PermAuditView          = "audit.view"
@@ -144,6 +145,7 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermAIManage, Label: "Manage AI Settings", Group: "AI"},
 	{Key: PermSecuritySelf, Label: "Manage Own Security", Group: "Security"},
 	{Key: PermNotificationsView, Label: "View Notifications", Group: "Operations"},
+	{Key: PermNotificationsManage, Label: "Manage Notification Integrations", Group: "Operations"},
 	{Key: PermBackupsManage, Label: "Manage Backups", Group: "Operations"},
 	{Key: PermSchedulesManage, Label: "Manage Schedules", Group: "Operations"},
 	{Key: PermHealthView, Label: "View Health", Group: "Operations"},

@@ -72,6 +72,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['schedules.manage'] },
         },
         {
+          path: 'notifications',
+          name: 'notifications',
+          component: () => import('@/views/NotificationsView.vue'),
+          meta: { requiredPermissionsAny: ['notifications.view'] },
+        },
+        {
           path: 'backup',
           name: 'backup',
           component: () => import('@/views/BackupView.vue'),

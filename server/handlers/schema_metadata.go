@@ -178,8 +178,6 @@ func fetchSchemaMetadataCatalog(db *sql.DB, driver, dbName string) (SchemaMetada
 		return listPostgresMetadataCatalog(db, dbName)
 	case "mysql", "mariadb":
 		return listMySQLMetadataCatalog(db, dbName)
-	case "sqlite":
-		return listSQLiteMetadataCatalog(db, dbName)
 	case "sqlserver":
 		return listSQLServerMetadataCatalog(db, dbName)
 	default:
@@ -193,8 +191,6 @@ func fetchSchemaObjectDetail(db *sql.DB, driver, dbName, objectType, objectName 
 		return postgresObjectDetail(db, dbName, objectType, objectName)
 	case "mysql", "mariadb":
 		return mySQLObjectDetail(db, dbName, objectType, objectName)
-	case "sqlite":
-		return sqliteObjectDetail(db, dbName, objectType, objectName)
 	case "sqlserver":
 		return sqlServerObjectDetail(db, dbName, objectType, objectName)
 	default:
@@ -425,38 +421,6 @@ func listMySQLMetadataCatalog(db *sql.DB, dbName string) (SchemaMetadataCatalog,
 	return catalog, nil
 }
 
-func listSQLiteMetadataCatalog(db *sql.DB, dbName string) (SchemaMetadataCatalog, error) {
-	catalog := newCatalog(dbName)
-	rows, err := db.Query(`
-		SELECT name, type, COALESCE(tbl_name, '')
-		FROM sqlite_master
-		WHERE type IN ('table', 'view', 'index', 'trigger')
-		  AND name NOT LIKE 'sqlite_%'
-		ORDER BY type, name
-	`)
-	if err != nil {
-		return catalog, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var name, objectType, parent string
-		if err := rows.Scan(&name, &objectType, &parent); err != nil {
-			return catalog, err
-		}
-		switch objectType {
-		case "table":
-			addCatalogItem(&catalog, "tables", SchemaObjectItem{Name: name, Type: "table"})
-		case "view":
-			addCatalogItem(&catalog, "views", SchemaObjectItem{Name: name, Type: "view"})
-		case "index":
-			addCatalogItem(&catalog, "indexes", SchemaObjectItem{Name: name, Type: "index", ParentName: parent})
-		case "trigger":
-			addCatalogItem(&catalog, "triggers", SchemaObjectItem{Name: name, Type: "trigger", ParentName: parent})
-		}
-	}
-	return catalog, nil
-}
-
 func listSQLServerMetadataCatalog(db *sql.DB, dbName string) (SchemaMetadataCatalog, error) {
 	catalog := newCatalog(dbName)
 	rows, err := db.Query(`
@@ -645,41 +609,6 @@ func mySQLObjectDetail(db *sql.DB, dbName, objectType, objectName string) (Schem
 	return detail, nil
 }
 
-func sqliteObjectDetail(db *sql.DB, dbName, objectType, objectName string) (SchemaObjectDetail, error) {
-	detail := emptyObjectDetail(dbName, objectType, objectName)
-	switch objectType {
-	case "table", "view":
-		columns, err := fetchTableColumnsForMetadata(db, "sqlite", dbName, objectName)
-		if err != nil {
-			return detail, err
-		}
-		indexes, _ := fetchSQLiteIndexes(db, objectName)
-		constraints, _ := fetchSQLiteConstraints(db, objectName)
-		triggers, _ := fetchSQLiteTriggers(db, objectName)
-		detail.Columns = columns
-		detail.Indexes = indexes
-		detail.Constraints = constraints
-		detail.Triggers = triggers
-		detail.DDL = fetchSQLiteObjectSQL(db, objectType, objectName)
-		detail.Properties = []SchemaProperty{
-			{Label: "Object Type", Value: objectType},
-			{Label: "Database", Value: dbName},
-		}
-	case "index":
-		indexes, _ := fetchSQLiteIndexByName(db, objectName)
-		detail.Indexes = indexes
-		if len(indexes) > 0 {
-			detail.DDL = indexes[0].Definition
-		}
-	case "trigger":
-		detail.DDL = fetchSQLiteObjectSQL(db, objectType, objectName)
-		var parent string
-		_ = db.QueryRow(`SELECT COALESCE(tbl_name, '') FROM sqlite_master WHERE type='trigger' AND name=?`, objectName).Scan(&parent)
-		detail.Triggers = []SchemaTriggerDetail{{Name: objectName, TableName: parent, Definition: detail.DDL}}
-	}
-	return detail, nil
-}
-
 func sqlServerObjectDetail(db *sql.DB, dbName, objectType, objectName string) (SchemaObjectDetail, error) {
 	detail := emptyObjectDetail(dbName, objectType, objectName)
 	switch objectType {
@@ -774,29 +703,6 @@ func fetchTableColumnsForMetadata(db *sql.DB, driver, dbName, tableName string) 
 			col.IsPrimaryKey = key == "PRI"
 			col.DefaultValue = defVal
 			cols = append(cols, col)
-		}
-		return cols, rows.Err()
-	case "sqlite":
-		rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, quoteIdent("sqlite", tableName)))
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		var cols []SchemaColumn
-		for rows.Next() {
-			var cid, notNull, pk int
-			var name, typeName string
-			var dflt *string
-			if err := rows.Scan(&cid, &name, &typeName, &notNull, &dflt, &pk); err != nil {
-				return nil, err
-			}
-			cols = append(cols, SchemaColumn{
-				Name:         name,
-				DataType:     typeName,
-				IsNullable:   notNull == 0,
-				IsPrimaryKey: pk > 0,
-				DefaultValue: dflt,
-			})
 		}
 		return cols, rows.Err()
 	case "sqlserver":
@@ -1359,111 +1265,6 @@ func fetchMySQLRoutineDetail(db *sql.DB, dbName, objectType, objectName string) 
 		routine.Definition = fmt.Sprintf("CREATE %s %s.%s\n%s", header, quoteIdent("mysql", dbName), quoteIdent("mysql", objectName), definition.String)
 	}
 	return routine
-}
-
-func fetchSQLiteIndexes(db *sql.DB, tableName string) ([]SchemaIndexDetail, error) {
-	rows, err := db.Query(fmt.Sprintf(`PRAGMA index_list(%s)`, quoteIdent("sqlite", tableName)))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var indexes []SchemaIndexDetail
-	for rows.Next() {
-		var seq int
-		var name string
-		var unique int
-		var origin string
-		var partial int
-		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
-			return nil, err
-		}
-		cols, _ := fetchSQLiteIndexColumns(db, name)
-		indexes = append(indexes, SchemaIndexDetail{
-			Name:       name,
-			TableName:  tableName,
-			Method:     origin,
-			IsUnique:   unique == 1,
-			IsPrimary:  origin == "pk",
-			Columns:    cols,
-			Definition: fetchSQLiteObjectSQL(db, "index", name),
-		})
-	}
-	return indexes, rows.Err()
-}
-
-func fetchSQLiteIndexByName(db *sql.DB, indexName string) ([]SchemaIndexDetail, error) {
-	var tableName string
-	_ = db.QueryRow(`SELECT COALESCE(tbl_name, '') FROM sqlite_master WHERE type='index' AND name=?`, indexName).Scan(&tableName)
-	cols, _ := fetchSQLiteIndexColumns(db, indexName)
-	return []SchemaIndexDetail{{
-		Name:       indexName,
-		TableName:  tableName,
-		Columns:    cols,
-		Definition: fetchSQLiteObjectSQL(db, "index", indexName),
-	}}, nil
-}
-
-func fetchSQLiteIndexColumns(db *sql.DB, indexName string) ([]string, error) {
-	rows, err := db.Query(fmt.Sprintf(`PRAGMA index_info(%s)`, quoteIdent("sqlite", indexName)))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var cols []string
-	for rows.Next() {
-		var seqno, cid int
-		var name string
-		if err := rows.Scan(&seqno, &cid, &name); err == nil {
-			cols = append(cols, name)
-		}
-	}
-	return cols, rows.Err()
-}
-
-func fetchSQLiteConstraints(db *sql.DB, tableName string) ([]SchemaConstraintDetail, error) {
-	rows, err := db.Query(fmt.Sprintf(`PRAGMA foreign_key_list(%s)`, quoteIdent("sqlite", tableName)))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var constraints []SchemaConstraintDetail
-	for rows.Next() {
-		var id, seq int
-		var refTable, fromCol, toCol, onUpdate, onDelete, match string
-		if err := rows.Scan(&id, &seq, &refTable, &fromCol, &toCol, &onUpdate, &onDelete, &match); err == nil {
-			constraints = append(constraints, SchemaConstraintDetail{
-				Name:            fmt.Sprintf("fk_%s_%d", tableName, id),
-				ConstraintType:  "FOREIGN KEY",
-				Columns:         []string{fromCol},
-				ReferencedTable: refTable,
-				Definition:      fmt.Sprintf("FOREIGN KEY (%s) REFERENCES %s(%s)", fromCol, refTable, toCol),
-			})
-		}
-	}
-	return constraints, rows.Err()
-}
-
-func fetchSQLiteTriggers(db *sql.DB, tableName string) ([]SchemaTriggerDetail, error) {
-	rows, err := db.Query(`SELECT name, tbl_name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name=? ORDER BY name`, tableName)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var triggers []SchemaTriggerDetail
-	for rows.Next() {
-		var trigger SchemaTriggerDetail
-		if err := rows.Scan(&trigger.Name, &trigger.TableName, &trigger.Definition); err == nil {
-			trigger.Timing, trigger.Events = parseTriggerDefinition(trigger.Definition)
-			triggers = append(triggers, trigger)
-		}
-	}
-	return triggers, rows.Err()
-}
-
-func fetchSQLiteObjectSQL(db *sql.DB, objectType, objectName string) string {
-	var sqlText string
-	_ = db.QueryRow(`SELECT COALESCE(sql, '') FROM sqlite_master WHERE type=? AND name=?`, objectType, objectName).Scan(&sqlText)
-	return sqlText
 }
 
 func fetchSQLServerIndexes(db *sql.DB, tableName string) ([]SchemaIndexDetail, error) {

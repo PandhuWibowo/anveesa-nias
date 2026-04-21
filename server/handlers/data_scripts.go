@@ -563,6 +563,25 @@ func SubmitDataChangePlan() http.HandlerFunc {
 			return
 		}
 		updated, _ := getDataChangePlanByID(id)
+		if updated != nil {
+			targetUserIDs := []int64{updated.CreatorID}
+			if step, _ := getStepByWorkflowAndOrder(updated.WorkflowID, updated.CurrentStep); step != nil {
+				targetUserIDs = append(targetUserIDs, getWorkflowApproverUserIDs(step.ID)...)
+			}
+			EmitNotification(NotificationEventInput{
+				EventType:     "data_script.submitted",
+				Category:      "data_script",
+				Severity:      "info",
+				Title:         "Data script request submitted",
+				Message:       fmt.Sprintf("Data script plan #%d was submitted for review", updated.ID),
+				EntityType:    "data_change_plan",
+				EntityID:      updated.ID,
+				ConnectionID:  updated.ConnID,
+				ActorUserID:   userID,
+				TargetUserIDs: targetUserIDs,
+				Payload:       map[string]any{"status": updated.Status, "script_name": updated.ScriptName},
+			})
+		}
 		json.NewEncoder(w).Encode(updated)
 	}
 }
@@ -657,6 +676,40 @@ func ReviewDataChangePlan() http.HandlerFunc {
 		}
 		go WriteFeatureAccessAudit(username, "review_data_script_plan", fmt.Sprintf("plan:%d", id), body.Action)
 		updated, _ := getDataChangePlanByID(id)
+		if updated != nil {
+			eventType := "data_script.waiting_review"
+			severity := "info"
+			title := "Data script review recorded"
+			message := fmt.Sprintf("Review recorded for data script plan #%d", updated.ID)
+			targetUserIDs := []int64{updated.CreatorID}
+			if body.Action == "rejected" {
+				eventType = "data_script.rejected"
+				severity = "warning"
+				title = "Data script request rejected"
+				message = fmt.Sprintf("%s requested changes on data script plan #%d", usernameOrFallback(username, ""), updated.ID)
+			} else if updated.Status == QueryApprovalStatusApproved {
+				eventType = "data_script.approved"
+				severity = "success"
+				title = "Data script request approved"
+				message = fmt.Sprintf("Data script plan #%d is approved", updated.ID)
+			} else if step, _ := getStepByWorkflowAndOrder(updated.WorkflowID, updated.CurrentStep); step != nil {
+				targetUserIDs = append(targetUserIDs, getWorkflowApproverUserIDs(step.ID)...)
+				message = fmt.Sprintf("Data script plan #%d advanced to the next approval step", updated.ID)
+			}
+			EmitNotification(NotificationEventInput{
+				EventType:     eventType,
+				Category:      "data_script",
+				Severity:      severity,
+				Title:         title,
+				Message:       message,
+				EntityType:    "data_change_plan",
+				EntityID:      updated.ID,
+				ConnectionID:  updated.ConnID,
+				ActorUserID:   userID,
+				TargetUserIDs: targetUserIDs,
+				Payload:       map[string]any{"status": updated.Status, "note": strings.TrimSpace(body.Note)},
+			})
+		}
 		json.NewEncoder(w).Encode(updated)
 	}
 }
@@ -708,6 +761,19 @@ func ExecuteDataChangePlan() http.HandlerFunc {
 			n, execErr := executeDataPlanItem(tx, driver, plan.DatabaseName, item)
 			if execErr != nil {
 				markDataPlanExecution(id, QueryApprovalStatusFailed, sanitizeDBError(execErr))
+				EmitNotification(NotificationEventInput{
+					EventType:     "data_script.failed",
+					Category:      "data_script",
+					Severity:      "error",
+					Title:         "Data script execution failed",
+					Message:       fmt.Sprintf("Execution failed for data script plan #%d", plan.ID),
+					EntityType:    "data_change_plan",
+					EntityID:      plan.ID,
+					ConnectionID:  plan.ConnID,
+					ActorUserID:   userID,
+					TargetUserIDs: []int64{plan.CreatorID},
+					Payload:       map[string]any{"error": sanitizeDBError(execErr)},
+				})
 				http.Error(w, jsonError(sanitizeDBError(execErr)), http.StatusBadRequest)
 				return
 			}
@@ -715,11 +781,37 @@ func ExecuteDataChangePlan() http.HandlerFunc {
 		}
 		if err := tx.Commit(); err != nil {
 			markDataPlanExecution(id, QueryApprovalStatusFailed, sanitizeDBError(err))
+			EmitNotification(NotificationEventInput{
+				EventType:     "data_script.failed",
+				Category:      "data_script",
+				Severity:      "error",
+				Title:         "Data script execution failed",
+				Message:       fmt.Sprintf("Execution failed for data script plan #%d", plan.ID),
+				EntityType:    "data_change_plan",
+				EntityID:      plan.ID,
+				ConnectionID:  plan.ConnID,
+				ActorUserID:   userID,
+				TargetUserIDs: []int64{plan.CreatorID},
+				Payload:       map[string]any{"error": sanitizeDBError(err)},
+			})
 			http.Error(w, jsonError(sanitizeDBError(err)), http.StatusBadRequest)
 			return
 		}
 
 		markDataPlanExecution(id, QueryApprovalStatusDone, "")
+		EmitNotification(NotificationEventInput{
+			EventType:     "data_script.executed",
+			Category:      "data_script",
+			Severity:      "success",
+			Title:         "Data script executed",
+			Message:       fmt.Sprintf("Data script plan #%d was executed successfully", plan.ID),
+			EntityType:    "data_change_plan",
+			EntityID:      plan.ID,
+			ConnectionID:  plan.ConnID,
+			ActorUserID:   userID,
+			TargetUserIDs: []int64{plan.CreatorID},
+			Payload:       map[string]any{"affected_rows": affected},
+		})
 		go WriteAuditLog(username, plan.ConnID, plan.Connection, fmt.Sprintf("DATA SCRIPT PLAN #%d", id), time.Since(start).Milliseconds(), affected, "")
 		updated, _ := getDataChangePlanByID(id)
 		json.NewEncoder(w).Encode(updated)

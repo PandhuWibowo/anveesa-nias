@@ -57,13 +57,8 @@ function barColor(cost: number): string {
   return '#4ade80'
 }
 
-const sqliteRows = computed(() => {
-  if (props.result?.driver !== 'sqlite' || !props.result.raw?.length) return null
-  return props.result.raw.map((r) => ({ id: r[0], parent: r[1], detail: r[2] }))
-})
-
 const textRows = computed(() => {
-  if (!props.result?.raw?.length || pgRoot.value || sqliteRows.value) return null
+  if (!props.result?.raw?.length || pgRoot.value) return null
   return props.result.raw
 })
 </script>
@@ -104,16 +99,6 @@ const textRows = computed(() => {
       </div>
     </template>
 
-    <!-- SQLite EXPLAIN QUERY PLAN -->
-    <template v-else-if="sqliteRows">
-      <div class="et-list">
-        <div v-for="(r, i) in sqliteRows" :key="i" class="et-sqlite-row">
-          <span class="et-sqlite-id">{{ r.id }}</span>
-          <span class="et-sqlite-detail">{{ r.detail }}</span>
-        </div>
-      </div>
-    </template>
-
     <!-- Text fallback -->
     <template v-else-if="textRows">
       <div class="et-list">
@@ -146,8 +131,5 @@ const textRows = computed(() => {
 .et-actual { color: #a78bfa; }
 .et-bar-wrap { width: 80px; height: 6px; background: var(--bg-body); border-radius: 3px; overflow: hidden; flex-shrink: 0; }
 .et-bar { height: 100%; border-radius: 3px; opacity: 0.8; }
-.et-sqlite-row { display: flex; gap: 12px; padding: 6px 12px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 6px; }
-.et-sqlite-id { color: var(--text-muted); font-size: 11px; min-width: 20px; font-family: var(--mono, monospace); }
-.et-sqlite-detail { font-size: 12px; color: var(--text-primary); font-family: var(--mono, monospace); }
 .et-text-row { padding: 5px 10px; font-family: var(--mono, monospace); font-size: 12px; color: var(--text-primary); border-bottom: 1px solid var(--border); }
 </style>

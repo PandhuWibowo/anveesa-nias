@@ -24,13 +24,11 @@ const selected = computed<Connection | null>(() =>
 const driverColors: Record<string, string> = {
   postgres: '#336791',
   mysql:    '#f29111',
-  sqlite:   '#7bc8f6',
   mssql:    '#cc2927',
 }
 const driverLabels: Record<string, string> = {
   postgres: 'PG',
   mysql:    'MY',
-  sqlite:   'SQ',
   mssql:    'MS',
 }
 

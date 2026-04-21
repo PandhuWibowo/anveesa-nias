@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -38,11 +36,10 @@ func main() {
 		log.Println("✓ Loaded configuration from .env")
 	}
 
-	cfg := config.Load()
-
-	// Validate configuration
-	if err := cfg.Validate(); err != nil {
-		log.Fatalf("Configuration error: %v", err)
+	cfg, err := config.Load()
+	if err != nil {
+		log.Printf("Configuration error: %v", err)
+		return
 	}
 
 	// Print config in non-production
@@ -52,11 +49,10 @@ func main() {
 
 	// Initialize database
 	if err := appdb.Init(cfg); err != nil {
-		log.Fatalf("Database init failed: %v", err)
+		log.Printf("Database init failed: %v", err)
+		return
 	}
 	switch cfg.DBDriver {
-	case "sqlite":
-		log.Printf("Database initialized: SQLite (%s)", cfg.DBPath)
 	case "postgres":
 		log.Printf("Database initialized: PostgreSQL")
 	case "mysql":
@@ -73,6 +69,7 @@ func main() {
 	if cfg.BackupEnabled {
 		go startAutoBackup(cfg)
 	}
+	handlers.StartNotificationWorker()
 
 	// Create router
 	mux := http.NewServeMux()
@@ -83,6 +80,7 @@ func main() {
 	handler = mw.InjectUserContext(cfg.JWTSecret)(handler) // Extract JWT claims and set headers
 	handler = mw.CORS(cfg.CORSOrigin)(handler)
 	handler = mw.SecurityHeaders(handler)
+	handler = mw.Recovery(handler)
 
 	// Add rate limiting in production
 	if cfg.RateLimitEnabled {
@@ -102,6 +100,7 @@ func main() {
 	}
 
 	// Start server
+	serverErr := make(chan error, 1)
 	go func() {
 		var err error
 		if cfg.TLSEnabled {
@@ -115,16 +114,23 @@ func main() {
 			err = server.ListenAndServe()
 		}
 		if err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
+			serverErr <- err
 		}
 	}()
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	sig := <-quit
+	var shutdownReason string
+	select {
+	case sig := <-quit:
+		shutdownReason = "signal " + sig.String()
+	case err := <-serverErr:
+		log.Printf("Server error: %v", err)
+		shutdownReason = "server error"
+	}
 
-	log.Printf("Received signal %v, shutting down...", sig)
+	log.Printf("Shutting down due to %s...", shutdownReason)
 
 	// Give active connections 60 seconds to complete
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -141,6 +147,7 @@ func main() {
 
 	// Stop background jobs
 	handlers.StopScheduler()
+	handlers.StopNotificationWorker()
 
 	// Close database
 	if err := appdb.Close(); err != nil {
@@ -698,6 +705,50 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 	mux.HandleFunc("/api/notifications/unread", requireAny(handlers.PermNotificationsView)(handlers.UnreadCount()))
+	mux.HandleFunc("/api/notification-events", requireAny(handlers.PermNotificationsManage)(handlers.ListNotificationEvents()))
+	mux.HandleFunc("/api/notification-targets", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermNotificationsManage)(handlers.ListNotificationTargets())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermNotificationsManage)(handlers.CreateNotificationTarget())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/notification-targets/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/test") && r.Method == http.MethodPost:
+			requireAny(handlers.PermNotificationsManage)(handlers.TestNotificationTarget())(w, r)
+		case r.Method == http.MethodPut:
+			requireAny(handlers.PermNotificationsManage)(handlers.UpdateNotificationTarget())(w, r)
+		case r.Method == http.MethodDelete:
+			requireAny(handlers.PermNotificationsManage)(handlers.DeleteNotificationTarget())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/notification-rules", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermNotificationsManage)(handlers.ListNotificationRules())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermNotificationsManage)(handlers.CreateNotificationRule())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/notification-rules/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			requireAny(handlers.PermNotificationsManage)(handlers.UpdateNotificationRule())(w, r)
+		case http.MethodDelete:
+			requireAny(handlers.PermNotificationsManage)(handlers.DeleteNotificationRule())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/notification-deliveries", requireAny(handlers.PermNotificationsManage)(handlers.ListNotificationDeliveries()))
 
 	// ── Connection folders ────────────────────────────────────────
 	mux.HandleFunc("/api/folders", func(w http.ResponseWriter, r *http.Request) {
@@ -884,32 +935,7 @@ func startAutoBackup(cfg *config.Config) {
 }
 
 func runBackup(cfg *config.Config) {
-	timestamp := time.Now().Format("20060102_150405")
-	backupFile := filepath.Join(cfg.BackupDir, fmt.Sprintf("nias_backup_%s.db", timestamp))
-
-	src, err := os.Open(cfg.DBPath)
-	if err != nil {
-		log.Printf("Backup failed: cannot open source: %v", err)
-		return
-	}
-	defer src.Close()
-
-	dst, err := os.Create(backupFile)
-	if err != nil {
-		log.Printf("Backup failed: cannot create backup file: %v", err)
-		return
-	}
-	defer dst.Close()
-
-	if _, err := io.Copy(dst, src); err != nil {
-		log.Printf("Backup failed: copy error: %v", err)
-		return
-	}
-
-	log.Printf("Backup completed: %s", backupFile)
-
-	// Cleanup old backups (keep last 7)
-	cleanupOldBackups(cfg.BackupDir, 7)
+	log.Printf("Automatic file-based backups are disabled for %s; use external database backups instead", cfg.DBDriver)
 }
 
 func cleanupOldBackups(dir string, keep int) {

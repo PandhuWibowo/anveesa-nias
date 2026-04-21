@@ -81,15 +81,6 @@ for row in cursor.fetchall():
     print(row)
 cursor.close()
 conn.close()`
-    case 'sqlite':
-      return `import sqlite3
-
-conn = sqlite3.connect("${c.database}")
-cursor = conn.cursor()
-cursor.execute("""${escaped}""")
-for row in cursor.fetchall():
-    print(row)
-conn.close()`
     default:
       return `# Driver: ${c.driver}\nimport pyodbc\n# Configure your connection string\ncursor.execute("""${escaped}""")`
   }
@@ -143,10 +134,6 @@ function generateGo(sql: string, c: Connection) {
       importPkg = '_ "github.com/go-sql-driver/mysql"'
       dsn = `"${c.username}:YOUR_PASSWORD@tcp(${c.host}:${c.port || 3306})/${c.database}"`
       break
-    case 'sqlite':
-      importPkg = '_ "modernc.org/sqlite"'
-      dsn = `"${c.database}"`
-      break
     default:
       importPkg = '// import your driver'
       dsn = '"your-dsn"'
@@ -156,17 +143,22 @@ function generateGo(sql: string, c: Connection) {
 import (
     "database/sql"
     "fmt"
-    "log"
     ${importPkg}
 )
 
 func main() {
-    db, err := sql.Open("${c.driver === 'sqlite' ? 'sqlite' : c.driver}", ${dsn})
-    if err != nil { log.Fatal(err) }
+    db, err := sql.Open("${c.driver}", ${dsn})
+    if err != nil {
+        fmt.Printf("open database: %v\n", err)
+        return
+    }
     defer db.Close()
 
     rows, err := db.Query(\`${sql}\`)
-    if err != nil { log.Fatal(err) }
+    if err != nil {
+        fmt.Printf("run query: %v\n", err)
+        return
+    }
     defer rows.Close()
 
     cols, _ := rows.Columns()

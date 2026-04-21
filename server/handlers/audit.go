@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -47,7 +48,7 @@ func writeAuditEvent(eventType, action, target, details, username string, connID
 	)
 	if err != nil {
 		// Log error but don't fail the request
-		println("Failed to write audit log:", err.Error())
+		log.Printf("Failed to write audit log: %v", err)
 		return
 	}
 	

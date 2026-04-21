@@ -64,7 +64,7 @@ function toggleFolder(id: number) {
   else collapsedFolders.value.add(id)
 }
 
-const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', sqlite: 'SQ', mssql: 'MS' }
+const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS' }
 
 function selectConn(conn: Connection) {
   emit('select-conn', conn.id)

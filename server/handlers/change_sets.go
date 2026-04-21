@@ -758,8 +758,6 @@ func validateChangeSetTarget(ctx context.Context, connID int64, database, statem
 
 func explainPrefixForDriver(driver string) string {
 	switch driver {
-	case "sqlite":
-		return "EXPLAIN QUERY PLAN "
 	default:
 		return "EXPLAIN "
 	}
