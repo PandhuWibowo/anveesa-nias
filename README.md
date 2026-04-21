@@ -15,18 +15,18 @@ docker-compose -f deploy/compose/docker-compose.prod.yml up -d
 Docker Hub publishing:
 
 ```bash
-make docker-build IMAGE_NAME=anveesa/nias IMAGE_TAG=v1.0.0
-make docker-push IMAGE_NAME=anveesa/nias IMAGE_TAG=v1.0.0
-make docker-push IMAGE_NAME=anveesa/nias IMAGE_TAG=v1.0.0 PUSH_LATEST=1
+make docker-build IMAGE_NAME=pandhu612/anveesa-nias IMAGE_TAG=v1.0.0
+make docker-push IMAGE_NAME=pandhu612/anveesa-nias IMAGE_TAG=v1.0.0
+make docker-push IMAGE_NAME=pandhu612/anveesa-nias IMAGE_TAG=v1.0.0 PUSH_LATEST=1
 ```
 
 GitHub Actions publishing:
 
-- Push `main` to publish `anveesa/nias:latest`
+- Push `main` to publish `pandhu612/anveesa-nias:latest`
 - Push a tag like `v1.2.3` to publish:
-  - `anveesa/nias:v1.2.3`
-  - `anveesa/nias:1.2`
-  - `anveesa/nias:latest`
+  - `pandhu612/anveesa-nias:v1.2.3`
+  - `pandhu612/anveesa-nias:1.2`
+  - `pandhu612/anveesa-nias:latest`
 - Configure GitHub repository secrets:
   - `DOCKERHUB_USERNAME`
   - `DOCKERHUB_TOKEN`
