@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -22,6 +23,14 @@ type clientInfo struct {
 
 // NewRateLimiter creates a rate limiter with the specified rate per window
 func NewRateLimiter(rate int, window time.Duration) *RateLimiter {
+	if rate <= 0 {
+		log.Printf("Invalid rate limit value %d, using default 100", rate)
+		rate = 100
+	}
+	if window <= 0 {
+		log.Printf("Invalid rate limit window %s, using default 1m", window)
+		window = time.Minute
+	}
 	rl := &RateLimiter{
 		clients:  make(map[string]*clientInfo),
 		rate:     rate,

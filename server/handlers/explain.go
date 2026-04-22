@@ -138,21 +138,6 @@ func ExplainQuery() http.HandlerFunc {
 				}
 			}
 
-		case "sqlite":
-			result.Format = "plan"
-			rows, err := db.QueryContext(r.Context(), "EXPLAIN QUERY PLAN "+req.SQL)
-			if err != nil {
-				http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
-				return
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var id, parent, notused int
-				var detail string
-				rows.Scan(&id, &parent, &notused, &detail)
-				result.Raw = append(result.Raw, []interface{}{id, parent, detail})
-			}
-
 		default:
 			rows, err := db.QueryContext(r.Context(), "EXPLAIN "+req.SQL)
 			if err != nil {

@@ -28,6 +28,12 @@ const selectedDb = ref('')
 const erData = ref<ERData | null>(null)
 const loading = ref(false)
 const error = ref('')
+const selectedTableName = ref('')
+const tableFilter = ref('')
+const pathFrom = ref('')
+const pathTo = ref('')
+const compactMode = ref(true)
+const sidepanelOpen = ref(true)
 
 watch(activeConn, (c) => {
   if (c?.database) selectedDb.value = c.database
@@ -36,6 +42,10 @@ watch(activeConn, (c) => {
 watch([() => activeConn.value, selectedDb], ([conn, db]) => {
   if (conn && db) fetchER(conn.id!, db)
 }, { immediate: true })
+
+watch(compactMode, () => {
+  computeLayout()
+})
 
 async function fetchER(connId: number, db: string) {
   loading.value = true
@@ -46,6 +56,7 @@ async function fetchER(connId: number, db: string) {
     const path = encodedDb ? `/api/connections/${connId}/er/${encodedDb}` : `/api/connections/${connId}/er`
     const { data } = await axios.get<ERData>(path)
     erData.value = data
+    selectedTableName.value = data.tables[0]?.name ?? ''
     computeLayout()
   } catch (e: unknown) {
     error.value = (e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Failed to load ER diagram'
@@ -66,8 +77,70 @@ interface LayoutTable extends ERTable {
 }
 
 const layout = ref<LayoutTable[]>([])
+const filteredTableNames = computed(() => {
+  if (!erData.value) return []
+  const q = tableFilter.value.trim().toLowerCase()
+  if (!q) return erData.value.tables.map((t) => t.name)
+  return erData.value.tables.filter((t) => t.name.toLowerCase().includes(q)).map((t) => t.name)
+})
+const visibleLayout = computed(() => layout.value.filter((t) => filteredTableNames.value.includes(t.name)))
+const selectedTable = computed(() => erData.value?.tables.find((t) => t.name === selectedTableName.value) ?? null)
+const selectedTableRelationshipCount = computed(() => {
+  if (!erData.value || !selectedTable.value) return 0
+  return erData.value.foreign_keys.filter((fk) =>
+    fk.table_name === selectedTable.value!.name || fk.ref_table_name === selectedTable.value!.name,
+  ).length
+})
+
+const joinPath = computed(() => {
+  if (!erData.value || !pathFrom.value || !pathTo.value || pathFrom.value === pathTo.value) return [] as FK[]
+  const edges = erData.value.foreign_keys
+  const queue: string[] = [pathFrom.value]
+  const prev = new Map<string, { table: string; edge: FK }>()
+  const seen = new Set<string>([pathFrom.value])
+
+  while (queue.length) {
+    const current = queue.shift()!
+    if (current === pathTo.value) break
+    for (const edge of edges) {
+      const neighbors: Array<{ next: string; edge: FK }> = []
+      if (edge.table_name === current) neighbors.push({ next: edge.ref_table_name, edge })
+      if (edge.ref_table_name === current) neighbors.push({ next: edge.table_name, edge })
+      for (const neighbor of neighbors) {
+        if (seen.has(neighbor.next)) continue
+        seen.add(neighbor.next)
+        prev.set(neighbor.next, { table: current, edge: neighbor.edge })
+        queue.push(neighbor.next)
+      }
+    }
+  }
+
+  if (!prev.has(pathTo.value)) return [] as FK[]
+  const path: FK[] = []
+  let cursor = pathTo.value
+  while (cursor !== pathFrom.value) {
+    const item = prev.get(cursor)
+    if (!item) break
+    path.unshift(item.edge)
+    cursor = item.table
+  }
+  return path
+})
+
+const highlightedTableNames = computed(() => {
+  const names = new Set<string>()
+  if (selectedTableName.value) names.add(selectedTableName.value)
+  for (const edge of joinPath.value) {
+    names.add(edge.table_name)
+    names.add(edge.ref_table_name)
+  }
+  return names
+})
+
+const highlightedArrowKeys = computed(() => new Set(joinPath.value.map((item) => item.constraint_name)))
 
 function tableHeight(t: ERTable) {
+  if (compactMode.value) return HEADER_H + 34
   return HEADER_H + Math.min(t.columns.length, 20) * ROW_H + 6
 }
 
@@ -90,29 +163,33 @@ function computeLayout() {
 
 // ── SVG dimensions ────────────────────────────────────────────────
 const svgW = computed(() => {
-  if (!layout.value.length) return 800
-  return Math.max(...layout.value.map((t) => t.x + t.width)) + 60
+  if (!visibleLayout.value.length) return 800
+  return Math.max(...visibleLayout.value.map((t) => t.x + t.width)) + 60
 })
 const svgH = computed(() => {
-  if (!layout.value.length) return 600
-  return Math.max(...layout.value.map((t) => t.y + t.height)) + 60
+  if (!visibleLayout.value.length) return 600
+  return Math.max(...visibleLayout.value.map((t) => t.y + t.height)) + 60
 })
 
 // ── FK arrow paths ────────────────────────────────────────────────
 interface Arrow { path: string; key: string }
 const arrows = computed<Arrow[]>(() => {
-  if (!erData.value || !layout.value.length) return []
+  if (!erData.value || !visibleLayout.value.length) return []
   const result: Arrow[] = []
   for (const fk of erData.value.foreign_keys) {
-    const src = layout.value.find((t) => t.name === fk.table_name)
-    const dst = layout.value.find((t) => t.name === fk.ref_table_name)
+    const src = visibleLayout.value.find((t) => t.name === fk.table_name)
+    const dst = visibleLayout.value.find((t) => t.name === fk.ref_table_name)
     if (!src || !dst) continue
 
     const srcColIdx = src.columns.findIndex((c) => c.name === fk.column_name)
     const dstColIdx = dst.columns.findIndex((c) => c.name === fk.ref_column_name)
 
-    const srcY = src.y + HEADER_H + (srcColIdx + 0.5) * ROW_H
-    const dstY = dst.y + HEADER_H + (dstColIdx + 0.5) * ROW_H
+    const srcY = compactMode.value || srcColIdx < 0
+      ? src.y + HEADER_H + 17
+      : src.y + HEADER_H + (srcColIdx + 0.5) * ROW_H
+    const dstY = compactMode.value || dstColIdx < 0
+      ? dst.y + HEADER_H + 17
+      : dst.y + HEADER_H + (dstColIdx + 0.5) * ROW_H
 
     // Exit from right edge of src, enter from left edge of dst (or swap if dst is left)
     let x1: number, x2: number, cp1x: number, cp2x: number
@@ -164,6 +241,9 @@ function onMousemove(e: MouseEvent) {
 function onMouseup() { isPanning = false }
 
 function resetView() { panX.value = 0; panY.value = 0; scale.value = 1 }
+function selectTable(name: string) {
+  selectedTableName.value = name
+}
 
 onMounted(() => {
   window.addEventListener('mouseup', onMouseup)
@@ -180,13 +260,21 @@ onBeforeUnmount(() => {
       <div class="er-toolbar__left">
         <span class="er-toolbar__title">ER Diagram</span>
         <template v-if="activeConn">
-          <span class="er-toolbar__conn">
+        <span class="er-toolbar__conn">
             <span class="query-toolbar__conn-driver">{{ activeConn.driver.toUpperCase() }}</span>
             {{ activeConn.name }}
           </span>
         </template>
       </div>
       <div class="er-toolbar__right">
+        <input v-model="tableFilter" class="er-filter-input" placeholder="Filter tables…" />
+        <label class="er-toggle">
+          <input v-model="compactMode" type="checkbox" />
+          Compact
+        </label>
+        <button class="base-btn base-btn--ghost base-btn--sm" @click="sidepanelOpen = !sidepanelOpen">
+          {{ sidepanelOpen ? 'Hide Panel' : 'Show Panel' }}
+        </button>
         <select
           v-if="activeConn"
           v-model="selectedDb"
@@ -204,6 +292,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Canvas -->
+    <div class="er-body" :class="{ 'er-body--collapsed': !sidepanelOpen }">
     <div class="er-canvas">
       <!-- Loading / error -->
       <div v-if="loading" class="er-center">
@@ -250,26 +339,30 @@ onBeforeUnmount(() => {
             :d="a.path"
             fill="none"
             stroke="var(--brand)"
-            stroke-width="1.5"
+            :stroke-width="highlightedArrowKeys.has(a.key) ? 2.5 : 1.5"
             stroke-dasharray="6 3"
-            opacity="0.6"
+            :opacity="highlightedArrowKeys.size ? (highlightedArrowKeys.has(a.key) ? 0.95 : 0.18) : 0.6"
             marker-end="url(#arrow)"
           />
         </g>
 
         <!-- Table nodes -->
         <g
-          v-for="t in layout"
+          v-for="t in visibleLayout"
           :key="t.name"
           :transform="`translate(${t.x}, ${t.y})`"
           class="er-table-node"
+          @click.stop="selectTable(t.name)"
         >
           <!-- Shadow -->
           <rect :width="t.width" :height="t.height" rx="6" fill="rgba(0,0,0,0.15)" transform="translate(3,3)" />
 
           <!-- Card background -->
           <rect :width="t.width" :height="t.height" rx="6"
-            fill="var(--bg-surface)" stroke="var(--border-2)" stroke-width="1.5" />
+            fill="var(--bg-surface)"
+            :stroke="highlightedTableNames.has(t.name) ? 'var(--brand)' : 'var(--border-2)'"
+            :stroke-width="highlightedTableNames.has(t.name) ? 2 : 1.5"
+            :opacity="highlightedTableNames.size ? (highlightedTableNames.has(t.name) ? 1 : 0.45) : 1" />
 
           <!-- Header -->
           <rect :width="t.width" :height="HEADER_H" rx="6" fill="var(--bg-elevated)" />
@@ -291,8 +384,18 @@ onBeforeUnmount(() => {
             {{ t.name.length > 20 ? t.name.slice(0, 19) + '…' : t.name }}
           </text>
 
+          <!-- Compact summary -->
+          <template v-if="compactMode">
+            <text x="14" :y="HEADER_H + 18" font-size="11.5" font-family="Inter, sans-serif" fill="var(--text-secondary)">
+              {{ t.columns.length }} columns
+            </text>
+            <text x="t.width - 12" :y="HEADER_H + 18" text-anchor="end" font-size="10.5" font-family="Inter, sans-serif" fill="var(--text-muted)">
+              {{ t.columns.filter((col) => col.is_primary_key).length }} PK
+            </text>
+          </template>
+
           <!-- Columns -->
-          <g v-for="(col, ci) in t.columns.slice(0, 20)" :key="col.name">
+          <g v-else v-for="(col, ci) in t.columns.slice(0, 20)" :key="col.name">
             <rect
               x="0" :y="HEADER_H + ci * ROW_H + 3"
               :width="t.width" :height="ROW_H - 1"
@@ -324,7 +427,7 @@ onBeforeUnmount(() => {
 
           <!-- "N more" label if truncated -->
           <text
-            v-if="t.columns.length > 20"
+            v-if="!compactMode && t.columns.length > 20"
             x="10" :y="HEADER_H + 20 * ROW_H + 16"
             font-size="10.5" font-family="Inter, sans-serif" fill="var(--text-muted)"
           >
@@ -332,6 +435,53 @@ onBeforeUnmount(() => {
           </text>
         </g>
       </svg>
+    </div>
+    <aside v-if="erData && erData.tables.length && sidepanelOpen" class="er-sidepanel">
+      <section class="er-panel">
+        <div class="er-panel__title">Join Path Finder</div>
+        <div class="er-panel__sub">Pick two tables to find the shortest foreign-key path.</div>
+        <select v-model="pathFrom" class="er-sidepanel__select">
+          <option value="">From table</option>
+          <option v-for="name in filteredTableNames" :key="`from-${name}`" :value="name">{{ name }}</option>
+        </select>
+        <select v-model="pathTo" class="er-sidepanel__select">
+          <option value="">To table</option>
+          <option v-for="name in filteredTableNames" :key="`to-${name}`" :value="name">{{ name }}</option>
+        </select>
+        <div v-if="pathFrom && pathTo && !joinPath.length" class="er-sidepanel__empty">No FK path found between these tables.</div>
+        <div v-else-if="joinPath.length" class="er-path-list">
+          <div v-for="step in joinPath" :key="step.constraint_name" class="er-path-step">
+            <strong>{{ step.table_name }}</strong>
+            <span>{{ step.column_name }} → {{ step.ref_table_name }}.{{ step.ref_column_name }}</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="er-panel">
+        <div class="er-panel__title">Table Details</div>
+        <div class="er-panel__sub">Click a table in the diagram to inspect its shape.</div>
+        <template v-if="selectedTable">
+          <div class="er-detail-head">
+            <strong>{{ selectedTable.name }}</strong>
+            <span class="er-detail-type">{{ selectedTable.type }}</span>
+          </div>
+          <div class="er-detail-stats">
+            <span>{{ selectedTable.columns.length }} columns</span>
+            <span>{{ selectedTableRelationshipCount }} relationships</span>
+          </div>
+          <div class="er-column-list">
+            <div v-for="col in selectedTable.columns" :key="col.name" class="er-column-row">
+              <div class="er-column-row__name">
+                <span v-if="col.is_primary_key" class="er-pk">PK</span>
+                <span>{{ col.name }}</span>
+              </div>
+              <div class="er-column-row__meta">{{ col.data_type }}<span v-if="!col.is_nullable"> · required</span></div>
+            </div>
+          </div>
+        </template>
+        <div v-else class="er-sidepanel__empty">Select a table to view details.</div>
+      </section>
+    </aside>
     </div>
 
     <!-- Legend -->
@@ -354,6 +504,17 @@ onBeforeUnmount(() => {
   width: 100%; height: 100%;
   display: flex; flex-direction: column;
   overflow: hidden;
+}
+
+.er-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+}
+
+.er-body--collapsed {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 /* Toolbar */
@@ -380,6 +541,23 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
+.er-filter-input {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.er-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
 /* Canvas */
 .er-canvas {
   flex: 1; min-height: 0;
@@ -393,6 +571,93 @@ onBeforeUnmount(() => {
   position: absolute; inset: 0;
   display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 12px;
+}
+
+.er-sidepanel {
+  border-left: 1px solid var(--border);
+  background: var(--bg-surface);
+  padding: 14px;
+  overflow-y: auto;
+  display: grid;
+  gap: 14px;
+}
+
+.er-panel {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.02);
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.er-panel__title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.er-panel__sub,
+.er-sidepanel__empty {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.er-sidepanel__select {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.er-path-list,
+.er-column-list {
+  display: grid;
+  gap: 8px;
+}
+
+.er-path-step,
+.er-column-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(255,255,255,0.02);
+  display: grid;
+  gap: 4px;
+}
+
+.er-path-step strong,
+.er-detail-head strong {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.er-path-step span,
+.er-column-row__meta,
+.er-detail-stats {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.er-detail-head,
+.er-column-row__name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.er-detail-type,
+.er-pk {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: var(--brand-dim);
+  color: var(--brand);
 }
 
 .er-svg {
@@ -410,4 +675,15 @@ onBeforeUnmount(() => {
 .er-legend__item { display: flex; align-items: center; gap: 6px; }
 .er-legend__stat { margin-left: auto; }
 .er-legend__hint { font-style: italic; }
+
+@media (max-width: 1100px) {
+  .er-body {
+    grid-template-columns: 1fr;
+  }
+
+  .er-sidepanel {
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}
 </style>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import axios from 'axios'
 import { useAuth } from '@/composables/useAuth'
 import { useTheme } from '@/composables/useTheme'
 import { useConnections } from '@/composables/useConnections'
@@ -22,18 +23,21 @@ const { connections } = useConnections()
 const activeConn = computed(() =>
   props.activeConnId != null ? connections.value.find(c => c.id === props.activeConnId) ?? null : null
 )
-const driverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', sqlite: '#0f80cc', mssql: '#cc2927' }
-const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', sqlite: 'SQ', mssql: 'MS' }
+const driverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927' }
+const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS' }
 
 // Nav group dropdown
 const openMenu = ref<string | null>(null)
 // Connections panel — kept separate so outside-click logic doesn't conflict
 const connPanelOpen = ref(false)
 const userMenuOpen = ref(false)
+const notificationUnread = ref(0)
 
 const navRef = ref<HTMLElement | null>(null)
 const userRef = ref<HTMLElement | null>(null)
 const connBtnRef = ref<HTMLElement | null>(null)
+const notificationPoll = ref<number | null>(null)
+const canViewNotifications = computed(() => hasAnyPermission(['notifications.view']))
 
 // ── Navigation structure ─────────────────────────────────────────
 // Direct links (no dropdown)
@@ -63,6 +67,8 @@ const allMenuGroups = [
     icon: 'table',
     items: [
       { name: 'data',          label: 'Query & Data',  desc: 'Browse tables, inspect schema, and run SQL', icon: 'table', permissionsAny: ['connections.view', 'query.execute', 'schema.browse'] },
+      { name: 'ai-analytics',  label: 'AI Analytics', desc: 'Ask business questions and generate safe read-only analytics queries', icon: 'spark', permissionsAny: ['ai.use'] },
+      { name: 'settings', label: 'AI Settings', desc: 'Manage your personal AI provider key, base URL, and model', icon: 'settings', permissionsAny: ['ai.use', 'ai.manage'] },
       { name: 'saved-queries', label: 'Saved Queries', desc: 'Reusable SQL and team query library', icon: 'saved', permissionsAny: ['savedqueries.manage'] },
       { name: 'er',            label: 'ER Diagram',    desc: 'Visualize relationships between tables', icon: 'er', permissionsAny: ['schema.browse'] },
     ],
@@ -75,6 +81,7 @@ const allMenuGroups = [
       { name: 'query-performance', label: 'Query Performance', desc: 'Slow queries, errors, and execution trends', icon: 'performance', permissionsAny: ['audit.view'] },
       { name: 'database-audit', label: 'Database Audit', desc: 'Live sessions and external access signals', icon: 'shieldlog', permissionsAny: ['audit.view'] },
       { name: 'audit',       label: 'Audit Log',   desc: 'Track access, actions, and query events', icon: 'audit', permissionsAny: ['audit.view'] },
+      { name: 'notifications', label: 'Notifications', desc: 'Inbox, integrations, routing rules, and delivery logs', icon: 'audit', permissionsAny: ['notifications.view'] },
       { name: 'row-history', label: 'Row History', desc: 'See row-level INSERT, UPDATE, DELETE changes', icon: 'rowhistory', permissionsAny: ['rowhistory.view'] },
       { name: 'watcher',     label: 'Watchers',    desc: 'Monitor important table or query activity', icon: 'watcher', permissionsAny: ['query.execute'] },
       { name: 'health',      label: 'Health',      desc: 'Connection and service health status', icon: 'health', permissionsAny: ['health.view'] },
@@ -90,7 +97,7 @@ const allMenuGroups = [
       { name: 'data-scripts', label: 'Data Scripts', desc: 'Preview programmable data updates before approval', icon: 'changeset', permissionsAny: ['query.execute', 'query.approve'] },
       { name: 'data-script-requests', label: 'Script Requests', desc: 'Global queue of data script plans and approvals', icon: 'workflow', permissionsAny: ['query.execute', 'query.approve'] },
       { name: 'diff',        label: 'Schema Diff', desc: 'Compare schema structure across environments', icon: 'diff', permissionsAny: ['schema.diff.view'] },
-      { name: 'backup',      label: 'Backup',      desc: 'Backup and restore databases safely', icon: 'backup', permissionsAny: ['backups.manage'] },
+      { name: 'backup',      label: 'Backup',      desc: 'Request database downloads or use direct backup and restore', icon: 'backup', permissionsAny: ['backups.manage', 'query.execute', 'query.approve'] },
       { name: 'scheduler',   label: 'Scheduler',   desc: 'Schedule recurring queries and jobs', icon: 'scheduler', permissionsAny: ['schedules.manage'] },
     ],
   },
@@ -100,7 +107,6 @@ const allMenuGroups = [
     icon: 'settings',
     items: [
       { name: 'connections', label: 'Connections', desc: 'Manage environments and database access points', icon: 'plug', permissionsAny: ['connections.view'] },
-      { name: 'users',       label: 'Users',       desc: 'Manage users who can access the app', icon: 'users', permissionsAny: ['users.manage'] },
       { name: 'permissions', label: 'Permissions', desc: 'Roles, folders, and permission policy', icon: 'rbac', permissionsAny: ['roles.manage', 'folders.manage', 'users.manage'] },
       { name: 'workflows',   label: 'Workflows',   desc: 'Configure approval workflows and routing', icon: 'workflow', permissionsAny: ['workflows.manage'] },
     ],
@@ -148,7 +154,37 @@ function navigate(name: string) {
 async function handleLogout() {
   userMenuOpen.value = false
   await logout()
+  notificationUnread.value = 0
   router.push({ name: 'login' })
+}
+
+async function loadNotificationUnread() {
+  if (!authEnabled.value || !canViewNotifications.value) {
+    notificationUnread.value = 0
+    return
+  }
+  try {
+    const { data } = await axios.get<{ count: number }>('/api/notifications/unread')
+    notificationUnread.value = Number(data?.count || 0)
+  } catch {
+    notificationUnread.value = 0
+  }
+}
+
+function startNotificationPolling() {
+  stopNotificationPolling()
+  if (!authEnabled.value || !canViewNotifications.value) return
+  void loadNotificationUnread()
+  notificationPoll.value = window.setInterval(() => {
+    void loadNotificationUnread()
+  }, 30000)
+}
+
+function stopNotificationPolling() {
+  if (notificationPoll.value !== null) {
+    window.clearInterval(notificationPoll.value)
+    notificationPoll.value = null
+  }
 }
 
 function handleOutside(e: MouseEvent) {
@@ -161,8 +197,18 @@ function handleOutside(e: MouseEvent) {
   if (userRef.value && !userRef.value.contains(t)) userMenuOpen.value = false
 }
 
-onMounted(() => document.addEventListener('mousedown', handleOutside))
-onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
+onMounted(() => {
+  document.addEventListener('mousedown', handleOutside)
+  startNotificationPolling()
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', handleOutside)
+  stopNotificationPolling()
+})
+
+watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () => {
+  startNotificationPolling()
+}, { immediate: true })
 </script>
 
 <template>
@@ -287,9 +333,11 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
               <svg v-else-if="item.icon === 'table'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
               <svg v-else-if="item.icon === 'er'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="6" height="6" rx="1"/><rect x="16" y="3" width="6" height="6" rx="1"/><rect x="9" y="15" width="6" height="6" rx="1"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="12" y1="9" x2="12" y2="15"/></svg>
               <svg v-else-if="item.icon === 'saved'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+              <svg v-else-if="item.icon === 'spark'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9 13.9 10.4 12 15l-1.9-4.6L5.5 9l4.6-1.4L12 3z"/><path d="M19 14l.95 2.05L22 17l-2.05.95L19 20l-.95-2.05L16 17l2.05-.95L19 14z"/><path d="M5 14l.95 2.05L8 17l-2.05.95L5 20l-.95-2.05L2 17l2.05-.95L5 14z"/></svg>
               <svg v-else-if="item.icon === 'workflow'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M7 6h10"/><path d="M6.5 7.5l4 8"/><path d="M17.5 7.5l-4 8"/></svg>
               <svg v-else-if="item.icon === 'changeset'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8z"/><polyline points="14 3 14 8 19 8"/><path d="M8 13h8"/><path d="M8 17h6"/></svg>
               <svg v-else-if="item.icon === 'plug'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+              <svg v-else-if="item.icon === 'settings'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
               <svg v-else-if="item.icon === 'users'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
               <svg v-else-if="item.icon === 'rbac'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
               <svg v-else-if="item.icon === 'diff'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
@@ -326,6 +374,20 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
       <button class="topnav__action-btn" :title="`Switch to ${mode === 'dark' ? 'light' : 'dark'} mode`" @click="toggleTheme">
         <svg v-if="mode === 'dark'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
         <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+
+      <button
+        v-if="canViewNotifications"
+        class="topnav__action-btn topnav__action-btn--icon"
+        :class="{ 'topnav__action-btn--active': route.name === 'notifications' }"
+        title="Notifications"
+        @click="router.push({ name: 'notifications' })"
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+        </svg>
+        <span v-if="notificationUnread > 0" class="topnav__notif-badge">{{ notificationUnread > 99 ? '99+' : notificationUnread }}</span>
       </button>
 
       <!-- User -->
@@ -655,6 +717,34 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
   transition: color 0.12s, background 0.12s;
 }
 .topnav__action-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+.topnav__action-btn--icon {
+  position: relative;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.topnav__action-btn--active {
+  color: var(--brand);
+  background: var(--brand-dim);
+}
+
+.topnav__notif-badge {
+  position: absolute;
+  top: -3px;
+  right: -2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  border: 2px solid var(--bg-surface);
+}
 
 .topnav__kbd {
   font-size: 10px;

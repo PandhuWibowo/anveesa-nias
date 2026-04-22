@@ -72,10 +72,22 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['schedules.manage'] },
         },
         {
+          path: 'notifications',
+          name: 'notifications',
+          component: () => import('@/views/NotificationsView.vue'),
+          meta: { requiredPermissionsAny: ['notifications.view'] },
+        },
+        {
+          path: 'ai-analytics',
+          name: 'ai-analytics',
+          component: () => import('@/views/AIAnalyticsView.vue'),
+          meta: { requiredPermissionsAny: ['ai.use'] },
+        },
+        {
           path: 'backup',
           name: 'backup',
           component: () => import('@/views/BackupView.vue'),
-          meta: { requiredPermissionsAny: ['backups.manage'] },
+          meta: { requiredPermissionsAny: ['backups.manage', 'query.execute', 'query.approve'] },
         },
         {
           path: 'health',
@@ -108,6 +120,12 @@ const router = createRouter({
           name: 'connections',
           component: () => import('@/views/ConnectionsView.vue'),
           meta: { requiredPermissionsAny: ['connections.view'] },
+        },
+        {
+          path: 'settings',
+          name: 'settings',
+          component: () => import('@/views/SettingsView.vue'),
+          meta: { requiredPermissionsAny: ['ai.use', 'ai.manage'] },
         },
         {
           path: 'er',

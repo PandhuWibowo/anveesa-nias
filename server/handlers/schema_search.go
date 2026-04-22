@@ -69,8 +69,6 @@ func SearchSchema() http.HandlerFunc {
 					SELECT COLUMN_NAME, 'column', DATA_TYPE FROM information_schema.COLUMNS
 					WHERE TABLE_SCHEMA=DATABASE() AND (COLUMN_NAME LIKE '%%%s%%' OR TABLE_NAME LIKE '%%%s%%')
 					LIMIT 30`, q, q, q)
-			case "sqlite":
-				tableQ = fmt.Sprintf(`SELECT name, 'table', '' FROM sqlite_master WHERE type='table' AND name LIKE '%%%s%%' LIMIT 30`, q)
 			default:
 				continue
 			}

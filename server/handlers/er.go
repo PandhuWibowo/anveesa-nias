@@ -197,51 +197,6 @@ func GetERDiagram() http.HandlerFunc {
 				}
 			}
 
-		case "sqlite":
-			tRows, err := db.Query(`SELECT name, type FROM sqlite_master WHERE type IN ('table','view') ORDER BY name`)
-			if err != nil {
-				http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
-				return
-			}
-			for tRows.Next() {
-				var name, tType string
-				tRows.Scan(&name, &tType)
-				diagram.Tables = append(diagram.Tables, ERTable{Name: name, Type: tType})
-			}
-			tRows.Close()
-
-			for i, t := range diagram.Tables {
-				cRows, err := db.Query(`PRAGMA table_info("` + t.Name + `")`)
-				if err == nil {
-					for cRows.Next() {
-						var cid, notNull, pk int
-						var name, typeName string
-						var dflt *string
-						cRows.Scan(&cid, &name, &typeName, &notNull, &dflt, &pk)
-						diagram.Tables[i].Columns = append(diagram.Tables[i].Columns, SchemaColumn{
-							Name: name, DataType: typeName,
-							IsNullable: notNull == 0, IsPrimaryKey: pk > 0, DefaultValue: dflt,
-						})
-					}
-					cRows.Close()
-				}
-				fkRows, err := db.Query(`PRAGMA foreign_key_list("` + t.Name + `")`)
-				if err == nil {
-					for fkRows.Next() {
-						var id, seq int
-						var refTable, from, to, onUpdate, onDelete, match string
-						fkRows.Scan(&id, &seq, &refTable, &from, &to, &onUpdate, &onDelete, &match)
-						diagram.ForeignKeys = append(diagram.ForeignKeys, ForeignKey{
-							ConstraintName: t.Name + "_" + from + "_fk",
-							TableName:      t.Name,
-							ColumnName:     from,
-							RefTableName:   refTable,
-							RefColumnName:  to,
-						})
-					}
-					fkRows.Close()
-				}
-			}
 		}
 
 		json.NewEncoder(w).Encode(diagram)

@@ -8,6 +8,8 @@ import SQLPanel from '@/components/database/SQLPanel.vue'
 import ExplainTree from '@/components/database/ExplainTree.vue'
 import ResultChart from '@/components/ui/ResultChart.vue'
 import ColumnProfiler from '@/components/ui/ColumnProfiler.vue'
+import { useRouter } from 'vue-router'
+import { pendingAIAnalytics } from '@/composables/usePendingAIAnalytics'
 import { useSchema } from '@/composables/useSchema'
 import { useForeignKeys } from '@/composables/useForeignKeys'
 import { useConnections } from '@/composables/useConnections'
@@ -23,6 +25,7 @@ const { connections } = useConnections()
 const { fetchTableData, fetchTableColumns, columns: schemaColumns, fetchColumns } = useSchema()
 const { fetchFKs, isFKColumn } = useForeignKeys()
 const toast = useToast()
+const router = useRouter()
 
 const activeConn = computed(() =>
   props.connId ? connections.value.find(c => c.id === props.connId) ?? null : null
@@ -371,6 +374,19 @@ function pinTabResult(tabId: string) {
   tab.pinnedResults.unshift({ id: crypto.randomUUID(), label: r.sql.slice(0, 40).replace(/\n/g, ' ').trim(), columns: [...r.columns], rows: [...r.rows] })
 }
 function useSQLInTab(tabId: string, sql: string) { sqlPanelRefs.value[tabId]?.loadSQL(sql) }
+function analyzeTabResultWithAI(tabId: string) {
+  const tab = sqlViewTabs.value.find(t => t.id === tabId)
+  if (!tab || !tab.result || tab.result.kind !== 'query' || !props.connId) return
+  const result = tab.result as any
+  pendingAIAnalytics.value = {
+    connId: props.connId,
+    title: tab.label,
+    question: 'Summarize the biggest takeaway from this query result and suggest follow-up questions.',
+    sql: result.sql || '',
+    source: 'query_result',
+  }
+  router.push({ name: 'ai-analytics' })
+}
 
 const resizingTabId = ref<string | null>(null)
 const resizeStart = ref({ y: 0, h: 0 })
@@ -413,8 +429,8 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
   event.returnValue = ''
 }
 
-function driverColor(d: string) { return ({ postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', sqlite: '#7bc8f6', mssql: '#cc2927' } as Record<string,string>)[d] ?? '#555' }
-function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', sqlite: 'SQ', mssql: 'MS' } as Record<string,string>)[d] ?? '??' }
+function driverColor(d: string) { return ({ postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927' } as Record<string,string>)[d] ?? '#555' }
+function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS' } as Record<string,string>)[d] ?? '??' }
 </script>
 
 <template>
@@ -798,6 +814,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
               <span class="res-meta">{{ (tab.result as any).duration_ms }}ms · {{ (tab.result as any).row_count }} rows</span>
               <button class="base-btn base-btn--ghost base-btn--xs" @click="sqlPanelRefs[tab.id]?.exportCurrentResult('csv',(tab.result as any).columns,(tab.result as any).rows)">CSV</button>
               <button class="base-btn base-btn--ghost base-btn--xs" @click="sqlPanelRefs[tab.id]?.exportCurrentResult('json',(tab.result as any).columns,(tab.result as any).rows)">JSON</button>
+              <button class="base-btn base-btn--ghost base-btn--xs" @click="analyzeTabResultWithAI(tab.id)" title="Analyze this query result with AI">Analyze with AI</button>
               <button class="base-btn base-btn--ghost base-btn--xs" @click="pinTabResult(tab.id)" title="Pin">Pin</button>
             </template>
             <button class="base-btn base-btn--ghost base-btn--sm" @click="clearTabResult(tab.id)">

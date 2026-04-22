@@ -171,11 +171,6 @@ func DropColumn() http.HandlerFunc {
 			return
 		}
 
-		if driver == "sqlite" {
-			http.Error(w, `{"error":"SQLite does not support DROP COLUMN in older versions"}`, http.StatusBadRequest)
-			return
-		}
-
 		ddl := fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", qualifiedTableName(driver, dbName, tableName), quoteIdent(driver, colName))
 		if _, err := db.ExecContext(r.Context(), ddl); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)

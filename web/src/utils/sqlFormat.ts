@@ -3,7 +3,6 @@ import { format } from 'sql-formatter'
 const dialectMap: Record<string, string> = {
   postgres: 'postgresql',
   mysql: 'mysql',
-  sqlite: 'sqlite',
   sqlserver: 'tsql',
 }
 

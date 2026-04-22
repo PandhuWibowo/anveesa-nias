@@ -1,4 +1,4 @@
-// Package db manages the internal SQLite store for connections and users.
+// Package db manages the internal database store for connections and users.
 package db
 
 import (
@@ -14,7 +14,6 @@ import (
 	"github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
-	_ "modernc.org/sqlite"
 )
 
 var DB *sql.DB
@@ -69,26 +68,7 @@ func Init(cfg *config.Config) error {
 		}
 
 	default:
-		// SQLite
-		db, err = sql.Open("sqlite", cfg.DBPath)
-		if err != nil {
-			return fmt.Errorf("open sqlite: %w", err)
-		}
-
-		// Configure connection pool - allow more connections for read operations
-		// WAL mode supports concurrent reads
-		db.SetMaxOpenConns(10)
-		db.SetMaxIdleConns(5)
-		db.SetConnMaxLifetime(0)
-
-		// Enable WAL mode and set busy timeout
-		if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-			return fmt.Errorf("enable WAL mode: %w", err)
-		}
-		// Increase busy timeout to 10 seconds for better handling of concurrent access
-		if _, err := db.Exec("PRAGMA busy_timeout=10000"); err != nil {
-			return fmt.Errorf("set busy timeout: %w", err)
-		}
+		return fmt.Errorf("unsupported database driver: %s", cfg.DBDriver)
 	}
 
 	DB = db
@@ -282,6 +262,9 @@ func migrate() error {
 			name            TEXT NOT NULL,
 			conn_id         INTEGER NOT NULL,
 			sql             TEXT NOT NULL,
+			kind            TEXT NOT NULL DEFAULT 'query',
+			ai_prompt       TEXT NOT NULL DEFAULT '',
+			created_by      INTEGER NOT NULL DEFAULT 0,
 			interval_min    INTEGER NOT NULL DEFAULT 60,
 			alert_condition TEXT DEFAULT '',
 			alert_threshold REAL DEFAULT 0,
@@ -294,6 +277,7 @@ func migrate() error {
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			schedule_id INTEGER NOT NULL,
 			row_count   INTEGER DEFAULT 0,
+			summary     TEXT DEFAULT '',
 			error       TEXT DEFAULT '',
 			alerted     INTEGER DEFAULT 0,
 			ran_at      DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -306,6 +290,81 @@ func migrate() error {
 			read       INTEGER DEFAULT 0,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE TABLE IF NOT EXISTS notification_events (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_type     TEXT NOT NULL DEFAULT '',
+			category       TEXT NOT NULL DEFAULT 'system',
+			severity       TEXT NOT NULL DEFAULT 'info',
+			title          TEXT NOT NULL DEFAULT '',
+			message        TEXT NOT NULL DEFAULT '',
+			entity_type    TEXT NOT NULL DEFAULT '',
+			entity_id      INTEGER NOT NULL DEFAULT 0,
+			connection_id  INTEGER NOT NULL DEFAULT 0,
+			actor_user_id  INTEGER NOT NULL DEFAULT 0,
+			payload        TEXT NOT NULL DEFAULT '{}',
+			created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`ALTER TABLE notifications ADD COLUMN event_id INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE notifications ADD COLUMN target_user_id INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE notifications ADD COLUMN event_type TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE notifications ADD COLUMN severity TEXT NOT NULL DEFAULT 'info'`,
+		`ALTER TABLE notifications ADD COLUMN entity_type TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE notifications ADD COLUMN entity_id INTEGER NOT NULL DEFAULT 0`,
+		`CREATE INDEX IF NOT EXISTS idx_notifications_target_read ON notifications(target_user_id, read, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_notifications_event ON notifications(event_id)`,
+		`CREATE TABLE IF NOT EXISTS notification_targets (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			name        TEXT NOT NULL,
+			type        TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			config_json TEXT NOT NULL DEFAULT '{}',
+			secret_enc  TEXT NOT NULL DEFAULT '',
+			secondary_secret_enc TEXT NOT NULL DEFAULT '',
+			is_active   INTEGER NOT NULL DEFAULT 1,
+			created_by  INTEGER NOT NULL DEFAULT 0,
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`ALTER TABLE notification_targets ADD COLUMN secondary_secret_enc TEXT NOT NULL DEFAULT ''`,
+		`CREATE TABLE IF NOT EXISTS notification_rules (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			name           TEXT NOT NULL,
+			description    TEXT NOT NULL DEFAULT '',
+			event_type     TEXT NOT NULL DEFAULT '*',
+			severity       TEXT NOT NULL DEFAULT '',
+			entity_type    TEXT NOT NULL DEFAULT '',
+			connection_id  INTEGER NOT NULL DEFAULT 0,
+			actor_user_id  INTEGER NOT NULL DEFAULT 0,
+			title_template TEXT NOT NULL DEFAULT '',
+			message_template TEXT NOT NULL DEFAULT '',
+			target_id      INTEGER NOT NULL DEFAULT 0,
+			is_active      INTEGER NOT NULL DEFAULT 1,
+			created_by     INTEGER NOT NULL DEFAULT 0,
+			created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`ALTER TABLE notification_rules ADD COLUMN entity_type TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE notification_rules ADD COLUMN actor_user_id INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE notification_rules ADD COLUMN title_template TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE notification_rules ADD COLUMN message_template TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_notification_rules_match ON notification_rules(is_active, event_type, connection_id)`,
+		`CREATE TABLE IF NOT EXISTS notification_deliveries (
+			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_id           INTEGER NOT NULL,
+			target_id          INTEGER NOT NULL,
+			channel            TEXT NOT NULL,
+			status             TEXT NOT NULL DEFAULT 'pending',
+			attempts           INTEGER NOT NULL DEFAULT 0,
+			last_error         TEXT NOT NULL DEFAULT '',
+			last_response_code INTEGER NOT NULL DEFAULT 0,
+			payload_json       TEXT NOT NULL DEFAULT '{}',
+			next_attempt_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+			last_attempt_at    DATETIME DEFAULT NULL,
+			created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_notification_deliveries_pending ON notification_deliveries(status, next_attempt_at, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_notification_deliveries_event ON notification_deliveries(event_id, created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS auth_sessions (
 			id           INTEGER PRIMARY KEY AUTOINCREMENT,
 			user_id      INTEGER NOT NULL,
@@ -356,6 +415,33 @@ func migrate() error {
 			key   TEXT PRIMARY KEY,
 			value TEXT NOT NULL DEFAULT ''
 		)`,
+		`CREATE TABLE IF NOT EXISTS user_ai_settings (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id    INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+			api_key    TEXT NOT NULL DEFAULT '',
+			base_url   TEXT NOT NULL DEFAULT 'https://api.openai.com/v1',
+			model      TEXT NOT NULL DEFAULT 'gpt-4o-mini',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_ai_settings_user_id ON user_ai_settings(user_id)`,
+		`CREATE TABLE IF NOT EXISTS ai_reports (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			conn_id      INTEGER NOT NULL DEFAULT 0,
+			title        TEXT NOT NULL DEFAULT '',
+			question     TEXT NOT NULL DEFAULT '',
+			summary      TEXT NOT NULL DEFAULT '',
+			chart_type   TEXT NOT NULL DEFAULT 'table',
+			sql_text     TEXT NOT NULL DEFAULT '',
+			columns_json TEXT NOT NULL DEFAULT '[]',
+			rows_json    TEXT NOT NULL DEFAULT '[]',
+			report_cards TEXT NOT NULL DEFAULT '[]',
+			follow_ups   TEXT NOT NULL DEFAULT '[]',
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_reports_user_time ON ai_reports(user_id, created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS snippets (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			name        TEXT NOT NULL,
@@ -599,12 +685,45 @@ func migrate() error {
 			after_json  TEXT NOT NULL DEFAULT '{}',
 			created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE TABLE IF NOT EXISTS backup_download_requests (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			title          TEXT NOT NULL,
+			description    TEXT NOT NULL DEFAULT '',
+			conn_id        INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+			database_name  TEXT NOT NULL DEFAULT '',
+			status         TEXT NOT NULL DEFAULT 'pending_review' CHECK(status IN ('draft','pending_review','approved','rejected','executing','done','failed')),
+			creator_id     INTEGER NOT NULL DEFAULT 0,
+			reviewer_id    INTEGER DEFAULT NULL,
+			review_note    TEXT NOT NULL DEFAULT '',
+			workflow_id    INTEGER REFERENCES approval_workflow(id) ON DELETE SET NULL,
+			current_step   INTEGER NOT NULL DEFAULT 1,
+			revision       INTEGER NOT NULL DEFAULT 1,
+			execute_error  TEXT NOT NULL DEFAULT '',
+			executed_at    DATETIME DEFAULT NULL,
+			created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS backup_download_approval (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			request_id INTEGER NOT NULL REFERENCES backup_download_requests(id) ON DELETE CASCADE,
+			step_id    INTEGER NOT NULL REFERENCES workflow_step(id),
+			revision   INTEGER NOT NULL DEFAULT 1,
+			user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			username   TEXT NOT NULL DEFAULT '',
+			action     TEXT NOT NULL CHECK(action IN ('approved','rejected')),
+			note       TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_data_scripts_created_by ON data_scripts(created_by, updated_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_data_script_versions_script_id ON data_script_versions(script_id, version_no DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_data_change_plans_script_id ON data_change_plans(script_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_data_change_plans_status ON data_change_plans(status, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_data_change_plan_approval_plan ON data_change_plan_approval(plan_id, revision)`,
 		`CREATE INDEX IF NOT EXISTS idx_data_change_plan_items_plan_id ON data_change_plan_items(plan_id, seq_no ASC)`,
+		`CREATE INDEX IF NOT EXISTS idx_backup_download_requests_status ON backup_download_requests(status, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_backup_download_requests_creator ON backup_download_requests(creator_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_backup_download_requests_conn ON backup_download_requests(conn_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_backup_download_approval_request ON backup_download_approval(request_id, revision)`,
 		`ALTER TABLE data_scripts ADD COLUMN description TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE data_scripts ADD COLUMN language TEXT NOT NULL DEFAULT 'javascript'`,
 		`ALTER TABLE data_scripts ADD COLUMN created_by INTEGER NOT NULL DEFAULT 0`,
@@ -632,6 +751,26 @@ func migrate() error {
 		`ALTER TABLE data_change_plan_items ADD COLUMN pk_json TEXT NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE data_change_plan_items ADD COLUMN before_json TEXT NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE data_change_plan_items ADD COLUMN after_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE backup_download_requests ADD COLUMN title TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE backup_download_requests ADD COLUMN description TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE backup_download_requests ADD COLUMN database_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE backup_download_requests ADD COLUMN status TEXT NOT NULL DEFAULT 'pending_review'`,
+		`ALTER TABLE backup_download_requests ADD COLUMN creator_id INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE backup_download_requests ADD COLUMN reviewer_id INTEGER DEFAULT NULL`,
+		`ALTER TABLE backup_download_requests ADD COLUMN review_note TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE backup_download_requests ADD COLUMN workflow_id INTEGER DEFAULT NULL`,
+		`ALTER TABLE backup_download_requests ADD COLUMN current_step INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE backup_download_requests ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE backup_download_requests ADD COLUMN execute_error TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE backup_download_requests ADD COLUMN executed_at DATETIME DEFAULT NULL`,
+		`ALTER TABLE backup_download_requests ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`,
+		`ALTER TABLE backup_download_approval ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE backup_download_approval ADD COLUMN username TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE backup_download_approval ADD COLUMN note TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE schedules ADD COLUMN kind TEXT NOT NULL DEFAULT 'query'`,
+		`ALTER TABLE schedules ADD COLUMN ai_prompt TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE schedules ADD COLUMN created_by INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE schedule_runs ADD COLUMN summary TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_workflow_step_workflow ON workflow_step(workflow_id, step_order)`,
 		`CREATE INDEX IF NOT EXISTS idx_step_approver_step ON step_approver(step_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_step_approver_type_id ON step_approver(approver_type, approver_id)`,
@@ -658,7 +797,10 @@ func migrate() error {
 		// Seed system roles
 		`INSERT OR IGNORE INTO roles (name, description, permissions, is_system) VALUES
 			('admin', 'Full system access',
-			 '["connections.view","connections.create","connections.edit","connections.delete","query.execute","query.approve","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","audit.view","ai.use","ai.manage","security.self","notifications.view","backups.manage","schedules.manage","health.view","rowhistory.view","users.manage","folders.manage","roles.manage","workflows.manage"]',
+			 '["connections.view","connections.create","connections.edit","connections.delete","query.execute","query.approve","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","audit.view","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","users.manage","folders.manage","roles.manage","workflows.manage"]',
+			 1),
+			('poweruser', 'Non-admin full access for testing',
+			 '["connections.view","connections.create","connections.edit","connections.delete","query.execute","query.approve","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","audit.view","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","users.manage","folders.manage","roles.manage","workflows.manage"]',
 			 1),
 			('user', 'Standard user access',
 			 '["connections.view","query.execute","savedqueries.manage","snippets.manage","schema.browse","ai.use","security.self","notifications.view"]',
@@ -671,7 +813,8 @@ func migrate() error {
 
 		// Set existing users to active
 		`UPDATE users SET is_active = 1 WHERE is_active IS NULL`,
-		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","query.execute","query.approve","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","audit.view","ai.use","ai.manage","security.self","notifications.view","backups.manage","schedules.manage","health.view","rowhistory.view","users.manage","folders.manage","roles.manage","workflows.manage"]' WHERE name = 'admin'`,
+		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","query.execute","query.approve","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","audit.view","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","users.manage","folders.manage","roles.manage","workflows.manage"]' WHERE name = 'admin'`,
+		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","query.execute","query.approve","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","audit.view","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","users.manage","folders.manage","roles.manage","workflows.manage"]' WHERE name = 'poweruser'`,
 		`UPDATE roles SET permissions = '["connections.view","query.execute","savedqueries.manage","snippets.manage","schema.browse","ai.use","security.self","notifications.view"]' WHERE name = 'user'`,
 		`ALTER TABLE query_approval_request ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE query_approval ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,

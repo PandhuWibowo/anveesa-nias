@@ -1,4 +1,20 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nias-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nias}
+      POSTGRES_USER: ${POSTGRES_USER:-nias}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-password}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nias}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Backend server with hot reload
   server:
     build:
@@ -8,13 +24,16 @@ services:
     working_dir: /app
     ports:
       - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
       - ../../server:/app
-      - ../../data:/data
     environment:
       - NIAS_ENV=development
       - PORT=8080
-      - DB_PATH=/data/nias.db
+      - DB_DRIVER=postgres
+      - DATABASE_URL=postgres://${POSTGRES_USER:-nias}:${POSTGRES_PASSWORD:-change-this-password}@postgres:5432/${POSTGRES_DB:-nias}?sslmode=disable
       - JWT_SECRET=<DEV_ONLY_JWT_SECRET_PLACEHOLDER>
       - CORS_ORIGIN=http://localhost:5173
     command: ["go", "run", "."]

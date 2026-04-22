@@ -100,8 +100,6 @@ html[data-theme='dark'] {
   --pg-bg:    rgba(51, 103, 145, 0.15);
   --mysql:    #e48e00;
   --mysql-bg: rgba(228, 142, 0, 0.12);
-  --sqlite:   #0f80cc;
-  --sqlite-bg:rgba(15, 128, 204, 0.12);
   --mssql:    #cc2927;
   --mssql-bg: rgba(204, 41, 39, 0.12);
 }
@@ -139,7 +137,6 @@ html[data-theme='light'] {
 
   --pg-bg:    rgba(51, 103, 145, 0.10);
   --mysql-bg: rgba(228, 142, 0, 0.10);
-  --sqlite-bg:rgba(15, 128, 204, 0.10);
   --mssql-bg: rgba(204, 41, 39, 0.10);
 }
 
@@ -351,7 +348,6 @@ body {
 .conn-badge--postgres { background: var(--pg-bg);    color: var(--pg); }
 .conn-badge--mysql   { background: var(--mysql-bg);   color: var(--mysql); }
 .conn-badge--mariadb { background: #c0392b22;          color: #c0392b; }
-.conn-badge--sqlite  { background: var(--sqlite-bg);  color: var(--sqlite); }
 .conn-badge--mssql   { background: var(--mssql-bg);   color: var(--mssql); }
 
 .conn-item__body { flex: 1; min-width: 0; }

@@ -110,21 +110,6 @@ func GetSchema() http.HandlerFunc {
 				dbs = append(dbs, *d)
 			}
 
-		case "sqlite":
-			rows, err := db.Query(`SELECT name, type FROM sqlite_master WHERE type IN ('table','view') ORDER BY name`)
-			if err != nil {
-				http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
-				return
-			}
-			defer rows.Close()
-			mainDB := SchemaDatabase{Name: "main"}
-			for rows.Next() {
-				var name, tType string
-				rows.Scan(&name, &tType)
-				mainDB.Tables = append(mainDB.Tables, SchemaTable{Name: name, Type: tType})
-			}
-			dbs = []SchemaDatabase{mainDB}
-
 		case "sqlserver":
 			rows, err := db.Query(
 				`SELECT TABLE_CATALOG, TABLE_NAME, TABLE_TYPE
@@ -249,29 +234,6 @@ func GetTableColumns() http.HandlerFunc {
 				col.IsPrimaryKey = key == "PRI"
 				col.DefaultValue = defVal
 				cols = append(cols, col)
-			}
-
-		case "sqlite":
-			// Use quoteIdent to safely escape the table name for SQLite PRAGMA
-			safeTableName := strings.ReplaceAll(tableName, `"`, `""`)
-			rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info("%s")`, safeTableName))
-			if err != nil {
-				http.Error(w, `{"error":"schema query failed"}`, http.StatusInternalServerError)
-				return
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var cid, notNull, pk int
-				var name, typeName string
-				var dflt *string
-				rows.Scan(&cid, &name, &typeName, &notNull, &dflt, &pk)
-				cols = append(cols, SchemaColumn{
-					Name:         name,
-					DataType:     typeName,
-					IsNullable:   notNull == 0,
-					IsPrimaryKey: pk > 0,
-					DefaultValue: dflt,
-				})
 			}
 
 		case "sqlserver":
@@ -404,9 +366,6 @@ func GetTableData() http.HandlerFunc {
 		case "mysql":
 			tableRef = qualifiedTableName(driver, dbName, tableName)
 			countSQL = fmt.Sprintf("SELECT COUNT(*) FROM %s", tableRef)
-		case "sqlite":
-			tableRef = quoteIdent(driver, tableName)
-			countSQL = fmt.Sprintf(`SELECT COUNT(*) FROM %s`, tableRef)
 		case "sqlserver":
 			tableRef = qualifiedTableName(driver, dbName, tableName)
 			countSQL = fmt.Sprintf("SELECT COUNT(*) FROM %s", tableRef)

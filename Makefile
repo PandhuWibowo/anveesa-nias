@@ -1,6 +1,9 @@
-.PHONY: dev build clean install test lint docker docker-build docker-up docker-down docker-logs
+.PHONY: dev build clean install test lint docker docker-build docker-tag docker-push docker-up docker-down docker-logs
 
 COMPOSE_FILE := deploy/compose/docker-compose.yml
+IMAGE_NAME ?= pandhu612/anveesa-nias
+IMAGE_TAG ?= latest
+PUSH_LATEST ?= 0
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Development
@@ -80,7 +83,19 @@ security:
 
 # Build Docker image
 docker-build:
-	@docker build -t anveesa-nias:latest .
+	@docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .
+
+# Add latest tag to an existing image tag
+docker-tag:
+	@docker tag $(IMAGE_NAME):$(IMAGE_TAG) $(IMAGE_NAME):latest
+
+# Build and push Docker image with optional latest tag
+docker-push: docker-build
+	@docker push $(IMAGE_NAME):$(IMAGE_TAG)
+	@if [ "$(PUSH_LATEST)" = "1" ]; then \
+		docker tag $(IMAGE_NAME):$(IMAGE_TAG) $(IMAGE_NAME):latest; \
+		docker push $(IMAGE_NAME):latest; \
+	fi
 
 # Start with Docker Compose
 docker-up:
@@ -139,7 +154,9 @@ help:
 	@echo "  start        Run the compiled binary"
 	@echo ""
 	@echo "Docker:"
-	@echo "  docker-build Build Docker image"
+	@echo "  docker-build Build Docker image (IMAGE_NAME=pandhu612/anveesa-nias IMAGE_TAG=v1.0.0)"
+	@echo "  docker-tag   Tag an existing image as latest"
+	@echo "  docker-push  Build and push image (set PUSH_LATEST=1 to also push latest)"
 	@echo "  docker-up    Start with Docker Compose"
 	@echo "  docker-down  Stop Docker Compose"
 	@echo "  docker-logs  View Docker logs"
