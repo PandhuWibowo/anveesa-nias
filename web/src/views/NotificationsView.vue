@@ -161,6 +161,8 @@ const eventTypeSuggestions = [
   'backup_request.failed',
   'backup_request.overdue',
   'schedule.alert',
+  'schedule.ai_summary',
+  'schedule.ai_summary.failed',
   'system.test',
   '*',
 ]
@@ -206,6 +208,31 @@ function resetRuleForm() {
   ruleForm.title_template = ''
   ruleForm.message_template = ''
   ruleForm.is_active = true
+}
+
+function applyRulePreset(input: {
+  name: string
+  description: string
+  eventType: string
+  severity?: string
+  entityType?: string
+  titleTemplate?: string
+  messageTemplate?: string
+}) {
+  editingRuleId.value = null
+  ruleForm.name = input.name
+  ruleForm.description = input.description
+  ruleForm.event_type = input.eventType
+  ruleForm.severity = input.severity || ''
+  ruleForm.entity_type = input.entityType || ''
+  ruleForm.title_template = input.titleTemplate || ''
+  ruleForm.message_template = input.messageTemplate || ''
+  ruleForm.connection_id = 0
+  ruleForm.actor_user_id = 0
+  ruleForm.is_active = true
+  if (!ruleForm.target_id && targetOptions.value.length) {
+    ruleForm.target_id = targetOptions.value[0].id
+  }
 }
 
 function editTarget(target: NotificationTarget) {
@@ -615,6 +642,36 @@ onMounted(loadAll)
             </div>
             <button v-if="editingRuleId" class="base-btn base-btn--ghost base-btn--sm" @click="resetRuleForm">Cancel</button>
           </div>
+          <div class="notif-preset-row">
+            <button
+              class="base-btn base-btn--ghost base-btn--xs"
+              @click="applyRulePreset({
+                name: 'AI Summary Delivery',
+                description: 'Send completed scheduled AI summaries to the selected integration.',
+                eventType: 'schedule.ai_summary',
+                severity: 'info',
+                entityType: 'schedule',
+                titleTemplate: 'AI Summary: {{payload.schedule_name}}',
+                messageTemplate: '{{message}}'
+              })"
+            >
+              Use AI Summary Preset
+            </button>
+            <button
+              class="base-btn base-btn--ghost base-btn--xs"
+              @click="applyRulePreset({
+                name: 'AI Summary Failure',
+                description: 'Send failed scheduled AI summaries to the selected integration.',
+                eventType: 'schedule.ai_summary.failed',
+                severity: 'error',
+                entityType: 'schedule',
+                titleTemplate: 'AI Summary Failed: {{payload.schedule_name}}',
+                messageTemplate: '{{message}}'
+              })"
+            >
+              Use Failure Preset
+            </button>
+          </div>
           <div class="notif-form">
             <input v-model="ruleForm.name" class="base-input" placeholder="Rule name" />
             <input v-model="ruleForm.event_type" class="base-input" list="notif-event-types" placeholder="Event type, for example approval_request.created or *" />
@@ -946,6 +1003,13 @@ onMounted(loadAll)
 .notif-form {
   display: grid;
   gap: 10px;
+}
+
+.notif-preset-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
 }
 
 .notif-form__actions {

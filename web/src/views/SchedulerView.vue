@@ -5,12 +5,13 @@ import { useConnections } from '@/composables/useConnections'
 
 interface Schedule {
   id: number; name: string; conn_id: number; sql: string
+  kind: string; ai_prompt: string; created_by: number
   interval_min: number; alert_condition: string; alert_threshold: number
   enabled: boolean; last_run_at: string; next_run_at: string; created_at: string
 }
 interface ScheduleRun {
   id: number; schedule_id: number; row_count: number
-  error: string; alerted: boolean; ran_at: string
+  summary: string; error: string; alerted: boolean; ran_at: string
 }
 
 const { connections } = useConnections()
@@ -21,9 +22,14 @@ const selectedRuns = ref<ScheduleRun[]>([])
 const runsFor = ref<number | null>(null)
 
 const form = ref<Partial<Schedule>>({
-  name: '', conn_id: 0, sql: '', interval_min: 60,
+  name: '', conn_id: 0, sql: '', kind: 'query', ai_prompt: '', interval_min: 60,
   alert_condition: '', alert_threshold: 0, enabled: true,
 })
+
+const kindOpts = [
+  { value: 'query', label: 'Query Check' },
+  { value: 'ai_summary', label: 'AI Summary' },
+]
 
 const alertOpts = [
   { value: '', label: 'None' },
@@ -89,7 +95,7 @@ function editSchedule(s: Schedule) {
 }
 
 function resetForm() {
-  form.value = { name: '', conn_id: 0, sql: '', interval_min: 60, alert_condition: '', alert_threshold: 0, enabled: true }
+  form.value = { name: '', conn_id: 0, sql: '', kind: 'query', ai_prompt: '', interval_min: 60, alert_condition: '', alert_threshold: 0, enabled: true }
 }
 
 function connName(id: number) {
@@ -126,6 +132,7 @@ onMounted(load)
             <div class="sc-item-info">
               <span class="sc-item-name">{{ s.name }}</span>
               <span class="sc-item-conn">{{ connName(s.conn_id) }}</span>
+              <span class="sc-item-kind">{{ s.kind === 'ai_summary' ? 'AI Summary' : 'Query Check' }}</span>
               <span class="sc-item-interval">every {{ s.interval_min }}m</span>
               <span v-if="s.alert_condition" class="sc-alert-pill">
                 🔔 {{ alertOpts.find(a => a.value === s.alert_condition)?.label }} {{ s.alert_threshold }}
@@ -160,6 +167,7 @@ onMounted(load)
           <span class="sc-time">{{ new Date(run.ran_at).toLocaleString() }}</span>
           <span class="sc-run-rows">{{ run.row_count }} rows</span>
           <span v-if="run.alerted" class="sc-alert-pill">🔔 Alert triggered</span>
+          <span v-if="run.summary" class="sc-run-summary">{{ run.summary }}</span>
           <span v-if="run.error" class="sc-run-err">{{ run.error }}</span>
         </div>
       </div>
@@ -187,8 +195,18 @@ onMounted(load)
               </select>
             </div>
             <div class="form-group">
-              <label class="form-label">SQL</label>
-              <textarea v-model="form.sql" class="base-input" rows="4" placeholder="SELECT COUNT(*) FROM users" style="font-family:monospace;font-size:12px;resize:vertical" />
+              <label class="form-label">Schedule Type</label>
+              <select v-model="form.kind" class="base-input">
+                <option v-for="o in kindOpts" :key="o.value" :value="o.value">{{ o.label }}</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">{{ form.kind === 'ai_summary' ? 'Read-only SQL' : 'SQL' }}</label>
+              <textarea v-model="form.sql" class="base-input" rows="4" :placeholder="form.kind === 'ai_summary' ? 'SELECT status, COUNT(*) AS total FROM orders GROUP BY status' : 'SELECT COUNT(*) FROM users'" style="font-family:monospace;font-size:12px;resize:vertical" />
+            </div>
+            <div v-if="form.kind === 'ai_summary'" class="form-group">
+              <label class="form-label">AI Summary Prompt</label>
+              <textarea v-model="form.ai_prompt" class="base-input" rows="3" placeholder="Summarize the biggest takeaway from this result and call out any unusual changes." style="resize:vertical" />
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
               <div class="form-group">
@@ -239,6 +257,7 @@ onMounted(load)
 .sc-item-info { display:flex; align-items:center; gap:8px; flex:1; flex-wrap:wrap; }
 .sc-item-name { font-weight:700; font-size:13px; color:var(--text-primary); }
 .sc-item-conn { font-size:11.5px; color:var(--brand); }
+.sc-item-kind { font-size:11px; color:var(--text-secondary); padding:1px 7px; border-radius:999px; border:1px solid var(--border); }
 .sc-item-interval { font-size:11px; color:var(--text-muted); }
 .sc-alert-pill { padding:1px 7px; border-radius:4px; font-size:10.5px; background:rgba(251,191,36,0.15); color:#fbbf24; }
 .sc-item-times { display:flex; flex-direction:column; gap:2px; }
@@ -251,6 +270,7 @@ onMounted(load)
 .sc-run-row:hover { background:var(--bg-hover); }
 .sc-run--err .sc-time { color:var(--danger); }
 .sc-run-rows { color:var(--text-muted); }
+.sc-run-summary { color:var(--text-primary); flex:1; min-width:220px; }
 .sc-run-err { color:var(--danger); font-family:var(--mono,monospace); font-size:11px; flex:1; }
 .cp-close { background:transparent; border:none; font-size:20px; color:var(--text-muted); cursor:pointer; padding:0 4px; line-height:1; }
 .sc-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.55); display:flex; align-items:center; justify-content:center; z-index:1100; }

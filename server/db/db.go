@@ -262,6 +262,9 @@ func migrate() error {
 			name            TEXT NOT NULL,
 			conn_id         INTEGER NOT NULL,
 			sql             TEXT NOT NULL,
+			kind            TEXT NOT NULL DEFAULT 'query',
+			ai_prompt       TEXT NOT NULL DEFAULT '',
+			created_by      INTEGER NOT NULL DEFAULT 0,
 			interval_min    INTEGER NOT NULL DEFAULT 60,
 			alert_condition TEXT DEFAULT '',
 			alert_threshold REAL DEFAULT 0,
@@ -274,6 +277,7 @@ func migrate() error {
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			schedule_id INTEGER NOT NULL,
 			row_count   INTEGER DEFAULT 0,
+			summary     TEXT DEFAULT '',
 			error       TEXT DEFAULT '',
 			alerted     INTEGER DEFAULT 0,
 			ran_at      DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -411,6 +415,16 @@ func migrate() error {
 			key   TEXT PRIMARY KEY,
 			value TEXT NOT NULL DEFAULT ''
 		)`,
+		`CREATE TABLE IF NOT EXISTS user_ai_settings (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id    INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+			api_key    TEXT NOT NULL DEFAULT '',
+			base_url   TEXT NOT NULL DEFAULT 'https://api.openai.com/v1',
+			model      TEXT NOT NULL DEFAULT 'gpt-4o-mini',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_ai_settings_user_id ON user_ai_settings(user_id)`,
 		`CREATE TABLE IF NOT EXISTS snippets (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			name        TEXT NOT NULL,
@@ -736,6 +750,10 @@ func migrate() error {
 		`ALTER TABLE backup_download_approval ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE backup_download_approval ADD COLUMN username TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE backup_download_approval ADD COLUMN note TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE schedules ADD COLUMN kind TEXT NOT NULL DEFAULT 'query'`,
+		`ALTER TABLE schedules ADD COLUMN ai_prompt TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE schedules ADD COLUMN created_by INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE schedule_runs ADD COLUMN summary TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_workflow_step_workflow ON workflow_step(workflow_id, step_order)`,
 		`CREATE INDEX IF NOT EXISTS idx_step_approver_step ON step_approver(step_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_step_approver_type_id ON step_approver(approver_type, approver_id)`,
