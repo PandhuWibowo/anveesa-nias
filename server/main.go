@@ -835,9 +835,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/ai/settings", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			requireAny(handlers.PermAIManage)(handlers.GetAISettings())(w, r)
+			requireAny(handlers.PermAIUse, handlers.PermAIManage)(handlers.GetAISettings())(w, r)
 		case http.MethodPost:
-			requireAny(handlers.PermAIManage)(handlers.SaveAISettings())(w, r)
+			requireAny(handlers.PermAIUse, handlers.PermAIManage)(handlers.SaveAISettings())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -845,6 +845,13 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/ai/chat", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			requireAny(handlers.PermAIUse)(handlers.AIChat())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/ai/analytics", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			requireAny(handlers.PermAIUse)(handlers.AIAnalytics())(w, r)
 		} else {
 			http.NotFound(w, r)
 		}
