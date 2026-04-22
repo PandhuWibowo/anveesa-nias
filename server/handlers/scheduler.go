@@ -331,7 +331,7 @@ func executeAISummarySchedule(s Schedule, dbConn *sql.DB) (map[string]any, error
 	}
 	prompt := firstNonEmptyString(strings.TrimSpace(s.AIPrompt), "Summarize the biggest takeaway from this scheduled query result and note any risks or unusual changes.")
 	summaryContent, err := callAIText(context.Background(), resolved.APIKey, resolved.BaseURL, resolved.Model, []map[string]string{
-		{"role": "system", "content": analyticsSummaryPrompt(prompt, plan, queryResult)},
+		{"role": "system", "content": analyticsSummaryPrompt(prompt, "", plan, queryResult)},
 	}, 900)
 	if err != nil {
 		recordScheduleRun(s.ID, int64(queryResult.RowCount), "", err.Error(), false)

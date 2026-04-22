@@ -26,10 +26,26 @@ type AISettings struct {
 }
 
 type AIAnalyticsRequest struct {
-	ConnID   int64  `json:"conn_id"`
-	Question string `json:"question"`
-	SQL      string `json:"sql"`
-	Title    string `json:"title"`
+	ConnID        int64  `json:"conn_id"`
+	Question      string `json:"question"`
+	SQL           string `json:"sql"`
+	Title         string `json:"title"`
+	ComparePreset string `json:"compare_preset"`
+}
+
+type AIReport struct {
+	ID           int64           `json:"id"`
+	ConnectionID int64           `json:"connection_id"`
+	Title        string          `json:"title"`
+	Question     string          `json:"question"`
+	Summary      string          `json:"summary"`
+	ChartType    string          `json:"chart_type"`
+	SQL          string          `json:"sql"`
+	Columns      []string        `json:"columns"`
+	Rows         [][]interface{} `json:"rows"`
+	ReportCards  []string        `json:"report_cards"`
+	FollowUps    []string        `json:"follow_ups"`
+	CreatedAt    string          `json:"created_at"`
 }
 
 type AIAnalyticsResponse struct {
@@ -47,6 +63,8 @@ type AIAnalyticsResponse struct {
 	DurationMs        int64           `json:"duration_ms"`
 	Assumptions       []string        `json:"assumptions"`
 	FollowUpQuestions []string        `json:"follow_up_questions"`
+	ReportCards       []string        `json:"report_cards"`
+	ComparePreset     string          `json:"compare_preset"`
 }
 
 type aiAnalyticsPlan struct {
@@ -61,6 +79,7 @@ type aiAnalyticsSummary struct {
 	Summary           string   `json:"summary"`
 	ChartType         string   `json:"chart_type"`
 	FollowUpQuestions []string `json:"follow_up_questions"`
+	ReportCards       []string `json:"report_cards"`
 }
 
 func GetAISettings() http.HandlerFunc {
@@ -269,6 +288,7 @@ func AIAnalytics() http.HandlerFunc {
 		req.Question = strings.TrimSpace(req.Question)
 		req.SQL = strings.TrimSpace(req.SQL)
 		req.Title = strings.TrimSpace(req.Title)
+		req.ComparePreset = strings.TrimSpace(req.ComparePreset)
 		if req.ConnID <= 0 {
 			http.Error(w, `{"error":"connection is required"}`, http.StatusBadRequest)
 			return
@@ -308,7 +328,7 @@ func AIAnalytics() http.HandlerFunc {
 			plan.SQL = normalizeAnalyticsSQL(req.SQL)
 		} else {
 			planContent, err := callAIText(r.Context(), resolved.APIKey, resolved.BaseURL, resolved.Model, []map[string]string{
-				{"role": "system", "content": analyticsPlannerPrompt(driver, databaseName, schemaContext)},
+				{"role": "system", "content": analyticsPlannerPrompt(driver, databaseName, schemaContext, req.ComparePreset)},
 				{"role": "user", "content": effectiveQuestion},
 			}, 1600)
 			if err != nil {
@@ -335,7 +355,7 @@ func AIAnalytics() http.HandlerFunc {
 		}
 
 		summaryContent, err := callAIText(r.Context(), resolved.APIKey, resolved.BaseURL, resolved.Model, []map[string]string{
-			{"role": "system", "content": analyticsSummaryPrompt(effectiveQuestion, plan, result)},
+			{"role": "system", "content": analyticsSummaryPrompt(effectiveQuestion, req.ComparePreset, plan, result)},
 		}, 900)
 		if err != nil {
 			http.Error(w, jsonError("AI summary failed: "+err.Error()), http.StatusBadGateway)
@@ -366,8 +386,102 @@ func AIAnalytics() http.HandlerFunc {
 			DurationMs:        result.DurationMs,
 			Assumptions:       dedupeNonEmpty(plan.Assumptions),
 			FollowUpQuestions: dedupeNonEmpty(append(summary.FollowUpQuestions, plan.FollowUpQuestions...)),
+			ReportCards:       dedupeNonEmpty(summary.ReportCards),
+			ComparePreset:     req.ComparePreset,
 		}
 		json.NewEncoder(w).Encode(resp)
+	}
+}
+
+func ListAIReports() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		userID, err := currentUserID(r)
+		if err != nil {
+			http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+			return
+		}
+		rows, err := appdb.DB.Query(appdb.ConvertQuery(`
+			SELECT id, conn_id, title, question, summary, chart_type, sql_text, columns_json, rows_json, report_cards, follow_ups, created_at
+			FROM ai_reports
+			WHERE user_id = ?
+			ORDER BY created_at DESC
+		`), userID)
+		if err != nil {
+			http.Error(w, `{"error":"failed to list AI reports"}`, http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+		items := make([]AIReport, 0)
+		for rows.Next() {
+			var item AIReport
+			var colsJSON, rowsJSON, cardsJSON, followJSON string
+			if err := rows.Scan(&item.ID, &item.ConnectionID, &item.Title, &item.Question, &item.Summary, &item.ChartType, &item.SQL, &colsJSON, &rowsJSON, &cardsJSON, &followJSON, &item.CreatedAt); err != nil {
+				continue
+			}
+			_ = json.Unmarshal([]byte(colsJSON), &item.Columns)
+			_ = json.Unmarshal([]byte(rowsJSON), &item.Rows)
+			_ = json.Unmarshal([]byte(cardsJSON), &item.ReportCards)
+			_ = json.Unmarshal([]byte(followJSON), &item.FollowUps)
+			items = append(items, item)
+		}
+		json.NewEncoder(w).Encode(items)
+	}
+}
+
+func SaveAIReport() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		userID, err := currentUserID(r)
+		if err != nil {
+			http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+			return
+		}
+		var body AIReport
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(body.Title) == "" || strings.TrimSpace(body.SQL) == "" {
+			http.Error(w, `{"error":"title and sql required"}`, http.StatusBadRequest)
+			return
+		}
+		colsJSON, _ := json.Marshal(body.Columns)
+		rowsJSON, _ := json.Marshal(body.Rows)
+		cardsJSON, _ := json.Marshal(body.ReportCards)
+		followJSON, _ := json.Marshal(body.FollowUps)
+		now := time.Now().UTC().Format("2006-01-02 15:04:05")
+		res, err := appdb.DB.Exec(appdb.ConvertQuery(`
+			INSERT INTO ai_reports (user_id, conn_id, title, question, summary, chart_type, sql_text, columns_json, rows_json, report_cards, follow_ups, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`), userID, body.ConnectionID, body.Title, body.Question, body.Summary, body.ChartType, body.SQL, string(colsJSON), string(rowsJSON), string(cardsJSON), string(followJSON), now, now)
+		if err != nil {
+			http.Error(w, `{"error":"failed to save AI report"}`, http.StatusInternalServerError)
+			return
+		}
+		id, _ := res.LastInsertId()
+		json.NewEncoder(w).Encode(map[string]any{"id": id})
+	}
+}
+
+func DeleteAIReport() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, err := currentUserID(r)
+		if err != nil {
+			http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+			return
+		}
+		idStr := strings.TrimPrefix(r.URL.Path, "/api/ai/reports/")
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			http.Error(w, `{"error":"invalid report id"}`, http.StatusBadRequest)
+			return
+		}
+		if _, err := appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM ai_reports WHERE id = ? AND user_id = ?`), id, userID); err != nil {
+			http.Error(w, `{"error":"failed to delete AI report"}`, http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
@@ -578,7 +692,11 @@ func shouldRetryWithoutMaxTokens(err error, statusCode int) bool {
 		strings.Contains(msg, "unsupported parameter")
 }
 
-func analyticsPlannerPrompt(driver, databaseName, schemaContext string) string {
+func analyticsPlannerPrompt(driver, databaseName, schemaContext, comparePreset string) string {
+	compareInstruction := ""
+	if comparePreset != "" {
+		compareInstruction = "\nComparison mode: " + comparePreset + ". When helpful, generate SQL that compares the current period to the immediately previous equivalent period."
+	}
 	return fmt.Sprintf(`You are an AI data analytics planner for Anveesa Nias.
 You must respond with JSON only, with this shape:
 {
@@ -599,12 +717,13 @@ Rules:
 
 Database driver: %s
 Database name: %s
+%s
 
 Schema context:
-%s`, driver, databaseName, schemaContext)
+%s`, driver, databaseName, compareInstruction, schemaContext)
 }
 
-func analyticsSummaryPrompt(question string, plan aiAnalyticsPlan, result QueryResult) string {
+func analyticsSummaryPrompt(question, comparePreset string, plan aiAnalyticsPlan, result QueryResult) string {
 	sampleRows := result.Rows
 	if len(sampleRows) > 12 {
 		sampleRows = sampleRows[:12]
@@ -616,17 +735,19 @@ Respond with JSON only, with this shape:
 {
   "summary": "2-4 sentence result summary for a business user",
   "chart_type": "table|bar|line|pie|kpi",
+  "report_cards": ["short highlight", "short highlight", "short highlight"],
   "follow_up_questions": ["...", "...", "..."]
 }
 
 Question: %s
+Compare preset: %s
 Title: %s
 SQL: %s
 Columns: %s
 Row count: %d
 Sample rows: %s
 
-Keep the summary grounded in the result data only.`, question, plan.Title, plan.SQL, string(colsJSON), result.RowCount, string(rowsJSON))
+Keep the summary grounded in the result data only.`, question, comparePreset, plan.Title, plan.SQL, string(colsJSON), result.RowCount, string(rowsJSON))
 }
 
 func parseAnalyticsPlan(content string) (aiAnalyticsPlan, error) {

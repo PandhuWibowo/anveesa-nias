@@ -20,6 +20,23 @@ interface AnalyticsResponse {
   duration_ms: number
   assumptions: string[]
   follow_up_questions: string[]
+  report_cards: string[]
+  compare_preset: string
+}
+
+interface AIReport {
+  id: number
+  connection_id: number
+  title: string
+  question: string
+  summary: string
+  chart_type: string
+  sql: string
+  columns: string[]
+  rows: any[][]
+  report_cards: string[]
+  follow_ups: string[]
+  created_at: string
 }
 
 const toast = useToast()
@@ -28,11 +45,14 @@ const { connections, fetchConnections } = useConnections()
 const loading = ref(false)
 const selectedConnId = ref<number | null>(null)
 const question = ref('')
+const comparePreset = ref('')
 const providedSQL = ref('')
 const providedTitle = ref('')
 const analysisSource = ref<'saved_query' | 'query_result' | ''>('')
 const result = ref<AnalyticsResponse | null>(null)
 const error = ref('')
+const pinnedReports = ref<AIReport[]>([])
+const pinning = ref(false)
 
 const prompts = [
   'What are the top 10 tables by row count in this database?',
@@ -40,6 +60,20 @@ const prompts = [
   'Show the daily trend for new orders in the last 30 days.',
   'Which users generated the most failed transactions this week?',
   'What changed most in the last 7 days compared with the previous 7 days?',
+]
+
+const opsPrompts = [
+  'Summarize the slowest queries and likely causes for this connection.',
+  'Which scheduled jobs are failing most often and what changed recently?',
+  'Summarize pending approvals and highlight operational bottlenecks.',
+  'Review recent backup requests and flag anything unusual.',
+]
+
+const compareOptions = [
+  { value: '', label: 'No compare' },
+  { value: 'last_7_days_vs_previous_7_days', label: 'Last 7 days vs previous 7 days' },
+  { value: 'this_month_vs_last_month', label: 'This month vs last month' },
+  { value: 'today_vs_yesterday', label: 'Today vs yesterday' },
 ]
 
 const selectedConnection = computed(() =>
@@ -70,6 +104,32 @@ function usePrompt(value: string) {
   question.value = value
 }
 
+function loadPinnedReport(report: AIReport) {
+  selectedConnId.value = report.connection_id
+  question.value = report.question || ''
+  providedSQL.value = report.sql || ''
+  providedTitle.value = report.title || ''
+  analysisSource.value = 'saved_query'
+  result.value = {
+    connection_id: report.connection_id,
+    database: '',
+    driver: '',
+    question: report.question,
+    title: report.title,
+    summary: report.summary,
+    chart_type: report.chart_type,
+    sql: report.sql,
+    columns: report.columns || [],
+    rows: report.rows || [],
+    row_count: report.rows?.length || 0,
+    duration_ms: 0,
+    assumptions: [],
+    follow_up_questions: report.follow_ups || [],
+    report_cards: report.report_cards || [],
+    compare_preset: '',
+  }
+}
+
 async function runAnalysis() {
   if (!selectedConnId.value) {
     toast.error('Select a connection first')
@@ -87,6 +147,7 @@ async function runAnalysis() {
       question: question.value.trim(),
       sql: providedSQL.value.trim() || undefined,
       title: providedTitle.value.trim() || undefined,
+      compare_preset: comparePreset.value || undefined,
     })
     result.value = data
   } catch (e: any) {
@@ -95,6 +156,50 @@ async function runAnalysis() {
     toast.error(error.value)
   } finally {
     loading.value = false
+  }
+}
+
+async function loadPinnedReports() {
+  try {
+    const { data } = await axios.get<AIReport[]>('/api/ai/reports')
+    pinnedReports.value = data || []
+  } catch {
+    pinnedReports.value = []
+  }
+}
+
+async function pinCurrentReport() {
+  if (!result.value) return
+  pinning.value = true
+  try {
+    await axios.post('/api/ai/reports', {
+      connection_id: result.value.connection_id,
+      title: result.value.title,
+      question: result.value.question,
+      summary: result.value.summary,
+      chart_type: result.value.chart_type,
+      sql: result.value.sql,
+      columns: result.value.columns,
+      rows: result.value.rows,
+      report_cards: result.value.report_cards,
+      follow_ups: result.value.follow_up_questions,
+    })
+    await loadPinnedReports()
+    toast.success('AI report pinned')
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to pin AI report')
+  } finally {
+    pinning.value = false
+  }
+}
+
+async function deletePinnedReport(id: number) {
+  try {
+    await axios.delete(`/api/ai/reports/${id}`)
+    await loadPinnedReports()
+    toast.success('Pinned report removed')
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to delete report')
   }
 }
 
@@ -128,6 +233,7 @@ watch(connections, (items) => {
 onMounted(() => {
   applyPendingAnalysis()
   fetchConnections()
+  loadPinnedReports()
 })
 </script>
 
@@ -183,10 +289,28 @@ onMounted(() => {
             </div>
           </div>
 
+          <div class="aia-toolbar-row">
+            <div class="aia-field">
+              <label class="aia-label">Compare</label>
+              <select v-model="comparePreset" class="base-select">
+                <option v-for="option in compareOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+              </select>
+            </div>
+          </div>
+
           <div v-if="!providedSQL" class="aia-prompts">
             <button v-for="prompt in prompts" :key="prompt" class="aia-prompt" @click="usePrompt(prompt)">
               {{ prompt }}
             </button>
+          </div>
+
+          <div class="aia-prompt-group">
+            <div class="aia-label">Ops & Audit Prompts</div>
+            <div class="aia-prompts">
+              <button v-for="prompt in opsPrompts" :key="prompt" class="aia-prompt" @click="usePrompt(prompt)">
+                {{ prompt }}
+              </button>
+            </div>
           </div>
 
           <div class="aia-actions">
@@ -209,6 +333,13 @@ onMounted(() => {
         </div>
 
         <template v-if="result">
+          <section v-if="result.report_cards?.length" class="aia-summary-grid">
+            <div v-for="card in result.report_cards" :key="card" class="page-panel aia-summary-card">
+              <div class="aia-summary-card__label">Report Card</div>
+              <div class="aia-summary-card__text">{{ card }}</div>
+            </div>
+          </section>
+
           <section class="aia-summary-grid">
             <div class="page-panel aia-summary-card">
               <div class="aia-summary-card__label">Result</div>
@@ -236,8 +367,9 @@ onMounted(() => {
             <div class="aia-panel-head">
               <div>
                 <div class="aia-panel-title">Narrative Summary</div>
-                <div class="aia-panel-sub">AI-written overview grounded on the executed query result.</div>
+                <div class="aia-panel-sub">AI-written overview grounded on the executed query result<span v-if="result.compare_preset"> · compare mode {{ result.compare_preset }}</span>.</div>
               </div>
+              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="pinning" @click="pinCurrentReport">{{ pinning ? 'Pinning…' : 'Pin Report' }}</button>
             </div>
             <p class="aia-summary-text">{{ result.summary }}</p>
 
@@ -295,6 +427,28 @@ onMounted(() => {
               </button>
             </div>
           </section>
+
+          <section v-if="pinnedReports.length" class="page-panel">
+            <div class="aia-panel-head">
+              <div>
+                <div class="aia-panel-title">Pinned AI Reports</div>
+                <div class="aia-panel-sub">Reusable AI summaries you saved from previous analyses.</div>
+              </div>
+            </div>
+            <div class="aia-report-list">
+              <article v-for="report in pinnedReports" :key="report.id" class="aia-report-card">
+                <div>
+                  <div class="aia-report-card__title">{{ report.title }}</div>
+                  <div class="aia-report-card__meta">{{ new Date(report.created_at).toLocaleString() }}</div>
+                  <p class="aia-report-card__summary">{{ report.summary }}</p>
+                </div>
+                <div class="aia-report-card__actions">
+                  <button class="base-btn base-btn--ghost base-btn--xs" @click="loadPinnedReport(report)">Open</button>
+                  <button class="base-btn base-btn--ghost base-btn--xs" @click="deletePinnedReport(report.id)">Delete</button>
+                </div>
+              </article>
+            </div>
+          </section>
         </template>
       </div>
     </div>
@@ -314,6 +468,11 @@ onMounted(() => {
   display: grid;
   grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
   gap: 12px;
+}
+
+.aia-toolbar-row,
+.aia-prompt-group {
+  margin-top: 10px;
 }
 
 .aia-input-panel {
@@ -436,6 +595,12 @@ onMounted(() => {
   color: var(--text-primary);
 }
 
+.aia-summary-card__text {
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
 .aia-summary-card__sub,
 .aia-empty {
   color: var(--text-secondary);
@@ -518,6 +683,46 @@ onMounted(() => {
   gap: 8px;
   min-height: 140px;
   color: var(--text-muted);
+}
+
+.aia-report-list {
+  display: grid;
+  gap: 12px;
+}
+
+.aia-report-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.aia-report-card__title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.aia-report-card__meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.aia-report-card__summary {
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.aia-report-card__actions {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
 }
 
 .aia-empty__title {

@@ -856,6 +856,23 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			http.NotFound(w, r)
 		}
 	})
+	mux.HandleFunc("/api/ai/reports", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermAIUse)(handlers.ListAIReports())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermAIUse)(handlers.SaveAIReport())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/ai/reports/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			requireAny(handlers.PermAIUse)(handlers.DeleteAIReport())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
 
 	// Serve the built frontend when running the production image.
 	registerStaticRoutes(mux)
