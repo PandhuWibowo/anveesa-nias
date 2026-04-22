@@ -425,6 +425,23 @@ func migrate() error {
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_ai_settings_user_id ON user_ai_settings(user_id)`,
+		`CREATE TABLE IF NOT EXISTS ai_reports (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			conn_id      INTEGER NOT NULL DEFAULT 0,
+			title        TEXT NOT NULL DEFAULT '',
+			question     TEXT NOT NULL DEFAULT '',
+			summary      TEXT NOT NULL DEFAULT '',
+			chart_type   TEXT NOT NULL DEFAULT 'table',
+			sql_text     TEXT NOT NULL DEFAULT '',
+			columns_json TEXT NOT NULL DEFAULT '[]',
+			rows_json    TEXT NOT NULL DEFAULT '[]',
+			report_cards TEXT NOT NULL DEFAULT '[]',
+			follow_ups   TEXT NOT NULL DEFAULT '[]',
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_reports_user_time ON ai_reports(user_id, created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS snippets (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			name        TEXT NOT NULL,
