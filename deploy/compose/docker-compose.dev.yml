@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -23,6 +21,7 @@ services:
       context: ../../server
       dockerfile: Dockerfile.dev
     container_name: nias-server-dev
+    working_dir: /app
     ports:
       - "8080:8080"
     depends_on:
@@ -50,7 +49,5 @@ services:
       - ../../web:/app
     environment:
       - VITE_API_URL=http://localhost:8080
-    command: ["bun", "run", "dev", "--host", "0.0.0.0"]
-
-volumes:
-  postgres-data:
+      - VITE_API_PROXY_TARGET=http://server:8080
+    command: ["sh", "-c", "bun install && bun run dev --host 0.0.0.0"]
