@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/anveesa/nias/cache"
 	"github.com/anveesa/nias/config"
 	appdb "github.com/anveesa/nias/db"
 	"github.com/anveesa/nias/handlers"
@@ -46,6 +47,13 @@ func main() {
 	if !cfg.IsProduction() {
 		cfg.PrintConfig()
 	}
+
+	cache.Init(cfg)
+	defer func() {
+		if err := cache.Close(); err != nil {
+			log.Printf("Cache close error: %v", err)
+		}
+	}()
 
 	// Initialize database
 	if err := appdb.Init(cfg); err != nil {
@@ -83,8 +91,9 @@ func main() {
 	handler = mw.Recovery(handler)
 
 	// Add rate limiting in production
+	mw.ConfigureLoginRateLimiter(mw.NewRateLimiter(5, time.Minute, cache.Default(), "login"))
 	if cfg.RateLimitEnabled {
-		rl := mw.NewRateLimiter(cfg.RateLimitRequests, time.Duration(cfg.RateLimitWindow)*time.Second)
+		rl := mw.NewRateLimiter(cfg.RateLimitRequests, time.Duration(cfg.RateLimitWindow)*time.Second, cache.Default(), "http")
 		handler = mw.RateLimit(rl)(handler)
 	}
 

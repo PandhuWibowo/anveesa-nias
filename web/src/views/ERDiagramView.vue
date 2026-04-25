@@ -47,14 +47,14 @@ watch(compactMode, () => {
   computeLayout()
 })
 
-async function fetchER(connId: number, db: string) {
+async function fetchER(connId: number, db: string, refresh = false) {
   loading.value = true
   error.value = ''
   erData.value = null
   try {
     const encodedDb = encodeURIComponent(db)
     const path = encodedDb ? `/api/connections/${connId}/er/${encodedDb}` : `/api/connections/${connId}/er`
-    const { data } = await axios.get<ERData>(path)
+    const { data } = await axios.get<ERData>(path, { params: refresh ? { refresh: 1 } : undefined })
     erData.value = data
     selectedTableName.value = data.tables[0]?.name ?? ''
     computeLayout()
@@ -284,7 +284,7 @@ onBeforeUnmount(() => {
           <option :value="activeConn?.database">{{ activeConn?.database }}</option>
         </select>
         <button class="base-btn base-btn--ghost base-btn--sm" @click="resetView">Reset view</button>
-        <button class="base-btn base-btn--ghost base-btn--sm" @click="activeConn && fetchER(activeConn.id!, selectedDb)">
+        <button class="base-btn base-btn--ghost base-btn--sm" @click="activeConn && fetchER(activeConn.id!, selectedDb, true)">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.43"/></svg>
           Refresh
         </button>

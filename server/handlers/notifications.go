@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anveesa/nias/cache"
 	appdb "github.com/anveesa/nias/db"
 )
 
@@ -124,6 +126,7 @@ var (
 	notificationStop chan struct{}
 	notificationMu   sync.Mutex
 )
+var notificationInstanceID = fmt.Sprintf("notification-%d", time.Now().UTC().UnixNano())
 
 func StartNotificationWorker() {
 	notificationMu.Lock()
@@ -138,8 +141,7 @@ func StartNotificationWorker() {
 		for {
 			select {
 			case <-ticker.C:
-				emitOverdueNotificationEvents()
-				processPendingNotificationDeliveries()
+				processNotificationWorkerTick()
 			case <-notificationStop:
 				return
 			}
@@ -731,6 +733,15 @@ func processPendingNotificationDeliveries() {
 		target.IsActive = active == 1
 		event.Payload = parseJSONMapSafe(eventPayloadJSON)
 
+		lockKey := fmt.Sprintf("notification:delivery:%d", deliveryID)
+		lockOwner := fmt.Sprintf("%s:%d", notificationInstanceID, time.Now().UTC().UnixNano())
+		lockCtx, lockCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		locked, lockErr := cache.Default().AcquireLock(lockCtx, lockKey, lockOwner, 2*time.Minute)
+		lockCancel()
+		if lockErr != nil || !locked {
+			continue
+		}
+
 		lastAttempt := time.Now().UTC().Format("2006-01-02 15:04:05")
 		_, _ = appdb.DB.Exec(appdb.ConvertQuery(`
 			UPDATE notification_deliveries
@@ -752,6 +763,7 @@ func processPendingNotificationDeliveries() {
 				SET status = ?, last_error = ?, last_response_code = ?, next_attempt_at = ?, updated_at = ?
 				WHERE id = ?
 			`), status, truncateNotificationError(sendErr.Error()), statusCode, nextAttemptAt, lastAttempt, deliveryID)
+			releaseNotificationDeliveryLock(lockKey, lockOwner)
 			continue
 		}
 		_, _ = appdb.DB.Exec(appdb.ConvertQuery(`
@@ -759,7 +771,33 @@ func processPendingNotificationDeliveries() {
 			SET status = 'delivered', last_error = '', last_response_code = ?, next_attempt_at = ?, updated_at = ?
 			WHERE id = ?
 		`), statusCode, lastAttempt, lastAttempt, deliveryID)
+		releaseNotificationDeliveryLock(lockKey, lockOwner)
 	}
+}
+
+func processNotificationWorkerTick() {
+	lockKey := "notification:worker:tick"
+	lockOwner := fmt.Sprintf("%s:%d", notificationInstanceID, time.Now().UTC().UnixNano())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	locked, err := cache.Default().AcquireLock(ctx, lockKey, lockOwner, 14*time.Second)
+	cancel()
+	if err != nil || !locked {
+		return
+	}
+	defer func() {
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer releaseCancel()
+		_ = cache.Default().ReleaseLock(releaseCtx, lockKey, lockOwner)
+	}()
+
+	emitOverdueNotificationEvents()
+	processPendingNotificationDeliveries()
+}
+
+func releaseNotificationDeliveryLock(lockKey, owner string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = cache.Default().ReleaseLock(ctx, lockKey, owner)
 }
 
 type notificationTargetRow struct {
