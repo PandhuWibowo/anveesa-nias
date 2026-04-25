@@ -44,6 +44,12 @@ type Config struct {
 	RateLimitRequests int // requests per window
 	RateLimitWindow   int // seconds
 
+	// Optional Redis integration
+	RedisURL      string
+	RedisPassword string
+	RedisDB       int
+	RedisPrefix   string
+
 	// Logging
 	LogLevel  string // "debug" | "info" | "warn" | "error"
 	LogFormat string // "text" | "json"
@@ -134,6 +140,16 @@ func Load() (*Config, error) {
 		cfg.RateLimitWindow = 60
 	}
 
+	// Optional Redis
+	cfg.RedisURL = strings.TrimSpace(getEnv("REDIS_URL", ""))
+	cfg.RedisPassword = getEnv("REDIS_PASSWORD", "")
+	cfg.RedisDB = getEnvInt("REDIS_DB", 0)
+	cfg.RedisPrefix = getEnv("REDIS_PREFIX", "nias")
+	if cfg.RedisDB < 0 {
+		log.Printf("WARNING: Invalid REDIS_DB=%d, using default 0", cfg.RedisDB)
+		cfg.RedisDB = 0
+	}
+
 	// Logging
 	cfg.LogLevel = getEnv("LOG_LEVEL", "info")
 	cfg.LogFormat = getEnv("LOG_FORMAT", "text")
@@ -217,6 +233,7 @@ func (c *Config) PrintConfig() {
 	log.Printf("  Auth Enabled: %v", c.AuthEnabled)
 	log.Printf("  Backup Enabled: %v", c.BackupEnabled)
 	log.Printf("  Rate Limit: %v", c.RateLimitEnabled)
+	log.Printf("  Redis Enabled: %v", c.RedisURL != "")
 	log.Printf("  CORS Origin: %s", maskOrigin(c.CORSOrigin))
 }
 

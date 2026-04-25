@@ -1,19 +1,26 @@
 package middleware
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
+
+	"github.com/anveesa/nias/cache"
 )
 
 // RateLimiter provides simple rate limiting per IP
 type RateLimiter struct {
-	mu       sync.RWMutex
-	clients  map[string]*clientInfo
-	rate     int           // requests per window
-	window   time.Duration // time window
-	cleanInt time.Duration // cleanup interval
+	store      cache.Store
+	fallback   *memoryRateLimiter
+	rate       int
+	window     time.Duration
+	keyPrefix  string
+	lastWarnMu sync.Mutex
+	lastWarnAt time.Time
 }
 
 type clientInfo struct {
@@ -21,8 +28,14 @@ type clientInfo struct {
 	lastSeen time.Time
 }
 
+type memoryRateLimiter struct {
+	mu      sync.RWMutex
+	clients map[string]*clientInfo
+	window  time.Duration
+}
+
 // NewRateLimiter creates a rate limiter with the specified rate per window
-func NewRateLimiter(rate int, window time.Duration) *RateLimiter {
+func NewRateLimiter(rate int, window time.Duration, store cache.Store, keyPrefix string) *RateLimiter {
 	if rate <= 0 {
 		log.Printf("Invalid rate limit value %d, using default 100", rate)
 		rate = 100
@@ -31,44 +44,44 @@ func NewRateLimiter(rate int, window time.Duration) *RateLimiter {
 		log.Printf("Invalid rate limit window %s, using default 1m", window)
 		window = time.Minute
 	}
-	rl := &RateLimiter{
-		clients:  make(map[string]*clientInfo),
-		rate:     rate,
-		window:   window,
-		cleanInt: window * 2,
+	if store == nil {
+		store = cache.Default()
 	}
-	go rl.cleanup()
-	return rl
-}
-
-func (rl *RateLimiter) cleanup() {
-	ticker := time.NewTicker(rl.cleanInt)
-	for range ticker.C {
-		rl.mu.Lock()
-		cutoff := time.Now().Add(-rl.window)
-		for ip, info := range rl.clients {
-			if info.lastSeen.Before(cutoff) {
-				delete(rl.clients, ip)
-			}
-		}
-		rl.mu.Unlock()
+	return &RateLimiter{
+		store:     store,
+		fallback:  newMemoryRateLimiter(window),
+		rate:      rate,
+		window:    window,
+		keyPrefix: keyPrefix,
 	}
 }
 
-// Allow returns true if the client can make a request
-func (rl *RateLimiter) Allow(ip string) bool {
+func newMemoryRateLimiter(window time.Duration) *memoryRateLimiter {
+	return &memoryRateLimiter{
+		clients: make(map[string]*clientInfo),
+		window:  window,
+	}
+}
+
+func (rl *memoryRateLimiter) allow(ip string, rate int) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	info, exists := rl.clients[ip]
+	cutoff := time.Now().Add(-rl.window)
+	for candidate, info := range rl.clients {
+		if info.lastSeen.Before(cutoff) {
+			delete(rl.clients, candidate)
+		}
+	}
 	now := time.Now()
+	info, exists := rl.clients[ip]
 
 	if !exists || now.Sub(info.lastSeen) > rl.window {
 		rl.clients[ip] = &clientInfo{count: 1, lastSeen: now}
 		return true
 	}
 
-	if info.count >= rl.rate {
+	if info.count >= rate {
 		return false
 	}
 
@@ -77,13 +90,45 @@ func (rl *RateLimiter) Allow(ip string) bool {
 	return true
 }
 
+// Allow returns true if the client can make a request
+func (rl *RateLimiter) Allow(ip string) bool {
+	if rl.store != nil && rl.store.BackendName() == "redis" {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		bucket := time.Now().UTC().Unix() / maxInt64(1, int64(rl.window/time.Second))
+		key := fmt.Sprintf("ratelimit:%s:%d:%s", rl.keyPrefix, bucket, ip)
+		count, err := rl.store.Increment(ctx, key, rl.window+5*time.Second)
+		if err == nil {
+			return count <= int64(rl.rate)
+		}
+		rl.warnRedisFallback(err)
+	}
+	return rl.fallback.allow(ip, rl.rate)
+}
+
+func (rl *RateLimiter) RetryAfter() string {
+	seconds := maxInt64(1, int64(rl.window/time.Second))
+	return strconv.FormatInt(seconds, 10)
+}
+
+func (rl *RateLimiter) warnRedisFallback(err error) {
+	rl.lastWarnMu.Lock()
+	defer rl.lastWarnMu.Unlock()
+	now := time.Now()
+	if now.Sub(rl.lastWarnAt) < time.Minute {
+		return
+	}
+	rl.lastWarnAt = now
+	log.Printf("WARNING: Redis rate limiter failed, falling back to in-memory limiter: %v", err)
+}
+
 // RateLimit middleware wraps handlers with rate limiting
 func RateLimit(rl *RateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ip := getClientIP(r)
 			if !rl.Allow(ip) {
-				w.Header().Set("Retry-After", "60")
+				w.Header().Set("Retry-After", rl.RetryAfter())
 				http.Error(w, `{"error":"rate limit exceeded"}`, http.StatusTooManyRequests)
 				return
 			}
@@ -136,7 +181,13 @@ func SecurityHeaders(next http.Handler) http.Handler {
 }
 
 // LoginRateLimiter is stricter rate limiting for login attempts (5 per minute)
-var LoginRateLimiter = NewRateLimiter(5, time.Minute)
+var LoginRateLimiter = NewRateLimiter(5, time.Minute, nil, "login")
+
+func ConfigureLoginRateLimiter(rl *RateLimiter) {
+	if rl != nil {
+		LoginRateLimiter = rl
+	}
+}
 
 // RateLimitLogin wraps login handlers with strict rate limiting
 func RateLimitLogin(next http.HandlerFunc) http.HandlerFunc {
@@ -149,4 +200,11 @@ func RateLimitLogin(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }

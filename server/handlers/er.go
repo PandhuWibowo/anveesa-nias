@@ -6,7 +6,9 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/anveesa/nias/cache"
 	appdb "github.com/anveesa/nias/db"
 )
 
@@ -63,6 +65,16 @@ func GetERDiagram() http.HandlerFunc {
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
+		}
+
+		cacheKey := "er:" + driver + ":" + strconv.FormatInt(connID, 10) + ":" + strings.ToLower(dbName)
+		refresh := r.URL.Query().Get("refresh") == "1"
+		if !refresh {
+			cached, found, cacheErr := cache.Default().Get(r.Context(), cacheKey)
+			if cacheErr == nil && found {
+				_, _ = w.Write([]byte(cached))
+				return
+			}
 		}
 
 		diagram := ERDiagram{Tables: []ERTable{}, ForeignKeys: []ForeignKey{}}
@@ -199,6 +211,12 @@ func GetERDiagram() http.HandlerFunc {
 
 		}
 
-		json.NewEncoder(w).Encode(diagram)
+		body, err := json.Marshal(diagram)
+		if err != nil {
+			http.Error(w, `{"error":"failed to encode ER diagram"}`, http.StatusInternalServerError)
+			return
+		}
+		_ = cache.Default().Set(r.Context(), cacheKey, string(body), 90*time.Second)
+		_, _ = w.Write(body)
 	}
 }

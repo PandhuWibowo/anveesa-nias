@@ -12,6 +12,22 @@ docker-compose -f deploy/compose/docker-compose.postgres.yml up -d
 docker-compose -f deploy/compose/docker-compose.prod.yml up -d
 ```
 
+Optional Redis acceleration:
+
+```bash
+docker-compose -f deploy/compose/docker-compose.yml --profile cache up -d
+REDIS_URL=redis://redis:6379/0 docker-compose -f deploy/compose/docker-compose.postgres.yml --profile cache up -d
+```
+
+If `REDIS_URL` is not set, the app automatically falls back to in-process server memory for rate limiting and cache storage.
+
+Supported Redis env vars:
+
+- `REDIS_URL`
+- `REDIS_PASSWORD`
+- `REDIS_DB`
+- `REDIS_PREFIX`
+
 Docker Hub publishing:
 
 ```bash

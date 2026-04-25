@@ -15,6 +15,15 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: anveesa-nias-redis
+    restart: unless-stopped
+    profiles: ["cache"]
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    volumes:
+      - redis-data:/data
+
   nias:
     build:
       context: ../..
@@ -43,6 +52,10 @@ services:
       - RATE_LIMIT_ENABLED=true
       - RATE_LIMIT_REQUESTS=100
       - RATE_LIMIT_WINDOW=60
+      - REDIS_URL=${REDIS_URL:-}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_DB=${REDIS_DB:-0}
+      - REDIS_PREFIX=${REDIS_PREFIX:-nias}
       - LOG_LEVEL=info
       - DEFAULT_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME:-admin}
       - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-<CHANGE_ME_ADMIN_PASSWORD>}
@@ -55,4 +68,6 @@ services:
 
 volumes:
   postgres-data:
+    driver: local
+  redis-data:
     driver: local

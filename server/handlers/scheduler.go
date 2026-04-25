@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anveesa/nias/cache"
 	appdb "github.com/anveesa/nias/db"
 )
 
@@ -163,7 +164,11 @@ func RunScheduleNow() http.HandlerFunc {
 			http.Error(w, `{"error":"schedule not found"}`, http.StatusNotFound)
 			return
 		}
-		result, runErr := executeSchedule(s)
+		result, runErr := executeScheduleWithLock(s, true)
+		if runErr != nil && strings.Contains(strings.ToLower(runErr.Error()), "already running") {
+			http.Error(w, `{"error":"schedule is already running"}`, http.StatusConflict)
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{"ok": runErr == nil, "result": result})
 	}
 }
@@ -423,6 +428,7 @@ func recordScheduleRun(scheduleID, rowCount int64, summary, errMsg string, alert
 
 var schedulerStop chan struct{}
 var schedulerMu sync.Mutex
+var schedulerInstanceID = fmt.Sprintf("scheduler-%d", time.Now().UTC().UnixNano())
 
 // StartScheduler runs due schedules in the background.
 func StartScheduler() {
@@ -438,7 +444,7 @@ func StartScheduler() {
 		for {
 			select {
 			case <-ticker.C:
-				runDueSchedules()
+				processSchedulerTick()
 			case <-schedulerStop:
 				return
 			}
@@ -472,6 +478,51 @@ func runDueSchedules() {
 	}
 	rows.Close()
 	for _, s := range due {
-		go executeSchedule(s) //nolint:errcheck
+		go executeScheduleWithLock(s, false) //nolint:errcheck
 	}
+}
+
+func processSchedulerTick() {
+	lockKey := "scheduler:tick"
+	owner := fmt.Sprintf("%s:%d", schedulerInstanceID, time.Now().UTC().UnixNano())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	locked, err := cache.Default().AcquireLock(ctx, lockKey, owner, 55*time.Second)
+	cancel()
+	if err != nil || !locked {
+		return
+	}
+	defer func() {
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer releaseCancel()
+		_ = cache.Default().ReleaseLock(releaseCtx, lockKey, owner)
+	}()
+	runDueSchedules()
+}
+
+func executeScheduleWithLock(s Schedule, manual bool) (map[string]any, error) {
+	lockKey := fmt.Sprintf("schedule:run:%d", s.ID)
+	owner := fmt.Sprintf("%s:%d", schedulerInstanceID, time.Now().UTC().UnixNano())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	locked, err := cache.Default().AcquireLock(ctx, lockKey, owner, 10*time.Minute)
+	if err != nil {
+		if manual {
+			return nil, fmt.Errorf("schedule lock failed: %w", err)
+		}
+		return nil, nil
+	}
+	if !locked {
+		if manual {
+			return nil, fmt.Errorf("schedule is already running")
+		}
+		return nil, nil
+	}
+	defer func() {
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer releaseCancel()
+		_ = cache.Default().ReleaseLock(releaseCtx, lockKey, owner)
+	}()
+
+	return executeSchedule(s)
 }
