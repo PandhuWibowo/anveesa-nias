@@ -65,7 +65,11 @@ For backend changes, prefer adding or updating Go tests. For frontend changes, v
 
 ## Commit Messages
 
-Use concise, descriptive commit messages. Conventional prefixes are welcome but not required:
+Use concise, descriptive Conventional Commit messages. The container pipeline reads commits since the latest `vX.Y.Z` tag and creates the next version automatically:
+
+- Major release: use `!` in the commit type, such as `feat!: remove legacy API`, or include `BREAKING CHANGE:` in the commit body.
+- Minor release: use `feat:`.
+- Patch release: use `fix:`, `perf:`, `refactor:`, `docs:`, `style:`, `test:`, `build:`, `ci:`, `chore:`, or `revert:`.
 
 - `fix: correct dashboard export header`
 - `feat: add chart embed route`
