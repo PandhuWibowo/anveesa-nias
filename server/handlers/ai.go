@@ -656,7 +656,7 @@ func doAIChatCompletion(ctx context.Context, apiKey, baseURL string, payload map
 		return nil, resp.StatusCode, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return raw, resp.StatusCode, fmt.Errorf(extractAIErrorMessage(resp.StatusCode, raw))
+		return raw, resp.StatusCode, fmt.Errorf("%s", extractAIErrorMessage(resp.StatusCode, raw))
 	}
 	return raw, resp.StatusCode, nil
 }

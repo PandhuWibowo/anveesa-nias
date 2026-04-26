@@ -42,6 +42,22 @@ const sections = [
     ],
   },
   {
+    id: 'analytics',
+    title: 'Analytics Dashboards',
+    description: 'Saved-query dashboards, direct SQL previews, chart views, exports, and public embeds.',
+    routeHints: ['/analytics', '/ai-analytics', '/dashboards', '/shared-dashboards/:token', '/embed/dashboards/:token', '/embed/dashboards/:token/blocks/:blockId'],
+    screenshots: ['analytics-home-page.png', 'analytics-dashboards-page.png', 'dashboard-export-menu.png', 'dashboard-embed-view.png'],
+    features: [
+      { name: 'Analytics Home', detail: 'Entry point for saved-query analytics, AI reports, and dashboard building.' },
+      { name: 'Dashboard Builder', detail: 'Create dashboard views from saved queries or direct SQL, preview the result, then save only when the view is correct.' },
+      { name: 'Charts', detail: 'Render table, KPI, bar, horizontal bar, line, area, scatter, pie, and donut views with animated on-screen charts.' },
+      { name: 'View Filters', detail: 'Per-view search and column filters keep each dashboard block independently focused.' },
+      { name: 'Exports', detail: 'Export a single view or the whole dashboard to PDF, PNG, Excel, CSV, SQL, or JSON with output matched to the dashboard.' },
+      { name: 'Shared Views', detail: 'Read-only share links expose dashboards by token for users who do not need the full app.' },
+      { name: 'Embeds', detail: 'Public iframe views can be embedded per dashboard or per chart.' },
+    ],
+  },
+  {
     id: 'change',
     title: 'Change Management',
     description: 'SQL approvals, change sets, schema diff, and programmable data changes.',
@@ -72,13 +88,27 @@ const sections = [
   {
     id: 'ops',
     title: 'Ops And Platform',
-    description: 'Scheduler, backup, deployment notes, and runtime requirements.',
+    description: 'Scheduler, backup, health checks, and runtime signals.',
     routeHints: ['/scheduler', '/backup'],
-    screenshots: ['scheduler-page.png', 'backup-page.png', 'docker-container-status.png', 'health-endpoint-check.png'],
+    screenshots: ['scheduler-page.png', 'backup-page.png', 'health-endpoint-check.png'],
     features: [
       { name: 'Scheduler', detail: 'Recurring jobs and scheduled execution.' },
       { name: 'Backup', detail: 'Backup and restore operations.' },
-      { name: 'Deployment Notes', detail: 'Container, runtime, and health verification guidance.' },
+      { name: 'Runtime Health', detail: 'Health checks and service status signals.' },
+    ],
+  },
+  {
+    id: 'project',
+    title: 'Open Source Project',
+    description: 'Public repository guidance, demo access, contribution flow, support, and security policy.',
+    routeHints: ['https://github.com/PandhuWibowo/anveesa-nias', 'README.md', 'docs/DEMO.md', 'CONTRIBUTING.md', 'SECURITY.md'],
+    screenshots: [],
+    features: [
+      { name: 'Demo System', detail: 'Public demo: https://nias.anveesa.com with username admin and password Admin123!.' },
+      { name: 'GitHub Repository', detail: 'Source code and issues live at https://github.com/PandhuWibowo/anveesa-nias.' },
+      { name: 'Contributing', detail: 'Contribution rules, local development checks, and pull request expectations.' },
+      { name: 'Security', detail: 'Private vulnerability reporting and safe handling of credentials and share links.' },
+      { name: 'License', detail: 'The project is released under the MIT License.' },
     ],
   },
 ]
@@ -131,12 +161,13 @@ const sections = [
 
             <div class="docs-card">
               <div class="docs-label">Screenshot Checklist</div>
-              <div class="docs-list">
+              <div v-if="section.screenshots.length" class="docs-list">
                 <div v-for="screenshot in section.screenshots" :key="screenshot" class="docs-list__item">
                   <strong>{{ screenshot }}</strong>
                   <span>Place under `docs/screenshots/{{ screenshot }}`</span>
                 </div>
               </div>
+              <div v-else class="docs-empty-note">No screenshot checklist for this documentation area.</div>
             </div>
           </div>
         </section>
@@ -238,6 +269,15 @@ const sections = [
   color: var(--text-secondary);
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+.docs-empty-note {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 @media (max-width: 900px) {

@@ -25,6 +25,12 @@ Monitoring and audit:
 - `watchers-page.png`
 - `health-page.png`
 
+Analytics dashboards:
+- `analytics-home-page.png`
+- `analytics-dashboards-page.png`
+- `dashboard-export-menu.png`
+- `dashboard-embed-view.png`
+
 Change management:
 - `approval-requests-list.png`
 - `approval-request-detail.png`

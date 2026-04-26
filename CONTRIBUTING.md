@@ -13,7 +13,7 @@ Thank you for considering a contribution. This project is intended to be a pract
 ## Development Setup
 
 ```bash
-git clone https://github.com/anveesa/anveesa-nias.git
+git clone https://github.com/PandhuWibowo/anveesa-nias.git
 cd anveesa-nias
 
 cd server

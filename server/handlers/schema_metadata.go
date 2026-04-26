@@ -105,7 +105,7 @@ func ListSchemaMetadata() http.HandlerFunc {
 		cachedJSONResponse(w, r, fmt.Sprintf("schema:metadata:%d:%s", connID, dbName), 2*time.Minute, func() (any, error) {
 			db, driver, err := GetDB(connID)
 			if err != nil {
-				return nil, fmt.Errorf(err.Error())
+				return nil, fmt.Errorf("%s", err.Error())
 			}
 			return fetchSchemaMetadataCatalog(db, normalizeSchemaDriver(driver), dbName)
 		})
@@ -132,7 +132,7 @@ func GetSchemaObjectDetail() http.HandlerFunc {
 		cachedJSONResponse(w, r, fmt.Sprintf("schema:object:%d:%s:%s:%s", connID, dbName, objectType, objectName), 2*time.Minute, func() (any, error) {
 			db, driver, err := GetDB(connID)
 			if err != nil {
-				return nil, fmt.Errorf(err.Error())
+				return nil, fmt.Errorf("%s", err.Error())
 			}
 			return fetchSchemaObjectDetail(db, normalizeSchemaDriver(driver), dbName, objectType, objectName)
 		})

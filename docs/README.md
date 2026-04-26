@@ -4,6 +4,7 @@ This directory contains project, product, and implementation documentation for A
 
 ## Start Here
 
+- [GitHub repository](https://github.com/PandhuWibowo/anveesa-nias)
 - [Project README](../README.md)
 - [Open-source project guide](OPEN_SOURCE.md)
 - [Feature guide](FEATURES.md)
@@ -18,6 +19,7 @@ This directory contains project, product, and implementation documentation for A
 - [Change management](04-change-management.md)
 - [Admin and governance](05-admin-and-governance.md)
 - [Operations and platform](06-ops-and-platform.md)
+- [Analytics dashboards](07-analytics-dashboards.md)
 - [Table features](TABLE_FEATURES.md)
 
 ## Permissions and Security
