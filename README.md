@@ -19,6 +19,18 @@ It is built with a Go HTTP API and a Vue 3 + Vite frontend.
 
 This repository is being prepared for public open-source collaboration. APIs may still change before a stable `v1.0.0` release.
 
+## Demo
+
+A public demo is available at [nias.anveesa.com](https://nias.anveesa.com).
+
+| Field | Value |
+| --- | --- |
+| URL | `https://nias.anveesa.com` |
+| Username | `admin` |
+| Password | `Admin123!` |
+
+The demo is for evaluation only. Do not enter private credentials or sensitive data.
+
 ## Local Development
 
 Prerequisites:
@@ -84,6 +96,7 @@ Start from `.env.example` and never commit real secrets. Important variables:
 - [Documentation index](docs/README.md)
 - [Feature guide](docs/FEATURES.md)
 - [Open-source project guide](docs/OPEN_SOURCE.md)
+- [Demo guide](docs/DEMO.md)
 - [Donation guide](docs/DONATION.md)
 
 ## Donations
