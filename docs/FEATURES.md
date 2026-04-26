@@ -15,12 +15,21 @@ Documentation index:
 - [04-change-management.md](./04-change-management.md)
 - [05-admin-and-governance.md](./05-admin-and-governance.md)
 - [06-ops-and-platform.md](./06-ops-and-platform.md)
+- [07-analytics-dashboards.md](./07-analytics-dashboards.md)
+- [DEMO.md](./DEMO.md)
+- [OPEN_SOURCE.md](./OPEN_SOURCE.md)
 - [screenshots/README.md](./screenshots/README.md)
 
 Current primary routes covered:
 - `/login`
 - `/welcome`
 - `/dashboard`
+- `/analytics`
+- `/ai-analytics`
+- `/dashboards`
+- `/shared-dashboards/:token`
+- `/embed/dashboards/:token`
+- `/embed/dashboards/:token/blocks/:blockId`
 - `/data`
 - `/connections`
 - `/er`

@@ -19,6 +19,12 @@ It is built with a Go HTTP API and a Vue 3 + Vite frontend.
 
 This repository is being prepared for public open-source collaboration. APIs may still change before a stable `v1.0.0` release.
 
+## Repository
+
+Source code is available on GitHub:
+
+https://github.com/PandhuWibowo/anveesa-nias
+
 ## Demo
 
 A public demo is available at [nias.anveesa.com](https://nias.anveesa.com).

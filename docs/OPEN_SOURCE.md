@@ -2,6 +2,10 @@
 
 This repository is set up for public collaboration.
 
+GitHub repository:
+
+https://github.com/PandhuWibowo/anveesa-nias
+
 ## Community Files
 
 - `LICENSE`: MIT license.
@@ -18,7 +22,7 @@ This repository is set up for public collaboration.
 ## Maintainer Checklist Before Public Release
 
 - Confirm the license choice is correct for the project.
-- Replace placeholder repository URLs with the final GitHub organization/name.
+- Confirm repository URLs point to `https://github.com/PandhuWibowo/anveesa-nias`.
 - Enable GitHub Discussions if you want user Q&A outside issues.
 - Enable GitHub Security Advisories.
 - Add repository topics such as `database`, `sql`, `vue`, `go`, `dashboard`, and `open-source`.

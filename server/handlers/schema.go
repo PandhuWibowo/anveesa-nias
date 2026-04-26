@@ -44,7 +44,7 @@ func GetSchema() http.HandlerFunc {
 		cachedJSONResponse(w, r, fmt.Sprintf("schema:list:%d", connID), 2*time.Minute, func() (any, error) {
 			db, driver, err := GetDB(connID)
 			if err != nil {
-				return nil, fmt.Errorf(err.Error())
+				return nil, fmt.Errorf("%s", err.Error())
 			}
 
 			var dbs []SchemaDatabase
@@ -165,7 +165,7 @@ func GetTableColumns() http.HandlerFunc {
 		cachedJSONResponse(w, r, cacheKey, 2*time.Minute, func() (any, error) {
 			db, driver, err := GetDB(connID)
 			if err != nil {
-				return nil, fmt.Errorf(err.Error())
+				return nil, fmt.Errorf("%s", err.Error())
 			}
 
 			var cols []SchemaColumn
