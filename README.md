@@ -41,7 +41,7 @@ The demo is for evaluation only. Do not enter private credentials or sensitive d
 
 Prerequisites:
 
-- Go 1.22+
+- Go 1.25+
 - Node.js 20+
 
 Install and run:
