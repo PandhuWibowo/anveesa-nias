@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anveesa/nias/cache"
 	appdb "github.com/anveesa/nias/db"
 )
 
@@ -314,7 +315,7 @@ func AIAnalytics() http.HandlerFunc {
 			return
 		}
 
-		databaseName, schemaContext := buildAnalyticsSchemaContext(dbConn, driver)
+		databaseName, schemaContext := buildAnalyticsSchemaContext(r.Context(), req.ConnID, dbConn, driver)
 		effectiveQuestion := req.Question
 		plan := aiAnalyticsPlan{
 			Title:     firstNonEmptyString(req.Title, "AI Analytics Result"),
@@ -702,7 +703,7 @@ You must respond with JSON only, with this shape:
 {
   "title": "short result title",
   "sql": "single read-only SQL statement",
-  "chart_type": "table|bar|line|pie|kpi",
+  "chart_type": "table|bar|horizontal-bar|line|area|scatter|pie|donut|kpi",
   "assumptions": ["..."],
   "follow_up_questions": ["...", "...", "..."]
 }
@@ -734,7 +735,7 @@ func analyticsSummaryPrompt(question, comparePreset string, plan aiAnalyticsPlan
 Respond with JSON only, with this shape:
 {
   "summary": "2-4 sentence result summary for a business user",
-  "chart_type": "table|bar|line|pie|kpi",
+  "chart_type": "table|bar|horizontal-bar|line|area|scatter|pie|donut|kpi",
   "report_cards": ["short highlight", "short highlight", "short highlight"],
   "follow_up_questions": ["...", "...", "..."]
 }
@@ -870,7 +871,18 @@ func executeAnalyticsQuery(ctx context.Context, dbConn *sql.DB, sqlText string) 
 	return result, nil
 }
 
-func buildAnalyticsSchemaContext(dbConn *sql.DB, driver string) (string, string) {
+func buildAnalyticsSchemaContext(ctx context.Context, connID int64, dbConn *sql.DB, driver string) (string, string) {
+	cacheKey := fmt.Sprintf("ai:schema-context:%d:%s", connID, driver)
+	if cached, found, err := cache.Default().Get(ctx, cacheKey); err == nil && found {
+		var payload struct {
+			Database string `json:"database"`
+			Context  string `json:"context"`
+		}
+		if json.Unmarshal([]byte(cached), &payload) == nil && strings.TrimSpace(payload.Context) != "" {
+			return payload.Database, payload.Context
+		}
+	}
+
 	var databaseName string
 	tableColumns := map[string][]string{}
 
@@ -950,7 +962,13 @@ func buildAnalyticsSchemaContext(dbConn *sql.DB, driver string) (string, string)
 	if b.Len() == 0 {
 		b.WriteString("- schema metadata unavailable\n")
 	}
-	return databaseName, strings.TrimSpace(b.String())
+	result := strings.TrimSpace(b.String())
+	payload, _ := json.Marshal(map[string]string{
+		"database": databaseName,
+		"context":  result,
+	})
+	_ = cache.Default().Set(ctx, cacheKey, string(payload), 5*time.Minute)
+	return databaseName, result
 }
 
 func firstNonEmptyString(values ...string) string {

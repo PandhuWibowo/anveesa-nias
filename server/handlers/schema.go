@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type SchemaTable struct {
@@ -29,8 +30,6 @@ type SchemaColumn struct {
 
 func GetSchema() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/connections/"), "/")
 		if len(parts) < 2 {
 			http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
@@ -42,107 +41,105 @@ func GetSchema() http.HandlerFunc {
 			return
 		}
 
-		db, driver, err := GetDB(connID)
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-			return
-		}
-
-		var dbs []SchemaDatabase
-
-		switch driver {
-		case "postgres":
-			rows, err := db.Query(
-				`SELECT table_schema, table_name, table_type
-				 FROM information_schema.tables
-				 WHERE table_schema NOT IN ('information_schema', 'pg_catalog')
-				   AND table_schema NOT LIKE 'pg_toast%'
-				   AND table_schema NOT LIKE 'pg_temp_%'
-				 ORDER BY table_schema, table_name`,
-			)
+		cachedJSONResponse(w, r, fmt.Sprintf("schema:list:%d", connID), 2*time.Minute, func() (any, error) {
+			db, driver, err := GetDB(connID)
 			if err != nil {
-				http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
-				return
-			}
-			defer rows.Close()
-			dbMap := map[string]*SchemaDatabase{}
-			for rows.Next() {
-				var schemaName, tableName, tableType string
-				rows.Scan(&schemaName, &tableName, &tableType)
-				tType := "table"
-				if tableType == "VIEW" {
-					tType = "view"
-				}
-				if _, ok := dbMap[schemaName]; !ok {
-					dbMap[schemaName] = &SchemaDatabase{Name: schemaName}
-				}
-				dbMap[schemaName].Tables = append(dbMap[schemaName].Tables, SchemaTable{Name: tableName, Type: tType})
-			}
-			for _, d := range dbMap {
-				dbs = append(dbs, *d)
+				return nil, fmt.Errorf(err.Error())
 			}
 
-	case "mysql", "mariadb":
-		rows, err := db.Query(
-			`SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE
-			 FROM information_schema.TABLES
-			 ORDER BY TABLE_SCHEMA, TABLE_NAME`,
-		)
-			if err != nil {
-				http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
-				return
-			}
-			defer rows.Close()
-			dbMap := map[string]*SchemaDatabase{}
-			for rows.Next() {
-				var dbName, tableName, tableType string
-				rows.Scan(&dbName, &tableName, &tableType)
-				tType := "table"
-				if tableType == "VIEW" {
-					tType = "view"
+			var dbs []SchemaDatabase
+
+			switch driver {
+			case "postgres":
+				rows, err := db.Query(
+					`SELECT table_schema, table_name, table_type
+					 FROM information_schema.tables
+					 WHERE table_schema NOT IN ('information_schema', 'pg_catalog')
+					   AND table_schema NOT LIKE 'pg_toast%'
+					   AND table_schema NOT LIKE 'pg_temp_%'
+					 ORDER BY table_schema, table_name`,
+				)
+				if err != nil {
+					return nil, err
 				}
-				if _, ok := dbMap[dbName]; !ok {
-					dbMap[dbName] = &SchemaDatabase{Name: dbName}
+				defer rows.Close()
+				dbMap := map[string]*SchemaDatabase{}
+				for rows.Next() {
+					var schemaName, tableName, tableType string
+					rows.Scan(&schemaName, &tableName, &tableType)
+					tType := "table"
+					if tableType == "VIEW" {
+						tType = "view"
+					}
+					if _, ok := dbMap[schemaName]; !ok {
+						dbMap[schemaName] = &SchemaDatabase{Name: schemaName}
+					}
+					dbMap[schemaName].Tables = append(dbMap[schemaName].Tables, SchemaTable{Name: tableName, Type: tType})
 				}
-				dbMap[dbName].Tables = append(dbMap[dbName].Tables, SchemaTable{Name: tableName, Type: tType})
-			}
-			for _, d := range dbMap {
-				dbs = append(dbs, *d)
+				for _, d := range dbMap {
+					dbs = append(dbs, *d)
+				}
+
+			case "mysql", "mariadb":
+				rows, err := db.Query(
+					`SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE
+					 FROM information_schema.TABLES
+					 ORDER BY TABLE_SCHEMA, TABLE_NAME`,
+				)
+				if err != nil {
+					return nil, err
+				}
+				defer rows.Close()
+				dbMap := map[string]*SchemaDatabase{}
+				for rows.Next() {
+					var dbName, tableName, tableType string
+					rows.Scan(&dbName, &tableName, &tableType)
+					tType := "table"
+					if tableType == "VIEW" {
+						tType = "view"
+					}
+					if _, ok := dbMap[dbName]; !ok {
+						dbMap[dbName] = &SchemaDatabase{Name: dbName}
+					}
+					dbMap[dbName].Tables = append(dbMap[dbName].Tables, SchemaTable{Name: tableName, Type: tType})
+				}
+				for _, d := range dbMap {
+					dbs = append(dbs, *d)
+				}
+
+			case "sqlserver":
+				rows, err := db.Query(
+					`SELECT TABLE_CATALOG, TABLE_NAME, TABLE_TYPE
+					 FROM INFORMATION_SCHEMA.TABLES
+					 ORDER BY TABLE_NAME`,
+				)
+				if err != nil {
+					return nil, err
+				}
+				defer rows.Close()
+				dbMap := map[string]*SchemaDatabase{}
+				for rows.Next() {
+					var dbName, tableName, tableType string
+					rows.Scan(&dbName, &tableName, &tableType)
+					tType := "table"
+					if tableType == "VIEW" {
+						tType = "view"
+					}
+					if _, ok := dbMap[dbName]; !ok {
+						dbMap[dbName] = &SchemaDatabase{Name: dbName}
+					}
+					dbMap[dbName].Tables = append(dbMap[dbName].Tables, SchemaTable{Name: tableName, Type: tType})
+				}
+				for _, d := range dbMap {
+					dbs = append(dbs, *d)
+				}
 			}
 
-		case "sqlserver":
-			rows, err := db.Query(
-				`SELECT TABLE_CATALOG, TABLE_NAME, TABLE_TYPE
-				 FROM INFORMATION_SCHEMA.TABLES
-				 ORDER BY TABLE_NAME`,
-			)
-			if err != nil {
-				http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
-				return
+			if dbs == nil {
+				dbs = []SchemaDatabase{}
 			}
-			defer rows.Close()
-			dbMap := map[string]*SchemaDatabase{}
-			for rows.Next() {
-				var dbName, tableName, tableType string
-				rows.Scan(&dbName, &tableName, &tableType)
-				tType := "table"
-				if tableType == "VIEW" {
-					tType = "view"
-				}
-				if _, ok := dbMap[dbName]; !ok {
-					dbMap[dbName] = &SchemaDatabase{Name: dbName}
-				}
-				dbMap[dbName].Tables = append(dbMap[dbName].Tables, SchemaTable{Name: tableName, Type: tType})
-			}
-			for _, d := range dbMap {
-				dbs = append(dbs, *d)
-			}
-		}
-
-		if dbs == nil {
-			dbs = []SchemaDatabase{}
-		}
-		json.NewEncoder(w).Encode(dbs)
+			return dbs, nil
+		})
 	}
 }
 
@@ -164,21 +161,22 @@ func GetTableColumns() http.HandlerFunc {
 		dbName := parts[2]
 		tableName := parts[4]
 
-		db, driver, err := GetDB(connID)
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-			return
-		}
-
-		var cols []SchemaColumn
-
-		switch driver {
-		case "postgres":
-			schemaName := dbName
-			if schemaName == "" {
-				schemaName = "public"
+		cacheKey := fmt.Sprintf("schema:columns:%d:%s:%s", connID, dbName, tableName)
+		cachedJSONResponse(w, r, cacheKey, 2*time.Minute, func() (any, error) {
+			db, driver, err := GetDB(connID)
+			if err != nil {
+				return nil, fmt.Errorf(err.Error())
 			}
-			rows, err := db.Query(`
+
+			var cols []SchemaColumn
+
+			switch driver {
+			case "postgres":
+				schemaName := dbName
+				if schemaName == "" {
+					schemaName = "public"
+				}
+				rows, err := db.Query(`
 				SELECT
 					c.column_name,
 					c.data_type,
@@ -197,47 +195,45 @@ func GetTableColumns() http.HandlerFunc {
 				WHERE c.table_name = $1 AND c.table_schema = $2
 				ORDER BY c.ordinal_position
 			`, tableName, schemaName)
-			if err != nil {
-				http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
-				return
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var col SchemaColumn
-				var nullable, pk string
-				var defVal *string
-				rows.Scan(&col.Name, &col.DataType, &nullable, &pk, &defVal)
-				col.IsNullable = nullable == "YES"
-				col.IsPrimaryKey = pk == "true" || pk == "1"
-				col.DefaultValue = defVal
-				cols = append(cols, col)
-			}
+				if err != nil {
+					return nil, err
+				}
+				defer rows.Close()
+				for rows.Next() {
+					var col SchemaColumn
+					var nullable, pk string
+					var defVal *string
+					rows.Scan(&col.Name, &col.DataType, &nullable, &pk, &defVal)
+					col.IsNullable = nullable == "YES"
+					col.IsPrimaryKey = pk == "true" || pk == "1"
+					col.DefaultValue = defVal
+					cols = append(cols, col)
+				}
 
-	case "mysql", "mariadb":
-		rows, err := db.Query(`
+			case "mysql", "mariadb":
+				rows, err := db.Query(`
 				SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT
 				FROM information_schema.COLUMNS
 				WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
 				ORDER BY ORDINAL_POSITION
 			`, dbName, tableName)
-			if err != nil {
-				http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
-				return
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var col SchemaColumn
-				var nullable, key string
-				var defVal *string
-				rows.Scan(&col.Name, &col.DataType, &nullable, &key, &defVal)
-				col.IsNullable = nullable == "YES"
-				col.IsPrimaryKey = key == "PRI"
-				col.DefaultValue = defVal
-				cols = append(cols, col)
-			}
+				if err != nil {
+					return nil, err
+				}
+				defer rows.Close()
+				for rows.Next() {
+					var col SchemaColumn
+					var nullable, key string
+					var defVal *string
+					rows.Scan(&col.Name, &col.DataType, &nullable, &key, &defVal)
+					col.IsNullable = nullable == "YES"
+					col.IsPrimaryKey = key == "PRI"
+					col.DefaultValue = defVal
+					cols = append(cols, col)
+				}
 
-		case "sqlserver":
-			rows, err := db.Query(`
+			case "sqlserver":
+				rows, err := db.Query(`
 				SELECT
 					c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE,
 					CASE WHEN pk.COLUMN_NAME IS NOT NULL THEN 1 ELSE 0 END AS is_pk,
@@ -253,28 +249,28 @@ func GetTableColumns() http.HandlerFunc {
 				WHERE c.TABLE_CATALOG = @p2 AND c.TABLE_NAME = @p1
 				ORDER BY c.ORDINAL_POSITION
 			`, tableName, dbName)
-			if err != nil {
-				http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
-				return
+				if err != nil {
+					return nil, err
+				}
+				defer rows.Close()
+				for rows.Next() {
+					var col SchemaColumn
+					var nullable string
+					var pk int
+					var defVal *string
+					rows.Scan(&col.Name, &col.DataType, &nullable, &pk, &defVal)
+					col.IsNullable = nullable == "YES"
+					col.IsPrimaryKey = pk == 1
+					col.DefaultValue = defVal
+					cols = append(cols, col)
+				}
 			}
-			defer rows.Close()
-			for rows.Next() {
-				var col SchemaColumn
-				var nullable string
-				var pk int
-				var defVal *string
-				rows.Scan(&col.Name, &col.DataType, &nullable, &pk, &defVal)
-				col.IsNullable = nullable == "YES"
-				col.IsPrimaryKey = pk == 1
-				col.DefaultValue = defVal
-				cols = append(cols, col)
-			}
-		}
 
-		if cols == nil {
-			cols = []SchemaColumn{}
-		}
-		json.NewEncoder(w).Encode(cols)
+			if cols == nil {
+				cols = []SchemaColumn{}
+			}
+			return cols, nil
+		})
 	}
 }
 

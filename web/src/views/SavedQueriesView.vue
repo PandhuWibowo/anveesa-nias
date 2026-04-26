@@ -7,6 +7,7 @@ import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
 import { pendingSQL } from '@/composables/usePendingSQL'
 import { pendingAIAnalytics } from '@/composables/usePendingAIAnalytics'
+import { pendingDashboardBlock } from '@/composables/usePendingDashboardBlock'
 
 const router = useRouter()
 const { queries, loading, fetchAll, save, remove } = useSavedQueries()
@@ -116,6 +117,14 @@ function analyzeWithAI(q: SavedQuery) {
     source: 'saved_query',
   }
   router.push({ name: 'ai-analytics' })
+}
+
+function addToDashboard(q: SavedQuery) {
+  pendingDashboardBlock.value = {
+    savedQueryId: q.id,
+    title: q.name,
+  }
+  router.push({ name: 'dashboards' })
 }
 
 async function createNew() {
@@ -264,6 +273,10 @@ function formatDate(d: string) {
               <button class="base-btn base-btn--ghost base-btn--xs" @click="analyzeWithAI(q)" title="Open this saved query in AI Analytics">
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3l1.9 4.8L19 9.7l-3.8 3.1 1.2 4.9L12 15l-4.4 2.7 1.2-4.9L5 9.7l5.1-1.9L12 3z"/></svg>
                 Analyze with AI
+              </button>
+              <button class="base-btn base-btn--ghost base-btn--xs" @click="addToDashboard(q)" title="Add this saved query into the dashboard builder">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="2" width="9" height="11" rx="1"/><rect x="13" y="2" width="9" height="7" rx="1"/><rect x="2" y="15" width="9" height="7" rx="1"/><rect x="13" y="11" width="9" height="11" rx="1"/></svg>
+                Add to Dashboard
               </button>
               <button class="base-btn base-btn--ghost base-btn--xs" @click="startEdit(q)" title="Edit name & description">
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>

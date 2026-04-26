@@ -44,10 +44,10 @@ const canViewNotifications = computed(() => hasAnyPermission(['notifications.vie
 const directLinks = computed(() => {
   const links = [
     {
-      name: 'dashboard',
-      label: 'Overview',
-      icon: 'grid',
-      permissionsAny: ['connections.view'],
+      name: 'analytics',
+      label: 'Analytics',
+      icon: 'dashboard',
+      permissionsAny: ['connections.view', 'savedqueries.manage', 'ai.use'],
     },
     {
       name: 'docs',
@@ -62,22 +62,24 @@ const directLinks = computed(() => {
 // Grouped dropdown menus (filtered by permissions)
 const allMenuGroups = [
   {
-    id: 'explore',
-    label: 'Explore',
+    id: 'build',
+    label: 'Build',
     icon: 'table',
     items: [
-      { name: 'data',          label: 'Query & Data',  desc: 'Browse tables, inspect schema, and run SQL', icon: 'table', permissionsAny: ['connections.view', 'query.execute', 'schema.browse'] },
+      { name: 'data',          label: 'SQL Studio',  desc: 'Browse tables, inspect schema, and run SQL in the main workbench', icon: 'table', permissionsAny: ['connections.view', 'query.execute', 'schema.browse'] },
+      { name: 'saved-queries', label: 'Saved Queries', desc: 'Reusable SQL and dataset-style query library', icon: 'saved', permissionsAny: ['savedqueries.manage'] },
+      { name: 'dashboards', label: 'Dashboards', desc: 'Compose saved queries into chart blocks and shared analytics views', icon: 'dashboard', permissionsAny: ['savedqueries.manage'] },
       { name: 'ai-analytics',  label: 'AI Analytics', desc: 'Ask business questions and generate safe read-only analytics queries', icon: 'spark', permissionsAny: ['ai.use'] },
+      { name: 'er',            label: 'ER Diagram',    desc: 'Visualize relationships between tables before building analysis', icon: 'er', permissionsAny: ['schema.browse'] },
       { name: 'settings', label: 'AI Settings', desc: 'Manage your personal AI provider key, base URL, and model', icon: 'settings', permissionsAny: ['ai.use', 'ai.manage'] },
-      { name: 'saved-queries', label: 'Saved Queries', desc: 'Reusable SQL and team query library', icon: 'saved', permissionsAny: ['savedqueries.manage'] },
-      { name: 'er',            label: 'ER Diagram',    desc: 'Visualize relationships between tables', icon: 'er', permissionsAny: ['schema.browse'] },
     ],
   },
   {
-    id: 'monitor',
-    label: 'Monitor',
+    id: 'operate',
+    label: 'Operate',
     icon: 'activity',
     items: [
+      { name: 'dashboard', label: 'Operations Overview', desc: 'Connection footprint, size, and slow-query pressure across environments', icon: 'dashboard', permissionsAny: ['connections.view'] },
       { name: 'query-performance', label: 'Query Performance', desc: 'Slow queries, errors, and execution trends', icon: 'performance', permissionsAny: ['audit.view'] },
       { name: 'database-audit', label: 'Database Audit', desc: 'Live sessions and external access signals', icon: 'shieldlog', permissionsAny: ['audit.view'] },
       { name: 'audit',       label: 'Audit Log',   desc: 'Track access, actions, and query events', icon: 'audit', permissionsAny: ['audit.view'] },
@@ -88,8 +90,8 @@ const allMenuGroups = [
     ],
   },
   {
-    id: 'change',
-    label: 'Change',
+    id: 'govern',
+    label: 'Govern',
     icon: 'wrench',
     items: [
       { name: 'approvals',   label: 'Approvals',   desc: 'Review and approve controlled SQL changes', icon: 'workflow', permissionsAny: ['query.execute', 'query.approve'] },
@@ -99,6 +101,7 @@ const allMenuGroups = [
       { name: 'diff',        label: 'Schema Diff', desc: 'Compare schema structure across environments', icon: 'diff', permissionsAny: ['schema.diff.view'] },
       { name: 'backup',      label: 'Backup',      desc: 'Request database downloads or use direct backup and restore', icon: 'backup', permissionsAny: ['backups.manage', 'query.execute', 'query.approve'] },
       { name: 'scheduler',   label: 'Scheduler',   desc: 'Schedule recurring queries and jobs', icon: 'scheduler', permissionsAny: ['schedules.manage'] },
+      { name: 'workflows',   label: 'Workflows',   desc: 'Configure approval workflows and routing', icon: 'workflow', permissionsAny: ['workflows.manage'] },
     ],
   },
   {
@@ -108,7 +111,6 @@ const allMenuGroups = [
     items: [
       { name: 'connections', label: 'Connections', desc: 'Manage environments and database access points', icon: 'plug', permissionsAny: ['connections.view'] },
       { name: 'permissions', label: 'Permissions', desc: 'Roles, folders, and permission policy', icon: 'rbac', permissionsAny: ['roles.manage', 'folders.manage', 'users.manage'] },
-      { name: 'workflows',   label: 'Workflows',   desc: 'Configure approval workflows and routing', icon: 'workflow', permissionsAny: ['workflows.manage'] },
     ],
   },
 ]
@@ -278,6 +280,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
       >
         <!-- icon -->
         <svg v-if="link.icon === 'grid'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        <svg v-else-if="link.icon === 'dashboard'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="9" height="11" rx="1"/><rect x="13" y="2" width="9" height="7" rx="1"/><rect x="2" y="15" width="9" height="7" rx="1"/><rect x="13" y="11" width="9" height="11" rx="1"/></svg>
         <svg v-else-if="link.icon === 'book'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
         <svg v-else-if="link.icon === 'terminal'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
         {{ link.label }}

@@ -84,10 +84,18 @@ const chartTone = computed(() => {
   switch (result.value?.chart_type) {
     case 'line':
       return { label: 'Line trend', color: '#2563eb' }
+    case 'area':
+      return { label: 'Area trend', color: '#0f766e' }
     case 'bar':
       return { label: 'Bar comparison', color: '#7c3aed' }
+    case 'horizontal-bar':
+      return { label: 'Horizontal bar comparison', color: '#7c3aed' }
+    case 'scatter':
+      return { label: 'Scatter relationship', color: '#0891b2' }
     case 'pie':
       return { label: 'Pie distribution', color: '#ea580c' }
+    case 'donut':
+      return { label: 'Donut distribution', color: '#ea580c' }
     case 'kpi':
       return { label: 'KPI card', color: '#059669' }
     default:

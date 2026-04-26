@@ -401,6 +401,64 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 
+	mux.HandleFunc("/api/analytics-dashboards", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermSavedQueriesManage)(handlers.ListAnalyticsDashboards())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermSavedQueriesManage)(handlers.CreateAnalyticsDashboard())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/analytics-dashboards/users", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			requireAny(handlers.PermSavedQueriesManage)(handlers.ListAnalyticsDashboardUsers())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/analytics-dashboards/preview", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			requireAny(handlers.PermSavedQueriesManage)(handlers.PreviewAnalyticsDashboardQuery())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/analytics-dashboards/blocks/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			requireAny(handlers.PermSavedQueriesManage)(handlers.UpdateAnalyticsDashboardBlock())(w, r)
+		case http.MethodDelete:
+			requireAny(handlers.PermSavedQueriesManage)(handlers.DeleteAnalyticsDashboardBlock())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/analytics-dashboards/shared/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handlers.RenderSharedAnalyticsDashboard()(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/analytics-dashboards/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/render") && r.Method == http.MethodGet:
+			requireAny(handlers.PermSavedQueriesManage)(handlers.RenderAnalyticsDashboard())(w, r)
+		case strings.HasSuffix(r.URL.Path, "/blocks") && r.Method == http.MethodPost:
+			requireAny(handlers.PermSavedQueriesManage)(handlers.CreateAnalyticsDashboardBlock())(w, r)
+		case r.Method == http.MethodGet:
+			requireAny(handlers.PermSavedQueriesManage)(handlers.GetAnalyticsDashboard())(w, r)
+		case r.Method == http.MethodPut:
+			requireAny(handlers.PermSavedQueriesManage)(handlers.UpdateAnalyticsDashboard())(w, r)
+		case r.Method == http.MethodDelete:
+			requireAny(handlers.PermSavedQueriesManage)(handlers.DeleteAnalyticsDashboard())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
 	// ── Admin: users ──────────────────────────────────────────────
 	mux.HandleFunc("/api/admin/users", requireAny(handlers.PermUsersManage, handlers.PermWorkflowsManage)(handlers.ListUsers()))
 	mux.HandleFunc("/api/admin/users/", func(w http.ResponseWriter, r *http.Request) {

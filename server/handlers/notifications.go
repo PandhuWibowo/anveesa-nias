@@ -199,6 +199,7 @@ func EmitNotification(input NotificationEventInput) {
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
 		`), eventID, targetUserID, input.EventType, input.Severity, input.Category, input.Title, input.Message, input.EntityType, input.EntityID, now)
 	}
+	invalidateNotificationCountCache(targetUserIDs...)
 
 	queueNotificationDeliveries(eventID, input.EventType, input.Severity, input.ConnectionID, string(payloadJSON), now)
 }

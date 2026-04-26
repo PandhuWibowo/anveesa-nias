@@ -75,6 +75,11 @@ const driverCounts = computed(() => {
         <div v-if="connections.length" class="wv-section">
           <div class="wv-section__label">Quick access</div>
           <div class="wv-nav-grid">
+            <button class="wv-nav-card" @click="router.push({ name: 'analytics' })">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="wv-nav-card__ico wv-nav-card__ico--brand"><rect x="2" y="2" width="9" height="11" rx="1"/><rect x="13" y="2" width="9" height="7" rx="1"/><rect x="2" y="15" width="9" height="7" rx="1"/><rect x="13" y="11" width="9" height="11" rx="1"/></svg>
+              <span class="wv-nav-card__label">Analytics</span>
+              <span class="wv-nav-card__sub">Saved queries, AI reports, and BI flows</span>
+            </button>
             <button class="wv-nav-card" @click="router.push({ name: 'query' })">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="wv-nav-card__ico wv-nav-card__ico--brand"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
               <span class="wv-nav-card__label">Query Editor</span>
@@ -193,7 +198,7 @@ const driverCounts = computed(() => {
 /* ── Provider cards ── */
 .wv-providers {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 8px;
 }
 
