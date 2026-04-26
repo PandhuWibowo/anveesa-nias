@@ -18,7 +18,7 @@
     "axios": "^1.15",
     "codemirror": "^6.0.2",
     "naive-ui": "^2.40",
-    "pinia": "^2.3",
+    "pinia": "^3.0",
     "qrcode.vue": "^3.8.1",
     "sql-formatter": "^15.7.3",
     "vue": "^3.5",
