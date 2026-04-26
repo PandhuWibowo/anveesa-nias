@@ -7,6 +7,7 @@ This directory contains project, product, and implementation documentation for A
 - [Project README](../README.md)
 - [Open-source project guide](OPEN_SOURCE.md)
 - [Feature guide](FEATURES.md)
+- [Demo guide](DEMO.md)
 - [Donation guide](DONATION.md)
 
 ## User and Product Guides
