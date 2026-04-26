@@ -15,12 +15,112 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve semantic version
+        id: semver
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --tags --force
+
+          write_empty_outputs() {
+            {
+              echo "has_version=false"
+              echo "should_tag=false"
+              echo "version="
+              echo "version_tag="
+              echo "major="
+              echo "major_minor="
+              echo "bump="
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          current_tag="$(git tag --points-at HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1 || true)"
+          if [[ -n "$current_tag" ]]; then
+            version="${current_tag#v}"
+            IFS='.' read -r major minor patch <<< "$version"
+            {
+              echo "has_version=true"
+              echo "should_tag=false"
+              echo "version=$version"
+              echo "version_tag=$current_tag"
+              echo "major=$major"
+              echo "major_minor=$major.$minor"
+              echo "bump=existing"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          latest_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1 || true)"
+          if [[ -n "$latest_tag" ]]; then
+            base_version="${latest_tag#v}"
+            range="$latest_tag..HEAD"
+          else
+            base_version="0.0.0"
+            range="HEAD"
+          fi
+
+          bump=""
+          while IFS= read -r commit; do
+            subject="$(git log -1 --format=%s "$commit")"
+            body="$(git log -1 --format=%b "$commit")"
+            message="$subject"$'\n'"$body"
+
+            if grep -Eq '(^|[[:space:]])BREAKING CHANGE:|^[a-zA-Z]+(\([^)]+\))?!:' <<< "$message"; then
+              bump="major"
+              break
+            fi
+
+            if [[ "$bump" != "minor" ]] && grep -Eq '^feat(\([^)]+\))?:' <<< "$subject"; then
+              bump="minor"
+              continue
+            fi
+
+            if [[ -z "$bump" ]] && grep -Eq '^(fix|perf|refactor|docs|style|test|build|ci|chore|revert)(\([^)]+\))?:' <<< "$subject"; then
+              bump="patch"
+            fi
+          done < <(git rev-list --reverse "$range")
+
+          if [[ -z "$bump" ]]; then
+            write_empty_outputs
+            exit 0
+          fi
+
+          IFS='.' read -r major minor patch <<< "$base_version"
+          case "$bump" in
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            patch)
+              patch=$((patch + 1))
+              ;;
+          esac
+
+          version="$major.$minor.$patch"
+          {
+            echo "has_version=true"
+            echo "should_tag=true"
+            echo "version=$version"
+            echo "version_tag=v$version"
+            echo "major=$major"
+            echo "major_minor=$major.$minor"
+            echo "bump=$bump"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -38,11 +138,11 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-
+            type=raw,value=${{ steps.semver.outputs.version_tag }},enable=${{ steps.semver.outputs.has_version == 'true' }}
+            type=raw,value=${{ steps.semver.outputs.version }},enable=${{ steps.semver.outputs.has_version == 'true' }}
+            type=raw,value=${{ steps.semver.outputs.major_minor }},enable=${{ steps.semver.outputs.has_version == 'true' }}
+            type=raw,value=${{ steps.semver.outputs.major }},enable=${{ steps.semver.outputs.has_version == 'true' }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and push
@@ -54,3 +154,13 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Create git version tag
+        if: steps.semver.outputs.should_tag == 'true' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.semver.outputs.version_tag }}"
+          git push origin "refs/tags/${{ steps.semver.outputs.version_tag }}"
