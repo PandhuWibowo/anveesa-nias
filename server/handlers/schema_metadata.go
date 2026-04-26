@@ -2,12 +2,12 @@ package handlers
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type SchemaObjectItem struct {
@@ -97,29 +97,23 @@ type SchemaObjectDetail struct {
 
 func ListSchemaMetadata() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
 		connID, dbName, err := schemaTargetFromPath(r.URL.Path)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
 		}
-		db, driver, err := GetDB(connID)
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-			return
-		}
-		catalog, err := fetchSchemaMetadataCatalog(db, normalizeSchemaDriver(driver), dbName)
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
-			return
-		}
-		json.NewEncoder(w).Encode(catalog)
+		cachedJSONResponse(w, r, fmt.Sprintf("schema:metadata:%d:%s", connID, dbName), 2*time.Minute, func() (any, error) {
+			db, driver, err := GetDB(connID)
+			if err != nil {
+				return nil, fmt.Errorf(err.Error())
+			}
+			return fetchSchemaMetadataCatalog(db, normalizeSchemaDriver(driver), dbName)
+		})
 	}
 }
 
 func GetSchemaObjectDetail() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
 		connID, dbName, err := schemaTargetFromPath(strings.TrimSuffix(r.URL.Path, "/object-detail"))
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
@@ -135,17 +129,13 @@ func GetSchemaObjectDetail() http.HandlerFunc {
 			http.Error(w, jsonError("type and name are required"), http.StatusBadRequest)
 			return
 		}
-		db, driver, err := GetDB(connID)
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-			return
-		}
-		detail, err := fetchSchemaObjectDetail(db, normalizeSchemaDriver(driver), dbName, objectType, objectName)
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
-			return
-		}
-		json.NewEncoder(w).Encode(detail)
+		cachedJSONResponse(w, r, fmt.Sprintf("schema:object:%d:%s:%s:%s", connID, dbName, objectType, objectName), 2*time.Minute, func() (any, error) {
+			db, driver, err := GetDB(connID)
+			if err != nil {
+				return nil, fmt.Errorf(err.Error())
+			}
+			return fetchSchemaObjectDetail(db, normalizeSchemaDriver(driver), dbName, objectType, objectName)
+		})
 	}
 }
 

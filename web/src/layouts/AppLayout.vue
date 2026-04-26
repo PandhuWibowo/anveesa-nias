@@ -57,7 +57,7 @@ function handleSearchNavigate({ connId, table, type }: { connId: number; table: 
       @global-search="schemaSearchOpen = true"
     />
 
-    <main class="main-area" style="flex:1;min-height:0;overflow:hidden">
+    <main class="main-area">
       <router-view :activeConnId="activeConnId" @set-conn="handleConnSelect" />
     </main>
 

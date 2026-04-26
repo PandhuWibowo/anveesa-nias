@@ -5,9 +5,13 @@ import { useConnections } from '@/composables/useConnections'
 
 interface Schedule {
   id: number; name: string; conn_id: number; sql: string
+  dashboard_id: number
   kind: string; ai_prompt: string; created_by: number
   interval_min: number; alert_condition: string; alert_threshold: number
   enabled: boolean; last_run_at: string; next_run_at: string; created_at: string
+}
+interface AnalyticsDashboard {
+  id: number; name: string
 }
 interface ScheduleRun {
   id: number; schedule_id: number; row_count: number
@@ -16,19 +20,21 @@ interface ScheduleRun {
 
 const { connections } = useConnections()
 const schedules = ref<Schedule[]>([])
+const dashboards = ref<AnalyticsDashboard[]>([])
 const loading = ref(false)
 const showForm = ref(false)
 const selectedRuns = ref<ScheduleRun[]>([])
 const runsFor = ref<number | null>(null)
 
 const form = ref<Partial<Schedule>>({
-  name: '', conn_id: 0, sql: '', kind: 'query', ai_prompt: '', interval_min: 60,
+  name: '', conn_id: 0, dashboard_id: 0, sql: '', kind: 'query', ai_prompt: '', interval_min: 60,
   alert_condition: '', alert_threshold: 0, enabled: true,
 })
 
 const kindOpts = [
   { value: 'query', label: 'Query Check' },
   { value: 'ai_summary', label: 'AI Summary' },
+  { value: 'dashboard_report', label: 'Dashboard Report' },
 ]
 
 const alertOpts = [
@@ -50,13 +56,22 @@ const intervalOpts = [
 async function load() {
   loading.value = true
   try {
-    const { data } = await axios.get<Schedule[]>('/api/schedules')
-    schedules.value = data
+    const [schedulesResp, dashboardsResp] = await Promise.all([
+      axios.get<Schedule[]>('/api/schedules'),
+      axios.get<AnalyticsDashboard[]>('/api/analytics-dashboards').catch(() => ({ data: [] as AnalyticsDashboard[] })),
+    ])
+    schedules.value = schedulesResp.data
+    dashboards.value = dashboardsResp.data ?? []
   } finally { loading.value = false }
 }
 
 async function save() {
-  if (!form.value.name || !form.value.sql || !form.value.conn_id) return
+  if (!form.value.name) return
+  if (form.value.kind === 'dashboard_report') {
+    if (!form.value.dashboard_id) return
+  } else if (!form.value.sql || !form.value.conn_id) {
+    return
+  }
   if (form.value.id) {
     await axios.put(`/api/schedules/${form.value.id}`, form.value)
   } else {
@@ -95,11 +110,15 @@ function editSchedule(s: Schedule) {
 }
 
 function resetForm() {
-  form.value = { name: '', conn_id: 0, sql: '', kind: 'query', ai_prompt: '', interval_min: 60, alert_condition: '', alert_threshold: 0, enabled: true }
+  form.value = { name: '', conn_id: 0, dashboard_id: 0, sql: '', kind: 'query', ai_prompt: '', interval_min: 60, alert_condition: '', alert_threshold: 0, enabled: true }
 }
 
 function connName(id: number) {
   return connections.value.find((c) => c.id === id)?.name ?? `#${id}`
+}
+
+function dashboardName(id: number) {
+  return dashboards.value.find((d) => d.id === id)?.name ?? `#${id}`
 }
 
 onMounted(load)
@@ -112,8 +131,8 @@ onMounted(load)
       <section class="page-hero">
         <div class="page-hero__content">
           <div class="page-kicker">Automation</div>
-          <div class="page-title">Scheduled Queries</div>
-          <div class="page-subtitle">Run recurring SQL jobs, monitor thresholds, and inspect execution history without leaving the app.</div>
+          <div class="page-title">Scheduled Jobs</div>
+          <div class="page-subtitle">Run recurring SQL checks, AI summaries, and dashboard report deliveries without leaving the app.</div>
         </div>
         <div class="page-hero__actions">
           <button class="base-btn base-btn--primary base-btn--sm" @click="resetForm(); showForm=true">+ New Schedule</button>
@@ -131,8 +150,8 @@ onMounted(load)
             <div class="sc-dot" :class="s.enabled ? 'sc-dot--on' : 'sc-dot--off'" />
             <div class="sc-item-info">
               <span class="sc-item-name">{{ s.name }}</span>
-              <span class="sc-item-conn">{{ connName(s.conn_id) }}</span>
-              <span class="sc-item-kind">{{ s.kind === 'ai_summary' ? 'AI Summary' : 'Query Check' }}</span>
+              <span class="sc-item-conn">{{ s.kind === 'dashboard_report' ? dashboardName(s.dashboard_id) : connName(s.conn_id) }}</span>
+              <span class="sc-item-kind">{{ s.kind === 'ai_summary' ? 'AI Summary' : (s.kind === 'dashboard_report' ? 'Dashboard Report' : 'Query Check') }}</span>
               <span class="sc-item-interval">every {{ s.interval_min }}m</span>
               <span v-if="s.alert_condition" class="sc-alert-pill">
                 🔔 {{ alertOpts.find(a => a.value === s.alert_condition)?.label }} {{ s.alert_threshold }}
@@ -152,7 +171,8 @@ onMounted(load)
               <button class="base-btn base-btn--ghost base-btn--sm" style="color:var(--danger)" @click="del(s)">Delete</button>
             </div>
           </div>
-          <pre class="sc-sql">{{ s.sql }}</pre>
+          <pre v-if="s.kind !== 'dashboard_report'" class="sc-sql">{{ s.sql }}</pre>
+          <div v-else class="sc-dashboard-target">Dashboard: {{ dashboardName(s.dashboard_id) }}</div>
         </div>
       </div>
 
@@ -188,8 +208,12 @@ onMounted(load)
               <input v-model="form.name" class="base-input" placeholder="Daily row count check" />
             </div>
             <div class="form-group">
-              <label class="form-label">Connection</label>
-              <select v-model.number="form.conn_id" class="base-input">
+              <label class="form-label">{{ form.kind === 'dashboard_report' ? 'Dashboard' : 'Connection' }}</label>
+              <select v-if="form.kind === 'dashboard_report'" v-model.number="form.dashboard_id" class="base-input">
+                <option :value="0">— select dashboard —</option>
+                <option v-for="d in dashboards" :key="d.id" :value="d.id">{{ d.name }}</option>
+              </select>
+              <select v-else v-model.number="form.conn_id" class="base-input">
                 <option :value="0">— select —</option>
                 <option v-for="c in connections" :key="c.id" :value="c.id">{{ c.name }}</option>
               </select>
@@ -200,9 +224,13 @@ onMounted(load)
                 <option v-for="o in kindOpts" :key="o.value" :value="o.value">{{ o.label }}</option>
               </select>
             </div>
-            <div class="form-group">
+            <div v-if="form.kind !== 'dashboard_report'" class="form-group">
               <label class="form-label">{{ form.kind === 'ai_summary' ? 'Read-only SQL' : 'SQL' }}</label>
               <textarea v-model="form.sql" class="base-input" rows="4" :placeholder="form.kind === 'ai_summary' ? 'SELECT status, COUNT(*) AS total FROM orders GROUP BY status' : 'SELECT COUNT(*) FROM users'" style="font-family:monospace;font-size:12px;resize:vertical" />
+            </div>
+            <div v-else class="form-group">
+              <label class="form-label">Delivery Summary</label>
+              <div class="sc-helper">This schedule renders the selected dashboard, records a run summary, and emits notification events like <code>dashboard.report</code> and <code>dashboard.report.failed</code>.</div>
             </div>
             <div v-if="form.kind === 'ai_summary'" class="form-group">
               <label class="form-label">AI Summary Prompt</label>
@@ -229,7 +257,7 @@ onMounted(load)
           </div>
           <div class="page-modal__foot sc-modal-footer">
             <button class="base-btn base-btn--ghost" @click="showForm=false">Cancel</button>
-            <button class="base-btn base-btn--primary" @click="save" :disabled="!form.name || !form.sql || !form.conn_id">
+            <button class="base-btn base-btn--primary" @click="save" :disabled="!form.name || (form.kind === 'dashboard_report' ? !form.dashboard_id : (!form.sql || !form.conn_id))">
               {{ form.id ? 'Save' : 'Create' }}
             </button>
           </div>
@@ -264,6 +292,8 @@ onMounted(load)
 .sc-time { font-size:10.5px; color:var(--text-muted); }
 .sc-item-actions { display:flex; gap:4px; flex-wrap:wrap; }
 .sc-sql { margin:0; padding:8px 14px; background:var(--bg-body); border-top:1px solid var(--border); font-family:var(--mono,monospace); font-size:11.5px; color:var(--text-secondary); white-space:pre-wrap; word-break:break-all; }
+.sc-dashboard-target { padding:10px 14px; border-top:1px solid var(--border); background:var(--bg-body); font-size:12px; color:var(--text-secondary); }
+.sc-helper { padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--bg-body); font-size:12px; line-height:1.6; color:var(--text-secondary); }
 .sc-runs { background:var(--bg-elevated); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
 .sc-runs-header { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-bottom:1px solid var(--border); font-size:13px; font-weight:700; color:var(--text-primary); }
 .sc-run-row { display:flex; align-items:center; gap:12px; padding:8px 14px; border-bottom:1px solid var(--border); font-size:12px; }

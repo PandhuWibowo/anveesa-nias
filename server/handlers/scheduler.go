@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ type Schedule struct {
 	ID             int64   `json:"id"`
 	Name           string  `json:"name"`
 	ConnID         int64   `json:"conn_id"`
+	DashboardID    int64   `json:"dashboard_id"`
 	SQL            string  `json:"sql"`
 	Kind           string  `json:"kind"`
 	AIPrompt       string  `json:"ai_prompt"`
@@ -59,7 +61,7 @@ func ListSchedules() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		rows, err := appdb.DB.Query(`
-			SELECT id, name, conn_id, sql, COALESCE(kind,'query'), COALESCE(ai_prompt,''), COALESCE(created_by,0),
+			SELECT id, name, conn_id, COALESCE(dashboard_id,0), sql, COALESCE(kind,'query'), COALESCE(ai_prompt,''), COALESCE(created_by,0),
 			       interval_min, COALESCE(alert_condition,''), COALESCE(alert_threshold,0),
 			       enabled, COALESCE(last_run_at,''), COALESCE(next_run_at,''), created_at
 			FROM schedules ORDER BY id`)
@@ -72,7 +74,7 @@ func ListSchedules() http.HandlerFunc {
 		for rows.Next() {
 			var s Schedule
 			var enabled int
-			rows.Scan(&s.ID, &s.Name, &s.ConnID, &s.SQL, &s.Kind, &s.AIPrompt, &s.CreatedBy, &s.IntervalMin, &s.AlertCondition, &s.AlertThreshold,
+			rows.Scan(&s.ID, &s.Name, &s.ConnID, &s.DashboardID, &s.SQL, &s.Kind, &s.AIPrompt, &s.CreatedBy, &s.IntervalMin, &s.AlertCondition, &s.AlertThreshold,
 				&enabled, &s.LastRunAt, &s.NextRunAt, &s.CreatedAt)
 			s.Enabled = enabled == 1
 			list = append(list, s)
@@ -88,8 +90,8 @@ func CreateSchedule() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		var s Schedule
-		if err := json.NewDecoder(r.Body).Decode(&s); err != nil || s.Name == "" || s.SQL == "" {
-			http.Error(w, `{"error":"name and sql required"}`, http.StatusBadRequest)
+		if err := json.NewDecoder(r.Body).Decode(&s); err != nil || strings.TrimSpace(s.Name) == "" {
+			http.Error(w, `{"error":"name required"}`, http.StatusBadRequest)
 			return
 		}
 		if s.IntervalMin <= 0 {
@@ -98,12 +100,23 @@ func CreateSchedule() http.HandlerFunc {
 		if strings.TrimSpace(s.Kind) == "" {
 			s.Kind = "query"
 		}
+		if s.Kind == "dashboard_report" {
+			if s.DashboardID <= 0 {
+				http.Error(w, `{"error":"dashboard_id required"}`, http.StatusBadRequest)
+				return
+			}
+			s.ConnID = 0
+			s.SQL = ""
+		} else if strings.TrimSpace(s.SQL) == "" {
+			http.Error(w, `{"error":"sql required"}`, http.StatusBadRequest)
+			return
+		}
 		userID, _, _ := currentUserFromHeaders(r)
 		nextRun := time.Now().Add(time.Duration(s.IntervalMin) * time.Minute).Format("2006-01-02 15:04:05")
 		res, err := appdb.DB.Exec(
-			`INSERT INTO schedules (name, conn_id, sql, kind, ai_prompt, created_by, interval_min, alert_condition, alert_threshold, enabled, next_run_at, created_at)
-			 VALUES (?,?,?,?,?,?,?,?,?,1,?,?)`,
-			s.Name, s.ConnID, s.SQL, s.Kind, s.AIPrompt, userID, s.IntervalMin, s.AlertCondition, s.AlertThreshold, nextRun,
+			`INSERT INTO schedules (name, conn_id, dashboard_id, sql, kind, ai_prompt, created_by, interval_min, alert_condition, alert_threshold, enabled, next_run_at, created_at)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+			s.Name, s.ConnID, s.DashboardID, s.SQL, s.Kind, s.AIPrompt, userID, s.IntervalMin, s.AlertCondition, s.AlertThreshold, nextRun,
 			time.Now().Format("2006-01-02 15:04:05"),
 		)
 		if err != nil {
@@ -132,9 +145,13 @@ func UpdateSchedule() http.HandlerFunc {
 		if strings.TrimSpace(s.Kind) == "" {
 			s.Kind = "query"
 		}
+		if s.Kind == "dashboard_report" {
+			s.ConnID = 0
+			s.SQL = ""
+		}
 		appdb.DB.Exec(
-			`UPDATE schedules SET name=?, sql=?, kind=?, ai_prompt=?, interval_min=?, alert_condition=?, alert_threshold=?, enabled=? WHERE id=?`,
-			s.Name, s.SQL, s.Kind, s.AIPrompt, s.IntervalMin, s.AlertCondition, s.AlertThreshold, enabled, s.ID,
+			`UPDATE schedules SET name=?, conn_id=?, dashboard_id=?, sql=?, kind=?, ai_prompt=?, interval_min=?, alert_condition=?, alert_threshold=?, enabled=? WHERE id=?`,
+			s.Name, s.ConnID, s.DashboardID, s.SQL, s.Kind, s.AIPrompt, s.IntervalMin, s.AlertCondition, s.AlertThreshold, enabled, s.ID,
 		)
 		json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	}
@@ -158,8 +175,8 @@ func RunScheduleNow() http.HandlerFunc {
 		var s Schedule
 		var enabled int
 		err := appdb.DB.QueryRow(
-			`SELECT id, name, conn_id, sql, COALESCE(kind,'query'), COALESCE(ai_prompt,''), COALESCE(created_by,0), interval_min, COALESCE(alert_condition,''), COALESCE(alert_threshold,0), enabled FROM schedules WHERE id=?`, id,
-		).Scan(&s.ID, &s.Name, &s.ConnID, &s.SQL, &s.Kind, &s.AIPrompt, &s.CreatedBy, &s.IntervalMin, &s.AlertCondition, &s.AlertThreshold, &enabled)
+			`SELECT id, name, conn_id, COALESCE(dashboard_id,0), sql, COALESCE(kind,'query'), COALESCE(ai_prompt,''), COALESCE(created_by,0), interval_min, COALESCE(alert_condition,''), COALESCE(alert_threshold,0), enabled FROM schedules WHERE id=?`, id,
+		).Scan(&s.ID, &s.Name, &s.ConnID, &s.DashboardID, &s.SQL, &s.Kind, &s.AIPrompt, &s.CreatedBy, &s.IntervalMin, &s.AlertCondition, &s.AlertThreshold, &enabled)
 		if err != nil {
 			http.Error(w, `{"error":"schedule not found"}`, http.StatusNotFound)
 			return
@@ -236,30 +253,42 @@ func MarkNotificationsRead() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, _, _ := currentUserFromHeaders(r)
 		appdb.DB.Exec(appdb.ConvertQuery(`UPDATE notifications SET read=1 WHERE target_user_id = 0 OR target_user_id = ?`), userID)
+		invalidateNotificationCountCache(0, userID)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
 func UnreadCount() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
 		userID, _, _ := currentUserFromHeaders(r)
-		var cnt int64
-		appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COUNT(*) FROM notifications WHERE read=0 AND (target_user_id = 0 OR target_user_id = ?)`), userID).Scan(&cnt)
-		json.NewEncoder(w).Encode(map[string]any{"count": cnt})
+		cachedJSONResponse(w, r, "notifications:unread:"+strconv.FormatInt(userID, 10), 20*time.Second, func() (any, error) {
+			var cnt int64
+			err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COUNT(*) FROM notifications WHERE read=0 AND (target_user_id = 0 OR target_user_id = ?)`), userID).Scan(&cnt)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"count": cnt}, nil
+		})
 	}
 }
 
 // executeSchedule runs a schedule's SQL and records the result.
 func executeSchedule(s Schedule) (map[string]any, error) {
+	switch firstNonEmptyString(strings.TrimSpace(s.Kind), "query") {
+	case "ai_summary":
+		db, _, err := GetDB(s.ConnID)
+		if err != nil {
+			recordScheduleRun(s.ID, 0, "", err.Error(), false)
+			return nil, err
+		}
+		return executeAISummarySchedule(s, db)
+	case "dashboard_report":
+		return executeDashboardReportSchedule(s)
+	}
 	db, _, err := GetDB(s.ConnID)
 	if err != nil {
 		recordScheduleRun(s.ID, 0, "", err.Error(), false)
 		return nil, err
-	}
-
-	if firstNonEmptyString(strings.TrimSpace(s.Kind), "query") == "ai_summary" {
-		return executeAISummarySchedule(s, db)
 	}
 
 	rows, err := db.Query(s.SQL)
@@ -403,6 +432,89 @@ func emitScheduleAIError(s Schedule, errMsg string) {
 	})
 }
 
+func executeDashboardReportSchedule(s Schedule) (map[string]any, error) {
+	rendered, err := renderAnalyticsDashboardForUser(s.CreatedBy, s.DashboardID, nil)
+	if err != nil {
+		recordScheduleRun(s.ID, 0, "", err.Error(), false)
+		emitDashboardReportError(s, err.Error())
+		return nil, err
+	}
+	successBlocks := 0
+	failedBlocks := 0
+	totalRows := 0
+	titles := make([]string, 0, len(rendered.Blocks))
+	for _, block := range rendered.Blocks {
+		if strings.TrimSpace(block.Error) != "" {
+			failedBlocks++
+			continue
+		}
+		successBlocks++
+		totalRows += block.RowCount
+		titles = append(titles, block.Title)
+	}
+	summary := fmt.Sprintf("Dashboard \"%s\" rendered with %d successful blocks, %d failed blocks, and %d total rows.", rendered.Name, successBlocks, failedBlocks, totalRows)
+	recordScheduleRun(s.ID, int64(totalRows), summary, "", failedBlocks > 0)
+	now := time.Now().Format("2006-01-02 15:04:05")
+	next := time.Now().Add(time.Duration(s.IntervalMin) * time.Minute).Format("2006-01-02 15:04:05")
+	appdb.DB.Exec(appdb.ConvertQuery(`UPDATE schedules SET last_run_at=?, next_run_at=? WHERE id=?`), now, next, s.ID)
+
+	EmitNotification(NotificationEventInput{
+		EventType:     "dashboard.report",
+		Category:      "alert",
+		Severity:      ternarySeverity(failedBlocks > 0, "warning", "info"),
+		Title:         fmt.Sprintf("Dashboard report ready for %s", rendered.Name),
+		Message:       summary,
+		EntityType:    "analytics_dashboard",
+		EntityID:      s.DashboardID,
+		TargetUserIDs: dedupeUserIDs([]int64{s.CreatedBy}),
+		Payload: map[string]any{
+			"schedule_id":       s.ID,
+			"schedule_name":     s.Name,
+			"dashboard_id":      s.DashboardID,
+			"dashboard_name":    rendered.Name,
+			"successful_blocks": successBlocks,
+			"failed_blocks":     failedBlocks,
+			"row_count":         totalRows,
+			"block_titles":      titles,
+		},
+	})
+
+	return map[string]any{
+		"dashboard_id":      s.DashboardID,
+		"dashboard_name":    rendered.Name,
+		"successful_blocks": successBlocks,
+		"failed_blocks":     failedBlocks,
+		"row_count":         totalRows,
+		"summary":           summary,
+	}, nil
+}
+
+func emitDashboardReportError(s Schedule, errMsg string) {
+	EmitNotification(NotificationEventInput{
+		EventType:     "dashboard.report.failed",
+		Category:      "alert",
+		Severity:      "error",
+		Title:         fmt.Sprintf("Dashboard report failed for schedule %s", s.Name),
+		Message:       errMsg,
+		EntityType:    "analytics_dashboard",
+		EntityID:      s.DashboardID,
+		TargetUserIDs: dedupeUserIDs([]int64{s.CreatedBy}),
+		Payload: map[string]any{
+			"schedule_id":   s.ID,
+			"schedule_name": s.Name,
+			"dashboard_id":  s.DashboardID,
+			"error":         errMsg,
+		},
+	})
+}
+
+func ternarySeverity(condition bool, whenTrue, whenFalse string) string {
+	if condition {
+		return whenTrue
+	}
+	return whenFalse
+}
+
 func checkAlert(condition string, threshold float64, rowCount int64) bool {
 	switch condition {
 	case "row_count_gt":
@@ -465,7 +577,7 @@ func StopScheduler() {
 func runDueSchedules() {
 	now := time.Now().Format("2006-01-02 15:04:05")
 	rows, err := appdb.DB.Query(
-		`SELECT id, name, conn_id, sql, COALESCE(kind,'query'), COALESCE(ai_prompt,''), COALESCE(created_by,0), interval_min, COALESCE(alert_condition,''), COALESCE(alert_threshold,0)
+		`SELECT id, name, conn_id, COALESCE(dashboard_id,0), sql, COALESCE(kind,'query'), COALESCE(ai_prompt,''), COALESCE(created_by,0), interval_min, COALESCE(alert_condition,''), COALESCE(alert_threshold,0)
 		 FROM schedules WHERE enabled=1 AND (next_run_at IS NULL OR next_run_at <= ?)`, now)
 	if err != nil {
 		return
@@ -473,7 +585,7 @@ func runDueSchedules() {
 	var due []Schedule
 	for rows.Next() {
 		var s Schedule
-		rows.Scan(&s.ID, &s.Name, &s.ConnID, &s.SQL, &s.Kind, &s.AIPrompt, &s.CreatedBy, &s.IntervalMin, &s.AlertCondition, &s.AlertThreshold)
+		rows.Scan(&s.ID, &s.Name, &s.ConnID, &s.DashboardID, &s.SQL, &s.Kind, &s.AIPrompt, &s.CreatedBy, &s.IntervalMin, &s.AlertCondition, &s.AlertThreshold)
 		due = append(due, s)
 	}
 	rows.Close()

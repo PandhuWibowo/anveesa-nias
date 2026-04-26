@@ -6,6 +6,24 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
+      path: '/shared-dashboards/:token',
+      name: 'shared-dashboard',
+      component: () => import('@/views/AnalyticsDashboardsView.vue'),
+      meta: { guest: true, publicDashboard: true },
+    },
+    {
+      path: '/embed/dashboards/:token',
+      name: 'embed-dashboard',
+      component: () => import('@/views/AnalyticsDashboardsView.vue'),
+      meta: { guest: true, publicDashboard: true, embed: true },
+    },
+    {
+      path: '/embed/dashboards/:token/blocks/:blockId',
+      name: 'embed-dashboard-block',
+      component: () => import('@/views/AnalyticsDashboardsView.vue'),
+      meta: { guest: true, publicDashboard: true, embed: true },
+    },
+    {
       path: '/login',
       name: 'login',
       component: () => import('@/views/LoginView.vue'),
@@ -18,7 +36,13 @@ const router = createRouter({
       children: [
         {
           path: '',
-          redirect: { name: 'data' },
+          redirect: { name: 'analytics' },
+        },
+        {
+          path: 'analytics',
+          name: 'analytics',
+          component: () => import('@/views/AnalyticsHomeView.vue'),
+          meta: { requiredPermissionsAny: ['connections.view', 'savedqueries.manage', 'ai.use'] },
         },
         {
           path: 'welcome',
@@ -140,6 +164,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['savedqueries.manage'] },
         },
         {
+          path: 'dashboards',
+          name: 'dashboards',
+          component: () => import('@/views/AnalyticsDashboardsView.vue'),
+          meta: { requiredPermissionsAny: ['savedqueries.manage'] },
+        },
+        {
           path: 'approvals',
           name: 'approvals',
           component: () => import('@/views/ApprovalRequestsView.vue'),
@@ -209,7 +239,7 @@ router.beforeEach((to) => {
   }
 
   // Guest routes (e.g., login) - redirect if already authenticated
-  if (to.meta.guest && isAuthenticated.value) {
+  if (to.meta.guest && !to.meta.publicDashboard && isAuthenticated.value) {
     return { name: 'welcome' }
   }
 

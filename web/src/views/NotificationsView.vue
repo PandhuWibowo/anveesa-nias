@@ -163,6 +163,8 @@ const eventTypeSuggestions = [
   'schedule.alert',
   'schedule.ai_summary',
   'schedule.ai_summary.failed',
+  'dashboard.report',
+  'dashboard.report.failed',
   'system.test',
   '*',
 ]
@@ -670,6 +672,20 @@ onMounted(loadAll)
               })"
             >
               Use Failure Preset
+            </button>
+            <button
+              class="base-btn base-btn--ghost base-btn--xs"
+              @click="applyRulePreset({
+                name: 'Dashboard Report Delivery',
+                description: 'Send completed scheduled dashboard reports to the selected integration.',
+                eventType: 'dashboard.report',
+                severity: 'info',
+                entityType: 'analytics_dashboard',
+                titleTemplate: 'Dashboard Report: {{payload.dashboard_name}}',
+                messageTemplate: '{{message}}'
+              })"
+            >
+              Use Dashboard Preset
             </button>
           </div>
           <div class="notif-form">
