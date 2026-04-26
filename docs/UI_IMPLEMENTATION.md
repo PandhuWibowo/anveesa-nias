@@ -223,35 +223,35 @@ FROM connections WHERE environment = 'staging';
 
 ---
 
-### **Scenario 3: Production Safeguards**
+### **Scenario 3: Sensitive Data Safeguards**
 
-**Goal:** Restrict production database access to read-only, even for admins.
+**Goal:** Restrict sensitive database access to read-only, even for admins.
 
 **Steps:**
-1. Create "Production Team" group:
+1. Create "Sensitive Data Team" group:
    - Role Restriction: "admin"
    - Only admins can be members
 
-2. Add production connections with read-only:
+2. Add sensitive connections with read-only:
 ```sql
 INSERT INTO folder_connections (folder_id, conn_id, permissions)
 SELECT 
-  (SELECT id FROM connection_folders WHERE name='Production Team'),
+  (SELECT id FROM connection_folders WHERE name='Sensitive Data Team'),
   id,
   '["select"]'
-FROM connections WHERE environment = 'production';
+FROM connections WHERE environment = 'sensitive';
 ```
 
 3. Add admin members:
 ```sql
 INSERT INTO folder_members (folder_id, user_id)
 SELECT 
-  (SELECT id FROM connection_folders WHERE name='Production Team'),
+  (SELECT id FROM connection_folders WHERE name='Sensitive Data Team'),
   id
 FROM users WHERE role_id = (SELECT id FROM roles WHERE name='admin');
 ```
 
-**Result:** Even admins can only SELECT from production, preventing accidental data loss.
+**Result:** Even admins can only SELECT from sensitive data sources, preventing accidental data loss.
 
 ---
 
@@ -429,4 +429,4 @@ Administration
 ✅ **Complete permission reference**  
 ✅ **Responsive & modern design**  
 
-The permission system is **production-ready** and **fully integrated** with your existing application! 🚀
+The permission system is ready for multi-user database access workflows.

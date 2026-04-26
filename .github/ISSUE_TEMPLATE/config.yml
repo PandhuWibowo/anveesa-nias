@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/anveesa/anveesa-nias/security/advisories/new
+    about: Please report security vulnerabilities privately.

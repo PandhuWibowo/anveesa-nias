@@ -232,7 +232,7 @@ VALUES ('ReadOnly', 'Can only view and query', '["connections.view","query.execu
 -- Assign user to role
 UPDATE users SET role_id = (SELECT id FROM roles WHERE name = 'ReadOnly') WHERE id = 5;
 
--- Grant access to production database with SELECT only
+-- Grant access to sensitive database with SELECT only
 INSERT INTO user_connections (user_id, conn_id, permissions)
 VALUES (5, 10, '["select"]');
 
@@ -261,7 +261,7 @@ VALUES (1, 20, '["select","insert","update","delete"]');
 
 ```sql
 -- Admin has full permissions by role
--- But we want to restrict their production access to read-only
+-- But we want to restrict their sensitive connection access to read-only
 
 -- Direct assignment (acts as ceiling)
 INSERT INTO user_connections (user_id, conn_id, permissions)
@@ -373,4 +373,4 @@ All existing data remains intact:
 ✅ **Scalable**: Group-based management for large teams  
 ✅ **Backward Compatible**: Existing data unaffected  
 
-The system is **production-ready** for multi-user deployments with varying access requirements.
+The system is ready for multi-user teams with varying access requirements.

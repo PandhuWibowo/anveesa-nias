@@ -1,6 +1,6 @@
 services:
   nias:
-    image: pandhu612/anveesa-nias:latest
+    image: ghcr.io/anveesa/anveesa-nias:latest
     container_name: anveesa-nias
     restart: unless-stopped
     ports:
