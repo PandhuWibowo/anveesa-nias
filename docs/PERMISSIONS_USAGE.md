@@ -243,15 +243,15 @@ VALUES (
 
 ## 8. Common Scenarios
 
-### **Scenario: Production Access Control**
+### **Scenario: Sensitive Data Access Control**
 
 ```sql
--- Mark production connections
-UPDATE connections SET environment = 'production' WHERE id IN (1, 2, 3);
+-- Mark sensitive connections
+UPDATE connections SET environment = 'sensitive' WHERE id IN (1, 2, 3);
 
--- Create "Production Team" group
+-- Create "Sensitive Data Team" group
 INSERT INTO connection_folders (name, role_restrict, is_active)
-VALUES ('Production Team', 'admin', 1);
+VALUES ('Sensitive Data Team', 'admin', 1);
 
 -- Add senior DBAs
 INSERT INTO folder_members (folder_id, user_id)
@@ -260,15 +260,15 @@ SELECT
   id
 FROM users WHERE role = 'admin';
 
--- Grant read-only access to production
+-- Grant read-only access to sensitive data
 INSERT INTO folder_connections (folder_id, conn_id, permissions)
 SELECT 
-  (SELECT id FROM connection_folders WHERE name='Production Team'),
+  (SELECT id FROM connection_folders WHERE name='Sensitive Data Team'),
   id,
   '["select"]'
-FROM connections WHERE environment = 'production';
+FROM connections WHERE environment = 'sensitive';
 
--- Result: Only admins can access production, and only with SELECT
+-- Result: Only admins can access sensitive data, and only with SELECT
 ```
 
 ### **Scenario: Temporary Access**
@@ -342,14 +342,14 @@ SELECT * FROM (
 ### **Audit Group Membership**
 
 ```sql
--- Who has access to production connections?
+-- Who has access to sensitive connections?
 SELECT DISTINCT u.username, u.role
 FROM users u
 JOIN folder_members fm ON fm.user_id = u.id
 JOIN connection_folders f ON f.id = fm.folder_id
 JOIN folder_connections fc ON fc.folder_id = f.id
 JOIN connections c ON c.id = fc.conn_id
-WHERE c.environment = 'production' AND f.is_active = 1;
+WHERE c.environment = 'sensitive' AND f.is_active = 1;
 ```
 
 ---

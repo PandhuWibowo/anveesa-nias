@@ -1,7 +1,7 @@
 .PHONY: dev build clean install test lint docker docker-build docker-tag docker-push docker-up docker-down docker-logs
 
 COMPOSE_FILE := deploy/compose/docker-compose.yml
-IMAGE_NAME ?= pandhu612/anveesa-nias
+IMAGE_NAME ?= ghcr.io/anveesa/anveesa-nias
 IMAGE_TAG ?= latest
 PUSH_LATEST ?= 0
 
@@ -13,12 +13,12 @@ PUSH_LATEST ?= 0
 dev:
 	@trap 'kill 0' INT; \
 	  (cd server && go run .) & \
-	  (until nc -z localhost 8080 2>/dev/null; do sleep 0.3; done; cd web && bun run dev) & \
+	  (until nc -z localhost 8080 2>/dev/null; do sleep 0.3; done; cd web && npm run dev) & \
 	  wait
 
 # Frontend only
 dev-web:
-	@cd web && bun run dev
+	@cd web && npm run dev
 
 # Backend only
 dev-server:
@@ -27,7 +27,7 @@ dev-server:
 # Install all dependencies
 install:
 	@echo "Installing frontend dependencies..."
-	@cd web && bun install
+	@cd web && npm install
 	@echo "Installing backend dependencies..."
 	@cd server && go mod tidy
 	@echo "Done!"
@@ -39,7 +39,7 @@ install:
 # Build frontend and backend
 build:
 	@echo "Building frontend..."
-	@cd web && bun run build
+	@cd web && npm run build
 	@echo "Building backend..."
 	@mkdir -p bin
 	@cd server && go build -ldflags="-s -w" -o ../bin/nias .
@@ -48,7 +48,7 @@ build:
 # Build for production with version info
 build-prod:
 	@echo "Building for production..."
-	@cd web && bun run build
+	@cd web && npm run build
 	@mkdir -p bin
 	@cd server && go build -ldflags="-s -w -X main.version=$$(git describe --tags --always 2>/dev/null || echo 'dev') -X main.buildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o ../bin/nias .
 	@echo "Production build complete: bin/nias"
@@ -64,12 +64,12 @@ start:
 # Run tests
 test:
 	@cd server && go test -v ./...
-	@cd web && bun run type-check
+	@cd web && npm run type-check
 
 # Lint code
 lint:
 	@cd server && go vet ./...
-	@cd web && bun run lint 2>/dev/null || true
+	@cd web && npm run lint 2>/dev/null || true
 
 # Security check
 security:
@@ -154,7 +154,7 @@ help:
 	@echo "  start        Run the compiled binary"
 	@echo ""
 	@echo "Docker:"
-	@echo "  docker-build Build Docker image (IMAGE_NAME=pandhu612/anveesa-nias IMAGE_TAG=v1.0.0)"
+	@echo "  docker-build Build Docker image (IMAGE_NAME=ghcr.io/anveesa/anveesa-nias IMAGE_TAG=v1.0.0)"
 	@echo "  docker-tag   Tag an existing image as latest"
 	@echo "  docker-push  Build and push image (set PUSH_LATEST=1 to also push latest)"
 	@echo "  docker-up    Start with Docker Compose"

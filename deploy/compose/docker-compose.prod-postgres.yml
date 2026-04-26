@@ -1,5 +1,5 @@
 # Production Docker Compose - PostgreSQL (recommended for production)
-# Uses pre-built image from Docker Hub
+# Uses pre-built image from GitHub Container Registry
 
 services:
   postgres:
@@ -32,7 +32,7 @@ services:
       - nias-network
 
   nias:
-    image: pandhu612/anveesa-nias:latest
+    image: ghcr.io/anveesa/anveesa-nias:latest
     container_name: anveesa-nias
     restart: unless-stopped
     ports:

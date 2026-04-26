@@ -49,7 +49,6 @@ Admin and governance:
 Ops and platform:
 - `scheduler-page.png`
 - `backup-page.png`
-- `docker-container-status.png`
 - `health-endpoint-check.png`
 
 Suggested capture rules:
