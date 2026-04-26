@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -167,8 +168,10 @@ func SecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Prevent MIME type sniffing
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		// Prevent clickjacking
-		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		// Prevent clickjacking for the app shell, but allow explicit public embed routes.
+		if !strings.HasPrefix(r.URL.Path, "/embed/") {
+			w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		}
 		// XSS protection (legacy browsers)
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 		// Don't expose server information
