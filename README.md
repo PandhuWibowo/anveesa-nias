@@ -114,6 +114,8 @@ If Anveesa Nias is useful for you and you are in Indonesia, donations can be sen
 | BCA | Pandhu Wibowo | `6043081611` |
 | BNI | Pandhu Wibowo | `1487723030` |
 
+PayPal: <https://www.paypal.com/paypalme/pandhuwibowo>
+
 ## Contributing
 
 Contributions are welcome. Please read:

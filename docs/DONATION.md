@@ -9,4 +9,8 @@ Anveesa Nias is open source. If this project helps your work and you want to sup
 | BCA | Pandhu Wibowo | `6043081611` |
 | BNI | Pandhu Wibowo | `1487723030` |
 
+## PayPal
+
+<https://www.paypal.com/paypalme/pandhuwibowo>
+
 Thank you for supporting the project.
