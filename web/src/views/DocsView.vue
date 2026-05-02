@@ -22,8 +22,8 @@ const sections: DocsSection[] = [
     id: 'auth',
     title: 'Authentication And Navigation',
     description: 'Login, welcome flow, top navigation, and connection switching.',
-    routeHints: ['/login', '/welcome'],
-    screenshots: ['login-page.png', 'welcome-page.png', 'top-navigation.png', 'connection-picker.png'],
+    routeHints: ['/login', '/welcome', '/docs'],
+    screenshots: ['login-page.png', 'welcome-page.png', 'top-navigation.png', 'connection-picker.png', 'docs-page.png'],
     features: [
       {
         name: 'Login',
@@ -44,7 +44,7 @@ const sections: DocsSection[] = [
         name: 'Top Navigation',
         detail: 'Groups the main product surfaces into predictable menus.',
         useCases: ['Move from SQL exploration to audit logs during an investigation.', 'Open admin screens for user or permission changes.', 'Check notifications after approval activity.'],
-        workflow: ['Use direct links such as Analytics and Docs.', 'Open grouped menus such as Build, Operate, Govern, and Admin.', 'Confirm the active connection before database-specific work.'],
+        workflow: ['Use direct links such as Analytics and Docs.', 'Open Build for SQL, dashboards, AI, ER diagrams, and AI Settings.', 'Open Operate for monitoring, audit, notifications, row history, watchers, and health.', 'Open Govern for approvals, scripts, schema diff, backup, scheduler, and workflows.', 'Open Admin for connections, users, and permissions.', 'Confirm the active connection before database-specific work.'],
         expected: 'Users can reach major features without remembering every route.',
       },
       {
@@ -55,14 +55,21 @@ const sections: DocsSection[] = [
         expected: 'Connection-sensitive pages refresh around the selected database target.',
         notes: ['Always check the active connection before running write operations.'],
       },
+      {
+        name: 'Product Docs',
+        detail: 'Mirrors the repo documentation inside the application.',
+        useCases: ['Check which screens need screenshots.', 'Confirm expected behavior while testing a feature area.', 'Find the route or menu where a feature lives.'],
+        workflow: ['Open Docs from the top navigation.', 'Choose the relevant feature area.', 'Review routes, expected results, and screenshot filenames.', 'Capture or update documentation assets as needed.'],
+        expected: 'In-app docs stay aligned with the Markdown feature guide and current navigation menus.',
+      },
     ],
   },
   {
     id: 'explore',
     title: 'Explore And Query',
     description: 'Data browsing, SQL work, saved queries, and ER diagrams.',
-    routeHints: ['/data', '/saved-queries', '/er'],
-    screenshots: ['data-view-overview.png', 'data-view-sql-panel.png', 'data-view-query-results.png', 'saved-queries-page.png', 'er-diagram-page.png'],
+    routeHints: ['/data', '/saved-queries', '/ai-analytics', '/settings', '/er'],
+    screenshots: ['data-view-overview.png', 'data-view-sql-panel.png', 'data-view-query-results.png', 'saved-queries-page.png', 'ai-settings-page.png', 'er-diagram-page.png'],
     features: [
       {
         name: 'Query And Data',
@@ -89,6 +96,14 @@ const sections: DocsSection[] = [
         notes: ['Treat AI output as a draft.', 'Do not paste secrets into prompts.'],
       },
       {
+        name: 'AI Settings',
+        detail: 'Stores personal AI provider settings used by SQL assistance and analytics workflows.',
+        useCases: ['Connect AI features to a personal provider account.', 'Test model configuration without changing global defaults.', 'Verify active AI settings before using AI Analytics.'],
+        workflow: ['Open Build, then AI Settings.', 'Enter or update provider details.', 'Save the settings.', 'Return to AI Analytics or SQL assistance and confirm provider behavior.'],
+        expected: 'AI-enabled screens use the saved settings or the configured fallback provider.',
+        notes: ['Treat provider keys as secrets.', 'Use the minimum provider access required for analytics and SQL assistance.'],
+      },
+      {
         name: 'ER Diagram',
         detail: 'Visual database relationship explorer.',
         useCases: ['Learn an unfamiliar database.', 'Identify join paths between tables.', 'Document relationships for onboarding.', 'Validate foreign-key assumptions.'],
@@ -101,8 +116,8 @@ const sections: DocsSection[] = [
     id: 'monitor',
     title: 'Monitoring And Audit',
     description: 'Operational visibility across performance, access, and history.',
-    routeHints: ['/dashboard', '/query-performance', '/database-audit', '/audit', '/row-history', '/watcher', '/health'],
-    screenshots: ['dashboard-page.png', 'query-performance-page.png', 'database-audit-page.png', 'audit-log-page.png', 'row-history-page.png', 'watchers-page.png', 'health-page.png'],
+    routeHints: ['/dashboard', '/query-performance', '/database-audit', '/audit', '/notifications', '/row-history', '/watcher', '/health'],
+    screenshots: ['dashboard-page.png', 'query-performance-page.png', 'database-audit-page.png', 'audit-log-page.png', 'notifications-page.png', 'row-history-page.png', 'watchers-page.png', 'health-page.png'],
     features: [
       {
         name: 'Dashboard',
@@ -131,6 +146,13 @@ const sections: DocsSection[] = [
         useCases: ['Review who changed or accessed something.', 'Investigate user activity during support cases.', 'Confirm permission or approval actions.'],
         workflow: ['Open Audit Log.', 'Search by user, action, connection, or text.', 'Sort or filter the table.', 'Inspect the event details.'],
         expected: 'Important app activity can be reconstructed from audit records.',
+      },
+      {
+        name: 'Notifications',
+        detail: 'Shows personal and workflow notifications plus routing tools when allowed.',
+        useCases: ['Review unread workflow or approval activity.', 'Mark notifications as read after follow-up.', 'Configure outbound routing for operational alerts.', 'Troubleshoot failed notification delivery.'],
+        workflow: ['Open Notifications from the top action button or the Operate menu.', 'Review inbox items and mark handled items as read.', 'Configure routing targets if allowed.', 'Check delivery logs when an outbound message fails.'],
+        expected: 'Users can see relevant workflow activity, and administrators can manage routing behavior from one screen.',
       },
       {
         name: 'Row History',

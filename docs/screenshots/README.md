@@ -7,6 +7,7 @@ Authentication and navigation:
 - `welcome-page.png`
 - `top-navigation.png`
 - `connection-picker.png`
+- `docs-page.png`
 
 Explore and query:
 - `data-view-overview.png`
@@ -14,6 +15,7 @@ Explore and query:
 - `data-view-sql-panel.png`
 - `data-view-query-results.png`
 - `saved-queries-page.png`
+- `ai-settings-page.png`
 - `er-diagram-page.png`
 
 Monitoring and audit:
@@ -21,6 +23,7 @@ Monitoring and audit:
 - `query-performance-page.png`
 - `database-audit-page.png`
 - `audit-log-page.png`
+- `notifications-page.png`
 - `row-history-page.png`
 - `watchers-page.png`
 - `health-page.png`

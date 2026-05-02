@@ -23,9 +23,11 @@ Documentation index:
 Current primary routes covered:
 - `/login`
 - `/welcome`
+- `/docs`
 - `/dashboard`
 - `/analytics`
 - `/ai-analytics`
+- `/settings`
 - `/dashboards`
 - `/shared-dashboards/:token`
 - `/embed/dashboards/:token`
@@ -42,6 +44,7 @@ Current primary routes covered:
 - `/scheduler`
 - `/backup`
 - `/health`
+- `/notifications`
 - `/watcher`
 - `/audit`
 - `/query-performance`

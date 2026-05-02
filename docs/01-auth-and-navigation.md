@@ -67,9 +67,16 @@ Purpose:
 Primary elements:
 - Brand and version.
 - Active connection indicator.
-- Navigation menus.
+- Direct links for Analytics and Docs.
+- Grouped menus for Build, Operate, Govern, and Admin.
 - Notification entry point.
 - User/account menu.
+
+Menu map:
+- Build: SQL Studio, Saved Queries, Dashboards, AI Analytics, ER Diagram, and AI Settings.
+- Operate: Operations Overview, Query Performance, Database Audit, Audit Log, Notifications, Row History, Watchers, and Health.
+- Govern: Approvals, Change Sets, Data Scripts, Script Requests, Schema Diff, Backup, Scheduler, and Workflows.
+- Admin: Connections, Users, and Permissions.
 
 Use cases:
 - Switching from SQL exploration to audit logs while investigating an incident.
@@ -86,6 +93,32 @@ Expected result:
 
 Screenshot:
 - `docs/screenshots/top-navigation.png`
+
+## Product Docs
+
+Route:
+- `/docs`
+
+Purpose:
+- Mirrors the repo documentation inside the application.
+- Gives users a feature guide, route map, and screenshot capture checklist without leaving the dashboard.
+
+Use cases:
+- A contributor checks which screens need screenshots.
+- A tester confirms expected behavior while moving through feature areas.
+- A user finds the route or menu where a feature lives.
+
+Typical workflow:
+1. Open Docs from the top navigation.
+2. Choose the relevant feature area.
+3. Review routes, expected results, and screenshot filenames.
+4. Capture or update documentation assets as needed.
+
+Expected result:
+- In-app docs stay aligned with the Markdown feature guide and current navigation menus.
+
+Screenshot:
+- `docs/screenshots/docs-page.png`
 
 ## Connection Picker
 

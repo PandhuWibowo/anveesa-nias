@@ -112,6 +112,33 @@ Expected result:
 Screenshot:
 - `docs/screenshots/audit-log-page.png`
 
+## Notifications
+
+Route:
+- `/notifications`
+
+Purpose:
+- Shows personal and workflow notifications.
+- Provides notification routing, integration targets, and delivery logs when the user has management access.
+
+Use cases:
+- Review unread workflow or approval activity.
+- Mark notifications as read after follow-up.
+- Configure outbound routing for operational alerts.
+- Troubleshoot failed notification delivery.
+
+Typical workflow:
+1. Open Notifications from the top action button or the Operate menu.
+2. Review inbox items and mark handled items as read.
+3. Configure routing targets if allowed.
+4. Check delivery logs when an outbound message fails.
+
+Expected result:
+- Users can see relevant workflow activity, and administrators can manage routing behavior from one screen.
+
+Screenshot:
+- `docs/screenshots/notifications-page.png`
+
 ## Row History
 
 Route:

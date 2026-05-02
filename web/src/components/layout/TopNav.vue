@@ -110,6 +110,7 @@ const allMenuGroups = [
     icon: 'settings',
     items: [
       { name: 'connections', label: 'Connections', desc: 'Manage environments and database access points', icon: 'plug', permissionsAny: ['connections.view'] },
+      { name: 'users', label: 'Users', desc: 'Create users, assign roles, and manage account status', icon: 'users', permissionsAny: ['users.manage'] },
       { name: 'permissions', label: 'Permissions', desc: 'Roles, folders, and permission policy', icon: 'rbac', permissionsAny: ['roles.manage', 'folders.manage', 'users.manage'] },
     ],
   },

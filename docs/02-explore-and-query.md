@@ -114,6 +114,36 @@ Notes:
 - Prefer read-only generated SQL.
 - Never paste secrets into prompts.
 
+## AI Settings
+
+Route:
+- `/settings`
+
+Purpose:
+- Stores personal AI provider settings used by AI-assisted SQL and analytics workflows.
+- Lets users configure their API key, base URL, and model when personal provider settings are allowed.
+
+Use cases:
+- A user connects AI features to their own provider account.
+- A maintainer tests model configuration without changing global defaults.
+- A team member verifies which AI settings are active before using AI Analytics.
+
+Typical workflow:
+1. Open Build, then AI Settings.
+2. Enter or update provider details.
+3. Save the settings.
+4. Return to AI Analytics or SQL assistance and confirm the provider behavior.
+
+Expected result:
+- AI-enabled screens use the saved settings or the configured fallback provider.
+
+Notes:
+- Treat provider keys as secrets.
+- Use the minimum provider access required for analytics and SQL assistance.
+
+Screenshot:
+- `docs/screenshots/ai-settings-page.png`
+
 ## ER Diagram
 
 Route:
