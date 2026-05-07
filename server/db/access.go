@@ -434,10 +434,20 @@ func SetGroupMembers(groupID int64, userIDs []int64) error {
 	vals := make([]string, len(userIDs))
 	args := make([]interface{}, 0, len(userIDs)*2)
 	for i, uid := range userIDs {
-		vals[i] = "(?, ?)"
+		if IsPostgreSQL() {
+			vals[i] = fmt.Sprintf("($%d, $%d)", i*2+1, i*2+2)
+		} else {
+			vals[i] = "(?, ?)"
+		}
 		args = append(args, groupID, uid)
 	}
-	_, err := DB.Exec(`INSERT OR IGNORE INTO folder_members (folder_id, user_id) VALUES `+strings.Join(vals, ","), args...)
+	var query string
+	if IsPostgreSQL() {
+		query = `INSERT INTO folder_members (folder_id, user_id) VALUES ` + strings.Join(vals, ",") + ` ON CONFLICT DO NOTHING`
+	} else {
+		query = `INSERT OR IGNORE INTO folder_members (folder_id, user_id) VALUES ` + strings.Join(vals, ",")
+	}
+	_, err := DB.Exec(query, args...)
 	return err
 }
 
@@ -452,14 +462,24 @@ func SetGroupConnections(groupID int64, connIDs []int64, permsMap map[int64][]Db
 	vals := make([]string, len(connIDs))
 	args := make([]interface{}, 0, len(connIDs)*3)
 	for i, cid := range connIDs {
-		vals[i] = "(?, ?, ?)"
+		if IsPostgreSQL() {
+			vals[i] = fmt.Sprintf("($%d, $%d, $%d)", i*3+1, i*3+2, i*3+3)
+		} else {
+			vals[i] = "(?, ?, ?)"
+		}
 		perms := AllDbPerms
 		if p, ok := permsMap[cid]; ok && len(p) > 0 {
 			perms = p
 		}
 		args = append(args, groupID, cid, dbPermsToJSON(perms))
 	}
-	_, err := DB.Exec(`INSERT OR IGNORE INTO folder_connections (folder_id, conn_id, permissions) VALUES `+strings.Join(vals, ","), args...)
+	var query string
+	if IsPostgreSQL() {
+		query = `INSERT INTO folder_connections (folder_id, conn_id, permissions) VALUES ` + strings.Join(vals, ",") + ` ON CONFLICT DO NOTHING`
+	} else {
+		query = `INSERT OR IGNORE INTO folder_connections (folder_id, conn_id, permissions) VALUES ` + strings.Join(vals, ",")
+	}
+	_, err := DB.Exec(query, args...)
 	return err
 }
 

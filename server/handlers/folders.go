@@ -97,8 +97,8 @@ func CreateFolder() http.HandlerFunc {
 	appdb.DB.QueryRow(`SELECT COALESCE(MAX(sort_order),0)+1 FROM connection_folders`).Scan(&nextOrder)
 
 	res, err := appdb.DB.Exec(
-		`INSERT INTO connection_folders (name, parent_id, owner_id, visibility, color, sort_order)
-		 VALUES (?,?,?,?,?,?)`,
+		appdb.ConvertQuery(`INSERT INTO connection_folders (name, parent_id, owner_id, visibility, color, sort_order)
+		 VALUES (?,?,?,?,?,?)`),
 		f.Name, f.ParentID, f.OwnerID, f.Visibility, f.Color, nextOrder,
 	)
 	if err != nil {
@@ -129,7 +129,7 @@ func UpdateFolder() http.HandlerFunc {
 			return
 		}
 		_, err := appdb.DB.Exec(
-			`UPDATE connection_folders SET name=?, parent_id=?, visibility=?, color=?, sort_order=? WHERE id=?`,
+			appdb.ConvertQuery(`UPDATE connection_folders SET name=?, parent_id=?, visibility=?, color=?, sort_order=? WHERE id=?`),
 			f.Name, f.ParentID, f.Visibility, f.Color, f.SortOrder, id,
 		)
 		if err != nil {
