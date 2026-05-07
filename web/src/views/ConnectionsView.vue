@@ -314,15 +314,15 @@ async function handleDelete(id: number, name: string) {
                   v-for="d in drivers"
                   :key="d.key"
                   class="provider-card"
-                  :class="{ 'is-active': form.driver === d.key }"
-                  style="padding:8px 10px"
+                  :class="[`provider-card--${d.key}`, { 'is-active': form.driver === d.key }]"
                   @click="selectDriver(d.key)"
                 >
-                  <div class="provider-card__icon" :class="`provider-card__icon--${d.key}`" style="width:26px;height:26px;font-size:10px">{{ d.badge }}</div>
-                  <div>
-                    <span class="provider-card__name" style="font-size:11.5px">{{ d.label }}</span>
+                  <div class="provider-card__icon" :class="`provider-card__icon--${d.key}`">{{ d.badge }}</div>
+                  <div class="provider-card__body">
+                    <span class="provider-card__name">{{ d.label }}</span>
                     <span class="provider-card__sub">{{ d.sub }}</span>
                   </div>
+                  <svg v-if="form.driver === d.key" class="provider-card__check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                 </button>
               </div>
             </div>
@@ -523,5 +523,80 @@ async function handleDelete(id: number, name: string) {
   .conn-form {
     width: 100%;
   }
+}
+
+/* ── Provider cards ── */
+.provider-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+  position: relative;
+  text-align: left;
+  width: 100%;
+}
+
+.provider-card:hover {
+  border-color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 6%, var(--bg-surface));
+}
+
+.provider-card__icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+  color: #fff;
+  background: var(--text-muted);
+}
+
+.provider-card__icon--postgres { background: #336791; }
+.provider-card__icon--mysql    { background: #e48e00; }
+.provider-card__icon--mariadb  { background: #c0765a; }
+.provider-card__icon--mssql    { background: #cc2927; }
+
+.provider-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+.provider-card__name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.provider-card__sub {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.provider-card__check {
+  color: var(--brand);
+  flex-shrink: 0;
+}
+
+.provider-card.is-active {
+  border-color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 8%, var(--bg-surface));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 15%, transparent);
+}
+
+.provider-card.is-active .provider-card__name {
+  color: var(--brand);
 }
 </style>
