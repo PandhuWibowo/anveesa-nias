@@ -148,9 +148,6 @@ jobs:
             ${{ env.DOCKERHUB_IMAGE }}
           tags: |
             type=raw,value=${{ steps.semver.outputs.version_tag }},enable=${{ steps.semver.outputs.has_version == 'true' }}
-            type=raw,value=${{ steps.semver.outputs.version }},enable=${{ steps.semver.outputs.has_version == 'true' }}
-            type=raw,value=${{ steps.semver.outputs.major_minor }},enable=${{ steps.semver.outputs.has_version == 'true' }}
-            type=raw,value=${{ steps.semver.outputs.major }},enable=${{ steps.semver.outputs.has_version == 'true' }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and push
