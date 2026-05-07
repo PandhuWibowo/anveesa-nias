@@ -332,7 +332,7 @@ async function handleDelete(id: number, name: string) {
               <input v-model="form.name" class="base-input" placeholder="My Database" />
             </div>
 
-            <template>
+            <div>
               <div class="form-row">
                 <div class="form-group" style="flex:2">
                   <label class="form-label">Host</label>
@@ -364,7 +364,7 @@ async function handleDelete(id: number, name: string) {
                 <input id="ssl" type="checkbox" v-model="form.ssl" style="accent-color:var(--brand)" />
                 <label for="ssl" class="form-label" style="cursor:pointer;margin:0">Enable SSL/TLS</label>
               </div>
-            </template>
+            </div>
 
             <!-- SSH Tunnel -->
             <details class="ssh-section">

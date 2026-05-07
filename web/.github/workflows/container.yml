@@ -9,8 +9,7 @@ on:
   workflow_dispatch:
 
 env:
-  GHCR_IMAGE: ghcr.io/${{ github.repository }}
-  DOCKERHUB_IMAGE: pandhu612/anveesa-nias
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 jobs:
   build:
@@ -133,20 +132,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: |
-            ${{ env.GHCR_IMAGE }}
-            ${{ env.DOCKERHUB_IMAGE }}
+          images: ${{ env.IMAGE_NAME }}
           tags: |
+            type=sha,prefix=sha-
             type=raw,value=${{ steps.semver.outputs.version_tag }},enable=${{ steps.semver.outputs.has_version == 'true' }}
             type=raw,value=${{ steps.semver.outputs.version }},enable=${{ steps.semver.outputs.has_version == 'true' }}
             type=raw,value=${{ steps.semver.outputs.major_minor }},enable=${{ steps.semver.outputs.has_version == 'true' }}
