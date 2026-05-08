@@ -30,6 +30,20 @@ const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', maria
 const openMenu = ref<string | null>(null)
 // Connections panel — kept separate so outside-click logic doesn't conflict
 const connPanelOpen = ref(false)
+
+const PANEL_WIDTH = 300
+const connPanelStyle = computed(() => {
+  if (!connBtnRef.value) return {}
+  const rect = connBtnRef.value.getBoundingClientRect()
+  const spaceRight = window.innerWidth - rect.left
+  const left = spaceRight >= PANEL_WIDTH + 8 ? rect.left : Math.max(8, window.innerWidth - PANEL_WIDTH - 8)
+  return {
+    position: 'fixed' as const,
+    top: `${rect.bottom + 6}px`,
+    left: `${left}px`,
+    zIndex: 9999,
+  }
+})
 const userMenuOpen = ref(false)
 const notificationUnread = ref(0)
 
@@ -257,13 +271,15 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
       </button>
 
       <!-- Connections dropdown panel -->
-      <div v-if="connPanelOpen" class="topnav__conn-panel">
-        <ConnectionsDropdown
-          :activeConnId="activeConnId"
-          @select-conn="(id) => { emit('select-conn', id) }"
-          @close="connPanelOpen = false"
-        />
-      </div>
+      <Teleport to="body">
+        <div v-if="connPanelOpen" class="topnav__conn-panel" :style="connPanelStyle">
+          <ConnectionsDropdown
+            :activeConnId="activeConnId"
+            @select-conn="(id) => { emit('select-conn', id) }"
+            @close="connPanelOpen = false"
+          />
+        </div>
+      </Teleport>
     </div>
 
     <div class="topnav__divider"></div>
@@ -548,10 +564,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   max-width: 80px;
 }
 .topnav__conn-panel {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 9999;
+  max-width: calc(100vw - 16px);
 }
 
 /* ── Nav ── */
