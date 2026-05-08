@@ -38,8 +38,8 @@ const editFolderVisibility = ref<'private' | 'shared'>('private')
 const contextMenu = ref<{ x: number; y: number; type: 'folder' | 'conn'; item: ConnectionFolder | Connection } | null>(null)
 
 const FOLDER_COLORS = ['#4f9cf9','#56c490','#f97f4f','#c45ef9','#f9d44f','#f9584f','#4fc8f9','#9cf94f','#f94f9c']
-const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS' }
-const driverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927' }
+const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD' }
+const driverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927', redis: '#c6302b' }
 
 onMounted(async () => {
   await fetchFolders()
@@ -80,9 +80,10 @@ function toggleFolder(id: number) {
 function selectConn(conn: Connection) {
   emit('select-conn', conn.id)
   emit('close')
-  const stayViews = ['data', 'er', 'dashboard']
+  const stayViews = ['data', 'er', 'dashboard', 'redis']
   const current = router.currentRoute.value.name as string
-  if (!stayViews.includes(current)) router.push({ name: 'data' })
+  if (conn.driver === 'redis' && current !== 'redis') router.push({ name: 'redis' })
+  else if (conn.driver !== 'redis' && (current === 'redis' || !stayViews.includes(current))) router.push({ name: 'data' })
 }
 
 // ── Folder ops ──

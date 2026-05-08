@@ -294,6 +294,26 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				handlers.ProfileColumn()(w, r)
 			case sub == "ping" && r.Method == http.MethodGet:
 				handlers.PingConnection()(w, r)
+			case sub == "redis" && len(parts) >= 3 && parts[2] == "ping" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.RedisPing())(w, r)
+			case sub == "redis" && len(parts) >= 3 && parts[2] == "keys" && r.Method == http.MethodGet:
+				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.RedisKeys())(w, r)
+			case sub == "redis" && len(parts) >= 3 && parts[2] == "key" && r.Method == http.MethodGet:
+				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.RedisKeyValue())(w, r)
+			case sub == "redis" && len(parts) >= 3 && parts[2] == "key" && (r.Method == http.MethodPost || r.Method == http.MethodPut):
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.RedisWriteKey())(w, r)
+			case sub == "redis" && len(parts) >= 3 && parts[2] == "key" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.RedisDeleteKey())(w, r)
+			case sub == "redis" && len(parts) >= 3 && parts[2] == "rename" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.RedisRenameKey())(w, r)
+			case sub == "redis" && len(parts) >= 3 && parts[2] == "move" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.RedisMoveKey())(w, r)
+			case sub == "redis" && len(parts) >= 3 && parts[2] == "command" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.RedisCommand())(w, r)
+			case sub == "redis" && len(parts) >= 3 && parts[2] == "script" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.RedisGenerateScript())(w, r)
+			case sub == "redis" && len(parts) >= 3 && parts[2] == "script" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.RedisExecuteScript())(w, r)
 			case sub == "backup" && r.Method == http.MethodGet:
 				requireAny(handlers.PermBackupsManage)(handlers.GetBackup())(w, r)
 			case sub == "restore" && r.Method == http.MethodPost:

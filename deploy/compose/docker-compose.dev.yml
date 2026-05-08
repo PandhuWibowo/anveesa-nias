@@ -15,6 +15,21 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: nias-redis-dev
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Backend server with hot reload
   server:
     build:
@@ -51,3 +66,9 @@ services:
       - VITE_API_URL=http://localhost:8080
       - VITE_API_PROXY_TARGET=http://server:8080
     command: ["sh", "-c", "bun install && bun run dev --host 0.0.0.0"]
+
+volumes:
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local

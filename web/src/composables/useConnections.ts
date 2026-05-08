@@ -1,7 +1,7 @@
 import { ref } from 'vue'
 import axios from 'axios'
 
-export type DbDriver = 'postgres' | 'mysql' | 'mariadb' | 'mssql'
+export type DbDriver = 'postgres' | 'mysql' | 'mariadb' | 'mssql' | 'redis'
 
 export interface Connection {
   id: number

@@ -64,13 +64,14 @@ function toggleFolder(id: number) {
   else collapsedFolders.value.add(id)
 }
 
-const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS' }
+const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD' }
 
 function selectConn(conn: Connection) {
   emit('select-conn', conn.id)
-  const stayViews = ['schema', 'data', 'er', 'dashboard', 'query']
+  const stayViews = ['schema', 'data', 'er', 'dashboard', 'query', 'redis']
   const current = router.currentRoute.value.name as string
-  if (!stayViews.includes(current)) router.push({ name: 'query' })
+  if (conn.driver === 'redis' && current !== 'redis') router.push({ name: 'redis' })
+  else if (conn.driver !== 'redis' && (current === 'redis' || !stayViews.includes(current))) router.push({ name: 'query' })
 }
 
 async function deleteConn(conn: Connection) {
