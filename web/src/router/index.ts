@@ -140,6 +140,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['connections.view', 'query.execute', 'schema.browse'] },
         },
         {
+          path: 'redis',
+          name: 'redis',
+          component: () => import('@/views/RedisView.vue'),
+          meta: { requiredPermissionsAny: ['connections.view', 'schema.browse'] },
+        },
+        {
           path: 'connections',
           name: 'connections',
           component: () => import('@/views/ConnectionsView.vue'),

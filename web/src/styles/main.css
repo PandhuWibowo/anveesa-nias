@@ -349,6 +349,7 @@ body {
 .conn-badge--mysql   { background: var(--mysql-bg);   color: var(--mysql); }
 .conn-badge--mariadb { background: #c0392b22;          color: #c0392b; }
 .conn-badge--mssql   { background: var(--mssql-bg);   color: var(--mssql); }
+.conn-badge--redis   { background: rgba(198, 48, 43, 0.14); color: #c6302b; }
 
 .conn-item__body { flex: 1; min-width: 0; }
 .conn-item__name {

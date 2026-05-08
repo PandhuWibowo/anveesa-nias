@@ -25,6 +25,7 @@ var allowedDrivers = map[string]bool{
 	"mysql":    true,
 	"mariadb":  true, // alias → uses MySQL driver
 	"mssql":    true,
+	"redis":    true,
 }
 
 // encryptionKey for credential encryption (should be set from environment)
@@ -150,7 +151,7 @@ type ConnectionInput struct {
 func validateConnectionInput(in *ConnectionInput) error {
 	// Validate driver
 	if !allowedDrivers[in.Driver] {
-		return fmt.Errorf("invalid driver: must be postgres, mysql, mariadb, or mssql")
+		return fmt.Errorf("invalid driver: must be postgres, mysql, mariadb, mssql, or redis")
 	}
 
 	// Validate port
@@ -191,6 +192,8 @@ func isValidHostname(host string) bool {
 
 func buildDSN(in ConnectionInput) (string, error) {
 	switch in.Driver {
+	case "redis":
+		return "", fmt.Errorf("redis does not use SQL DSN")
 	case "postgres":
 		sslMode := "disable"
 		if in.SSL {
@@ -394,7 +397,7 @@ func CreateConnection() http.HandlerFunc {
 		var id int64
 		var c Connection
 		var sslV int
-		
+
 		// PostgreSQL and MySQL support RETURNING clause
 		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
 			query := `INSERT INTO connections (name, driver, host, port, database, username, password, ssl, tags,
@@ -444,14 +447,14 @@ func CreateConnection() http.HandlerFunc {
 func GetConnection() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		
+
 		idStr := strings.TrimPrefix(r.URL.Path, "/api/connections/")
 		connID, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil {
 			http.Error(w, `{"error":"invalid connection id"}`, http.StatusBadRequest)
 			return
 		}
-		
+
 		// Get current user info
 		userIDStr := r.Header.Get("X-User-ID")
 		userRole := r.Header.Get("X-User-Role")
@@ -459,37 +462,37 @@ func GetConnection() http.HandlerFunc {
 		if userIDStr != "" {
 			userID, _ = strconv.ParseInt(userIDStr, 10, 64)
 		}
-		
+
 		// Fetch connection
 		var c Connection
 		var ssl int
 		var encPassword, encSSHPassword, encSSHKey string
-		
+
 		query := appdb.ConvertQuery(`SELECT id, name, driver, COALESCE(host,''), COALESCE(port,0), database,
 			COALESCE(username,''), password, ssl, COALESCE(tags,''),
 			COALESCE(ssh_host,''), COALESCE(ssh_port,22), COALESCE(ssh_user,''), ssh_password, ssh_key,
 			folder_id, COALESCE(visibility,'shared'), COALESCE(owner_id,0), created_at
 			FROM connections WHERE id=?`)
-		
+
 		err = appdb.DB.QueryRow(query, connID).Scan(
 			&c.ID, &c.Name, &c.Driver, &c.Host, &c.Port, &c.Database,
 			&c.Username, &encPassword, &ssl, &c.Tags,
 			&c.SSHHost, &c.SSHPort, &c.SSHUser, &encSSHPassword, &encSSHKey,
 			&c.FolderID, &c.Visibility, &c.OwnerID, &c.CreatedAt)
-		
+
 		if err != nil {
 			http.Error(w, `{"error":"connection not found"}`, http.StatusNotFound)
 			return
 		}
-		
+
 		c.SSL = ssl == 1
-		
+
 		// Check permission
 		if isAuthEnabled() && userRole != "admin" && c.OwnerID != userID && c.Visibility != "shared" {
 			http.Error(w, `{"error":"permission denied"}`, http.StatusForbidden)
 			return
 		}
-		
+
 		// Mask passwords (show bullets for security)
 		if encPassword != "" {
 			c.Password = "••••••••"
@@ -500,7 +503,7 @@ func GetConnection() http.HandlerFunc {
 		if encSSHKey != "" {
 			c.SSHKey = "••••••••"
 		}
-		
+
 		json.NewEncoder(w).Encode(c)
 	}
 }
@@ -508,7 +511,7 @@ func GetConnection() http.HandlerFunc {
 func UpdateConnection() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		
+
 		// Get connection ID from URL
 		idStr := strings.TrimPrefix(r.URL.Path, "/api/connections/")
 		connID, err := strconv.ParseInt(idStr, 10, 64)
@@ -516,7 +519,7 @@ func UpdateConnection() http.HandlerFunc {
 			http.Error(w, `{"error":"invalid connection id"}`, http.StatusBadRequest)
 			return
 		}
-		
+
 		// Check if connection exists and user has permission
 		var existingOwnerID int64
 		err = appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT owner_id FROM connections WHERE id = ?`), connID).Scan(&existingOwnerID)
@@ -524,7 +527,7 @@ func UpdateConnection() http.HandlerFunc {
 			http.Error(w, `{"error":"connection not found"}`, http.StatusNotFound)
 			return
 		}
-		
+
 		// Get current user info
 		userIDStr := r.Header.Get("X-User-ID")
 		userRole := r.Header.Get("X-User-Role")
@@ -532,34 +535,34 @@ func UpdateConnection() http.HandlerFunc {
 		if userIDStr != "" {
 			userID, _ = strconv.ParseInt(userIDStr, 10, 64)
 		}
-		
+
 		// Check permission: must be owner or admin
 		if isAuthEnabled() && userRole != "admin" && existingOwnerID != userID {
 			http.Error(w, `{"error":"permission denied"}`, http.StatusForbidden)
 			return
 		}
-		
+
 		var in ConnectionInput
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
 			return
 		}
-		
+
 		if in.Name == "" || in.Driver == "" {
 			http.Error(w, `{"error":"name and driver are required"}`, http.StatusBadRequest)
 			return
 		}
-		
+
 		// Validate input
 		if err := validateConnectionInput(&in); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
 		}
-		
+
 		if in.Visibility == "" {
 			in.Visibility = "shared"
 		}
-		
+
 		// Handle password: if empty or masked, keep existing
 		var encPassword string
 		if in.Password != "" && !strings.Contains(in.Password, "•") {
@@ -572,7 +575,7 @@ func UpdateConnection() http.HandlerFunc {
 			// Keep existing password
 			appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT password FROM connections WHERE id = ?`), connID).Scan(&encPassword)
 		}
-		
+
 		// Handle SSH credentials
 		var encSSHPassword, encSSHKey string
 		if in.SSHPassword != "" && !strings.Contains(in.SSHPassword, "•") {
@@ -584,7 +587,7 @@ func UpdateConnection() http.HandlerFunc {
 		} else {
 			appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT ssh_password FROM connections WHERE id = ?`), connID).Scan(&encSSHPassword)
 		}
-		
+
 		if in.SSHKey != "" && !strings.Contains(in.SSHKey, "•") {
 			encSSHKey, err = encryptCredential(in.SSHKey)
 			if err != nil {
@@ -594,18 +597,18 @@ func UpdateConnection() http.HandlerFunc {
 		} else {
 			appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT ssh_key FROM connections WHERE id = ?`), connID).Scan(&encSSHKey)
 		}
-		
+
 		ssl := 0
 		if in.SSL {
 			ssl = 1
 		}
-		
+
 		// Update connection
 		query := appdb.ConvertQuery(`UPDATE connections SET 
 			name=?, driver=?, host=?, port=?, database=?, username=?, password=?, ssl=?, tags=?,
 			ssh_host=?, ssh_port=?, ssh_user=?, ssh_password=?, ssh_key=?, folder_id=?, visibility=?
 			WHERE id=?`)
-		
+
 		_, err = appdb.DB.Exec(query,
 			in.Name, in.Driver, in.Host, in.Port, in.Database, in.Username, encPassword, ssl, in.Tags,
 			in.SSHHost, in.SSHPort, in.SSHUser, encSSHPassword, encSSHKey, in.FolderID, in.Visibility, connID,
@@ -614,10 +617,10 @@ func UpdateConnection() http.HandlerFunc {
 			http.Error(w, `{"error":"failed to update connection"}`, http.StatusInternalServerError)
 			return
 		}
-		
+
 		// Evict from pool to force reconnect with new credentials
 		EvictFromPool(connID)
-		
+
 		// Fetch updated connection
 		var c Connection
 		var sslV int
@@ -632,7 +635,7 @@ func UpdateConnection() http.HandlerFunc {
 			&c.SSHHost, &c.SSHPort, &c.SSHUser,
 			&c.FolderID, &c.Visibility, &c.OwnerID, &c.CreatedAt)
 		c.SSL = sslV == 1
-		
+
 		json.NewEncoder(w).Encode(c)
 	}
 }
@@ -664,7 +667,7 @@ func DeleteConnection() http.HandlerFunc {
 func UpdateConnectionFolder() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		
+
 		// Extract connection ID from URL
 		path := strings.TrimPrefix(r.URL.Path, "/api/connections/")
 		parts := strings.Split(path, "/")
@@ -672,7 +675,7 @@ func UpdateConnectionFolder() http.HandlerFunc {
 			http.Error(w, `{"error":"invalid endpoint"}`, http.StatusBadRequest)
 			return
 		}
-		
+
 		id, err := strconv.ParseInt(parts[0], 10, 64)
 		if err != nil {
 			http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
@@ -720,7 +723,7 @@ func UpdateConnectionFolder() http.HandlerFunc {
 func UpdateConnectionVisibility() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		
+
 		// Extract connection ID from URL
 		path := strings.TrimPrefix(r.URL.Path, "/api/connections/")
 		parts := strings.Split(path, "/")
@@ -728,7 +731,7 @@ func UpdateConnectionVisibility() http.HandlerFunc {
 			http.Error(w, `{"error":"invalid endpoint"}`, http.StatusBadRequest)
 			return
 		}
-		
+
 		id, err := strconv.ParseInt(parts[0], 10, 64)
 		if err != nil {
 			http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
@@ -798,6 +801,15 @@ func TestConnection() http.HandlerFunc {
 		// Validate input
 		if err := validateConnectionInput(&in); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+
+		if in.Driver == "redis" {
+			if err := testRedisInput(r.Context(), in); err != nil {
+				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"message": "Connection successful"})
 			return
 		}
 

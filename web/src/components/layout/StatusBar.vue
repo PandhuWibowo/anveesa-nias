@@ -18,6 +18,7 @@ const driverLabel: Record<string, string> = {
   mysql: 'MySQL',
   mariadb: 'MariaDB',
   mssql: 'SQL Server',
+  redis: 'Redis',
 }
 </script>
 
@@ -26,8 +27,8 @@ const driverLabel: Record<string, string> = {
     <!-- Connection status -->
     <div
       class="statusbar__item statusbar__item--clickable"
-      @click="router.push({ name: activeConn ? 'query' : 'connections' })"
-      :title="activeConn ? `Open query editor for ${activeConn.name}` : 'Add a connection'"
+      @click="router.push({ name: activeConn?.driver === 'redis' ? 'redis' : activeConn ? 'query' : 'connections' })"
+      :title="activeConn ? `Open ${activeConn.driver === 'redis' ? 'Redis browser' : 'query editor'} for ${activeConn.name}` : 'Add a connection'"
     >
       <div class="statusbar__dot" :class="activeConn ? 'statusbar__dot--ok' : 'statusbar__dot--err'" />
       <span>{{ activeConn ? activeConn.name : 'No connection' }}</span>
@@ -47,7 +48,7 @@ const driverLabel: Record<string, string> = {
       <div class="statusbar__sep" />
       <div class="statusbar__item">
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.7"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
-        <span>{{ activeConn.database }}</span>
+        <span>{{ activeConn.driver === 'redis' ? `DB ${activeConn.database || 0}` : activeConn.database }}</span>
       </div>
     </template>
 

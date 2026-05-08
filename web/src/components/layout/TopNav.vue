@@ -23,8 +23,8 @@ const { connections } = useConnections()
 const activeConn = computed(() =>
   props.activeConnId != null ? connections.value.find(c => c.id === props.activeConnId) ?? null : null
 )
-const driverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927' }
-const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS' }
+const driverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927', redis: '#c6302b' }
+const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD' }
 
 // Nav group dropdown
 const openMenu = ref<string | null>(null)
@@ -54,15 +54,28 @@ const notificationPoll = ref<number | null>(null)
 const canViewNotifications = computed(() => hasAnyPermission(['notifications.view']))
 
 // ── Navigation structure ─────────────────────────────────────────
+type NavLink = {
+  name: string
+  label: string
+  icon: string
+  permissionsAny?: string[]
+}
+
+type MenuItem = NavLink & {
+  desc: string
+  section?: string
+}
+
+type MenuGroup = {
+  id: string
+  label: string
+  icon: string
+  items: MenuItem[]
+}
+
 // Direct links (no dropdown)
 const directLinks = computed(() => {
-  const links = [
-    {
-      name: 'analytics',
-      label: 'Analytics',
-      icon: 'dashboard',
-      permissionsAny: ['connections.view', 'savedqueries.manage', 'ai.use'],
-    },
+  const links: NavLink[] = [
     {
       name: 'docs',
       label: 'Docs',
@@ -74,23 +87,34 @@ const directLinks = computed(() => {
 })
 
 // Grouped dropdown menus (filtered by permissions)
-const allMenuGroups = [
+const allMenuGroups: MenuGroup[] = [
   {
-    id: 'build',
-    label: 'Build',
-    icon: 'table',
+    id: 'analytics',
+    label: 'Analytics',
+    icon: 'dashboard',
     items: [
-      { name: 'data',          label: 'SQL Studio',  desc: 'Browse tables, inspect schema, and run SQL in the main workbench', icon: 'table', permissionsAny: ['connections.view', 'query.execute', 'schema.browse'] },
-      { name: 'saved-queries', label: 'Saved Queries', desc: 'Reusable SQL and dataset-style query library', icon: 'saved', permissionsAny: ['savedqueries.manage'] },
+      { name: 'analytics', label: 'Analytics Home', desc: 'Start analysis workflows and review available analytics surfaces', icon: 'dashboard', permissionsAny: ['connections.view', 'savedqueries.manage', 'ai.use'] },
       { name: 'dashboards', label: 'Dashboards', desc: 'Compose saved queries into chart blocks and shared analytics views', icon: 'dashboard', permissionsAny: ['savedqueries.manage'] },
-      { name: 'ai-analytics',  label: 'AI Analytics', desc: 'Ask business questions and generate safe read-only analytics queries', icon: 'spark', permissionsAny: ['ai.use'] },
-      { name: 'er',            label: 'ER Diagram',    desc: 'Visualize relationships between tables before building analysis', icon: 'er', permissionsAny: ['schema.browse'] },
+      { name: 'saved-queries', label: 'Saved Queries', desc: 'Reusable SQL and dataset-style query library', icon: 'saved', permissionsAny: ['savedqueries.manage'] },
+      { name: 'ai-analytics', label: 'AI Analytics', desc: 'Ask business questions and generate safe read-only analytics queries', icon: 'spark', permissionsAny: ['ai.use'] },
       { name: 'settings', label: 'AI Settings', desc: 'Manage your personal AI provider key, base URL, and model', icon: 'settings', permissionsAny: ['ai.use', 'ai.manage'] },
     ],
   },
   {
+    id: 'database',
+    label: 'Database',
+    icon: 'table',
+    items: [
+      { name: 'data', label: 'SQL Studio', desc: 'Browse tables, inspect schema, and run SQL in the main workbench', icon: 'table', section: 'RDBMS', permissionsAny: ['connections.view', 'query.execute', 'schema.browse'] },
+      { name: 'er', label: 'ER Diagram', desc: 'Visualize relationships between tables before building analysis', icon: 'er', section: 'RDBMS', permissionsAny: ['schema.browse'] },
+      { name: 'diff', label: 'Schema Diff', desc: 'Compare schema structure across environments', icon: 'diff', section: 'RDBMS', permissionsAny: ['schema.diff.view'] },
+      { name: 'row-history', label: 'Row History', desc: 'See row-level INSERT, UPDATE, DELETE changes', icon: 'rowhistory', section: 'RDBMS', permissionsAny: ['rowhistory.view'] },
+      { name: 'redis', label: 'Redis Browser', desc: 'Scan keys and inspect Redis values from managed connections', icon: 'table', section: 'Database Cache', permissionsAny: ['connections.view', 'schema.browse'] },
+    ],
+  },
+  {
     id: 'operate',
-    label: 'Operate',
+    label: 'Operations',
     icon: 'activity',
     items: [
       { name: 'dashboard', label: 'Operations Overview', desc: 'Connection footprint, size, and slow-query pressure across environments', icon: 'dashboard', permissionsAny: ['connections.view'] },
@@ -98,21 +122,19 @@ const allMenuGroups = [
       { name: 'database-audit', label: 'Database Audit', desc: 'Live sessions and external access signals', icon: 'shieldlog', permissionsAny: ['audit.view'] },
       { name: 'audit',       label: 'Audit Log',   desc: 'Track access, actions, and query events', icon: 'audit', permissionsAny: ['audit.view'] },
       { name: 'notifications', label: 'Notifications', desc: 'Inbox, integrations, routing rules, and delivery logs', icon: 'audit', permissionsAny: ['notifications.view'] },
-      { name: 'row-history', label: 'Row History', desc: 'See row-level INSERT, UPDATE, DELETE changes', icon: 'rowhistory', permissionsAny: ['rowhistory.view'] },
       { name: 'watcher',     label: 'Watchers',    desc: 'Monitor important table or query activity', icon: 'watcher', permissionsAny: ['query.execute'] },
       { name: 'health',      label: 'Health',      desc: 'Connection and service health status', icon: 'health', permissionsAny: ['health.view'] },
     ],
   },
   {
     id: 'govern',
-    label: 'Govern',
+    label: 'Governance',
     icon: 'wrench',
     items: [
       { name: 'approvals',   label: 'Approvals',   desc: 'Review and approve controlled SQL changes', icon: 'workflow', permissionsAny: ['query.execute', 'query.approve'] },
       { name: 'change-sets', label: 'Change Sets', desc: 'Plan, validate, and run database changes', icon: 'changeset', permissionsAny: ['query.execute', 'query.approve'] },
       { name: 'data-scripts', label: 'Data Scripts', desc: 'Preview programmable data updates before approval', icon: 'changeset', permissionsAny: ['query.execute', 'query.approve'] },
       { name: 'data-script-requests', label: 'Script Requests', desc: 'Global queue of data script plans and approvals', icon: 'workflow', permissionsAny: ['query.execute', 'query.approve'] },
-      { name: 'diff',        label: 'Schema Diff', desc: 'Compare schema structure across environments', icon: 'diff', permissionsAny: ['schema.diff.view'] },
       { name: 'backup',      label: 'Backup',      desc: 'Request database downloads or use direct backup and restore', icon: 'backup', permissionsAny: ['backups.manage', 'query.execute', 'query.approve'] },
       { name: 'scheduler',   label: 'Scheduler',   desc: 'Schedule recurring queries and jobs', icon: 'scheduler', permissionsAny: ['schedules.manage'] },
       { name: 'workflows',   label: 'Workflows',   desc: 'Configure approval workflows and routing', icon: 'workflow', permissionsAny: ['workflows.manage'] },
@@ -156,6 +178,20 @@ const menuGroups = computed(() => {
 // Is any item in a group active?
 function groupActive(group: { items: Array<{ name: string }> }) {
   return group.items.some(i => i.name === route.name)
+}
+
+function groupedDropdownSections(items: MenuItem[]) {
+  const sections: Array<{ label: string; items: MenuItem[] }> = []
+  for (const item of items) {
+    const label = item.section || ''
+    let section = sections.find(s => s.label === label)
+    if (!section) {
+      section = { label, items: [] }
+      sections.push(section)
+    }
+    section.items.push(item)
+  }
+  return sections
 }
 
 function toggleMenu(id: string) {
@@ -322,6 +358,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
         >
           <!-- Group icons -->
           <svg v-if="group.icon === 'table'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+          <svg v-else-if="group.icon === 'dashboard'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="9" height="11" rx="1"/><rect x="13" y="2" width="9" height="7" rx="1"/><rect x="2" y="15" width="9" height="7" rx="1"/><rect x="13" y="11" width="9" height="11" rx="1"/></svg>
           <svg v-else-if="group.icon === 'settings'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           <svg v-else-if="group.icon === 'wrench'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
           <svg v-else-if="group.icon === 'activity'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
@@ -339,15 +376,17 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
         <!-- Dropdown panel -->
         <div v-if="openMenu === group.id" class="topnav__dropdown">
           <div class="topnav__dropdown-label">{{ group.label }}</div>
-          <button
-            v-for="item in group.items"
-            :key="item.name"
-            class="topnav__dropdown-item"
-            :class="{ 'topnav__dropdown-item--active': route.name === item.name }"
-            @click="navigate(item.name)"
-            type="button"
-          >
-            <div class="topnav__dropdown-icon">
+          <template v-for="section in groupedDropdownSections(group.items)" :key="section.label || 'default'">
+            <div v-if="section.label" class="topnav__dropdown-section">{{ section.label }}</div>
+            <button
+              v-for="item in section.items"
+              :key="item.name"
+              class="topnav__dropdown-item"
+              :class="{ 'topnav__dropdown-item--active': route.name === item.name }"
+              @click="navigate(item.name)"
+              type="button"
+            >
+              <div class="topnav__dropdown-icon">
               <svg v-if="item.icon === 'dashboard'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="9" height="11" rx="1"/><rect x="13" y="2" width="9" height="7" rx="1"/><rect x="2" y="15" width="9" height="7" rx="1"/><rect x="13" y="11" width="9" height="11" rx="1"/></svg>
               <svg v-else-if="item.icon === 'layers'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
               <svg v-else-if="item.icon === 'table'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
@@ -369,15 +408,16 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
               <svg v-else-if="item.icon === 'shieldlog'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6l7-3z"/><path d="M9 12h6"/><path d="M12 9v6"/></svg>
               <svg v-else-if="item.icon === 'health'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
               <svg v-else-if="item.icon === 'rowhistory'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h18v4H3z"/><path d="M3 10h18v4H3z"/><path d="M3 17h18v4H3z"/></svg>
-            </div>
-            <div class="topnav__dropdown-info">
-              <span class="topnav__dropdown-name">{{ item.label }}</span>
-              <span class="topnav__dropdown-desc">{{ item.desc }}</span>
-            </div>
-            <svg v-if="route.name === item.name" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:var(--brand);flex-shrink:0">
-              <polyline points="20 6 9 17 4 12"/>
-            </svg>
-          </button>
+              </div>
+              <div class="topnav__dropdown-info">
+                <span class="topnav__dropdown-name">{{ item.label }}</span>
+                <span class="topnav__dropdown-desc">{{ item.desc }}</span>
+              </div>
+              <svg v-if="route.name === item.name" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:var(--brand);flex-shrink:0">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </button>
+          </template>
         </div>
       </div>
     </nav>
@@ -654,6 +694,15 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   letter-spacing: 0.7px;
   color: var(--text-muted);
   padding: 6px 10px 4px;
+}
+
+.topnav__dropdown-section {
+  padding: 8px 10px 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
 }
 
 .topnav__dropdown-item {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { useConnections, type DbDriver, type ConnectionForm } from '@/composables/useConnections'
 import { useFolders } from '@/composables/useFolders'
@@ -10,6 +11,8 @@ const { connections, loading, testConnection, saveConnection, removeConnection, 
 const { folders, fetchFolders, moveConnection, setConnectionVisibility } = useFolders()
 const toast = useToast()
 const { confirm } = useConfirm()
+const router = useRouter()
+const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
 
 onMounted(() => fetchFolders())
 
@@ -24,6 +27,7 @@ const defaultPorts: Record<DbDriver, number> = {
   mysql: 3306,
   mariadb: 3306,
   mssql: 1433,
+  redis: 6379,
 }
 
 const form = reactive<ConnectionForm>({
@@ -45,11 +49,36 @@ const form = reactive<ConnectionForm>({
   visibility: 'shared',
 })
 
-const drivers: Array<{ key: DbDriver; label: string; badge: string; sub: string }> = [
-  { key: 'postgres', label: 'PostgreSQL', badge: 'PG',  sub: 'v12+' },
-  { key: 'mysql',    label: 'MySQL',      badge: 'MY',  sub: 'v8+' },
-  { key: 'mariadb',  label: 'MariaDB',    badge: 'MB',  sub: 'v10+' },
-  { key: 'mssql',    label: 'SQL Server', badge: 'MS',  sub: '2019+' },
+type DriverOption = { key: DbDriver; label: string; badge: string; sub: string }
+
+const driverGroups: Array<{ key: string; label: string; options: DriverOption[] }> = [
+  {
+    key: 'rdbms',
+    label: 'RDBMS',
+    options: [
+      { key: 'postgres', label: 'PostgreSQL', badge: 'PG',  sub: 'v12+' },
+      { key: 'mysql',    label: 'MySQL',      badge: 'MY',  sub: 'v8+' },
+      { key: 'mariadb',  label: 'MariaDB',    badge: 'MB',  sub: 'v10+' },
+      { key: 'mssql',    label: 'SQL Server', badge: 'MS',  sub: '2019+' },
+    ],
+  },
+  {
+    key: 'nosql',
+    label: 'NoSQL',
+    options: [],
+  },
+  {
+    key: 'cache',
+    label: 'Database Cache',
+    options: [
+      { key: 'redis', label: 'Redis', badge: 'RD', sub: 'v6+' },
+    ],
+  },
+  {
+    key: 'other',
+    label: 'Other',
+    options: [],
+  },
 ]
 
 function selectDriver(d: DbDriver) {
@@ -162,6 +191,7 @@ function parseConnectionURL(raw: string) {
       postgres: 'postgres', postgresql: 'postgres',
       mysql: 'mysql', mariadb: 'mariadb',
       mssql: 'mssql', sqlserver: 'mssql',
+      redis: 'redis', rediss: 'redis',
     }
     const driver = driverMap[scheme] ?? ('postgres' as DbDriver)
     form.driver = driver
@@ -170,7 +200,7 @@ function parseConnectionURL(raw: string) {
     form.database = url.pathname.replace(/^\//, '')
     form.username = decodeURIComponent(url.username || '')
     form.password = decodeURIComponent(url.password || '')
-    form.ssl = url.searchParams.get('sslmode') === 'require' || url.searchParams.get('ssl') === 'true'
+    form.ssl = scheme === 'rediss' || url.searchParams.get('sslmode') === 'require' || url.searchParams.get('ssl') === 'true'
     if (!form.name) form.name = `${driver} / ${form.database}`
     showURLImport.value = false
     urlInput.value = ''
@@ -178,6 +208,15 @@ function parseConnectionURL(raw: string) {
   } catch {
     // ignore parse errors - let user fix the URL
   }
+}
+
+function driverBadge(driver: DbDriver) {
+  return ({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD' } as Record<DbDriver, string>)[driver]
+}
+
+function openConnection(id: number, driver: DbDriver) {
+  emit('set-conn', id)
+  router.push({ name: driver === 'redis' ? 'redis' : 'data' })
 }
 
 async function handleDelete(id: number, name: string) {
@@ -233,7 +272,7 @@ async function handleDelete(id: number, name: string) {
             class="conn-row"
           >
             <div class="conn-badge" :class="`conn-badge--${conn.driver}`" style="width:36px;height:36px;border-radius:var(--r-sm);font-size:12px">
-              {{ conn.driver === 'postgres' ? 'PG' : conn.driver === 'mysql' ? 'MY' : conn.driver === 'mariadb' ? 'MB' : 'MS' }}
+              {{ driverBadge(conn.driver) }}
             </div>
             <div style="flex:1;min-width:0">
               <div style="font-size:13px;font-weight:600;color:var(--text-primary);display:flex;align-items:center;gap:6px">
@@ -242,13 +281,16 @@ async function handleDelete(id: number, name: string) {
                 <span v-else style="font-size:11px" title="Shared">🌐</span>
               </div>
               <div style="font-size:11.5px;font-family:var(--mono);color:var(--text-muted);margin-top:2px">
-                {{ conn.username ? `${conn.username}@` : '' }}{{ conn.host }}:{{ conn.port }}/{{ conn.database }}
+                {{ conn.username ? `${conn.username}@` : '' }}{{ conn.host }}:{{ conn.port }}/{{ conn.driver === 'redis' ? `db${conn.database || 0}` : conn.database }}
               </div>
               <div v-if="conn.folder_id" style="font-size:10.5px;color:var(--text-muted);margin-top:2px">
                 📁 {{ folders.find(f => f.id === conn.folder_id)?.name ?? 'Folder' }}
               </div>
             </div>
             <span class="badge badge--default">{{ conn.driver.toUpperCase() }}</span>
+            <button class="base-btn base-btn--ghost base-btn--sm" @click="openConnection(conn.id, conn.driver)">
+              Open
+            </button>
             <!-- Quick folder assign -->
             <select
               :value="conn.folder_id ?? ''"
@@ -298,7 +340,7 @@ async function handleDelete(id: number, name: string) {
                 <input
                   v-model="urlInput"
                   class="base-input"
-                  placeholder="postgres://user:pass@host:5432/dbname"
+                  placeholder="postgres://user:pass@host:5432/dbname or redis://user:pass@host:6379/0"
                   style="flex:1;font-family:var(--font-mono);font-size:11px"
                   @keydown.enter="parseConnectionURL(urlInput)"
                 />
@@ -309,21 +351,30 @@ async function handleDelete(id: number, name: string) {
             <!-- Driver selection -->
             <div class="form-group">
               <label class="form-label">Database Engine</label>
-              <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px">
-                <button
-                  v-for="d in drivers"
-                  :key="d.key"
-                  class="provider-card"
-                  :class="[`provider-card--${d.key}`, { 'is-active': form.driver === d.key }]"
-                  @click="selectDriver(d.key)"
-                >
-                  <div class="provider-card__icon" :class="`provider-card__icon--${d.key}`">{{ d.badge }}</div>
-                  <div class="provider-card__body">
-                    <span class="provider-card__name">{{ d.label }}</span>
-                    <span class="provider-card__sub">{{ d.sub }}</span>
+              <div class="provider-groups">
+                <div v-for="group in driverGroups" :key="group.key" class="provider-group">
+                  <div class="provider-group__head">
+                    <span>{{ group.label }}</span>
+                    <span>{{ group.options.length }}</span>
                   </div>
-                  <svg v-if="form.driver === d.key" class="provider-card__check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                </button>
+                  <div v-if="group.options.length" class="provider-grid">
+                    <button
+                      v-for="d in group.options"
+                      :key="d.key"
+                      class="provider-card"
+                      :class="[`provider-card--${d.key}`, { 'is-active': form.driver === d.key }]"
+                      @click="selectDriver(d.key)"
+                    >
+                      <div class="provider-card__icon" :class="`provider-card__icon--${d.key}`">{{ d.badge }}</div>
+                      <div class="provider-card__body">
+                        <span class="provider-card__name">{{ d.label }}</span>
+                        <span class="provider-card__sub">{{ d.sub }}</span>
+                      </div>
+                      <svg v-if="form.driver === d.key" class="provider-card__check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    </button>
+                  </div>
+                  <div v-else class="provider-group__empty">No drivers yet</div>
+                </div>
               </div>
             </div>
 
@@ -345,14 +396,14 @@ async function handleDelete(id: number, name: string) {
               </div>
 
               <div class="form-group">
-                <label class="form-label">Database</label>
-                <input v-model="form.database" class="base-input" placeholder="mydb" />
+              <label class="form-label">{{ form.driver === 'redis' ? 'Database Index' : 'Database' }}</label>
+                <input v-model="form.database" class="base-input" :placeholder="form.driver === 'redis' ? '0' : 'mydb'" />
               </div>
 
               <div class="form-row">
                 <div class="form-group">
                   <label class="form-label">Username</label>
-                  <input v-model="form.username" class="base-input" placeholder="postgres" />
+                  <input v-model="form.username" class="base-input" :placeholder="form.driver === 'redis' ? 'default' : 'postgres'" />
                 </div>
                 <div class="form-group">
                   <label class="form-label">Password</label>
@@ -526,6 +577,43 @@ async function handleDelete(id: number, name: string) {
 }
 
 /* ── Provider cards ── */
+.provider-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.provider-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.provider-group__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.provider-group__empty {
+  padding: 8px 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
 .provider-card {
   display: flex;
   align-items: center;
@@ -564,6 +652,7 @@ async function handleDelete(id: number, name: string) {
 .provider-card__icon--mysql    { background: #e48e00; }
 .provider-card__icon--mariadb  { background: #c0765a; }
 .provider-card__icon--mssql    { background: #cc2927; }
+.provider-card__icon--redis    { background: #c6302b; }
 
 .provider-card__body {
   display: flex;
