@@ -211,7 +211,11 @@ function parseConnectionURL(raw: string) {
 }
 
 function driverBadge(driver: DbDriver) {
-  return ({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD' } as Record<DbDriver, string>)[driver]
+  return ({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD' } as Record<DbDriver, string>)[driver] ?? driver.slice(0, 2).toUpperCase()
+}
+
+function driverFullName(driver: DbDriver) {
+  return ({ postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', mssql: 'SQL Server', redis: 'Redis' } as Record<DbDriver, string>)[driver] ?? driver
 }
 
 function openConnection(id: number, driver: DbDriver) {
@@ -265,53 +269,61 @@ async function handleDelete(id: number, name: string) {
           No connections yet. Add your first one.
         </div>
 
-        <div v-else style="display:flex;flex-direction:column;gap:8px">
+        <div v-else class="conn-list">
           <div
             v-for="conn in connections"
             :key="conn.id"
             class="conn-row"
           >
-            <div class="conn-badge" :class="`conn-badge--${conn.driver}`" style="width:36px;height:36px;border-radius:var(--r-sm);font-size:12px">
+            <!-- Driver badge -->
+            <div class="conn-badge conn-row__badge" :class="`conn-badge--${conn.driver}`">
               {{ driverBadge(conn.driver) }}
             </div>
-            <div style="flex:1;min-width:0">
-              <div style="font-size:13px;font-weight:600;color:var(--text-primary);display:flex;align-items:center;gap:6px">
-                {{ conn.name }}
-                <span v-if="conn.visibility === 'private'" style="font-size:11px" title="Private">🔒</span>
-                <span v-else style="font-size:11px" title="Shared">🌐</span>
+
+            <!-- Main info -->
+            <div class="conn-row__body">
+              <div class="conn-row__top">
+                <span class="conn-row__name">{{ conn.name }}</span>
+                <span class="conn-row__driver">{{ driverFullName(conn.driver) }}</span>
+                <span class="conn-row__vis" :title="conn.visibility">{{ conn.visibility === 'shared' ? '🌐' : '🔒' }}</span>
               </div>
-              <div style="font-size:11.5px;font-family:var(--mono);color:var(--text-muted);margin-top:2px">
-                {{ conn.username ? `${conn.username}@` : '' }}{{ conn.host }}:{{ conn.port }}/{{ conn.driver === 'redis' ? `db${conn.database || 0}` : conn.database }}
+              <div class="conn-row__host">
+                {{ conn.username ? `${conn.username}@` : '' }}{{ conn.host }}{{ conn.port ? `:${conn.port}` : '' }}{{ (conn.driver === 'redis' ? `/db${conn.database || 0}` : conn.database ? `/${conn.database}` : '') }}
               </div>
-              <div v-if="conn.folder_id" style="font-size:10.5px;color:var(--text-muted);margin-top:2px">
-                📁 {{ folders.find(f => f.id === conn.folder_id)?.name ?? 'Folder' }}
+              <div v-if="conn.folder_id" class="conn-row__folder">
+                {{ folders.find(f => f.id === conn.folder_id)?.name ?? 'Folder' }}
               </div>
             </div>
-            <span class="badge badge--default">{{ conn.driver.toUpperCase() }}</span>
-            <button class="base-btn base-btn--ghost base-btn--sm" @click="openConnection(conn.id, conn.driver)">
-              Open
-            </button>
-            <!-- Quick folder assign -->
-            <select
-              :value="conn.folder_id ?? ''"
-              class="conn-folder-select"
-              title="Move to folder"
-              @change="moveConnection(conn.id, ($event.target as HTMLSelectElement).value ? Number(($event.target as HTMLSelectElement).value) : null)"
-            >
-              <option value="">📂 Unfiled</option>
-              <option v-for="f in folders" :key="f.id" :value="f.id">{{ f.visibility === 'shared' ? '🌐' : '🔒' }} {{ f.name }}</option>
-            </select>
-            <!-- Visibility toggle -->
-            <button class="icon-btn" :title="conn.visibility === 'shared' ? 'Make private' : 'Make shared'"
-              @click="setConnectionVisibility(conn.id, conn.visibility === 'shared' ? 'private' : 'shared').then(() => fetchConnections())">
-              {{ conn.visibility === 'shared' ? '🌐' : '🔒' }}
-            </button>
-            <button class="icon-btn" @click="editConnection(conn.id)" title="Edit">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-            </button>
-            <button class="icon-btn danger" @click="handleDelete(conn.id, conn.name)" title="Delete">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
-            </button>
+
+            <!-- Actions -->
+            <div class="conn-row__actions">
+              <button class="base-btn base-btn--primary base-btn--sm" @click="openConnection(conn.id, conn.driver)">
+                Open
+              </button>
+              <select
+                :value="conn.folder_id ?? ''"
+                class="conn-row__folder-sel"
+                title="Move to folder"
+                @change="moveConnection(conn.id, ($event.target as HTMLSelectElement).value ? Number(($event.target as HTMLSelectElement).value) : null)"
+              >
+                <option value="">📂 Unfiled</option>
+                <option v-for="f in folders" :key="f.id" :value="f.id">{{ f.name }}</option>
+              </select>
+              <button
+                class="icon-btn"
+                :title="conn.visibility === 'shared' ? 'Make private' : 'Make shared'"
+                @click="setConnectionVisibility(conn.id, conn.visibility === 'shared' ? 'private' : 'shared').then(() => fetchConnections())"
+              >
+                <svg v-if="conn.visibility === 'shared'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              </button>
+              <button class="icon-btn" @click="editConnection(conn.id)" title="Edit">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </button>
+              <button class="icon-btn danger" @click="handleDelete(conn.id, conn.name)" title="Delete">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -541,23 +553,111 @@ async function handleDelete(id: number, name: string) {
   color: var(--text-muted);
 }
 
+.conn-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .conn-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 16px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 44%),
-    var(--bg-surface);
+  padding: 12px 14px;
+  background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 16px;
-  transition: border-color var(--dur), transform var(--dur), box-shadow var(--dur);
+  border-radius: 10px;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .conn-row:hover {
-  border-color: rgba(92, 184, 165, 0.22);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-sm);
+  border-color: var(--brand);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 20%, transparent);
+}
+
+.conn-row__badge {
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.conn-row__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.conn-row__top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.conn-row__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.conn-row__driver {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: var(--bg-body);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.conn-row__vis {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.conn-row__host {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conn-row__folder {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.conn-row__folder::before {
+  content: '📁';
+  font-size: 10px;
+}
+
+.conn-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.conn-row__folder-sel {
+  height: 28px;
+  padding: 0 6px;
+  font-size: 11.5px;
+  background: var(--bg-body);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  max-width: 130px;
 }
 
 .conn-form {

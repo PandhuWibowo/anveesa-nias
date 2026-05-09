@@ -124,6 +124,9 @@ const activeConn = computed(() =>
   props.activeConnId != null ? connections.value.find((c) => c.id === props.activeConnId) ?? null : null,
 )
 const isRedis = computed(() => activeConn.value?.driver === 'redis')
+const isSql = computed(() => activeConn.value != null && activeConn.value.driver !== 'redis')
+// When in SQL-only mode, the user picks a Redis conn just for the retry-push step
+const retryRedisConnId = ref<number | null>(null)
 const filteredJobs = computed(() => {
   const query = search.value.trim().toLowerCase()
   return jobs.value.filter((job) => {
@@ -283,15 +286,21 @@ let refreshTimer: number | null = null
 onMounted(async () => {
   loadProfiles()
   if (!connections.value.length) await fetchConnections()
-  if (!isRedis.value && redisConnections.value.length === 1) {
+  // Only auto-switch to the sole Redis connection when no SQL conn is active
+  if (!isRedis.value && !isSql.value && redisConnections.value.length === 1) {
     emit('set-conn', redisConnections.value[0].id)
     return
   }
   selectedDb.value = Number(activeConn.value?.database || 0)
-  failedConnId.value = sqlConnections.value[0]?.id ?? null
   if (isRedis.value) {
+    failedConnId.value = sqlConnections.value[0]?.id ?? null
     await loadOpsSettings()
     await Promise.all([loadQueues(), loadHorizon(), loadQuarantine(), loadQueueAudit()])
+  } else if (isSql.value) {
+    failedConnId.value = props.activeConnId
+    activeState.value = 'failed'
+    await loadOpsSettings()
+    await Promise.all([loadFailedJobs(), loadQuarantine(), loadQueueAudit()])
   }
 })
 
@@ -314,9 +323,15 @@ watch(() => props.activeConnId, async () => {
   selectedFailedJobIds.value = new Set()
   queues.value = []
   jobs.value = []
+  failedJobs.value = []
   if (isRedis.value) {
     await loadOpsSettings()
     await Promise.all([loadQueues(), loadHorizon(), loadQuarantine(), loadQueueAudit()])
+  } else if (isSql.value) {
+    failedConnId.value = props.activeConnId
+    activeState.value = 'failed'
+    await loadOpsSettings()
+    await Promise.all([loadFailedJobs(), loadQuarantine(), loadQueueAudit()])
   }
 })
 
@@ -843,9 +858,11 @@ async function quarantineSelectedFailed() {
 }
 
 async function quarantineFailed(job: LaravelFailedJob | null, notify = true) {
-  if (!activeConn.value || !failedConnId.value || !job) return
+  if (!failedConnId.value || !job) return
+  // In SQL mode, use failedConnId as the primary conn; in Redis mode use the Redis conn
+  const connId = isRedis.value ? activeConn.value!.id : failedConnId.value
   try {
-    await quarantineFailedJob(activeConn.value.id, {
+    await quarantineFailedJob(connId, {
       failed_conn_id: failedConnId.value,
       failed_job_id: job.id,
       uuid: job.uuid,
@@ -864,11 +881,12 @@ async function quarantineFailed(job: LaravelFailedJob | null, notify = true) {
 }
 
 async function removeFromQuarantine(job: LaravelFailedJob) {
-  if (!activeConn.value) return
+  const connId = isRedis.value ? activeConn.value?.id : failedConnId.value
+  if (!connId) return
   const item = quarantine.value.find(entry => entry.failed_job_id === job.id)
   if (!item) return
   try {
-    await releaseQuarantine(activeConn.value.id, item.id)
+    await releaseQuarantine(connId, item.id)
     await loadQuarantine()
   } catch (err) {
     toast.error(errorMessage(err, 'Failed to release quarantine item'))
@@ -1091,7 +1109,12 @@ async function clearSelectedQueue() {
 }
 
 async function retrySelectedFailedJob(job: LaravelFailedJob | null, deleteAfter: boolean, queueOverride = '') {
-  if (!activeConn.value || !failedConnId.value || !job) return
+  if (!failedConnId.value || !job) return
+  const redisConnId = isRedis.value ? activeConn.value?.id : retryRedisConnId.value
+  if (!redisConnId) {
+    toast.error('Select a Redis connection to push the retried job to')
+    return
+  }
   if (deleteAfter && !canAction('delete')) {
     toast.error('Delete after retry is disabled by feature flags')
     return
@@ -1108,7 +1131,7 @@ async function retrySelectedFailedJob(job: LaravelFailedJob | null, deleteAfter:
   try {
     await retryFailedJob(failedConnId.value, {
       id: job.id,
-      redis_conn_id: activeConn.value.id,
+      redis_conn_id: redisConnId,
       redis_db: selectedDb.value,
       prefix: prefix.value,
       queue: targetQueue,
@@ -1140,7 +1163,12 @@ async function removeFailedJob(job: LaravelFailedJob | null) {
 }
 
 async function bulkRetryFailed(deleteAfter: boolean) {
-  if (!activeConn.value || !failedConnId.value || selectedFailedJobs.value.length === 0) return
+  if (!failedConnId.value || selectedFailedJobs.value.length === 0) return
+  const redisConnId = isRedis.value ? activeConn.value?.id : retryRedisConnId.value
+  if (!redisConnId) {
+    toast.error('Select a Redis connection to push the retried jobs to')
+    return
+  }
   if (deleteAfter && !canAction('delete')) {
     toast.error('Delete after retry is disabled by feature flags')
     return
@@ -1151,7 +1179,7 @@ async function bulkRetryFailed(deleteAfter: boolean) {
     await Promise.all(selectedFailedJobs.value.map(job =>
       retryFailedJob(failedConnId.value!, {
         id: job.id,
-        redis_conn_id: activeConn.value!.id,
+        redis_conn_id: redisConnId!,
         redis_db: selectedDb.value,
         prefix: prefix.value,
         queue: job.queue || selectedQueue.value,
@@ -1268,10 +1296,11 @@ function errorMessage(err: unknown, fallback: string) {
 
 <template>
   <div class="lq-view">
-    <section v-if="!isRedis" class="page-panel lq-empty">
-      <div class="lq-empty__title">No Redis connection selected</div>
+    <section v-if="!isRedis && !isSql" class="page-panel lq-empty">
+      <div class="lq-empty__title">No connection selected</div>
+      <div class="lq-empty__hint">Select a Redis connection to monitor queues, or a SQL database connection to browse failed jobs.</div>
       <div v-if="redisConnections.length" class="lq-picker">
-        <label class="form-label">Redis Connection</label>
+        <label class="form-label">Redis Connection (full queue monitor)</label>
         <select class="base-input" @change="selectRedisConnection(($event.target as HTMLSelectElement).value)">
           <option value="">Select Redis connection</option>
           <option v-for="conn in redisConnections" :key="conn.id" :value="conn.id">
@@ -1279,14 +1308,23 @@ function errorMessage(err: unknown, fallback: string) {
           </option>
         </select>
       </div>
-      <div v-else class="lq-muted">Create a Redis connection first.</div>
+      <div v-if="sqlConnections.length" class="lq-picker" style="margin-top:12px">
+        <label class="form-label">SQL Connection (failed jobs only)</label>
+        <select class="base-input" @change="selectRedisConnection(($event.target as HTMLSelectElement).value)">
+          <option value="">Select SQL connection</option>
+          <option v-for="conn in sqlConnections" :key="conn.id" :value="conn.id">
+            {{ conn.name }} ({{ conn.driver }})
+          </option>
+        </select>
+      </div>
+      <div v-if="!redisConnections.length && !sqlConnections.length" class="lq-muted">Create a connection first.</div>
     </section>
 
-    <template v-else>
+    <template v-else-if="isRedis || isSql">
       <aside class="lq-sidebar">
         <div class="lq-panel-header">
           <span>{{ activeConn?.name }}</span>
-          <span class="lq-driver">RD</span>
+          <span class="lq-driver">{{ ({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD' }[activeConn?.driver ?? ''] ?? (activeConn?.driver ?? 'DB').slice(0,2).toUpperCase()) }}</span>
         </div>
 
         <div class="lq-controls">
@@ -1304,20 +1342,41 @@ function errorMessage(err: unknown, fallback: string) {
             <input v-model="profileName" class="base-input" placeholder="Profile name" @keydown.enter="saveProfile" />
             <button class="base-btn base-btn--primary base-btn--sm" @click="saveProfile">Save</button>
           </div>
-          <div class="form-group">
-            <label class="form-label">Redis DB</label>
-            <select v-model.number="selectedDb" class="base-input">
-              <option v-for="db in redisDbIndexes" :key="db" :value="db">DB {{ db }}</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Queue Prefix</label>
-            <input v-model="prefix" class="base-input" placeholder="queues" @keydown.enter="loadQueues" />
-          </div>
-          <button class="base-btn base-btn--ghost base-btn--sm" :disabled="loadingQueues" @click="loadQueues">Refresh</button>
+          <template v-if="isRedis">
+            <div class="form-group">
+              <label class="form-label">Redis DB</label>
+              <select v-model.number="selectedDb" class="base-input">
+                <option v-for="db in redisDbIndexes" :key="db" :value="db">DB {{ db }}</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Queue Prefix</label>
+              <input v-model="prefix" class="base-input" placeholder="queues" @keydown.enter="loadQueues" />
+            </div>
+            <button class="base-btn base-btn--ghost base-btn--sm" :disabled="loadingQueues" @click="loadQueues">Refresh</button>
+          </template>
+          <template v-else>
+            <div class="form-group">
+              <label class="form-label">Redis connection for retry</label>
+              <select v-model.number="retryRedisConnId" class="base-input" title="Pick a Redis connection to push retried jobs back into">
+                <option :value="null">None (disable retry)</option>
+                <option v-for="conn in redisConnections" :key="conn.id" :value="conn.id">{{ conn.name }}</option>
+              </select>
+            </div>
+            <div v-if="retryRedisConnId" class="form-group">
+              <label class="form-label">Redis DB</label>
+              <select v-model.number="selectedDb" class="base-input">
+                <option v-for="db in redisDbIndexes" :key="db" :value="db">DB {{ db }}</option>
+              </select>
+            </div>
+            <div v-if="retryRedisConnId" class="form-group">
+              <label class="form-label">Queue prefix</label>
+              <input v-model="prefix" class="base-input" placeholder="queues" />
+            </div>
+          </template>
         </div>
 
-        <div class="lq-queue-list">
+        <div v-if="isRedis" class="lq-queue-list">
           <button
             v-for="queue in queues"
             :key="queue.name"
@@ -1330,13 +1389,17 @@ function errorMessage(err: unknown, fallback: string) {
           </button>
           <div v-if="!loadingQueues && queues.length === 0" class="lq-muted">No Laravel queues found.</div>
         </div>
+        <div v-else class="lq-queue-list">
+          <div class="lq-muted" style="padding:10px 12px">Showing <strong>failed_jobs</strong> from <em>{{ activeConn?.name }}</em>.<br>Switch to a Redis connection to monitor live queues.</div>
+        </div>
       </aside>
 
       <main class="lq-main">
         <div class="lq-toolbar">
           <div class="lq-toolbar__info">
-            <span class="lq-title">Laravel Queue</span>
-            <span class="lq-meta">{{ prefix }}:{{ selectedQueue }}</span>
+            <span class="lq-title">{{ isSql ? 'Laravel Failed Jobs' : 'Laravel Queue' }}</span>
+            <span v-if="isRedis" class="lq-meta">{{ prefix }}:{{ selectedQueue }}</span>
+            <span v-else class="lq-meta">{{ activeConn?.name }} · failed_jobs</span>
           </div>
           <div class="lq-toolbar__actions">
             <label class="lq-auto">
@@ -1348,19 +1411,25 @@ function errorMessage(err: unknown, fallback: string) {
               <option :value="10">10s</option>
               <option :value="30">30s</option>
             </select>
-            <span v-if="selectedSummary" class="lq-chip">{{ selectedSummary.ready }} ready</span>
-            <span v-if="selectedSummary" class="lq-chip">{{ selectedSummary.delayed }} delayed</span>
-            <span v-if="selectedSummary" class="lq-chip">{{ selectedSummary.reserved }} reserved</span>
-            <span class="lq-chip" :class="{ 'lq-chip--danger': stuckJobs.length }">{{ stuckJobs.length }} stuck</span>
-            <span v-if="queueAlerts.length" class="lq-chip lq-chip--danger">{{ queueAlerts.length }} alerts</span>
+            <template v-if="isRedis">
+              <span v-if="selectedSummary" class="lq-chip">{{ selectedSummary.ready }} ready</span>
+              <span v-if="selectedSummary" class="lq-chip">{{ selectedSummary.delayed }} delayed</span>
+              <span v-if="selectedSummary" class="lq-chip">{{ selectedSummary.reserved }} reserved</span>
+              <span class="lq-chip" :class="{ 'lq-chip--danger': stuckJobs.length }">{{ stuckJobs.length }} stuck</span>
+              <span v-if="queueAlerts.length" class="lq-chip lq-chip--danger">{{ queueAlerts.length }} alerts</span>
+              <span class="lq-chip">oldest {{ oldestJobAge }}</span>
+              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="loadingJobs" @click="loadJobs">Refresh Jobs</button>
+              <button class="base-btn base-btn--danger base-btn--sm" :disabled="!jobs.length || !canAction('clear')" @click="clearSelectedQueue">Clear Queue</button>
+            </template>
+            <template v-else>
+              <span class="lq-chip" :class="{ 'lq-chip--danger': failedJobs.length > 0 }">{{ failedJobs.length }} failed</span>
+              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="loadingFailed" @click="loadFailedJobs">Refresh</button>
+            </template>
             <span v-if="featureFlags.readOnly" class="lq-chip lq-chip--danger">read only</span>
-            <span class="lq-chip">oldest {{ oldestJobAge }}</span>
-            <button class="base-btn base-btn--ghost base-btn--sm" :disabled="loadingJobs" @click="loadJobs">Refresh Jobs</button>
-            <button class="base-btn base-btn--danger base-btn--sm" :disabled="!jobs.length || !canAction('clear')" @click="clearSelectedQueue">Clear Queue</button>
           </div>
         </div>
 
-        <div class="lq-healthbar">
+        <div v-if="isRedis" class="lq-healthbar">
           <span class="lq-health">All queues ready <strong>{{ queueTotals.ready }}</strong></span>
           <span class="lq-health">Delayed <strong>{{ queueTotals.delayed }}</strong></span>
           <span class="lq-health">Reserved <strong>{{ queueTotals.reserved }}</strong></span>
@@ -1517,27 +1586,31 @@ function errorMessage(err: unknown, fallback: string) {
 
         <div class="lq-filterbar">
           <input v-model="search" class="base-input lq-search" placeholder="Search UUID, class, handler, or payload" />
-          <label class="lq-retry-after">
-            <span>Retry after</span>
-            <input v-model.number="retryAfter" class="base-input" type="number" min="1" />
-            <span>seconds</span>
-          </label>
-          <select v-model.number="failedConnId" class="base-input lq-failed-select" title="SQL connection for failed_jobs">
-            <option :value="null">Failed jobs connection</option>
-            <option v-for="conn in sqlConnections" :key="conn.id" :value="conn.id">{{ conn.name }}</option>
-          </select>
-          <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!failedConnId || loadingFailed" @click="loadFailedJobs">Load Failed</button>
+          <template v-if="isRedis">
+            <label class="lq-retry-after">
+              <span>Retry after</span>
+              <input v-model.number="retryAfter" class="base-input" type="number" min="1" />
+              <span>seconds</span>
+            </label>
+            <select v-model.number="failedConnId" class="base-input lq-failed-select" title="SQL connection for failed_jobs">
+              <option :value="null">Failed jobs connection</option>
+              <option v-for="conn in sqlConnections" :key="conn.id" :value="conn.id">{{ conn.name }}</option>
+            </select>
+            <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!failedConnId || loadingFailed" @click="loadFailedJobs">Load Failed</button>
+          </template>
         </div>
 
         <div class="lq-tabs">
-          <button class="lq-tab" :class="{ active: activeState === 'all' }" @click="activeState = 'all'">All <span>{{ jobs.length }}</span></button>
-          <button class="lq-tab" :class="{ active: activeState === 'ready' }" @click="activeState = 'ready'">Ready <span>{{ stateCount('ready') }}</span></button>
-          <button class="lq-tab" :class="{ active: activeState === 'delayed' }" @click="activeState = 'delayed'">Delayed <span>{{ stateCount('delayed') }}</span></button>
-          <button class="lq-tab" :class="{ active: activeState === 'reserved' }" @click="activeState = 'reserved'">Reserved <span>{{ stateCount('reserved') }}</span></button>
+          <template v-if="isRedis">
+            <button class="lq-tab" :class="{ active: activeState === 'all' }" @click="activeState = 'all'">All <span>{{ jobs.length }}</span></button>
+            <button class="lq-tab" :class="{ active: activeState === 'ready' }" @click="activeState = 'ready'">Ready <span>{{ stateCount('ready') }}</span></button>
+            <button class="lq-tab" :class="{ active: activeState === 'delayed' }" @click="activeState = 'delayed'">Delayed <span>{{ stateCount('delayed') }}</span></button>
+            <button class="lq-tab" :class="{ active: activeState === 'reserved' }" @click="activeState = 'reserved'">Reserved <span>{{ stateCount('reserved') }}</span></button>
+          </template>
           <button class="lq-tab" :class="{ active: activeState === 'failed' }" @click="activeState = 'failed'; loadFailedJobs()">Failed <span>{{ failedJobs.length }}</span></button>
         </div>
 
-        <div v-if="activeState !== 'failed' && selectedJobIds.size" class="lq-bulkbar">
+        <div v-if="isRedis && activeState !== 'failed' && selectedJobIds.size" class="lq-bulkbar">
           <span>{{ selectedJobIds.size }} selected</span>
           <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!canAction('retry')" @click="bulkRequeueJobs">Requeue selected</button>
           <button class="base-btn base-btn--danger base-btn--sm" :disabled="!canAction('delete')" @click="bulkDeleteJobs">Delete selected</button>
@@ -1546,8 +1619,8 @@ function errorMessage(err: unknown, fallback: string) {
 
         <div v-if="activeState === 'failed' && selectedFailedJobIds.size" class="lq-bulkbar">
           <span>{{ selectedFailedJobIds.size }} failed selected</span>
-          <button class="base-btn base-btn--primary base-btn--sm" :disabled="!canAction('retry')" @click="bulkRetryFailed(false)">Retry selected</button>
-          <button class="base-btn base-btn--primary base-btn--sm" :disabled="!canAction('retry') || !canAction('delete')" @click="bulkRetryFailed(true)">Retry & delete</button>
+          <button class="base-btn base-btn--primary base-btn--sm" :disabled="!canAction('retry') || (isSql && !retryRedisConnId)" @click="bulkRetryFailed(false)">Retry selected</button>
+          <button class="base-btn base-btn--primary base-btn--sm" :disabled="!canAction('retry') || !canAction('delete') || (isSql && !retryRedisConnId)" @click="bulkRetryFailed(true)">Retry & delete</button>
           <button class="base-btn base-btn--danger base-btn--sm" :disabled="!canAction('delete')" @click="bulkDeleteFailed">Delete failed</button>
           <button class="base-btn base-btn--ghost base-btn--sm" @click="quarantineSelectedFailed">Quarantine</button>
           <button class="base-btn base-btn--ghost base-btn--sm" @click="exportSelectedJobs">Export selected</button>
@@ -1560,7 +1633,7 @@ function errorMessage(err: unknown, fallback: string) {
         </div>
 
         <div class="lq-content">
-          <section v-if="activeState !== 'failed'" class="lq-jobs">
+          <section v-if="isRedis && activeState !== 'failed'" class="lq-jobs">
             <table class="lq-table">
               <thead>
                 <tr>
@@ -1680,8 +1753,18 @@ function errorMessage(err: unknown, fallback: string) {
               </div>
               <div class="lq-detail__actions">
                 <button class="base-btn base-btn--ghost base-btn--sm" @click="copyFailedPayload(selectedFailedJob)">Copy Payload</button>
-                <button class="base-btn base-btn--primary base-btn--sm" :disabled="!canAction('retry')" @click="retrySelectedFailedJob(selectedFailedJob, false)">Retry</button>
-                <button class="base-btn base-btn--primary base-btn--sm" :disabled="!canAction('retry') || !canAction('delete')" @click="retrySelectedFailedJob(selectedFailedJob, true)">Retry & Delete</button>
+                <button
+                  class="base-btn base-btn--primary base-btn--sm"
+                  :disabled="!canAction('retry') || (isSql && !retryRedisConnId)"
+                  :title="isSql && !retryRedisConnId ? 'Select a Redis connection in the sidebar to enable retry' : undefined"
+                  @click="retrySelectedFailedJob(selectedFailedJob, false)"
+                >Retry</button>
+                <button
+                  class="base-btn base-btn--primary base-btn--sm"
+                  :disabled="!canAction('retry') || !canAction('delete') || (isSql && !retryRedisConnId)"
+                  :title="isSql && !retryRedisConnId ? 'Select a Redis connection in the sidebar to enable retry' : undefined"
+                  @click="retrySelectedFailedJob(selectedFailedJob, true)"
+                >Retry & Delete</button>
                 <button class="base-btn base-btn--ghost base-btn--sm" @click="quarantineFailed(selectedFailedJob)">Quarantine</button>
                 <button v-if="quarantinedFailedJobIds.has(selectedFailedJob.id)" class="base-btn base-btn--ghost base-btn--sm" @click="removeFromQuarantine(selectedFailedJob)">Unquarantine</button>
                 <button class="base-btn base-btn--danger base-btn--sm" :disabled="!canAction('delete')" @click="removeFailedJob(selectedFailedJob)">Delete Failed</button>
@@ -1704,8 +1787,8 @@ function errorMessage(err: unknown, fallback: string) {
                 <textarea v-model="editedFailedPayload" class="base-input lq-payload-editor" rows="14" />
                 <div class="lq-editor-actions">
                   <button class="base-btn base-btn--ghost base-btn--sm" @click="editedFailedPayload = formatFailedPayload(selectedFailedJob)">Reset</button>
-                  <button class="base-btn base-btn--primary base-btn--sm" :disabled="!canAction('editedReplay')" @click="retrySelectedFailedJob(selectedFailedJob, false)">Retry Edited</button>
-                  <button class="base-btn base-btn--primary base-btn--sm" :disabled="!canAction('editedReplay') || !canAction('delete')" @click="retrySelectedFailedJob(selectedFailedJob, true)">Retry Edited & Delete</button>
+                  <button class="base-btn base-btn--primary base-btn--sm" :disabled="!canAction('editedReplay') || (isSql && !retryRedisConnId)" @click="retrySelectedFailedJob(selectedFailedJob, false)">Retry Edited</button>
+                  <button class="base-btn base-btn--primary base-btn--sm" :disabled="!canAction('editedReplay') || !canAction('delete') || (isSql && !retryRedisConnId)" @click="retrySelectedFailedJob(selectedFailedJob, true)">Retry Edited & Delete</button>
                 </div>
               </div>
               <pre v-if="detailTab === 'command'" class="lq-payload">{{ failedCommandData(selectedFailedJob) || 'No command data found.' }}</pre>
@@ -1740,6 +1823,13 @@ function errorMessage(err: unknown, fallback: string) {
   color: var(--text-primary);
   font-size: 14px;
   font-weight: 700;
+}
+
+.lq-empty__hint {
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin-top: 6px;
+  max-width: 420px;
 }
 
 .lq-picker {
