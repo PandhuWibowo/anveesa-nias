@@ -7,6 +7,7 @@ How to use this documentation:
 - Capture the screenshots listed in each file.
 - Save screenshots under [docs/screenshots](./screenshots/README.md) using the suggested filenames.
 - Replace placeholder lines like `Screenshot:` with real markdown image links later if you want a polished handbook.
+- In the app, open `/docs` and use the Docs Menu to jump to each feature area.
 
 Documentation index:
 - [01-auth-and-navigation.md](./01-auth-and-navigation.md)
@@ -52,5 +53,7 @@ Current primary routes covered:
 - `/row-history`
 - `/users`
 - `/permissions`
+- `/permissions?tab=groups`
+- `/permissions?tab=users`
 - `/workflows`
 - `/security`

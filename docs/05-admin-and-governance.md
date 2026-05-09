@@ -66,24 +66,27 @@ Screenshot:
 
 Route:
 - `/permissions`
+- `/permissions?tab=groups`
+- `/permissions?tab=users`
 
 Purpose:
-- Manages roles, folders, and connection-level permission policy.
+- Manages roles, app-level feature permissions, access groups, users, and connection-level permission policy.
 - Controls both app-level features and database operation permissions.
 
 Use cases:
 - Create a read-only analyst role.
+- Grant or deny access to specific product screens.
 - Restrict a group to specific connection folders.
 - Allow query execution but block write operations.
 - Review who has access to sensitive connections.
 - Apply different access levels for different teams.
 
 Typical workflow:
-1. Define app roles.
-2. Assign users to roles.
-3. Create connection folders or groups.
-4. Assign users and connections to groups.
-5. Configure database permissions such as select, insert, update, delete, DDL, and admin operations.
+1. Open Admin, then Roles & Permissions.
+2. Define app roles and select feature permissions from the current permission list.
+3. Open Access Groups when folder-based connection access needs to be changed.
+4. Open Users to assign roles and direct connection permissions.
+5. Configure database permissions such as select, insert, update, delete, create, alter, and drop.
 
 Expected result:
 - Users only see and use the features and connections they are allowed to access.
@@ -92,6 +95,9 @@ Notes:
 - Prefer granting the minimum access required.
 - Review permissions after team or responsibility changes.
 - Permission changes should be tested with a non-admin account.
+- The Admin menu separates Roles & Permissions from Access Groups, but both use the `/permissions` screen.
+- The application permission catalog includes current screen-level keys such as `analytics.view`, `dashboards.manage`, `sqlstudio.access`, `er.view`, `redis.view`, `queues.view`, `operations.view`, `performance.view`, `databaseaudit.view`, `watchers.manage`, `approvals.view`, `changesets.manage`, `datascripts.manage`, and `scriptrequests.view`.
+- Older roles that only have coarse permissions continue to work through compatibility expansion.
 
 Screenshot:
 - `docs/screenshots/permissions-page.png`

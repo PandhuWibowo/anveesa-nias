@@ -141,22 +141,50 @@ CREATE TABLE roles (
 ```
 
 **System Roles:**
-- **admin**: Full access (10 permissions)
-- **user**: Standard access (3 permissions: view connections, execute queries, browse schema)
+- **admin**: Full access to the current application permission catalog
+- **user**: Standard access for query, analytics, schema browsing, saved queries, notifications, and related non-admin workflows
 
-### **10 Application Permission Keys**
+### **Application Permission Keys**
 
 ```
 connections.view       ← Can see connection list
 connections.create     ← Can add new connections
 connections.edit       ← Can modify connections
 connections.delete     ← Can remove connections
+analytics.view         ← Can open Analytics Home
+dashboards.manage      ← Can manage analytics dashboards
 query.execute          ← Can run SQL queries
+query.approve          ← Can approve controlled query requests
+sqlstudio.access       ← Can open SQL Studio
+savedqueries.manage    ← Can manage saved queries
+snippets.manage        ← Can manage SQL snippets
 schema.browse          ← Can view table structures
+schema.diff.view       ← Can compare schemas
+er.view                ← Can view ER diagrams
+redis.view             ← Can use Redis Browser
+queues.view            ← Can use Laravel Queue
 audit.view             ← Can access audit logs
+operations.view        ← Can view Operations Overview
+performance.view       ← Can view Query Performance
+databaseaudit.view     ← Can view Database Audit
+watchers.manage        ← Can manage watchers
+ai.use                 ← Can use AI analytics features
+ai.manage              ← Can manage AI settings
+security.self          ← Can manage own security settings
+notifications.view     ← Can view notifications
+notifications.manage   ← Can manage notification routing
+backups.manage         ← Can manage backups
+schedules.manage       ← Can manage schedules
+health.view            ← Can view health checks
+rowhistory.view        ← Can view row history
+approvals.view         ← Can view approval queues
+changesets.manage      ← Can manage change sets
+datascripts.manage     ← Can manage data scripts
+scriptrequests.view    ← Can view script requests
 users.manage           ← Can create/edit/delete users
 folders.manage         ← Can organize connections into folders
 roles.manage           ← Can create custom roles
+workflows.manage       ← Can manage approval workflows
 ```
 
 ### **User Permission Overrides**
@@ -207,16 +235,17 @@ Users inherit permissions from their role, but can have **additive** personal ov
 
 ## Frontend Implementation
 
-### **New View**
-- `web/src/views/RBACView.vue` — Role management UI:
+### **View**
+- `web/src/views/PermissionsView.vue` — Role and access management UI:
   - List all roles with user counts
   - Create/Edit/Delete roles (except system roles)
   - Permission assignment with grouped checkboxes
-  - Responsive card-based layout
+  - Access groups and user role assignment
 
 ### **Already Integrated**
-- Route already exists: `/rbac` → `RBACView.vue`
-- Menu item already in TopNav: "Permissions" under Administration group
+- Route exists: `/permissions`
+- Legacy `/rbac` redirects to `/permissions`
+- Admin menu entries include "Roles & Permissions" and "Access Groups"
 
 ---
 

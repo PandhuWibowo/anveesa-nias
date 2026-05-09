@@ -24,13 +24,14 @@ const { queries, fetchAll: fetchSavedQueries } = useSavedQueries()
 const loading = ref(false)
 const pinnedReports = ref<AIReport[]>([])
 
-const canQuery = computed(() => hasAnyPermission(['connections.view', 'query.execute', 'schema.browse']))
+const canQuery = computed(() => hasAnyPermission(['sqlstudio.access']))
 const canUseAI = computed(() => hasAnyPermission(['ai.use']))
 const canSavedQueries = computed(() => hasAnyPermission(['savedqueries.manage']))
+const canDashboards = computed(() => hasAnyPermission(['dashboards.manage']))
 const canSchedule = computed(() => hasAnyPermission(['schedules.manage']))
 const canNotifications = computed(() => hasAnyPermission(['notifications.view']))
-const canDashboard = computed(() => hasAnyPermission(['connections.view']))
-const canER = computed(() => hasAnyPermission(['schema.browse']))
+const canDashboard = computed(() => hasAnyPermission(['operations.view']))
+const canER = computed(() => hasAnyPermission(['er.view']))
 
 const analyticsCards = computed(() => [
   {
@@ -58,7 +59,7 @@ const analyticsCards = computed(() => [
     badge: 'BI',
     tone: 'violet',
     stat: 'Chart blocks from saved SQL',
-    enabled: canSavedQueries.value,
+    enabled: canDashboards.value,
   },
   {
     title: 'AI Analytics',

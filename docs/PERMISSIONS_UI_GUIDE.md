@@ -14,9 +14,11 @@ The Permissions UI has been redesigned to match your existing application's desi
 
 ## 📍 Navigation
 
-**Access:** Administration → Permissions
+**Access:** Admin → Roles & Permissions
 
 **URL:** `http://localhost:5173/permissions`
+
+**Access Groups URL:** `http://localhost:5173/permissions?tab=groups`
 
 ---
 
@@ -393,10 +395,19 @@ PUT    /api/admin/users/:id    - Update user role
 ### **Permissions Grouping**
 Permissions are grouped by category:
 - **Connections:** view, create, edit, delete
-- **Query:** execute
-- **Schema:** browse
-- **Audit:** view
-- **Administration:** users.manage, folders.manage, roles.manage
+- **Analytics:** analytics.view, dashboards.manage, ai.use, ai.manage
+- **Query:** query.execute, query.approve, savedqueries.manage, snippets.manage
+- **Database:** sqlstudio.access
+- **Schema:** schema.browse, er.view, schema.diff.view
+- **Database Cache:** redis.view
+- **Messaging:** queues.view
+- **Audit:** audit.view
+- **Operations:** operations.view, performance.view, databaseaudit.view, watchers.manage, notifications.view, notifications.manage, backups.manage, schedules.manage, health.view, rowhistory.view
+- **Governance:** approvals.view, changesets.manage, datascripts.manage, scriptrequests.view
+- **Administration:** users.manage, folders.manage, roles.manage, workflows.manage
+- **Security:** security.self
+
+Older roles that contain coarse permissions are expanded for compatibility. For example, `query.execute` still grants access to related query workflows that now also have screen-level permission keys.
 
 ---
 

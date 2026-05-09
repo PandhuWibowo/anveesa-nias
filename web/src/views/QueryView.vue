@@ -681,7 +681,7 @@ function exportResults(format: 'csv' | 'json') {
             </div>
           </template>
           <div class="editor-hint">
-            <kbd>Cmd/Ctrl</kbd>+<kbd>Enter</kbd> run &nbsp;·&nbsp; <kbd>Cmd/Ctrl</kbd>+<kbd>Space</kbd> suggest &nbsp;·&nbsp; <kbd>Tab</kbd> indent &nbsp;·&nbsp; <kbd>Ctrl</kbd>+<kbd>K</kbd> search schema
+            <kbd>Cmd/Ctrl</kbd>+<kbd>Enter</kbd> run &nbsp;·&nbsp; <kbd>Cmd/Ctrl</kbd>+<kbd>Space</kbd> suggest &nbsp;·&nbsp; <kbd>Tab</kbd> indent
           </div>
           <!-- Param panel -->
           <ParamPanel

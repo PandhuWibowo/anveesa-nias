@@ -86,9 +86,31 @@ func GetUserAppPermissions(userID int64) ([]string, error) {
 		permsMap["savedqueries.manage"] = true
 		permsMap["snippets.manage"] = true
 		permsMap["ai.use"] = true
+		permsMap["sqlstudio.access"] = true
+		permsMap["watchers.manage"] = true
+		permsMap["approvals.view"] = true
+		permsMap["changesets.manage"] = true
+		permsMap["datascripts.manage"] = true
+		permsMap["scriptrequests.view"] = true
 	}
 	if permsMap["connections.view"] || permsMap["query.execute"] {
 		permsMap["notifications.view"] = true
+		permsMap["analytics.view"] = true
+		permsMap["operations.view"] = true
+	}
+	if permsMap["connections.view"] && permsMap["schema.browse"] {
+		permsMap["redis.view"] = true
+		permsMap["queues.view"] = true
+	}
+	if permsMap["schema.browse"] {
+		permsMap["er.view"] = true
+	}
+	if permsMap["savedqueries.manage"] {
+		permsMap["dashboards.manage"] = true
+	}
+	if permsMap["audit.view"] {
+		permsMap["performance.view"] = true
+		permsMap["databaseaudit.view"] = true
 	}
 	if permsMap["users.manage"] || permsMap["roles.manage"] || permsMap["workflows.manage"] {
 		permsMap["notifications.manage"] = true
@@ -98,6 +120,33 @@ func GetUserAppPermissions(userID int64) ([]string, error) {
 	}
 	if permsMap["users.manage"] || permsMap["roles.manage"] {
 		permsMap["ai.manage"] = true
+	}
+
+	// Newer screen-level permissions expand back to the older coarse
+	// permissions that existing API handlers still enforce.
+	if permsMap["analytics.view"] || permsMap["operations.view"] {
+		permsMap["connections.view"] = true
+	}
+	if permsMap["dashboards.manage"] {
+		permsMap["savedqueries.manage"] = true
+	}
+	if permsMap["sqlstudio.access"] {
+		permsMap["connections.view"] = true
+		permsMap["query.execute"] = true
+		permsMap["schema.browse"] = true
+	}
+	if permsMap["er.view"] {
+		permsMap["schema.browse"] = true
+	}
+	if permsMap["redis.view"] || permsMap["queues.view"] {
+		permsMap["connections.view"] = true
+		permsMap["schema.browse"] = true
+	}
+	if permsMap["performance.view"] || permsMap["databaseaudit.view"] {
+		permsMap["audit.view"] = true
+	}
+	if permsMap["watchers.manage"] || permsMap["approvals.view"] || permsMap["changesets.manage"] || permsMap["datascripts.manage"] || permsMap["scriptrequests.view"] {
+		permsMap["query.execute"] = true
 	}
 
 	result := make([]string, 0, len(permsMap))
@@ -328,7 +377,7 @@ func ListAccessGroups() ([]map[string]interface{}, error) {
 		var name, visibility, color, roleRestrict, createdAt string
 		var parentID sql.NullInt64
 		var isActive bool
-		
+
 		err := rows.Scan(&id, &name, &parentID, &ownerID, &visibility, &color, &roleRestrict, &isActive, &sortOrder, &createdAt, &memberCount, &connCount)
 		if err != nil {
 			return nil, err
@@ -493,7 +542,7 @@ func SetUserDirectConnections(userID int64, connIDs []int64, permsMap map[int64]
 	}
 	vals := make([]string, len(connIDs))
 	args := make([]interface{}, 0, len(connIDs)*3)
-	
+
 	// Build placeholders - need to convert ? to $1, $2, etc for PostgreSQL
 	paramIndex := 1
 	for i, cid := range connIDs {
@@ -509,7 +558,7 @@ func SetUserDirectConnections(userID int64, connIDs []int64, permsMap map[int64]
 		}
 		args = append(args, userID, cid, dbPermsToJSON(perms))
 	}
-	
+
 	// Build INSERT query with proper syntax for each database
 	var query string
 	if IsPostgreSQL() || IsMySQL() {
@@ -517,7 +566,7 @@ func SetUserDirectConnections(userID int64, connIDs []int64, permsMap map[int64]
 	} else {
 		query = `INSERT OR REPLACE INTO user_connections (user_id, conn_id, permissions) VALUES ` + strings.Join(vals, ",")
 	}
-	
+
 	_, err := DB.Exec(query, args...)
 	return err
 }

@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConnections } from '@/composables/useConnections'
 import { useAuth } from '@/composables/useAuth'
 
 const toast = useToast()
+const route = useRoute()
+const router = useRouter()
 const { connections, fetchConnections } = useConnections()
 const { hasPermission } = useAuth()
 
@@ -19,6 +22,27 @@ const availableTabs = computed(() => [
   ...(canManageGroups.value ? ['groups' as const] : []),
   ...(canManageUsers.value ? ['users' as const] : []),
 ])
+
+function syncActiveTabFromRoute() {
+  const requestedTab = route.query.tab
+  const tab = typeof requestedTab === 'string' ? requestedTab : ''
+  if (availableTabs.value.includes(tab as typeof activeTab.value)) {
+    activeTab.value = tab as typeof activeTab.value
+    return
+  }
+  activeTab.value = availableTabs.value[0] ?? 'roles'
+}
+
+function selectTab(tab: typeof activeTab.value) {
+  activeTab.value = tab
+  const query = { ...route.query }
+  if (tab === 'roles') {
+    delete query.tab
+  } else {
+    query.tab = tab
+  }
+  router.replace({ query })
+}
 
 // ── ROLES MODULE ──
 
@@ -524,7 +548,7 @@ function getPermissionLabel(permKey: string): string {
 // ── Init ──
 
 onMounted(async () => {
-  activeTab.value = availableTabs.value[0] ?? 'roles'
+  syncActiveTabFromRoute()
 
   const tasks: Promise<unknown>[] = []
   if (canManageRoles.value) {
@@ -540,6 +564,10 @@ onMounted(async () => {
     }
   }
   await Promise.all(tasks)
+})
+
+watch(() => route.query.tab, () => {
+  syncActiveTabFromRoute()
 })
 </script>
 
@@ -561,7 +589,7 @@ onMounted(async () => {
           v-if="canManageRoles"
           class="page-tab perm-tab"
           :class="{ 'is-active': activeTab === 'roles' }"
-          @click="activeTab = 'roles'"
+          @click="selectTab('roles')"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
@@ -575,7 +603,7 @@ onMounted(async () => {
           v-if="canManageGroups"
           class="page-tab perm-tab"
           :class="{ 'is-active': activeTab === 'groups' }"
-          @click="activeTab = 'groups'"
+          @click="selectTab('groups')"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
@@ -586,7 +614,7 @@ onMounted(async () => {
           v-if="canManageUsers"
           class="page-tab perm-tab"
           :class="{ 'is-active': activeTab === 'users' }"
-          @click="activeTab = 'users'"
+          @click="selectTab('users')"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>

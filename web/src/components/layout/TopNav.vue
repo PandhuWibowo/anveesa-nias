@@ -9,7 +9,6 @@ import ConnectionsDropdown from '@/components/layout/ConnectionsDropdown.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{
-  (e: 'global-search'): void
   (e: 'select-conn', id: number): void
 }>()
 
@@ -59,6 +58,7 @@ type NavLink = {
   label: string
   icon: string
   permissionsAny?: string[]
+  query?: Record<string, string>
 }
 
 type MenuItem = NavLink & {
@@ -93,8 +93,8 @@ const allMenuGroups: MenuGroup[] = [
     label: 'Analytics',
     icon: 'dashboard',
     items: [
-      { name: 'analytics', label: 'Analytics Home', desc: 'Start analysis workflows and review available analytics surfaces', icon: 'dashboard', permissionsAny: ['connections.view', 'savedqueries.manage', 'ai.use'] },
-      { name: 'dashboards', label: 'Dashboards', desc: 'Compose saved queries into chart blocks and shared analytics views', icon: 'dashboard', permissionsAny: ['savedqueries.manage'] },
+      { name: 'analytics', label: 'Analytics Home', desc: 'Start analysis workflows and review available analytics surfaces', icon: 'dashboard', permissionsAny: ['analytics.view'] },
+      { name: 'dashboards', label: 'Dashboards', desc: 'Compose saved queries into chart blocks and shared analytics views', icon: 'dashboard', permissionsAny: ['dashboards.manage'] },
       { name: 'saved-queries', label: 'Saved Queries', desc: 'Reusable SQL and dataset-style query library', icon: 'saved', permissionsAny: ['savedqueries.manage'] },
       { name: 'ai-analytics', label: 'AI Analytics', desc: 'Ask business questions and generate safe read-only analytics queries', icon: 'spark', permissionsAny: ['ai.use'] },
       { name: 'settings', label: 'AI Settings', desc: 'Manage your personal AI provider key, base URL, and model', icon: 'settings', permissionsAny: ['ai.use', 'ai.manage'] },
@@ -105,11 +105,11 @@ const allMenuGroups: MenuGroup[] = [
     label: 'Database',
     icon: 'table',
     items: [
-      { name: 'data', label: 'SQL Studio', desc: 'Browse tables, inspect schema, and run SQL in the main workbench', icon: 'table', section: 'RDBMS', permissionsAny: ['connections.view', 'query.execute', 'schema.browse'] },
-      { name: 'er', label: 'ER Diagram', desc: 'Visualize relationships between tables before building analysis', icon: 'er', section: 'RDBMS', permissionsAny: ['schema.browse'] },
+      { name: 'data', label: 'SQL Studio', desc: 'Browse tables, inspect schema, and run SQL in the main workbench', icon: 'table', section: 'RDBMS', permissionsAny: ['sqlstudio.access'] },
+      { name: 'er', label: 'ER Diagram', desc: 'Visualize relationships between tables before building analysis', icon: 'er', section: 'RDBMS', permissionsAny: ['er.view'] },
       { name: 'diff', label: 'Schema Diff', desc: 'Compare schema structure across environments', icon: 'diff', section: 'RDBMS', permissionsAny: ['schema.diff.view'] },
       { name: 'row-history', label: 'Row History', desc: 'See row-level INSERT, UPDATE, DELETE changes', icon: 'rowhistory', section: 'RDBMS', permissionsAny: ['rowhistory.view'] },
-      { name: 'redis', label: 'Redis Browser', desc: 'Scan keys and inspect Redis values from managed connections', icon: 'table', section: 'Database Cache', permissionsAny: ['connections.view', 'schema.browse'] },
+      { name: 'redis', label: 'Redis Browser', desc: 'Scan keys and inspect Redis values from managed connections', icon: 'table', section: 'Database Cache', permissionsAny: ['redis.view'] },
     ],
   },
   {
@@ -117,7 +117,7 @@ const allMenuGroups: MenuGroup[] = [
     label: 'Messaging',
     icon: 'activity',
     items: [
-      { name: 'laravel-queue', label: 'Laravel Queue', desc: 'Inspect Redis-backed Laravel queue jobs, delayed jobs, and reserved jobs', icon: 'activity', permissionsAny: ['connections.view', 'schema.browse'] },
+      { name: 'laravel-queue', label: 'Laravel Queue', desc: 'Inspect Redis-backed Laravel queue jobs, delayed jobs, and reserved jobs', icon: 'activity', permissionsAny: ['queues.view'] },
     ],
   },
   {
@@ -125,12 +125,12 @@ const allMenuGroups: MenuGroup[] = [
     label: 'Operations',
     icon: 'activity',
     items: [
-      { name: 'dashboard', label: 'Operations Overview', desc: 'Connection footprint, size, and slow-query pressure across environments', icon: 'dashboard', permissionsAny: ['connections.view'] },
-      { name: 'query-performance', label: 'Query Performance', desc: 'Slow queries, errors, and execution trends', icon: 'performance', permissionsAny: ['audit.view'] },
-      { name: 'database-audit', label: 'Database Audit', desc: 'Live sessions and external access signals', icon: 'shieldlog', permissionsAny: ['audit.view'] },
+      { name: 'dashboard', label: 'Operations Overview', desc: 'Connection footprint, size, and slow-query pressure across environments', icon: 'dashboard', permissionsAny: ['operations.view'] },
+      { name: 'query-performance', label: 'Query Performance', desc: 'Slow queries, errors, and execution trends', icon: 'performance', permissionsAny: ['performance.view'] },
+      { name: 'database-audit', label: 'Database Audit', desc: 'Live sessions and external access signals', icon: 'shieldlog', permissionsAny: ['databaseaudit.view'] },
       { name: 'audit',       label: 'Audit Log',   desc: 'Track access, actions, and query events', icon: 'audit', permissionsAny: ['audit.view'] },
       { name: 'notifications', label: 'Notifications', desc: 'Inbox, integrations, routing rules, and delivery logs', icon: 'audit', permissionsAny: ['notifications.view'] },
-      { name: 'watcher',     label: 'Watchers',    desc: 'Monitor important table or query activity', icon: 'watcher', permissionsAny: ['query.execute'] },
+      { name: 'watcher',     label: 'Watchers',    desc: 'Monitor important table or query activity', icon: 'watcher', permissionsAny: ['watchers.manage'] },
       { name: 'health',      label: 'Health',      desc: 'Connection and service health status', icon: 'health', permissionsAny: ['health.view'] },
     ],
   },
@@ -139,10 +139,10 @@ const allMenuGroups: MenuGroup[] = [
     label: 'Governance',
     icon: 'wrench',
     items: [
-      { name: 'approvals',   label: 'Approvals',   desc: 'Review and approve controlled SQL changes', icon: 'workflow', permissionsAny: ['query.execute', 'query.approve'] },
-      { name: 'change-sets', label: 'Change Sets', desc: 'Plan, validate, and run database changes', icon: 'changeset', permissionsAny: ['query.execute', 'query.approve'] },
-      { name: 'data-scripts', label: 'Data Scripts', desc: 'Preview programmable data updates before approval', icon: 'changeset', permissionsAny: ['query.execute', 'query.approve'] },
-      { name: 'data-script-requests', label: 'Script Requests', desc: 'Global queue of data script plans and approvals', icon: 'workflow', permissionsAny: ['query.execute', 'query.approve'] },
+      { name: 'approvals',   label: 'Approvals',   desc: 'Review and approve controlled SQL changes', icon: 'workflow', permissionsAny: ['approvals.view', 'query.approve'] },
+      { name: 'change-sets', label: 'Change Sets', desc: 'Plan, validate, and run database changes', icon: 'changeset', permissionsAny: ['changesets.manage', 'query.approve'] },
+      { name: 'data-scripts', label: 'Data Scripts', desc: 'Preview programmable data updates before approval', icon: 'changeset', permissionsAny: ['datascripts.manage', 'query.approve'] },
+      { name: 'data-script-requests', label: 'Script Requests', desc: 'Global queue of data script plans and approvals', icon: 'workflow', permissionsAny: ['scriptrequests.view', 'query.approve'] },
       { name: 'backup',      label: 'Backup',      desc: 'Request database downloads or use direct backup and restore', icon: 'backup', permissionsAny: ['backups.manage', 'query.execute', 'query.approve'] },
       { name: 'scheduler',   label: 'Scheduler',   desc: 'Schedule recurring queries and jobs', icon: 'scheduler', permissionsAny: ['schedules.manage'] },
       { name: 'workflows',   label: 'Workflows',   desc: 'Configure approval workflows and routing', icon: 'workflow', permissionsAny: ['workflows.manage'] },
@@ -155,7 +155,8 @@ const allMenuGroups: MenuGroup[] = [
     items: [
       { name: 'connections', label: 'Connections', desc: 'Manage environments and database access points', icon: 'plug', permissionsAny: ['connections.view'] },
       { name: 'users', label: 'Users', desc: 'Create users, assign roles, and manage account status', icon: 'users', permissionsAny: ['users.manage'] },
-      { name: 'permissions', label: 'Permissions', desc: 'Roles, folders, and permission policy', icon: 'rbac', permissionsAny: ['roles.manage', 'folders.manage', 'users.manage'] },
+      { name: 'permissions', label: 'Roles & Permissions', desc: 'Define roles and application permission policy', icon: 'rbac', permissionsAny: ['roles.manage'] },
+      { name: 'permissions', label: 'Access Groups', desc: 'Manage folder-based connection access groups', icon: 'rbac', permissionsAny: ['folders.manage'], query: { tab: 'groups' } },
     ],
   },
 ]
@@ -202,14 +203,20 @@ function groupedDropdownSections(items: MenuItem[]) {
   return sections
 }
 
+function itemActive(item: MenuItem) {
+  if (route.name !== item.name) return false
+  if (item.query?.tab) return route.query.tab === item.query.tab
+  return !route.query.tab
+}
+
 function toggleMenu(id: string) {
   openMenu.value = openMenu.value === id ? null : id
   connPanelOpen.value = false
 }
 
-function navigate(name: string) {
+function navigate(item: MenuItem) {
   openMenu.value = null
-  router.push({ name })
+  router.push({ name: item.name, query: item.query })
 }
 
 async function handleLogout() {
@@ -388,10 +395,10 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
             <div v-if="section.label" class="topnav__dropdown-section">{{ section.label }}</div>
             <button
               v-for="item in section.items"
-              :key="item.name"
+              :key="`${item.name}:${item.label}`"
               class="topnav__dropdown-item"
-              :class="{ 'topnav__dropdown-item--active': route.name === item.name }"
-              @click="navigate(item.name)"
+              :class="{ 'topnav__dropdown-item--active': itemActive(item) }"
+              @click="navigate(item)"
               type="button"
             >
               <div class="topnav__dropdown-icon">
@@ -421,7 +428,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
                 <span class="topnav__dropdown-name">{{ item.label }}</span>
                 <span class="topnav__dropdown-desc">{{ item.desc }}</span>
               </div>
-              <svg v-if="route.name === item.name" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:var(--brand);flex-shrink:0">
+              <svg v-if="itemActive(item)" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:var(--brand);flex-shrink:0">
                 <polyline points="20 6 9 17 4 12"/>
               </svg>
             </button>
@@ -432,12 +439,6 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 
     <!-- Right actions -->
     <div class="topnav__actions">
-      <!-- Search -->
-      <button class="topnav__action-btn" title="Global search (⌘K)" @click="$emit('global-search')">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <kbd class="topnav__kbd">⌘K</kbd>
-      </button>
-
       <!-- Theme -->
       <button class="topnav__action-btn" :title="`Switch to ${mode === 'dark' ? 'light' : 'dark'} mode`" @click="toggleTheme">
         <svg v-if="mode === 'dark'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
