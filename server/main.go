@@ -800,9 +800,6 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 
-	// ── Schema search ─────────────────────────────────────────────
-	mux.HandleFunc("/api/schema/search", handlers.SearchSchema())
-
 	// ── Health ping ───────────────────────────────────────────────
 	mux.HandleFunc("/api/health", requireAny(handlers.PermHealthView)(handlers.PingAllConnections()))
 

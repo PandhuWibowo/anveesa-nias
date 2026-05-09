@@ -102,30 +102,44 @@ func DetectRequiredPerm(statement string) DbPerm {
 
 // Application permission keys
 const (
-	PermConnectionsView    = "connections.view"
-	PermConnectionsCreate  = "connections.create"
-	PermConnectionsEdit    = "connections.edit"
-	PermConnectionsDelete  = "connections.delete"
-	PermQueryExecute       = "query.execute"
-	PermQueryApprove       = "query.approve"
-	PermSavedQueriesManage = "savedqueries.manage"
-	PermSnippetsManage     = "snippets.manage"
-	PermNotificationsView  = "notifications.view"
+	PermConnectionsView     = "connections.view"
+	PermConnectionsCreate   = "connections.create"
+	PermConnectionsEdit     = "connections.edit"
+	PermConnectionsDelete   = "connections.delete"
+	PermAnalyticsView       = "analytics.view"
+	PermDashboardsManage    = "dashboards.manage"
+	PermQueryExecute        = "query.execute"
+	PermQueryApprove        = "query.approve"
+	PermSQLStudioAccess     = "sqlstudio.access"
+	PermSavedQueriesManage  = "savedqueries.manage"
+	PermSnippetsManage      = "snippets.manage"
+	PermNotificationsView   = "notifications.view"
 	PermNotificationsManage = "notifications.manage"
-	PermSchemaBrowse       = "schema.browse"
-	PermSchemaDiffView     = "schema.diff.view"
-	PermAuditView          = "audit.view"
-	PermAIUse              = "ai.use"
-	PermAIManage           = "ai.manage"
-	PermSecuritySelf       = "security.self"
-	PermBackupsManage      = "backups.manage"
-	PermSchedulesManage    = "schedules.manage"
-	PermHealthView         = "health.view"
-	PermRowHistoryView     = "rowhistory.view"
-	PermUsersManage        = "users.manage"
-	PermFoldersManage      = "folders.manage"
-	PermRolesManage        = "roles.manage"
-	PermWorkflowsManage    = "workflows.manage"
+	PermSchemaBrowse        = "schema.browse"
+	PermSchemaDiffView      = "schema.diff.view"
+	PermERView              = "er.view"
+	PermRedisView           = "redis.view"
+	PermQueuesView          = "queues.view"
+	PermAuditView           = "audit.view"
+	PermOperationsView      = "operations.view"
+	PermPerformanceView     = "performance.view"
+	PermDatabaseAuditView   = "databaseaudit.view"
+	PermWatchersManage      = "watchers.manage"
+	PermAIUse               = "ai.use"
+	PermAIManage            = "ai.manage"
+	PermSecuritySelf        = "security.self"
+	PermBackupsManage       = "backups.manage"
+	PermSchedulesManage     = "schedules.manage"
+	PermHealthView          = "health.view"
+	PermRowHistoryView      = "rowhistory.view"
+	PermApprovalsView       = "approvals.view"
+	PermChangeSetsManage    = "changesets.manage"
+	PermDataScriptsManage   = "datascripts.manage"
+	PermScriptRequestsView  = "scriptrequests.view"
+	PermUsersManage         = "users.manage"
+	PermFoldersManage       = "folders.manage"
+	PermRolesManage         = "roles.manage"
+	PermWorkflowsManage     = "workflows.manage"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -134,15 +148,25 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermConnectionsCreate, Label: "Create Connections", Group: "Connections"},
 	{Key: PermConnectionsEdit, Label: "Edit Connections", Group: "Connections"},
 	{Key: PermConnectionsDelete, Label: "Delete Connections", Group: "Connections"},
+	{Key: PermAnalyticsView, Label: "View Analytics Home", Group: "Analytics"},
+	{Key: PermDashboardsManage, Label: "Manage Dashboards", Group: "Analytics"},
+	{Key: PermAIUse, Label: "Use AI Analytics", Group: "Analytics"},
+	{Key: PermAIManage, Label: "Manage AI Settings", Group: "Analytics"},
 	{Key: PermQueryExecute, Label: "Execute Queries", Group: "Query"},
 	{Key: PermQueryApprove, Label: "Approve Query Requests", Group: "Query"},
 	{Key: PermSavedQueriesManage, Label: "Manage Saved Queries", Group: "Query"},
 	{Key: PermSnippetsManage, Label: "Manage Snippets", Group: "Query"},
+	{Key: PermSQLStudioAccess, Label: "Access SQL Studio", Group: "Database"},
 	{Key: PermSchemaBrowse, Label: "Browse Schema", Group: "Schema"},
+	{Key: PermERView, Label: "View ER Diagram", Group: "Schema"},
 	{Key: PermSchemaDiffView, Label: "View Schema Diff", Group: "Schema"},
+	{Key: PermRedisView, Label: "Use Redis Browser", Group: "Database Cache"},
+	{Key: PermQueuesView, Label: "Use Laravel Queue", Group: "Messaging"},
 	{Key: PermAuditView, Label: "View Audit Logs", Group: "Audit"},
-	{Key: PermAIUse, Label: "Use AI Assistant", Group: "AI"},
-	{Key: PermAIManage, Label: "Manage AI Settings", Group: "AI"},
+	{Key: PermOperationsView, Label: "View Operations Overview", Group: "Operations"},
+	{Key: PermPerformanceView, Label: "View Query Performance", Group: "Operations"},
+	{Key: PermDatabaseAuditView, Label: "View Database Audit", Group: "Operations"},
+	{Key: PermWatchersManage, Label: "Manage Watchers", Group: "Operations"},
 	{Key: PermSecuritySelf, Label: "Manage Own Security", Group: "Security"},
 	{Key: PermNotificationsView, Label: "View Notifications", Group: "Operations"},
 	{Key: PermNotificationsManage, Label: "Manage Notification Integrations", Group: "Operations"},
@@ -150,6 +174,10 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermSchedulesManage, Label: "Manage Schedules", Group: "Operations"},
 	{Key: PermHealthView, Label: "View Health", Group: "Operations"},
 	{Key: PermRowHistoryView, Label: "View Row History", Group: "Operations"},
+	{Key: PermApprovalsView, Label: "View Approvals", Group: "Governance"},
+	{Key: PermChangeSetsManage, Label: "Manage Change Sets", Group: "Governance"},
+	{Key: PermDataScriptsManage, Label: "Manage Data Scripts", Group: "Governance"},
+	{Key: PermScriptRequestsView, Label: "View Script Requests", Group: "Governance"},
 	{Key: PermUsersManage, Label: "Manage Users", Group: "Administration"},
 	{Key: PermFoldersManage, Label: "Manage Folders", Group: "Administration"},
 	{Key: PermRolesManage, Label: "Manage Roles", Group: "Administration"},

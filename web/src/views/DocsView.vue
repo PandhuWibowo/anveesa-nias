@@ -44,8 +44,9 @@ const sections: DocsSection[] = [
         name: 'Top Navigation',
         detail: 'Groups the main product surfaces into predictable menus.',
         useCases: ['Move from SQL exploration to audit logs during an investigation.', 'Open admin screens for user or permission changes.', 'Check notifications after approval activity.'],
-        workflow: ['Use direct links such as Analytics and Docs.', 'Open Build for SQL, dashboards, AI, ER diagrams, and AI Settings.', 'Open Operate for monitoring, audit, notifications, row history, watchers, and health.', 'Open Govern for approvals, scripts, schema diff, backup, scheduler, and workflows.', 'Open Admin for connections, users, and permissions.', 'Confirm the active connection before database-specific work.'],
+        workflow: ['Use Docs for product guidance and screenshot planning.', 'Open Analytics for dashboards, saved queries, AI analytics, and AI settings.', 'Open Database for SQL Studio, ER diagrams, schema diff, row history, and Redis Browser.', 'Open Messaging for Laravel Queue.', 'Open Operations for monitoring, audit, notifications, watchers, and health.', 'Open Governance for approvals, scripts, backup, scheduler, and workflows.', 'Open Admin for connections, users, roles, permissions, and access groups.', 'Confirm the active connection before database-specific work.'],
         expected: 'Users can reach major features without remembering every route.',
+        notes: ['Global schema search and the Cmd/Ctrl+K shortcut are no longer part of the navigation shell.'],
       },
       {
         name: 'Connection Picker',
@@ -286,7 +287,7 @@ const sections: DocsSection[] = [
     id: 'admin',
     title: 'Admin And Governance',
     description: 'Connections, users, permissions, workflows, and security.',
-    routeHints: ['/connections', '/users', '/permissions', '/workflows', '/security'],
+    routeHints: ['/connections', '/users', '/permissions', '/permissions?tab=groups', '/permissions?tab=users', '/workflows', '/security'],
     screenshots: ['connections-page.png', 'users-page.png', 'permissions-page.png', 'workflows-page.png', 'security-page.png'],
     features: [
       {
@@ -305,10 +306,11 @@ const sections: DocsSection[] = [
       },
       {
         name: 'Permissions',
-        detail: 'Roles, folders, and permission policy.',
-        useCases: ['Grant feature access.', 'Restrict connection access.', 'Separate admin, analyst, and reviewer responsibilities.'],
-        workflow: ['Open Permissions.', 'Review roles or folders.', 'Adjust allowed actions.', 'Save and test with the affected account.'],
+        detail: 'Roles, application permissions, access groups, users, and connection-level permission policy.',
+        useCases: ['Grant feature access with screen-level permission keys.', 'Restrict connection access through access groups.', 'Separate admin, analyst, reviewer, and operator responsibilities.', 'Assign direct connection permissions for a specific user.'],
+        workflow: ['Open Roles & Permissions for role-level application permissions.', 'Use Access Groups to manage folder-based connection access.', 'Use Users to assign roles and direct connection permissions.', 'Save and test with the affected account.'],
         expected: 'Users see and use only the features and connections they are allowed to access.',
+        notes: ['The permission list includes current feature keys such as analytics.view, dashboards.manage, sqlstudio.access, redis.view, queues.view, operations.view, performance.view, databaseaudit.view, watchers.manage, approvals.view, changesets.manage, datascripts.manage, and scriptrequests.view.', 'Older coarse permissions are expanded for compatibility so existing roles keep their expected access.'],
       },
       {
         name: 'Approval Workflows',
@@ -419,7 +421,18 @@ const sections: DocsSection[] = [
           </div>
         </section>
 
-        <section v-for="section in sections" :key="section.id" class="page-card docs-section">
+        <section class="page-card docs-menu">
+          <div class="docs-overview__title">Docs Menu</div>
+          <div class="docs-overview__text">Jump to a product area and verify the current menu, route, permission, and screenshot guidance.</div>
+          <div class="docs-menu__grid">
+            <a v-for="section in sections" :key="section.id" class="docs-menu__item" :href="`#docs-${section.id}`">
+              <strong>{{ section.title }}</strong>
+              <span>{{ section.description }}</span>
+            </a>
+          </div>
+        </section>
+
+        <section v-for="section in sections" :id="`docs-${section.id}`" :key="section.id" class="page-card docs-section">
           <div class="docs-section__head">
             <div>
               <div class="docs-section__title">{{ section.title }}</div>
@@ -492,6 +505,7 @@ const sections: DocsSection[] = [
 
 <style scoped>
 .docs-overview,
+.docs-menu,
 .docs-section {
   padding: 20px;
 }
@@ -509,6 +523,43 @@ const sections: DocsSection[] = [
   font-size: 13px;
   color: var(--text-secondary);
   line-height: 1.6;
+}
+
+.docs-menu__grid {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.docs-menu__item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: inherit;
+  text-decoration: none;
+  min-width: 0;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.docs-menu__item:hover {
+  border-color: var(--brand);
+  background: rgba(255,255,255,0.04);
+}
+
+.docs-menu__item strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.docs-menu__item span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .docs-block {
@@ -665,6 +716,7 @@ const sections: DocsSection[] = [
 }
 
 @media (max-width: 900px) {
+  .docs-menu__grid,
   .docs-grid {
     grid-template-columns: 1fr;
   }
@@ -676,6 +728,7 @@ const sections: DocsSection[] = [
 
 @media (max-width: 720px) {
   .docs-overview,
+  .docs-menu,
   .docs-section {
     padding: 16px;
   }

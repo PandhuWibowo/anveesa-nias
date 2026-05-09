@@ -30,7 +30,7 @@ Operation   → Can user run this SQL operation?
 
 ### **View Roles**
 
-Navigate to: **Administration → Permissions** (or `/rbac`)
+Navigate to: **Admin → Roles & Permissions** (or `/permissions`)
 
 ### **Create Custom Role**
 
@@ -413,7 +413,7 @@ WHERE c.environment = 'sensitive' AND f.is_active = 1;
 
 ## Next Steps
 
-1. **Explore RBAC UI**: Visit `/rbac` to manage roles visually
+1. **Explore RBAC UI**: Visit `/permissions` to manage roles visually
 2. **Create Custom Roles**: Define roles matching your organization
 3. **Set Up Groups**: Convert folders to access groups with permissions
 4. **Test Scenarios**: Verify read-only users are properly restricted

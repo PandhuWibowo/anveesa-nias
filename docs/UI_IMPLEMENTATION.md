@@ -10,14 +10,13 @@ The permission system has been **fully implemented** in both backend and fronten
 
 ### 1. **Permissions Management Page** (`/permissions`)
 
-Navigate to: **Administration → Permissions** in the top menu
+Navigate to: **Admin → Roles & Permissions** in the top menu. Use **Admin → Access Groups** for the access group tab.
 
 #### **Features:**
-- ✅ **4 Tabs:**
+- ✅ **3 Tabs:**
   - **Roles** - Create and manage user roles with granular permissions
-  - **Users** - Assign roles to users and view their permissions
   - **Access Groups** - Create team-based access controls (folders with permissions)
-  - **Permission Reference** - Complete catalog of all available permissions
+  - **Users** - Assign roles to users and view their permissions
 
 #### **Screenshots/Layout:**
 ```
@@ -25,14 +24,14 @@ Navigate to: **Administration → Permissions** in the top menu
 │  Permissions & Access Control                           │
 │  Manage roles, access groups, and user permissions      │
 ├─────────────────────────────────────────────────────────┤
-│  [Roles] [Users] [Access Groups] [Permission Reference] │
+│  [Roles] [Access Groups] [Users]                         │
 ├─────────────────────────────────────────────────────────┤
 │                                                          │
 │  ┌────────────────────┐  ┌────────────────────┐        │
 │  │  admin             │  │  user              │        │
 │  │  System            │  │  System            │        │
 │  │  Full system access│  │  Standard user     │        │
-│  │  5 users · 10 perms│  │  12 users · 3 perms│        │
+│  │  5 users · catalog │  │  12 users · standard│       │
 │  │  [Edit] [Delete]   │  │  [Edit] [Delete]   │        │
 │  └────────────────────┘  └────────────────────┘        │
 │                                                          │
@@ -71,7 +70,7 @@ The badge automatically appears on:
 
 ### **Creating a Role**
 
-1. Go to **Administration → Permissions**
+1. Go to **Admin → Roles & Permissions**
 2. Click **"Create Role"** button
 3. Fill in:
    - **Role Name:** e.g., "Analyst", "Developer", "DBA"
@@ -358,7 +357,7 @@ server/
   </div>
   <div class="role-description">Full system access</div>
   <div class="role-meta">
-    5 users · 10 permissions
+    5 users · current catalog permissions
   </div>
 </NCard>
 ```
@@ -369,14 +368,14 @@ server/
 
 ### **Menu Structure:**
 ```
-Administration
+Admin
 ├── Connections  (/connections)
 ├── Users        (/users)
-└── Permissions  (/permissions)  ← NEW!
+├── Roles & Permissions  (/permissions)
+└── Access Groups        (/permissions?tab=groups)
     ├── Roles tab
-    ├── Users tab
     ├── Access Groups tab
-    └── Permission Reference tab
+    └── Users tab
 ```
 
 ### **Route Configuration:**
