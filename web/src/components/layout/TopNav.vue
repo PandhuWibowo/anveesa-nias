@@ -113,6 +113,14 @@ const allMenuGroups: MenuGroup[] = [
     ],
   },
   {
+    id: 'messaging',
+    label: 'Messaging',
+    icon: 'activity',
+    items: [
+      { name: 'laravel-queue', label: 'Laravel Queue', desc: 'Inspect Redis-backed Laravel queue jobs, delayed jobs, and reserved jobs', icon: 'activity', permissionsAny: ['connections.view', 'schema.browse'] },
+    ],
+  },
+  {
     id: 'operate',
     label: 'Operations',
     icon: 'activity',

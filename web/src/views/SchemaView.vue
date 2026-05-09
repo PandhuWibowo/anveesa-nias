@@ -19,6 +19,10 @@ const localConnId = ref<number | null>(props.activeConnId ?? null)
 const activeDatabase = ref('')
 const selectedKey = ref('')
 const detailLoading = ref(false)
+const activeConn = computed(() =>
+  localConnId.value ? connections.value.find(c => c.id === localConnId.value) ?? null : null
+)
+const supportsRelationalSchema = computed(() => !!activeConn.value && activeConn.value.driver !== 'redis')
 
 watch(() => props.activeConnId, (id) => {
   if (id != null) localConnId.value = id
@@ -29,7 +33,7 @@ watch(localConnId, async (id) => {
   objectDetail.value = null
   selectedKey.value = ''
   activeDatabase.value = ''
-  if (!id) return
+  if (!id || !supportsRelationalSchema.value) return
   await fetchSchema(id)
   activeDatabase.value = databases.value[0]?.name ?? ''
 }, { immediate: true })
@@ -45,10 +49,6 @@ watch(activeDatabase, async (dbName) => {
     await selectObject({ type: firstItem.type, name: firstItem.name })
   }
 })
-
-const activeConn = computed(() =>
-  localConnId.value ? connections.value.find(c => c.id === localConnId.value) ?? null : null
-)
 
 async function selectObject(payload: { type: string; name: string }) {
   if (!localConnId.value || !activeDatabase.value) return
@@ -128,6 +128,7 @@ const columnRows = computed(() => (objectDetail.value?.columns ?? []).map((colum
         </div>
         <div v-if="loadingSchema" class="schema-explorer__empty">Loading database structure…</div>
         <div v-else-if="!activeConn" class="schema-explorer__empty">Select a connection to inspect database structure.</div>
+        <div v-else-if="!supportsRelationalSchema" class="schema-explorer__empty">Redis does not expose relational schema here. Use the Redis or Laravel Queue page for this connection.</div>
         <div v-else-if="!activeDatabase" class="schema-explorer__empty">Choose a database or schema to load structural objects.</div>
         <SchemaExplorerTree
           v-else

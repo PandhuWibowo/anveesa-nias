@@ -38,13 +38,21 @@ func GetDB(connID int64) (*sql.DB, string, error) {
 
 	if ok {
 		if err := entry.db.Ping(); err == nil {
-			entry.lastUsed = time.Now()
+			// Update lastUsed under write lock to avoid the data race.
+			dbPool.Lock()
+			if e, still := dbPool.entries[connID]; still {
+				e.lastUsed = time.Now()
+			}
+			dbPool.Unlock()
 			return entry.db, entry.driver, nil
 		}
-		// Stale — close and re-open
+		// Ping failed — evict under write lock. Re-check the entry is still
+		// the same one we tested to avoid a TOCTOU double-close.
 		dbPool.Lock()
-		entry.db.Close()
-		delete(dbPool.entries, connID)
+		if current, still := dbPool.entries[connID]; still && current == entry {
+			entry.db.Close()
+			delete(dbPool.entries, connID)
+		}
 		dbPool.Unlock()
 	}
 

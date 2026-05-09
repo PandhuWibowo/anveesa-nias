@@ -68,7 +68,7 @@ const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', maria
 
 function selectConn(conn: Connection) {
   emit('select-conn', conn.id)
-  const stayViews = ['schema', 'data', 'er', 'dashboard', 'query', 'redis']
+  const stayViews = ['schema', 'data', 'er', 'dashboard', 'query', 'redis', 'laravel-queue']
   const current = router.currentRoute.value.name as string
   if (conn.driver === 'redis' && current !== 'redis') router.push({ name: 'redis' })
   else if (conn.driver !== 'redis' && (current === 'redis' || !stayViews.includes(current))) router.push({ name: 'query' })

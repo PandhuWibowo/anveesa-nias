@@ -1051,7 +1051,7 @@ function quoteCommandArg(value: string) {
 
 .redis-tabbody {
   min-height: 0;
-  padding: 0;
+  padding: 14px;
   overflow: auto;
 }
 
@@ -1066,7 +1066,8 @@ function quoteCommandArg(value: string) {
   gap: 16px;
   min-height: 48px;
   padding: 12px 18px;
-  border-bottom: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
   background: var(--bg-surface);
   flex-shrink: 0;
 }
@@ -1074,7 +1075,9 @@ function quoteCommandArg(value: string) {
 .redis-data-toolbar {
   min-height: 36px;
   padding: 6px 18px;
-  border-bottom: 1px solid var(--border);
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
   background: var(--bg-surface);
   flex-shrink: 0;
 }
@@ -1091,7 +1094,11 @@ function quoteCommandArg(value: string) {
 
 .redis-table-wrap {
   min-height: 0;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
   overflow: auto;
+  background: var(--bg-surface);
 }
 
 .redis-data-table {
@@ -1153,7 +1160,7 @@ html[data-theme='light'] .redis-data-table tbody tr:nth-child(even) td {
 }
 
 .redis-empty-work {
-  padding: 28px;
+  padding: 32px;
 }
 
 .redis-edit-split {
@@ -1314,11 +1321,15 @@ html[data-theme='light'] .redis-data-table tbody tr:nth-child(even) td {
   gap: 10px;
 }
 
+.redis-editor__head {
+  padding: 2px 0 12px;
+}
+
 .redis-editor__grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 160px 140px;
-  gap: 10px;
-  margin: 12px 0;
+  gap: 12px;
+  margin: 0 0 14px;
 }
 
 .redis-editor__grid--rename {
@@ -1344,6 +1355,7 @@ html[data-theme='light'] .redis-data-table tbody tr:nth-child(even) td {
 
 .redis-editor__actions {
   justify-content: flex-end;
+  margin-top: 14px;
 }
 
 .redis-check {
@@ -1362,7 +1374,7 @@ html[data-theme='light'] .redis-data-table tbody tr:nth-child(even) td {
 .redis-console__row {
   display: flex;
   gap: 8px;
-  margin-top: 12px;
+  margin-top: 14px;
 }
 
 .redis-console__input {
@@ -1371,11 +1383,11 @@ html[data-theme='light'] .redis-data-table tbody tr:nth-child(even) td {
 
 .redis-console__result {
   min-height: 120px;
-  margin-top: 12px;
+  margin-top: 14px;
 }
 
 .redis-script-editor {
-  margin-top: 12px;
+  margin-top: 14px;
   min-height: 220px;
 }
 

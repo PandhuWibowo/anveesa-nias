@@ -146,6 +146,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['connections.view', 'schema.browse'] },
         },
         {
+          path: 'laravel-queue',
+          name: 'laravel-queue',
+          component: () => import('@/views/LaravelQueueView.vue'),
+          meta: { requiredPermissionsAny: ['connections.view', 'schema.browse'] },
+        },
+        {
           path: 'connections',
           name: 'connections',
           component: () => import('@/views/ConnectionsView.vue'),

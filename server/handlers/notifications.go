@@ -699,6 +699,14 @@ func queueNotificationDeliveries(eventID int64, eventType, severity string, conn
 	}
 }
 
+type pendingDelivery struct {
+	deliveryID      int64
+	payloadJSON     string
+	eventPayloadJSON string
+	event           NotificationEvent
+	target          notificationTargetRow
+}
+
 func processPendingNotificationDeliveries() {
 	rows, err := appdb.DB.Query(appdb.ConvertQuery(`
 		SELECT d.id, d.event_id, d.target_id, d.payload_json,
@@ -716,25 +724,27 @@ func processPendingNotificationDeliveries() {
 	if err != nil {
 		return
 	}
-	defer rows.Close()
 
+	// Scan all rows first and close the cursor before making any network calls.
+	var pending []pendingDelivery
 	for rows.Next() {
-		var deliveryID int64
-		var payloadJSON, eventPayloadJSON string
-		var event NotificationEvent
-		var target notificationTargetRow
+		var d pendingDelivery
 		var active int
 		if err := rows.Scan(
-			&deliveryID, &event.ID, &target.ID, &payloadJSON,
-			&event.EventType, &event.Category, &event.Severity, &event.Title, &event.Message, &event.EntityType, &event.EntityID, &event.ConnectionID, &event.ActorUserID, &eventPayloadJSON, &event.CreatedAt,
-			&target.Name, &target.Type, &target.Description, &target.ConfigJSON, &target.SecretEnc, &active, &target.CreatedBy, &target.CreatedAt, &target.UpdatedAt,
+			&d.deliveryID, &d.event.ID, &d.target.ID, &d.payloadJSON,
+			&d.event.EventType, &d.event.Category, &d.event.Severity, &d.event.Title, &d.event.Message, &d.event.EntityType, &d.event.EntityID, &d.event.ConnectionID, &d.event.ActorUserID, &d.eventPayloadJSON, &d.event.CreatedAt,
+			&d.target.Name, &d.target.Type, &d.target.Description, &d.target.ConfigJSON, &d.target.SecretEnc, &active, &d.target.CreatedBy, &d.target.CreatedAt, &d.target.UpdatedAt,
 		); err != nil {
 			continue
 		}
-		target.IsActive = active == 1
-		event.Payload = parseJSONMapSafe(eventPayloadJSON)
+		d.target.IsActive = active == 1
+		d.event.Payload = parseJSONMapSafe(d.eventPayloadJSON)
+		pending = append(pending, d)
+	}
+	rows.Close()
 
-		lockKey := fmt.Sprintf("notification:delivery:%d", deliveryID)
+	for _, d := range pending {
+		lockKey := fmt.Sprintf("notification:delivery:%d", d.deliveryID)
 		lockOwner := fmt.Sprintf("%s:%d", notificationInstanceID, time.Now().UTC().UnixNano())
 		lockCtx, lockCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		locked, lockErr := cache.Default().AcquireLock(lockCtx, lockKey, lockOwner, 2*time.Minute)
@@ -748,11 +758,11 @@ func processPendingNotificationDeliveries() {
 			UPDATE notification_deliveries
 			SET status = 'sending', attempts = attempts + 1, last_attempt_at = ?, updated_at = ?
 			WHERE id = ?
-		`), lastAttempt, lastAttempt, deliveryID)
+		`), lastAttempt, lastAttempt, d.deliveryID)
 
-		statusCode, sendErr := sendNotificationToTarget(target, event, []byte(payloadJSON))
+		statusCode, sendErr := sendNotificationToTarget(d.target, d.event, []byte(d.payloadJSON))
 		if sendErr != nil {
-			attempts := currentDeliveryAttempts(deliveryID)
+			attempts := currentDeliveryAttempts(d.deliveryID)
 			nextAttemptAt := nextNotificationAttempt(attempts)
 			status := "retrying"
 			if attempts >= 5 {
@@ -763,7 +773,7 @@ func processPendingNotificationDeliveries() {
 				UPDATE notification_deliveries
 				SET status = ?, last_error = ?, last_response_code = ?, next_attempt_at = ?, updated_at = ?
 				WHERE id = ?
-			`), status, truncateNotificationError(sendErr.Error()), statusCode, nextAttemptAt, lastAttempt, deliveryID)
+			`), status, truncateNotificationError(sendErr.Error()), statusCode, nextAttemptAt, lastAttempt, d.deliveryID)
 			releaseNotificationDeliveryLock(lockKey, lockOwner)
 			continue
 		}
@@ -771,7 +781,7 @@ func processPendingNotificationDeliveries() {
 			UPDATE notification_deliveries
 			SET status = 'delivered', last_error = '', last_response_code = ?, next_attempt_at = ?, updated_at = ?
 			WHERE id = ?
-		`), statusCode, lastAttempt, lastAttempt, deliveryID)
+		`), statusCode, lastAttempt, lastAttempt, d.deliveryID)
 		releaseNotificationDeliveryLock(lockKey, lockOwner)
 	}
 }
@@ -1320,7 +1330,7 @@ func parsePathActionID(path, prefix, suffix string) (int64, error) {
 }
 
 func insertRowReturningID(query string, args ...any) (int64, error) {
-	if appdb.IsPostgreSQL() || appdb.IsMySQL() {
+	if appdb.IsPostgreSQL() {
 		query = strings.TrimSpace(query)
 		if !strings.Contains(strings.ToUpper(query), "RETURNING ID") {
 			query += " RETURNING id"
@@ -1331,6 +1341,7 @@ func insertRowReturningID(query string, args ...any) (int64, error) {
 		}
 		return id, nil
 	}
+	// MySQL and SQLite both use LastInsertId()
 	res, err := appdb.DB.Exec(query, args...)
 	if err != nil {
 		return 0, err

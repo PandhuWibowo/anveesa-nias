@@ -74,8 +74,10 @@ func main() {
 	handlers.SetEncryptionKey(cfg.EncryptionKey)
 
 	// Start automatic backup if enabled
+	backupCtx, backupCancel := context.WithCancel(context.Background())
+	defer backupCancel()
 	if cfg.BackupEnabled {
-		go startAutoBackup(cfg)
+		go startAutoBackup(backupCtx, cfg)
 	}
 	handlers.StartNotificationWorker()
 
@@ -314,6 +316,30 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.RedisGenerateScript())(w, r)
 			case sub == "redis" && len(parts) >= 3 && parts[2] == "script" && r.Method == http.MethodPost:
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.RedisExecuteScript())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "queues" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueQueues())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "jobs" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueJobs())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "failed-jobs" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueFailedJobs())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "horizon" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueHorizon())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "ops-settings" && (r.Method == http.MethodGet || r.Method == http.MethodPut):
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueOpsSettings())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "audit" && r.Method == http.MethodGet:
+				requireAny(handlers.PermAuditView, handlers.PermConnectionsView)(handlers.LaravelQueueAudit())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "quarantine" && (r.Method == http.MethodGet || r.Method == http.MethodPost):
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueQuarantine())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 4 && parts[2] == "quarantine" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.LaravelQueueQuarantineItem())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "alerts" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueAlerts())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "agent" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.LaravelQueueAgentAction())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 4 && (parts[3] == "retry-failed" || parts[3] == "delete-failed") && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.LaravelQueueFailedJobAction())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 4 && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.LaravelQueueAction())(w, r)
 			case sub == "backup" && r.Method == http.MethodGet:
 				requireAny(handlers.PermBackupsManage)(handlers.GetBackup())(w, r)
 			case sub == "restore" && r.Method == http.MethodPost:
@@ -1032,16 +1058,24 @@ func registerStaticRoutes(mux *http.ServeMux) {
 }
 
 // Auto backup
-func startAutoBackup(cfg *config.Config) {
+func startAutoBackup(ctx context.Context, cfg *config.Config) {
 	ticker := time.NewTicker(time.Duration(cfg.BackupHours) * time.Hour)
 	defer ticker.Stop()
 
-	// Run initial backup after 1 minute
-	time.Sleep(time.Minute)
-	runBackup(cfg)
-
-	for range ticker.C {
+	select {
+	case <-time.After(time.Minute):
 		runBackup(cfg)
+	case <-ctx.Done():
+		return
+	}
+
+	for {
+		select {
+		case <-ticker.C:
+			runBackup(cfg)
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 

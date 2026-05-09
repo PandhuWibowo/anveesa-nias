@@ -118,6 +118,9 @@ export function useSchema() {
     try {
       const { data } = await axios.get<SchemaDatabase[]>(`/api/connections/${connId}/schema`)
       databases.value = data
+    } catch (err) {
+      console.error('[useSchema] fetchSchema failed', { connId, err })
+      databases.value = []
     } finally {
       loadingSchema.value = false
     }
