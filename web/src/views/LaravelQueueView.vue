@@ -1324,7 +1324,7 @@ function errorMessage(err: unknown, fallback: string) {
       <aside class="lq-sidebar">
         <div class="lq-panel-header">
           <span>{{ activeConn?.name }}</span>
-          <span class="lq-driver">{{ ({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD' }[activeConn?.driver ?? ''] ?? (activeConn?.driver ?? 'DB').slice(0,2).toUpperCase()) }}</span>
+          <span class="lq-driver">{{ (({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD' } as Record<string, string>)[activeConn?.driver ?? ''] ?? (activeConn?.driver ?? 'DB').slice(0,2).toUpperCase()) }}</span>
         </div>
 
         <div class="lq-controls">
