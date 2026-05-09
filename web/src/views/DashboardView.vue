@@ -239,7 +239,15 @@ onMounted(loadAll)
             <button class="dash-retry-btn" @click="loadOne(conn.id)">Retry</button>
           </div>
 
-          <!-- Stats -->
+          <!-- Redis card -->
+          <template v-else-if="states[conn.id]?.data?.driver === 'redis'">
+            <div class="dash-redis-badge">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M12 12h.01"/><path d="M8 12h.01"/><path d="M16 12h.01"/></svg>
+              Redis key-value store
+            </div>
+          </template>
+
+          <!-- SQL Stats -->
           <template v-else-if="states[conn.id]?.data">
             <div class="dash-conn-card__db">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
@@ -409,6 +417,12 @@ onMounted(loadAll)
   font-size: 11px; color: var(--text-muted); margin-top: 1px;
   font-family: var(--mono, monospace);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.dash-redis-badge {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; font-weight: 500; color: #dc2626;
+  background: #dc262614; border-radius: 6px; padding: 8px 12px;
 }
 
 .dash-conn-card__db {

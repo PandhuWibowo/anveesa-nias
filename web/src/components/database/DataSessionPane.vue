@@ -30,6 +30,7 @@ const router = useRouter()
 const activeConn = computed(() =>
   props.connId ? connections.value.find(c => c.id === props.connId) ?? null : null
 )
+const supportsRelationalSchema = computed(() => !!activeConn.value && activeConn.value.driver !== 'redis')
 
 // ── Data browser state ────────────────────────────────────────────
 const selected = ref<{ db: string; table: string } | null>(null)
@@ -193,7 +194,7 @@ watch(() => props.connId, async (id) => {
   objectDetail.value = null
   selectedObjectKey.value = ''
   activeDatabase.value = ''
-  if (!id) return
+  if (!id || !supportsRelationalSchema.value) return
   await fetchSchemaList(id)
   activeDatabase.value = databases.value[0]?.name ?? ''
 }, { immediate: true })
@@ -475,6 +476,10 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
     </div>
 
     <!-- DATA BROWSER -->
+    <div v-else-if="!supportsRelationalSchema" v-show="activeSubTab === 'data' || activeSubTab === 'schema' || activeSubTab === 'explorer'" class="empty-state" style="flex:1">
+      Redis does not expose relational schema here. Use the Redis or Laravel Queue page for this connection.
+    </div>
+
     <div v-else v-show="activeSubTab === 'data'" style="display:flex;flex:1;min-height:0;overflow:hidden">
       <div class="sidebar-panel">
         <div class="panel-header">
@@ -519,7 +524,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
     </div>
 
     <!-- SCHEMA -->
-    <div v-if="activeConn" v-show="activeSubTab === 'schema'" style="display:flex;flex:1;min-height:0;overflow:hidden">
+    <div v-if="activeConn && supportsRelationalSchema" v-show="activeSubTab === 'schema'" style="display:flex;flex:1;min-height:0;overflow:hidden">
       <div class="sidebar-panel">
         <div class="panel-header">
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ activeConn.name }}</span>
@@ -560,7 +565,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
     </div>
 
     <!-- EXPLORER (Full Schema Metadata) -->
-    <div v-if="activeConn" v-show="activeSubTab === 'explorer'" class="explorer-view">
+    <div v-if="activeConn && supportsRelationalSchema" v-show="activeSubTab === 'explorer'" class="explorer-view">
       <div class="explorer-sidebar">
         <div class="explorer-sidebar__head">
           <select v-model="activeDatabase" class="explorer-db-select" :disabled="!databases.length">

@@ -93,6 +93,15 @@ func GetDashboard() http.HandlerFunc {
 			return
 		}
 
+		// Check the driver before attempting a SQL connection — Redis connections
+		// have no SQL DSN and must return a minimal response rather than a 502.
+		var rawDriver string
+		_ = appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT driver FROM connections WHERE id=?`), connID).Scan(&rawDriver)
+		if rawDriver == "redis" {
+			json.NewEncoder(w).Encode(DashboardData{Driver: "redis", Tables: []TableStat{}, SlowQueries: SlowQuerySummary{Queries: []SlowQueryStat{}}})
+			return
+		}
+
 		db, driver, err := GetDB(connID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)

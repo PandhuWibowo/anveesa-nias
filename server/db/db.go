@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/anveesa/nias/config"
 	"github.com/go-sql-driver/mysql"
@@ -36,7 +37,7 @@ func Init(cfg *config.Config) error {
 		// Configure connection pool for PostgreSQL
 		db.SetMaxOpenConns(25)
 		db.SetMaxIdleConns(5)
-		db.SetConnMaxLifetime(0)
+		db.SetConnMaxLifetime(5 * time.Minute)
 
 		// Test connection
 		if err := db.Ping(); err != nil {
@@ -60,7 +61,7 @@ func Init(cfg *config.Config) error {
 		// Configure connection pool for MySQL
 		db.SetMaxOpenConns(25)
 		db.SetMaxIdleConns(5)
-		db.SetConnMaxLifetime(0)
+		db.SetConnMaxLifetime(3 * time.Minute)
 
 		// Test connection
 		if err := db.Ping(); err != nil {
@@ -117,7 +118,8 @@ func ConvertQuery(query string) string {
 	}
 
 	// Convert ? to $1, $2, $3, etc.
-	result := ""
+	var buf strings.Builder
+	buf.Grow(len(query))
 	paramCount := 1
 	inQuote := false
 	quoteChar := byte(0)
@@ -137,12 +139,14 @@ func ConvertQuery(query string) string {
 
 		// Only replace ? outside of string literals
 		if ch == '?' && !inQuote {
-			result += "$" + strconv.Itoa(paramCount)
+			buf.WriteByte('$')
+			buf.WriteString(strconv.Itoa(paramCount))
 			paramCount++
 		} else {
-			result += string(ch)
+			buf.WriteByte(ch)
 		}
 	}
+	result := buf.String()
 
 	// Add ON CONFLICT DO NOTHING for PostgreSQL/MySQL if original had INSERT OR IGNORE
 	if hasInsertOrIgnore && (IsPostgreSQL() || IsMySQL()) {
@@ -365,6 +369,54 @@ func migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_notification_deliveries_pending ON notification_deliveries(status, next_attempt_at, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_notification_deliveries_event ON notification_deliveries(event_id, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS laravel_queue_profiles (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			conn_id       INTEGER NOT NULL,
+			environment   TEXT NOT NULL DEFAULT 'default',
+			settings_json TEXT NOT NULL DEFAULT '{}',
+			created_by    INTEGER NOT NULL DEFAULT 0,
+			updated_by    INTEGER NOT NULL DEFAULT 0,
+			created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(conn_id, environment)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_laravel_queue_profiles_conn ON laravel_queue_profiles(conn_id, environment)`,
+		`CREATE TABLE IF NOT EXISTS laravel_queue_audit (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			conn_id        INTEGER NOT NULL DEFAULT 0,
+			failed_conn_id INTEGER NOT NULL DEFAULT 0,
+			user_id        INTEGER NOT NULL DEFAULT 0,
+			username       TEXT NOT NULL DEFAULT '',
+			action         TEXT NOT NULL DEFAULT '',
+			queue          TEXT NOT NULL DEFAULT '',
+			target_queue   TEXT NOT NULL DEFAULT '',
+			job_uuid       TEXT NOT NULL DEFAULT '',
+			failed_job_id  INTEGER NOT NULL DEFAULT 0,
+			payload_edited INTEGER NOT NULL DEFAULT 0,
+			status         TEXT NOT NULL DEFAULT 'success',
+			error          TEXT NOT NULL DEFAULT '',
+			details_json   TEXT NOT NULL DEFAULT '{}',
+			created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_laravel_queue_audit_conn_time ON laravel_queue_audit(conn_id, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS laravel_queue_quarantine (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			conn_id        INTEGER NOT NULL DEFAULT 0,
+			failed_conn_id INTEGER NOT NULL DEFAULT 0,
+			failed_job_id  INTEGER NOT NULL DEFAULT 0,
+			uuid           TEXT NOT NULL DEFAULT '',
+			queue          TEXT NOT NULL DEFAULT '',
+			job_name       TEXT NOT NULL DEFAULT '',
+			payload        TEXT NOT NULL DEFAULT '',
+			exception      TEXT NOT NULL DEFAULT '',
+			reason         TEXT NOT NULL DEFAULT '',
+			status         TEXT NOT NULL DEFAULT 'quarantined',
+			created_by     INTEGER NOT NULL DEFAULT 0,
+			created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(conn_id, failed_conn_id, failed_job_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_laravel_queue_quarantine_conn ON laravel_queue_quarantine(conn_id, status, created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS auth_sessions (
 			id           INTEGER PRIMARY KEY AUTOINCREMENT,
 			user_id      INTEGER NOT NULL,
@@ -898,12 +950,7 @@ func migrate() error {
 }
 
 func isAlterAdd(s string) bool {
-	u := len(s)
-	if u > 30 {
-		u = 30
-	}
-	upper := s[:u]
-	return len(upper) > 5 && upper[:5] == "ALTER"
+	return strings.HasPrefix(s, "ALTER")
 }
 
 // Ping checks if the database is accessible
@@ -939,11 +986,8 @@ func seedDefaultAdmin() error {
 	var roleCount int
 	DB.QueryRow(`SELECT COUNT(*) FROM roles WHERE id = 1`).Scan(&roleCount)
 	if roleCount == 0 {
-		// Create admin role
-		if IsPostgreSQL() || IsMySQL() {
-			DB.Exec(`INSERT INTO roles (id, name, description, is_system) VALUES (1, 'Admin', 'Full system access', 1)`)
-		} else {
-			DB.Exec(`INSERT INTO roles (id, name, description, is_system) VALUES (1, 'Admin', 'Full system access', 1)`)
+		if _, err := DB.Exec(ConvertQuery(`INSERT INTO roles (id, name, description, is_system) VALUES (?, 'Admin', 'Full system access', 1)`), 1); err != nil {
+			fmt.Printf("Warning: could not create admin role: %v\n", err)
 		}
 	}
 

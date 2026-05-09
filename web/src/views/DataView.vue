@@ -6,6 +6,7 @@ import { useTheme } from '@/composables/useTheme'
 import { pendingSQL } from '@/composables/usePendingSQL'
 
 const props = defineProps<{ activeConnId?: number | null }>()
+const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
 
 const { connections } = useConnections()
 const { mode } = useTheme()
@@ -106,10 +107,13 @@ const pickerStyle = computed(() => ({
   zIndex: 9999,
 }))
 
+// Redis connections have no SQL DSN — exclude them from SQL Studio.
+const sqlConns = computed(() => connections.value.filter(c => c.driver !== 'redis'))
+
 const filteredConns = computed(() =>
   pickerSearch.value
-    ? connections.value.filter(c => c.name.toLowerCase().includes(pickerSearch.value.toLowerCase()))
-    : connections.value
+    ? sqlConns.value.filter(c => c.name.toLowerCase().includes(pickerSearch.value.toLowerCase()))
+    : sqlConns.value
 )
 
 function togglePicker() {
@@ -143,9 +147,12 @@ function onDocClick(e: MouseEvent) {
 onMounted(() => document.addEventListener('mousedown', onDocClick, true))
 onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick, true))
 
-// Bootstrap or switch session when the global active connection changes
+// Bootstrap or switch session when the global active connection changes.
+// Redis connections are excluded — they belong in the Redis Browser, not SQL Studio.
 watch(() => props.activeConnId, (id) => {
   if (id == null) return
+  const conn = connections.value.find(c => c.id === id)
+  if (conn?.driver === 'redis') return
   const existing = sessions.value.find(s => s.connId === id)
   if (existing) {
     // Session already open — just bring it to focus
@@ -173,6 +180,28 @@ onMounted(() => {
 })
 
 function onPickerKeydown(e: KeyboardEvent) { if (e.key === 'Escape') pickerOpen.value = false }
+
+const activeConnIsRedis = computed(() => {
+  if (props.activeConnId == null) return false
+  return connections.value.find(c => c.id === props.activeConnId)?.driver === 'redis'
+})
+
+// Show landing page when there are no sessions OR active conn is Redis
+const showLanding = computed(() => activeConnIsRedis.value || sessions.value.length === 0)
+
+const connDriverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927' }
+const connDriverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS' }
+
+// Open a session and also promote it as the global active connection
+function quickOpen(connId: number) {
+  emit('set-conn', connId)
+  const existing = sessions.value.find(s => s.connId === connId)
+  if (existing) {
+    activeSessionId.value = existing.id
+  } else {
+    openSession(connId)
+  }
+}
 
 function handleTableSelected(sessionId: string, db: string, table: string) {
   const session = sessions.value.find(s => s.id === sessionId)
@@ -238,12 +267,49 @@ function handleTableSelected(sessionId: string, db: string, table: string) {
       </div>
     </div>
 
-    <!-- Session panes (kept alive while hidden) -->
-    <div v-if="sessions.length === 0" class="data-empty-state">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" style="opacity:0.3"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
-      <div class="data-empty-state__text">
-        <p style="font-size:14px;font-weight:600;margin:0;color:var(--text-primary)">No database sessions open</p>
-        <p style="font-size:13px;margin:6px 0 0;color:var(--text-muted)">Click <strong style="color:var(--brand)">+ DB</strong> to open a database connection</p>
+    <!-- Landing page: shown when no SQL sessions are open OR active conn is Redis -->
+    <div v-if="showLanding" class="dv-landing">
+      <div class="dv-landing__inner">
+
+        <!-- Redis context hint -->
+        <div v-if="activeConnIsRedis" class="dv-landing__redis-hint">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="flex-shrink:0"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M12 12h.01"/><path d="M8 12h.01"/><path d="M16 12h.01"/></svg>
+          The active connection is Redis. SQL Studio requires a relational database — pick one below or use <strong>Database → Redis Browser</strong>.
+        </div>
+
+        <div class="dv-landing__heading">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="color:var(--brand)"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+          <span>Open a database connection</span>
+        </div>
+        <p class="dv-landing__sub">Click any connection to open it in a new session tab.</p>
+
+        <!-- No SQL connections at all -->
+        <div v-if="sqlConns.length === 0" class="dv-landing__empty">
+          No relational database connections found. Add one in <strong>Admin → Connections</strong>.
+        </div>
+
+        <!-- SQL connection cards -->
+        <div v-else class="dv-landing__grid">
+          <button
+            v-for="conn in sqlConns"
+            :key="conn.id"
+            class="dv-conn-card"
+            :class="{ 'dv-conn-card--active': conn.id === props.activeConnId }"
+            @click="quickOpen(conn.id)"
+          >
+            <div class="dv-conn-card__badge" :style="{ background: connDriverColor[conn.driver] ?? '#888' }">
+              {{ connDriverLabel[conn.driver] ?? '??' }}
+            </div>
+            <div class="dv-conn-card__info">
+              <div class="dv-conn-card__name">{{ conn.name }}</div>
+              <div class="dv-conn-card__host">{{ conn.host }}{{ conn.port ? ':' + conn.port : '' }}</div>
+            </div>
+            <div class="dv-conn-card__open">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+            </div>
+          </button>
+        </div>
+
       </div>
     </div>
 
@@ -427,19 +493,144 @@ function handleTableSelected(sessionId: string, db: string, table: string) {
   flex-shrink: 0;
 }
 
-/* ── Empty State ──────────────────────────────────────────────── */
-.data-empty-state {
+/* ── Landing page ─────────────────────────────────────────────── */
+.dv-landing {
   flex: 1;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 16px;
-  color: var(--text-muted);
-  padding: 40px;
-  text-align: center;
+  overflow-y: auto;
+  padding: 40px 24px;
+  background: var(--bg-body);
 }
-.data-empty-state__text {
-  max-width: 400px;
+
+.dv-landing__inner {
+  width: 100%;
+  max-width: 580px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.dv-landing__redis-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px 14px;
+  border: 1px solid #c6302b44;
+  border-radius: 8px;
+  background: #c6302b0c;
+  color: #c6302b;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.dv-landing__heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.dv-landing__sub {
+  margin: -12px 0 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.dv-landing__empty {
+  padding: 20px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+
+.dv-landing__grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dv-conn-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s, transform 0.12s, box-shadow 0.15s;
+}
+.dv-conn-card:hover {
+  border-color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 5%, var(--bg-surface));
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(0,0,0,.08);
+}
+.dv-conn-card--active {
+  border-color: var(--brand);
+  background: var(--brand-dim);
+}
+
+.dv-conn-card__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 28px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+  letter-spacing: 0.3px;
+}
+
+.dv-conn-card__info {
+  flex: 1;
+  min-width: 0;
+}
+
+.dv-conn-card__name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dv-conn-card__host {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-family: var(--mono, monospace);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dv-conn-card__open {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+.dv-conn-card:hover .dv-conn-card__open {
+  background: var(--brand);
+  color: #fff;
 }
 </style>

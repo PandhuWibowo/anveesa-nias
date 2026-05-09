@@ -80,7 +80,7 @@ function toggleFolder(id: number) {
 function selectConn(conn: Connection) {
   emit('select-conn', conn.id)
   emit('close')
-  const stayViews = ['data', 'er', 'dashboard', 'redis']
+  const stayViews = ['data', 'er', 'dashboard', 'redis', 'laravel-queue']
   const current = router.currentRoute.value.name as string
   if (conn.driver === 'redis' && current !== 'redis') router.push({ name: 'redis' })
   else if (conn.driver !== 'redis' && (current === 'redis' || !stayViews.includes(current))) router.push({ name: 'data' })
