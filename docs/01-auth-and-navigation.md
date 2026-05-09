@@ -75,7 +75,7 @@ Primary elements:
 Menu map:
 - Analytics: Analytics Home, Dashboards, Saved Queries, AI Analytics, and AI Settings.
 - Database: SQL Studio, ER Diagram, Schema Diff, Row History, and Redis Browser.
-- Messaging: Laravel Queue.
+- Messaging: Laravel Queue and Kafka.
 - Operations: Operations Overview, Query Performance, Database Audit, Audit Log, Notifications, Watchers, and Health.
 - Governance: Approvals, Change Sets, Data Scripts, Script Requests, Backup, Scheduler, and Workflows.
 - Admin: Connections, Users, Roles & Permissions, and Access Groups.

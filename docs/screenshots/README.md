@@ -17,6 +17,7 @@ Explore and query:
 - `saved-queries-page.png`
 - `ai-settings-page.png`
 - `er-diagram-page.png`
+- `kafka-page.png`
 
 Monitoring and audit:
 - `dashboard-page.png`

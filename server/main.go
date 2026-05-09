@@ -340,6 +340,22 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.LaravelQueueFailedJobAction())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 4 && r.Method == http.MethodPost:
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.LaravelQueueAction())(w, r)
+			case sub == "kafka" && len(parts) >= 3 && parts[2] == "topics" && r.Method == http.MethodGet:
+				requireAny(handlers.PermKafkaView)(handlers.KafkaTopics())(w, r)
+			case sub == "kafka" && len(parts) >= 3 && parts[2] == "topics" && r.Method == http.MethodPost:
+				requireAny(handlers.PermKafkaManage)(handlers.KafkaCreateTopic())(w, r)
+			case sub == "kafka" && len(parts) >= 3 && parts[2] == "topics" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermKafkaManage)(handlers.KafkaDeleteTopic())(w, r)
+			case sub == "kafka" && len(parts) >= 4 && parts[2] == "topics" && parts[3] == "partitions" && r.Method == http.MethodPut:
+				requireAny(handlers.PermKafkaManage)(handlers.KafkaUpdatePartitions())(w, r)
+			case sub == "kafka" && len(parts) >= 3 && parts[2] == "messages" && r.Method == http.MethodGet:
+				requireAny(handlers.PermKafkaView)(handlers.KafkaMessages())(w, r)
+			case sub == "kafka" && len(parts) >= 3 && parts[2] == "produce" && r.Method == http.MethodPost:
+				requireAny(handlers.PermKafkaProduce)(handlers.KafkaProduce())(w, r)
+			case sub == "kafka" && len(parts) >= 3 && parts[2] == "groups" && r.Method == http.MethodGet:
+				requireAny(handlers.PermKafkaView)(handlers.KafkaGroups())(w, r)
+			case sub == "kafka" && len(parts) >= 3 && parts[2] == "groups-detail" && r.Method == http.MethodGet:
+				requireAny(handlers.PermKafkaView)(handlers.KafkaGroupDetailHandler())(w, r)
 			case sub == "backup" && r.Method == http.MethodGet:
 				requireAny(handlers.PermBackupsManage)(handlers.GetBackup())(w, r)
 			case sub == "restore" && r.Method == http.MethodPost:

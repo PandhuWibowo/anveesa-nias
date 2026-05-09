@@ -120,6 +120,9 @@ const (
 	PermERView              = "er.view"
 	PermRedisView           = "redis.view"
 	PermQueuesView          = "queues.view"
+	PermKafkaView           = "kafka.view"
+	PermKafkaProduce        = "kafka.produce"
+	PermKafkaManage         = "kafka.manage"
 	PermAuditView           = "audit.view"
 	PermOperationsView      = "operations.view"
 	PermPerformanceView     = "performance.view"
@@ -162,6 +165,9 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermSchemaDiffView, Label: "View Schema Diff", Group: "Schema"},
 	{Key: PermRedisView, Label: "Use Redis Browser", Group: "Database Cache"},
 	{Key: PermQueuesView, Label: "Use Laravel Queue", Group: "Messaging"},
+	{Key: PermKafkaView, Label: "Use Kafka Browser", Group: "Messaging"},
+	{Key: PermKafkaProduce, Label: "Produce Kafka Messages", Group: "Messaging"},
+	{Key: PermKafkaManage, Label: "Manage Kafka Topics", Group: "Messaging"},
 	{Key: PermAuditView, Label: "View Audit Logs", Group: "Audit"},
 	{Key: PermOperationsView, Label: "View Operations Overview", Group: "Operations"},
 	{Key: PermPerformanceView, Label: "View Query Performance", Group: "Operations"},

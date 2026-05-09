@@ -163,6 +163,9 @@ schema.diff.view       ← Can compare schemas
 er.view                ← Can view ER diagrams
 redis.view             ← Can use Redis Browser
 queues.view            ← Can use Laravel Queue
+kafka.view             ← Can use Kafka Browser
+kafka.produce          ← Can produce Kafka test messages
+kafka.manage           ← Can create, delete, and resize Kafka topics
 audit.view             ← Can access audit logs
 operations.view        ← Can view Operations Overview
 performance.view       ← Can view Query Performance

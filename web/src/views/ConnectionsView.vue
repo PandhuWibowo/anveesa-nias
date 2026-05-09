@@ -28,6 +28,7 @@ const defaultPorts: Record<DbDriver, number> = {
   mariadb: 3306,
   mssql: 1433,
   redis: 6379,
+  kafka: 9092,
 }
 
 const form = reactive<ConnectionForm>({
@@ -75,9 +76,11 @@ const driverGroups: Array<{ key: string; label: string; options: DriverOption[] 
     ],
   },
   {
-    key: 'other',
-    label: 'Other',
-    options: [],
+    key: 'streaming',
+    label: 'Streaming',
+    options: [
+      { key: 'kafka', label: 'Kafka', badge: 'KF', sub: 'v2+' },
+    ],
   },
 ]
 
@@ -192,6 +195,7 @@ function parseConnectionURL(raw: string) {
       mysql: 'mysql', mariadb: 'mariadb',
       mssql: 'mssql', sqlserver: 'mssql',
       redis: 'redis', rediss: 'redis',
+      kafka: 'kafka',
     }
     const driver = driverMap[scheme] ?? ('postgres' as DbDriver)
     form.driver = driver
@@ -201,7 +205,7 @@ function parseConnectionURL(raw: string) {
     form.username = decodeURIComponent(url.username || '')
     form.password = decodeURIComponent(url.password || '')
     form.ssl = scheme === 'rediss' || url.searchParams.get('sslmode') === 'require' || url.searchParams.get('ssl') === 'true'
-    if (!form.name) form.name = `${driver} / ${form.database}`
+    if (!form.name) form.name = driver === 'kafka' ? `${driver} / ${form.host}` : `${driver} / ${form.database}`
     showURLImport.value = false
     urlInput.value = ''
     testResult.value = null
@@ -211,16 +215,16 @@ function parseConnectionURL(raw: string) {
 }
 
 function driverBadge(driver: DbDriver) {
-  return ({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD' } as Record<DbDriver, string>)[driver] ?? driver.slice(0, 2).toUpperCase()
+  return ({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', kafka: 'KF' } as Record<DbDriver, string>)[driver] ?? driver.slice(0, 2).toUpperCase()
 }
 
 function driverFullName(driver: DbDriver) {
-  return ({ postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', mssql: 'SQL Server', redis: 'Redis' } as Record<DbDriver, string>)[driver] ?? driver
+  return ({ postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', mssql: 'SQL Server', redis: 'Redis', kafka: 'Kafka' } as Record<DbDriver, string>)[driver] ?? driver
 }
 
 function openConnection(id: number, driver: DbDriver) {
   emit('set-conn', id)
-  router.push({ name: driver === 'redis' ? 'redis' : 'data' })
+  router.push({ name: driver === 'redis' ? 'redis' : driver === 'kafka' ? 'kafka' : 'data' })
 }
 
 async function handleDelete(id: number, name: string) {
@@ -352,7 +356,7 @@ async function handleDelete(id: number, name: string) {
                 <input
                   v-model="urlInput"
                   class="base-input"
-                  placeholder="postgres://user:pass@host:5432/dbname or redis://user:pass@host:6379/0"
+                  placeholder="postgres://user:pass@host:5432/dbname, redis://host:6379/0, or kafka://broker:9092"
                   style="flex:1;font-family:var(--font-mono);font-size:11px"
                   @keydown.enter="parseConnectionURL(urlInput)"
                 />
@@ -408,14 +412,14 @@ async function handleDelete(id: number, name: string) {
               </div>
 
               <div class="form-group">
-              <label class="form-label">{{ form.driver === 'redis' ? 'Database Index' : 'Database' }}</label>
-                <input v-model="form.database" class="base-input" :placeholder="form.driver === 'redis' ? '0' : 'mydb'" />
+              <label class="form-label">{{ form.driver === 'redis' ? 'Database Index' : form.driver === 'kafka' ? 'Client ID / Notes' : 'Database' }}</label>
+                <input v-model="form.database" class="base-input" :placeholder="form.driver === 'redis' ? '0' : form.driver === 'kafka' ? 'optional' : 'mydb'" />
               </div>
 
               <div class="form-row">
                 <div class="form-group">
                   <label class="form-label">Username</label>
-                  <input v-model="form.username" class="base-input" :placeholder="form.driver === 'redis' ? 'default' : 'postgres'" />
+                  <input v-model="form.username" class="base-input" :placeholder="form.driver === 'redis' ? 'default' : form.driver === 'kafka' ? 'SASL username' : 'postgres'" />
                 </div>
                 <div class="form-group">
                   <label class="form-label">Password</label>
@@ -753,6 +757,7 @@ async function handleDelete(id: number, name: string) {
 .provider-card__icon--mariadb  { background: #c0765a; }
 .provider-card__icon--mssql    { background: #cc2927; }
 .provider-card__icon--redis    { background: #c6302b; }
+.provider-card__icon--kafka    { background: #231f20; }
 
 .provider-card__body {
   display: flex;

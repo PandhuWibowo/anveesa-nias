@@ -153,6 +153,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['queues.view'] },
         },
         {
+          path: 'kafka',
+          name: 'kafka',
+          component: () => import('@/views/KafkaView.vue'),
+          meta: { requiredPermissionsAny: ['kafka.view'] },
+        },
+        {
           path: 'connections',
           name: 'connections',
           component: () => import('@/views/ConnectionsView.vue'),

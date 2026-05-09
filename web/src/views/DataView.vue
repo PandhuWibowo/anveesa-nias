@@ -108,7 +108,7 @@ const pickerStyle = computed(() => ({
 }))
 
 // Redis connections have no SQL DSN — exclude them from SQL Studio.
-const sqlConns = computed(() => connections.value.filter(c => c.driver !== 'redis'))
+const sqlConns = computed(() => connections.value.filter(c => c.driver !== 'redis' && c.driver !== 'kafka'))
 
 const filteredConns = computed(() =>
   pickerSearch.value

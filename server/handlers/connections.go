@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -26,6 +27,7 @@ var allowedDrivers = map[string]bool{
 	"mariadb":  true, // alias → uses MySQL driver
 	"mssql":    true,
 	"redis":    true,
+	"kafka":    true,
 }
 
 // encryptionKey for credential encryption (should be set from environment)
@@ -151,7 +153,7 @@ type ConnectionInput struct {
 func validateConnectionInput(in *ConnectionInput) error {
 	// Validate driver
 	if !allowedDrivers[in.Driver] {
-		return fmt.Errorf("invalid driver: must be postgres, mysql, mariadb, mssql, or redis")
+		return fmt.Errorf("invalid driver: must be postgres, mysql, mariadb, mssql, redis, or kafka")
 	}
 
 	// Validate port
@@ -192,8 +194,8 @@ func isValidHostname(host string) bool {
 
 func buildDSN(in ConnectionInput) (string, error) {
 	switch in.Driver {
-	case "redis":
-		return "", fmt.Errorf("redis does not use SQL DSN")
+	case "redis", "kafka":
+		return "", fmt.Errorf("%s does not use SQL DSN", in.Driver)
 	case "postgres":
 		sslMode := "disable"
 		if in.SSL {
@@ -806,6 +808,16 @@ func TestConnection() http.HandlerFunc {
 
 		if in.Driver == "redis" {
 			if err := testRedisInput(r.Context(), in); err != nil {
+				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"message": "Connection successful"})
+			return
+		}
+		if in.Driver == "kafka" {
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			if _, err := readKafkaTopics(ctx, in); err != nil {
 				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
 				return
 			}

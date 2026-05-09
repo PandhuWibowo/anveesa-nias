@@ -30,7 +30,7 @@ const router = useRouter()
 const activeConn = computed(() =>
   props.connId ? connections.value.find(c => c.id === props.connId) ?? null : null
 )
-const supportsRelationalSchema = computed(() => !!activeConn.value && activeConn.value.driver !== 'redis')
+const supportsRelationalSchema = computed(() => !!activeConn.value && activeConn.value.driver !== 'redis' && activeConn.value.driver !== 'kafka')
 
 // ── Data browser state ────────────────────────────────────────────
 const selected = ref<{ db: string; table: string } | null>(null)
