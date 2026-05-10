@@ -1,14 +1,20 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import axios from 'axios'
 import { useToast } from '@/composables/useToast'
+import { useAuth } from '@/composables/useAuth'
 import QrcodeVue from 'qrcode.vue'
 
 const toast = useToast()
+const { hasPermission, markMfaSetupComplete } = useAuth()
 
 const loading = ref(false)
 const enabled = ref(false)
 const backupCodesCount = ref(0)
+const mfaEnforced = ref(false)
+const mfaRequiredSetup = ref(false)
+const canManagePolicy = ref(false)
+const policyLoading = ref(false)
 const sessions = ref<Array<{ id: number; token_id: string; ip_address: string; user_agent: string; last_seen_at: string; expires_at: string; current: boolean; revoked_at?: string | null }>>([])
 const activity = ref<Array<{ id: number; username: string; ip_address: string; user_agent: string; success: boolean; failure_reason: string; created_at: string }>>([])
 const suspiciousEvents = ref(0)
@@ -30,6 +36,7 @@ const showDisable = ref(false)
 const disablePassword = ref('')
 const disableBackupCode = ref('')
 const disableLoading = ref(false)
+const canEditPolicy = computed(() => canManagePolicy.value || hasPermission('users.manage'))
 
 async function fetchStatus() {
   loading.value = true
@@ -37,6 +44,15 @@ async function fetchStatus() {
     const { data } = await axios.get('/api/auth/2fa/status')
     enabled.value = data.enabled
     backupCodesCount.value = data.backup_codes_count || 0
+    mfaEnforced.value = !!data.mfa_enforced
+    mfaRequiredSetup.value = !!data.mfa_required_setup
+    canManagePolicy.value = !!data.can_manage_policy
+    if (mfaRequiredSetup.value) {
+      sessions.value = []
+      activity.value = []
+      suspiciousEvents.value = 0
+      return
+    }
     const [sessionsResp, activityResp] = await Promise.all([
       axios.get('/api/auth/sessions'),
       axios.get('/api/auth/activity'),
@@ -78,10 +94,25 @@ async function enableTwoFA() {
     setupData.value = null
     verifyCode.value = ''
     await fetchStatus()
+    markMfaSetupComplete()
   } catch (error: any) {
     toast.error(error.response?.data?.error || 'Invalid code')
   } finally {
     setupLoading.value = false
+  }
+}
+
+async function updateMFAPolicy(enforced: boolean) {
+  policyLoading.value = true
+  try {
+    const { data } = await axios.post('/api/auth/mfa-policy', { enforced })
+    mfaEnforced.value = !!data.mfa_enforced
+    mfaRequiredSetup.value = mfaEnforced.value && !enabled.value
+    toast.success(enforced ? 'MFA enforcement enabled' : 'MFA enforcement disabled')
+  } catch (error: any) {
+    toast.error(error.response?.data?.error || 'Failed to update MFA policy')
+  } finally {
+    policyLoading.value = false
   }
 }
 
@@ -187,8 +218,49 @@ onMounted(fetchStatus)
         Loading...
       </div>
 
+      <div v-if="!loading && mfaRequiredSetup" class="notice notice--warning sec-required">
+        <div>
+          <strong>MFA setup is required.</strong>
+          <p>Your organization requires multi-factor authentication before you can continue using the application.</p>
+        </div>
+        <button class="base-btn base-btn--primary" @click="startSetup" :disabled="setupLoading">
+          {{ setupLoading ? 'Setting up...' : 'Set Up MFA' }}
+        </button>
+      </div>
+
+      <div v-if="!loading && canEditPolicy" class="page-card sec-card">
+        <div class="sec-card-header">
+          <div class="sec-card-icon" :class="mfaEnforced ? 'sec-card-icon--enabled' : 'sec-card-icon--disabled'">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              <path d="m9 12 2 2 4-5"/>
+            </svg>
+          </div>
+          <div class="sec-card-meta">
+            <h3 class="sec-card-title">MFA Enforcement</h3>
+            <p class="sec-card-desc">Require every user to enable MFA before accessing application features.</p>
+          </div>
+          <div class="sec-card-status">
+            <span class="sec-badge" :class="mfaEnforced ? 'sec-badge--enabled' : 'sec-badge--disabled'">
+              {{ mfaEnforced ? 'Enforced' : 'Optional' }}
+            </span>
+          </div>
+        </div>
+        <div class="sec-card-body">
+          <div class="sec-policy-row">
+            <div>
+              <div class="sec-list-title">Force MFA setup after login</div>
+              <div class="sec-list-sub">Users without MFA can only open this Security page and complete setup.</div>
+            </div>
+            <button class="base-btn" :class="mfaEnforced ? 'base-btn--ghost' : 'base-btn--primary'" @click="updateMFAPolicy(!mfaEnforced)" :disabled="policyLoading || mfaRequiredSetup">
+              {{ policyLoading ? 'Updating...' : (mfaEnforced ? 'Disable Enforcement' : 'Enforce MFA') }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- 2FA Card -->
-      <div v-else class="page-card sec-card">
+      <div v-if="!loading && !mfaRequiredSetup" class="page-card sec-card">
         <div class="sec-card-header">
           <div class="sec-card-icon" :class="enabled ? 'sec-card-icon--enabled' : 'sec-card-icon--disabled'">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -236,13 +308,14 @@ onMounted(fetchStatus)
             </svg>
             {{ setupLoading ? 'Setting up...' : 'Enable 2FA' }}
           </button>
-          <button v-else class="base-btn base-btn--ghost" style="color:#f87171" @click="showDisable = true">
+          <button v-else-if="!mfaEnforced" class="base-btn base-btn--ghost" style="color:#f87171" @click="showDisable = true">
             Disable 2FA
           </button>
+          <span v-else class="sec-list-sub">Cannot disable while enforcement is active.</span>
         </div>
       </div>
 
-      <div v-if="!loading" class="page-card sec-card">
+      <div v-if="!loading && !mfaRequiredSetup" class="page-card sec-card">
         <div class="sec-card-header">
           <div class="sec-card-meta">
             <h3 class="sec-card-title">Password</h3>
@@ -261,7 +334,7 @@ onMounted(fetchStatus)
         </div>
       </div>
 
-      <div v-if="!loading" class="page-card sec-card">
+      <div v-if="!loading && !mfaRequiredSetup" class="page-card sec-card">
         <div class="sec-card-header">
           <div class="sec-card-meta">
             <h3 class="sec-card-title">Active Sessions</h3>
@@ -290,7 +363,7 @@ onMounted(fetchStatus)
         </div>
       </div>
 
-      <div v-if="!loading" class="page-card sec-card">
+      <div v-if="!loading && !mfaRequiredSetup" class="page-card sec-card">
         <div class="sec-card-header">
           <div class="sec-card-meta">
             <h3 class="sec-card-title">Login Activity</h3>
@@ -466,6 +539,24 @@ onMounted(fetchStatus)
   padding: 40px;
   color: var(--text-muted);
   font-size: 13px;
+}
+
+.sec-required {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.sec-required p {
+  margin: 4px 0 0;
+}
+
+.sec-policy-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
 }
 
 /* Card */
@@ -795,6 +886,14 @@ onMounted(fetchStatus)
   font-size: 12px;
   color: var(--text-primary);
   text-align: center;
+}
+
+@media (max-width: 640px) {
+  .sec-required,
+  .sec-policy-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 
 @keyframes spin {

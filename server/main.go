@@ -90,6 +90,7 @@ func main() {
 
 	// Apply middleware stack
 	var handler http.Handler = mux
+	handler = mw.EnforceMFASetup(handler)
 	handler = mw.InjectUserContext(cfg.JWTSecret)(handler) // Extract JWT claims and set headers
 	handler = mw.CORS(cfg.CORSOrigin)(handler)
 	handler = mw.SecurityHeaders(handler)
@@ -221,11 +222,12 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	})
 
 	// ── 2FA ────────────────────────────────────────────────────────
-	mux.HandleFunc("/api/auth/2fa/status", requireAny(handlers.PermSecuritySelf)(handlers.Get2FAStatus()))
-	mux.HandleFunc("/api/auth/2fa/setup", requireAny(handlers.PermSecuritySelf)(handlers.Setup2FA()))
-	mux.HandleFunc("/api/auth/2fa/enable", requireAny(handlers.PermSecuritySelf)(handlers.Enable2FA()))
-	mux.HandleFunc("/api/auth/2fa/disable", requireAny(handlers.PermSecuritySelf)(handlers.Disable2FA()))
+	mux.HandleFunc("/api/auth/2fa/status", handlers.Get2FAStatus())
+	mux.HandleFunc("/api/auth/2fa/setup", handlers.Setup2FA())
+	mux.HandleFunc("/api/auth/2fa/enable", handlers.Enable2FA())
+	mux.HandleFunc("/api/auth/2fa/disable", handlers.Disable2FA())
 	mux.HandleFunc("/api/auth/2fa/verify", handlers.Verify2FA())
+	mux.HandleFunc("/api/auth/mfa-policy", requireAny(handlers.PermUsersManage)(handlers.UpdateMFAPolicy()))
 
 	// ── Connections (list + create) ───────────────────────────────
 	mux.HandleFunc("/api/connections", func(w http.ResponseWriter, r *http.Request) {
