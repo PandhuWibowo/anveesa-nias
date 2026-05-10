@@ -119,12 +119,12 @@ interface MainDataResult {
 
 const redisDbIndexes = Array.from({ length: 16 }, (_, index) => index)
 const redisConnections = computed(() => connections.value.filter((c) => c.driver === 'redis'))
-const sqlConnections = computed(() => connections.value.filter((c) => c.driver !== 'redis'))
+const sqlConnections = computed(() => connections.value.filter((c) => c.driver !== 'redis' && c.driver !== 'kafka'))
 const activeConn = computed(() =>
   props.activeConnId != null ? connections.value.find((c) => c.id === props.activeConnId) ?? null : null,
 )
 const isRedis = computed(() => activeConn.value?.driver === 'redis')
-const isSql = computed(() => activeConn.value != null && activeConn.value.driver !== 'redis')
+const isSql = computed(() => activeConn.value != null && activeConn.value.driver !== 'redis' && activeConn.value.driver !== 'kafka')
 // When in SQL-only mode, the user picks a Redis conn just for the retry-push step
 const retryRedisConnId = ref<number | null>(null)
 const filteredJobs = computed(() => {

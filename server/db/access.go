@@ -102,6 +102,9 @@ func GetUserAppPermissions(userID int64) ([]string, error) {
 		permsMap["redis.view"] = true
 		permsMap["queues.view"] = true
 	}
+	if permsMap["queues.view"] {
+		permsMap["kafka.view"] = true
+	}
 	if permsMap["schema.browse"] {
 		permsMap["er.view"] = true
 	}
@@ -141,6 +144,12 @@ func GetUserAppPermissions(userID int64) ([]string, error) {
 	if permsMap["redis.view"] || permsMap["queues.view"] {
 		permsMap["connections.view"] = true
 		permsMap["schema.browse"] = true
+	}
+	if permsMap["kafka.produce"] || permsMap["kafka.manage"] {
+		permsMap["kafka.view"] = true
+	}
+	if permsMap["kafka.view"] {
+		permsMap["connections.view"] = true
 	}
 	if permsMap["performance.view"] || permsMap["databaseaudit.view"] {
 		permsMap["audit.view"] = true

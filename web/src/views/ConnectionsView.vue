@@ -7,7 +7,7 @@ import { useFolders } from '@/composables/useFolders'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 
-const { connections, loading, testConnection, saveConnection, removeConnection, fetchConnections } = useConnections()
+const { connections, loading, testConnection, saveConnection, removeConnection, fetchConnections, disconnectConnection, reconnectConnection } = useConnections()
 const { folders, fetchFolders, moveConnection, setConnectionVisibility } = useFolders()
 const toast = useToast()
 const { confirm } = useConfirm()
@@ -28,6 +28,7 @@ const defaultPorts: Record<DbDriver, number> = {
   mariadb: 3306,
   mssql: 1433,
   redis: 6379,
+  kafka: 9092,
 }
 
 const form = reactive<ConnectionForm>({
@@ -75,15 +76,29 @@ const driverGroups: Array<{ key: string; label: string; options: DriverOption[] 
     ],
   },
   {
-    key: 'other',
-    label: 'Other',
-    options: [],
+    key: 'streaming',
+    label: 'Streaming',
+    options: [
+      { key: 'kafka', label: 'Kafka', badge: 'KF', sub: 'v2+' },
+    ],
   },
 ]
+
+const defaultDatabases: Record<DbDriver, string> = {
+  postgres: 'postgres',
+  mysql: '',
+  mariadb: '',
+  mssql: '',
+  redis: '0',
+  kafka: '',
+}
 
 function selectDriver(d: DbDriver) {
   form.driver = d
   form.port = defaultPorts[d]
+  if (!form.database || Object.values(defaultDatabases).includes(form.database)) {
+    form.database = defaultDatabases[d]
+  }
   testResult.value = null
 }
 
@@ -93,7 +108,7 @@ function resetForm() {
   form.driver = 'postgres'
   form.host = 'localhost'
   form.port = 5432
-  form.database = ''
+  form.database = 'postgres'
   form.username = ''
   form.password = ''
   form.ssl = false
@@ -136,7 +151,16 @@ async function editConnection(id: number) {
   }
 }
 
+function validateForm(): string | null {
+  if (!form.name.trim()) return 'Connection name is required'
+  const needsDb = ['postgres', 'mysql', 'mariadb', 'mssql']
+  if (needsDb.includes(form.driver) && !form.database.trim()) return 'Database name is required'
+  return null
+}
+
 async function handleTest() {
+  const err = validateForm()
+  if (err) { toast.error(err); return }
   testing.value = true
   testResult.value = null
   testResult.value = await testConnection({ ...form })
@@ -144,10 +168,8 @@ async function handleTest() {
 }
 
 async function handleSave() {
-  if (!form.name.trim()) {
-    toast.error('Connection name is required')
-    return
-  }
+  const err = validateForm()
+  if (err) { toast.error(err); return }
   
   saving.value = true
   let conn
@@ -192,6 +214,7 @@ function parseConnectionURL(raw: string) {
       mysql: 'mysql', mariadb: 'mariadb',
       mssql: 'mssql', sqlserver: 'mssql',
       redis: 'redis', rediss: 'redis',
+      kafka: 'kafka',
     }
     const driver = driverMap[scheme] ?? ('postgres' as DbDriver)
     form.driver = driver
@@ -201,7 +224,7 @@ function parseConnectionURL(raw: string) {
     form.username = decodeURIComponent(url.username || '')
     form.password = decodeURIComponent(url.password || '')
     form.ssl = scheme === 'rediss' || url.searchParams.get('sslmode') === 'require' || url.searchParams.get('ssl') === 'true'
-    if (!form.name) form.name = `${driver} / ${form.database}`
+    if (!form.name) form.name = driver === 'kafka' ? `${driver} / ${form.host}` : `${driver} / ${form.database}`
     showURLImport.value = false
     urlInput.value = ''
     testResult.value = null
@@ -211,16 +234,16 @@ function parseConnectionURL(raw: string) {
 }
 
 function driverBadge(driver: DbDriver) {
-  return ({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD' } as Record<DbDriver, string>)[driver] ?? driver.slice(0, 2).toUpperCase()
+  return ({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', kafka: 'KF' } as Record<DbDriver, string>)[driver] ?? driver.slice(0, 2).toUpperCase()
 }
 
 function driverFullName(driver: DbDriver) {
-  return ({ postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', mssql: 'SQL Server', redis: 'Redis' } as Record<DbDriver, string>)[driver] ?? driver
+  return ({ postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', mssql: 'SQL Server', redis: 'Redis', kafka: 'Kafka' } as Record<DbDriver, string>)[driver] ?? driver
 }
 
 function openConnection(id: number, driver: DbDriver) {
   emit('set-conn', id)
-  router.push({ name: driver === 'redis' ? 'redis' : 'data' })
+  router.push({ name: driver === 'redis' ? 'redis' : driver === 'kafka' ? 'kafka' : 'data' })
 }
 
 async function handleDelete(id: number, name: string) {
@@ -229,6 +252,18 @@ async function handleDelete(id: number, name: string) {
   const success = await removeConnection(id)
   if (success) toast.success('Connection deleted')
   else toast.error('Failed to delete connection')
+}
+
+async function handleDisconnect(id: number, name: string) {
+  const success = await disconnectConnection(id)
+  if (success) toast.success(`"${name}" disconnected`)
+  else toast.error('Failed to disconnect')
+}
+
+async function handleReconnect(id: number, name: string) {
+  const success = await reconnectConnection(id)
+  if (success) toast.success(`"${name}" reconnected`)
+  else toast.error('Failed to reconnect')
 }
 </script>
 
@@ -243,7 +278,7 @@ async function handleDelete(id: number, name: string) {
             <div class="page-subtitle">Add, organize, and validate the database endpoints your team works against every day.</div>
           </div>
           <div class="page-hero__actions">
-            <button class="base-btn base-btn--primary base-btn--sm" @click="showForm = !showForm">
+            <button class="base-btn base-btn--primary base-btn--sm" @click="resetForm(); showForm = true">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               New Connection
             </button>
@@ -297,8 +332,14 @@ async function handleDelete(id: number, name: string) {
 
             <!-- Actions -->
             <div class="conn-row__actions">
-              <button class="base-btn base-btn--primary base-btn--sm" @click="openConnection(conn.id, conn.driver)">
-                Open
+              <button
+                class="base-btn base-btn--sm"
+                :class="conn.disconnected ? 'base-btn--secondary' : 'base-btn--primary'"
+                :disabled="conn.disconnected"
+                :title="conn.disconnected ? 'Connection is disconnected' : ''"
+                @click="openConnection(conn.id, conn.driver)"
+              >
+                {{ conn.disconnected ? 'Disconnected' : 'Open' }}
               </button>
               <select
                 :value="conn.folder_id ?? ''"
@@ -319,6 +360,23 @@ async function handleDelete(id: number, name: string) {
               </button>
               <button class="icon-btn" @click="editConnection(conn.id)" title="Edit">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </button>
+              <button
+                v-if="!conn.disconnected"
+                class="icon-btn"
+                title="Disconnect"
+                @click="handleDisconnect(conn.id, conn.name)"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+              </button>
+              <button
+                v-else
+                class="icon-btn"
+                style="color: var(--color-success, #22c55e)"
+                title="Reconnect"
+                @click="handleReconnect(conn.id, conn.name)"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
               </button>
               <button class="icon-btn danger" @click="handleDelete(conn.id, conn.name)" title="Delete">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
@@ -352,7 +410,7 @@ async function handleDelete(id: number, name: string) {
                 <input
                   v-model="urlInput"
                   class="base-input"
-                  placeholder="postgres://user:pass@host:5432/dbname or redis://user:pass@host:6379/0"
+                  placeholder="postgres://user:pass@host:5432/dbname, redis://host:6379/0, or kafka://broker:9092"
                   style="flex:1;font-family:var(--font-mono);font-size:11px"
                   @keydown.enter="parseConnectionURL(urlInput)"
                 />
@@ -408,14 +466,14 @@ async function handleDelete(id: number, name: string) {
               </div>
 
               <div class="form-group">
-              <label class="form-label">{{ form.driver === 'redis' ? 'Database Index' : 'Database' }}</label>
-                <input v-model="form.database" class="base-input" :placeholder="form.driver === 'redis' ? '0' : 'mydb'" />
+              <label class="form-label">{{ form.driver === 'redis' ? 'Database Index' : form.driver === 'kafka' ? 'Client ID / Notes' : 'Database' }}</label>
+                <input v-model="form.database" class="base-input" :placeholder="defaultDatabases[form.driver] || (form.driver === 'kafka' ? 'optional' : 'required')" />
               </div>
 
               <div class="form-row">
                 <div class="form-group">
                   <label class="form-label">Username</label>
-                  <input v-model="form.username" class="base-input" :placeholder="form.driver === 'redis' ? 'default' : 'postgres'" />
+                  <input v-model="form.username" class="base-input" :placeholder="form.driver === 'redis' ? 'default' : form.driver === 'kafka' ? 'SASL username' : 'postgres'" />
                 </div>
                 <div class="form-group">
                   <label class="form-label">Password</label>
@@ -753,6 +811,7 @@ async function handleDelete(id: number, name: string) {
 .provider-card__icon--mariadb  { background: #c0765a; }
 .provider-card__icon--mssql    { background: #cc2927; }
 .provider-card__icon--redis    { background: #c6302b; }
+.provider-card__icon--kafka    { background: #231f20; }
 
 .provider-card__body {
   display: flex;

@@ -1,7 +1,7 @@
 import { ref } from 'vue'
 import axios from 'axios'
 
-export type DbDriver = 'postgres' | 'mysql' | 'mariadb' | 'mssql' | 'redis'
+export type DbDriver = 'postgres' | 'mysql' | 'mariadb' | 'mssql' | 'redis' | 'kafka'
 
 export interface Connection {
   id: number
@@ -19,6 +19,7 @@ export interface Connection {
   folder_id: number | null
   visibility: 'private' | 'shared'
   owner_id: number
+  disconnected: boolean
   created_at: string
 }
 
@@ -99,6 +100,28 @@ export function useConnections() {
     }
   }
 
+  async function disconnectConnection(id: number): Promise<boolean> {
+    try {
+      await axios.post(`/api/connections/${id}/disconnect`)
+      const idx = connections.value.findIndex((c) => c.id === id)
+      if (idx !== -1) connections.value[idx].disconnected = true
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  async function reconnectConnection(id: number): Promise<boolean> {
+    try {
+      await axios.post(`/api/connections/${id}/reconnect`)
+      const idx = connections.value.findIndex((c) => c.id === id)
+      if (idx !== -1) connections.value[idx].disconnected = false
+      return true
+    } catch {
+      return false
+    }
+  }
+
   return {
     connections,
     loading,
@@ -108,5 +131,7 @@ export function useConnections() {
     saveConnection,
     updateConnection,
     removeConnection,
+    disconnectConnection,
+    reconnectConnection,
   }
 }

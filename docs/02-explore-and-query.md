@@ -1,6 +1,6 @@
 # Explore And Query
 
-This section covers the day-to-day workflows for browsing database structure, running SQL, saving reusable queries, and understanding relationships.
+This section covers the day-to-day workflows for browsing database structure, running SQL, saving reusable queries, understanding relationships, and inspecting messaging metadata.
 
 ## Query And Data
 
@@ -170,3 +170,43 @@ Expected result:
 
 Screenshot:
 - `docs/screenshots/er-diagram-page.png`
+
+## Kafka Browser
+
+Route:
+- `/kafka`
+
+Purpose:
+- Inspects Kafka topic metadata, partition counts, replication factors, latest messages, and consumer groups from configured Kafka connections.
+- Gives operators a read-only view into Kafka structure without requiring a separate Kafka console.
+
+Use cases:
+- Confirm that expected topics exist after a deployment.
+- Check partition and replication settings before investigating consumer behavior.
+- Preview recent messages in a topic without joining a consumer group.
+- Produce a controlled test message in development or test clusters.
+- Review known consumer groups for a broker connection.
+- Inspect committed offsets and lag for a consumer group.
+- Validate Kafka connectivity from the application environment.
+
+Typical workflow:
+1. Create or select a Kafka connection from Admin, then Connections.
+2. Open Messaging, then Kafka.
+3. Choose the Kafka connection.
+4. Review topic metadata, latest messages, consumer groups, and lag.
+5. Use Produce or Manage only when the account has elevated Kafka permissions.
+
+Expected result:
+- Kafka topics, latest messages, and consumer groups load for the selected broker when the account has `kafka.view`.
+- Message production requires `kafka.produce`.
+- Topic creation, deletion, and partition increases require `kafka.manage`.
+- Connection or broker errors are shown without exposing stored credentials.
+
+Risk notes:
+- Topic message preview is read-only.
+- Producing messages can affect downstream consumers and should be limited to trusted roles.
+- Topic deletion is irreversible and should be restricted to administrators.
+- Treat broker addresses and SASL credentials as sensitive connection configuration.
+
+Screenshot:
+- `docs/screenshots/kafka-page.png`

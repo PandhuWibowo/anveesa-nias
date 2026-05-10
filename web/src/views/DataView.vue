@@ -108,7 +108,7 @@ const pickerStyle = computed(() => ({
 }))
 
 // Redis connections have no SQL DSN — exclude them from SQL Studio.
-const sqlConns = computed(() => connections.value.filter(c => c.driver !== 'redis'))
+const sqlConns = computed(() => connections.value.filter(c => c.driver !== 'redis' && c.driver !== 'kafka'))
 
 const filteredConns = computed(() =>
   pickerSearch.value
@@ -320,6 +320,7 @@ function handleTableSelected(sessionId: string, db: string, table: string) {
             :key="s.id"
             :conn-id="s.connId"
             :dark-mode="mode === 'dark'"
+            :active="activeSessionId === s.id"
             :initial-s-q-l="s.initialSQL"
             :initial-db="s.initialDb"
             :initial-table="s.initialTable"

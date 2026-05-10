@@ -73,6 +73,9 @@ func main() {
 	// Set encryption key for credentials
 	handlers.SetEncryptionKey(cfg.EncryptionKey)
 
+	// Seed global AI defaults from env/config (UI-saved values take priority at runtime)
+	handlers.SetGlobalAIConfig(cfg.AIAPIKey, cfg.AIBaseURL, cfg.AIModel)
+
 	// Start automatic backup if enabled
 	backupCtx, backupCancel := context.WithCancel(context.Background())
 	defer backupCancel()
@@ -296,6 +299,10 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				handlers.ProfileColumn()(w, r)
 			case sub == "ping" && r.Method == http.MethodGet:
 				handlers.PingConnection()(w, r)
+			case sub == "disconnect" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit)(handlers.DisconnectConnection())(w, r)
+			case sub == "reconnect" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit)(handlers.ReconnectConnection())(w, r)
 			case sub == "redis" && len(parts) >= 3 && parts[2] == "ping" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.RedisPing())(w, r)
 			case sub == "redis" && len(parts) >= 3 && parts[2] == "keys" && r.Method == http.MethodGet:
@@ -340,6 +347,24 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.LaravelQueueFailedJobAction())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 4 && r.Method == http.MethodPost:
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.LaravelQueueAction())(w, r)
+			case sub == "kafka" && len(parts) >= 3 && parts[2] == "topics" && r.Method == http.MethodGet:
+				requireAny(handlers.PermKafkaView)(handlers.KafkaTopics())(w, r)
+			case sub == "kafka" && len(parts) >= 3 && parts[2] == "topics" && r.Method == http.MethodPost:
+				requireAny(handlers.PermKafkaManage)(handlers.KafkaCreateTopic())(w, r)
+			case sub == "kafka" && len(parts) >= 3 && parts[2] == "topics" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermKafkaManage)(handlers.KafkaDeleteTopic())(w, r)
+			case sub == "kafka" && len(parts) >= 4 && parts[2] == "topics" && parts[3] == "partitions" && r.Method == http.MethodPut:
+				requireAny(handlers.PermKafkaManage)(handlers.KafkaUpdatePartitions())(w, r)
+			case sub == "kafka" && len(parts) >= 3 && parts[2] == "messages" && r.Method == http.MethodGet:
+				requireAny(handlers.PermKafkaView)(handlers.KafkaMessages())(w, r)
+			case sub == "kafka" && len(parts) >= 3 && parts[2] == "produce" && r.Method == http.MethodPost:
+				requireAny(handlers.PermKafkaProduce)(handlers.KafkaProduce())(w, r)
+			case sub == "kafka" && len(parts) >= 3 && parts[2] == "consume-test" && r.Method == http.MethodPost:
+				requireAny(handlers.PermKafkaView)(handlers.KafkaConsumeTest())(w, r)
+			case sub == "kafka" && len(parts) >= 3 && parts[2] == "groups" && r.Method == http.MethodGet:
+				requireAny(handlers.PermKafkaView)(handlers.KafkaGroups())(w, r)
+			case sub == "kafka" && len(parts) >= 3 && parts[2] == "groups-detail" && r.Method == http.MethodGet:
+				requireAny(handlers.PermKafkaView)(handlers.KafkaGroupDetailHandler())(w, r)
 			case sub == "backup" && r.Method == http.MethodGet:
 				requireAny(handlers.PermBackupsManage)(handlers.GetBackup())(w, r)
 			case sub == "restore" && r.Method == http.MethodPost:
@@ -955,6 +980,13 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/ai/chat", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			requireAny(handlers.PermAIUse)(handlers.AIChat())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/ai/analytics/stream", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			requireAny(handlers.PermAIUse)(handlers.AIAnalyticsStream())(w, r)
 		} else {
 			http.NotFound(w, r)
 		}

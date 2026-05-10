@@ -34,6 +34,7 @@ Current primary routes covered:
 - `/embed/dashboards/:token`
 - `/embed/dashboards/:token/blocks/:blockId`
 - `/data`
+- `/kafka`
 - `/connections`
 - `/er`
 - `/saved-queries`

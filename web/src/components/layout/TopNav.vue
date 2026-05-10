@@ -22,8 +22,8 @@ const { connections } = useConnections()
 const activeConn = computed(() =>
   props.activeConnId != null ? connections.value.find(c => c.id === props.activeConnId) ?? null : null
 )
-const driverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927', redis: '#c6302b' }
-const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD' }
+const driverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927', redis: '#c6302b', kafka: '#231f20' }
+const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', kafka: 'KF' }
 
 // Nav group dropdown
 const openMenu = ref<string | null>(null)
@@ -49,6 +49,7 @@ const notificationUnread = ref(0)
 const navRef = ref<HTMLElement | null>(null)
 const userRef = ref<HTMLElement | null>(null)
 const connBtnRef = ref<HTMLElement | null>(null)
+const connPanelRef = ref<HTMLElement | null>(null)
 const notificationPoll = ref<number | null>(null)
 const canViewNotifications = computed(() => hasAnyPermission(['notifications.view']))
 
@@ -117,7 +118,8 @@ const allMenuGroups: MenuGroup[] = [
     label: 'Messaging',
     icon: 'activity',
     items: [
-      { name: 'laravel-queue', label: 'Laravel Queue', desc: 'Inspect Redis-backed Laravel queue jobs, delayed jobs, and reserved jobs', icon: 'activity', permissionsAny: ['queues.view'] },
+      { name: 'laravel-queue', label: 'Laravel Queue', desc: 'Inspect Redis-backed Laravel queue jobs, delayed jobs, and reserved jobs', icon: 'queue', permissionsAny: ['queues.view'] },
+      { name: 'kafka', label: 'Kafka', desc: 'Inspect Kafka topics, partitions, and consumer groups', icon: 'kafka', permissionsAny: ['kafka.view'] },
     ],
   },
   {
@@ -257,11 +259,15 @@ function stopNotificationPolling() {
 
 function handleOutside(e: MouseEvent) {
   const t = e.target as Node
-  // Close nav dropdowns when clicking outside the nav area
   if (navRef.value && !navRef.value.contains(t)) openMenu.value = null
-  // Close connections panel when clicking outside its wrapper
-  if (connBtnRef.value && !connBtnRef.value.contains(t)) connPanelOpen.value = false
-  // Close user menu when clicking outside it
+  // Only close the connections panel if the click is outside BOTH the trigger
+  // button AND the teleported panel (which lives in <body>)
+  if (
+    connBtnRef.value && !connBtnRef.value.contains(t) &&
+    connPanelRef.value && !connPanelRef.value.contains(t)
+  ) {
+    connPanelOpen.value = false
+  }
   if (userRef.value && !userRef.value.contains(t)) userMenuOpen.value = false
 }
 
@@ -323,7 +329,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 
       <!-- Connections dropdown panel -->
       <Teleport to="body">
-        <div v-if="connPanelOpen" class="topnav__conn-panel" :style="connPanelStyle">
+        <div v-if="connPanelOpen" ref="connPanelRef" class="topnav__conn-panel" :style="connPanelStyle">
           <ConnectionsDropdown
             :activeConnId="activeConnId"
             @select-conn="(id) => { emit('select-conn', id) }"
@@ -423,6 +429,8 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
               <svg v-else-if="item.icon === 'shieldlog'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6l7-3z"/><path d="M9 12h6"/><path d="M12 9v6"/></svg>
               <svg v-else-if="item.icon === 'health'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
               <svg v-else-if="item.icon === 'rowhistory'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h18v4H3z"/><path d="M3 10h18v4H3z"/><path d="M3 17h18v4H3z"/></svg>
+              <svg v-else-if="item.icon === 'queue'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h11"/><path d="M4 12h11"/><path d="M4 18h11"/><path d="M18 7l3 3-3 3"/><path d="M15 10h6"/></svg>
+              <svg v-else-if="item.icon === 'kafka'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2.5"/><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 7.7l3.1 2.7"/><path d="M17 7.7l-3.1 2.7"/><path d="M7 16.3l3.1-2.7"/><path d="M17 16.3l-3.1-2.7"/></svg>
               </div>
               <div class="topnav__dropdown-info">
                 <span class="topnav__dropdown-name">{{ item.label }}</span>

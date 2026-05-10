@@ -44,7 +44,7 @@ const sections: DocsSection[] = [
         name: 'Top Navigation',
         detail: 'Groups the main product surfaces into predictable menus.',
         useCases: ['Move from SQL exploration to audit logs during an investigation.', 'Open admin screens for user or permission changes.', 'Check notifications after approval activity.'],
-        workflow: ['Use Docs for product guidance and screenshot planning.', 'Open Analytics for dashboards, saved queries, AI analytics, and AI settings.', 'Open Database for SQL Studio, ER diagrams, schema diff, row history, and Redis Browser.', 'Open Messaging for Laravel Queue.', 'Open Operations for monitoring, audit, notifications, watchers, and health.', 'Open Governance for approvals, scripts, backup, scheduler, and workflows.', 'Open Admin for connections, users, roles, permissions, and access groups.', 'Confirm the active connection before database-specific work.'],
+        workflow: ['Use Docs for product guidance and screenshot planning.', 'Open Analytics for dashboards, saved queries, AI analytics, and AI settings.', 'Open Database for SQL Studio, ER diagrams, schema diff, row history, and Redis Browser.', 'Open Messaging for Laravel Queue and Kafka.', 'Open Operations for monitoring, audit, notifications, watchers, and health.', 'Open Governance for approvals, scripts, backup, scheduler, and workflows.', 'Open Admin for connections, users, roles, permissions, and access groups.', 'Confirm the active connection before database-specific work.'],
         expected: 'Users can reach major features without remembering every route.',
         notes: ['Global schema search and the Cmd/Ctrl+K shortcut are no longer part of the navigation shell.'],
       },
@@ -68,9 +68,9 @@ const sections: DocsSection[] = [
   {
     id: 'explore',
     title: 'Explore And Query',
-    description: 'Data browsing, SQL work, saved queries, and ER diagrams.',
-    routeHints: ['/data', '/saved-queries', '/ai-analytics', '/settings', '/er'],
-    screenshots: ['data-view-overview.png', 'data-view-sql-panel.png', 'data-view-query-results.png', 'saved-queries-page.png', 'ai-settings-page.png', 'er-diagram-page.png'],
+    description: 'Data browsing, SQL work, saved queries, ER diagrams, and messaging metadata.',
+    routeHints: ['/data', '/saved-queries', '/ai-analytics', '/settings', '/er', '/kafka'],
+    screenshots: ['data-view-overview.png', 'data-view-sql-panel.png', 'data-view-query-results.png', 'saved-queries-page.png', 'ai-settings-page.png', 'er-diagram-page.png', 'kafka-page.png'],
     features: [
       {
         name: 'Query And Data',
@@ -110,6 +110,14 @@ const sections: DocsSection[] = [
         useCases: ['Learn an unfamiliar database.', 'Identify join paths between tables.', 'Document relationships for onboarding.', 'Validate foreign-key assumptions.'],
         workflow: ['Select a connection.', 'Load the schema.', 'Inspect tables and relationships.', 'Use the diagram to plan joins or explain structure.'],
         expected: 'Database structure becomes easier to understand visually.',
+      },
+      {
+        name: 'Kafka Browser',
+        detail: 'Kafka topic, message preview, production, topic management, and consumer group browser.',
+        useCases: ['Confirm expected topics exist.', 'Preview recent messages without joining a consumer group.', 'Produce controlled test messages when allowed.', 'Review partition and replication settings.', 'Check consumer group members, committed offsets, and lag.'],
+        workflow: ['Create or select a Kafka connection.', 'Open Messaging, then Kafka.', 'Choose the active Kafka connection.', 'Review topics and latest messages.', 'Use Produce or Manage only with elevated Kafka permissions.'],
+        expected: 'Kafka metadata and message previews load for users with kafka.view; production requires kafka.produce; topic changes require kafka.manage.',
+        notes: ['Topic message preview is read-only.', 'Producing messages and deleting topics can affect downstream systems and should be limited to trusted roles.'],
       },
     ],
   },
@@ -310,7 +318,7 @@ const sections: DocsSection[] = [
         useCases: ['Grant feature access with screen-level permission keys.', 'Restrict connection access through access groups.', 'Separate admin, analyst, reviewer, and operator responsibilities.', 'Assign direct connection permissions for a specific user.'],
         workflow: ['Open Roles & Permissions for role-level application permissions.', 'Use Access Groups to manage folder-based connection access.', 'Use Users to assign roles and direct connection permissions.', 'Save and test with the affected account.'],
         expected: 'Users see and use only the features and connections they are allowed to access.',
-        notes: ['The permission list includes current feature keys such as analytics.view, dashboards.manage, sqlstudio.access, redis.view, queues.view, operations.view, performance.view, databaseaudit.view, watchers.manage, approvals.view, changesets.manage, datascripts.manage, and scriptrequests.view.', 'Older coarse permissions are expanded for compatibility so existing roles keep their expected access.'],
+        notes: ['The permission list includes current feature keys such as analytics.view, dashboards.manage, sqlstudio.access, redis.view, queues.view, kafka.view, kafka.produce, kafka.manage, operations.view, performance.view, databaseaudit.view, watchers.manage, approvals.view, changesets.manage, datascripts.manage, and scriptrequests.view.', 'Older coarse permissions are expanded for compatibility so existing roles keep their expected access.'],
       },
       {
         name: 'Approval Workflows',

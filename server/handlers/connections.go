@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -26,6 +27,7 @@ var allowedDrivers = map[string]bool{
 	"mariadb":  true, // alias → uses MySQL driver
 	"mssql":    true,
 	"redis":    true,
+	"kafka":    true,
 }
 
 // encryptionKey for credential encryption (should be set from environment)
@@ -107,25 +109,26 @@ func decryptCredential(encrypted string) (string, error) {
 }
 
 type Connection struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	Driver      string `json:"driver"`
-	Host        string `json:"host"`
-	Port        int    `json:"port"`
-	Database    string `json:"database"`
-	Username    string `json:"username"`
-	Password    string `json:"password,omitempty"`
-	SSL         bool   `json:"ssl"`
-	Tags        string `json:"tags"`
-	SSHHost     string `json:"ssh_host"`
-	SSHPort     int    `json:"ssh_port"`
-	SSHUser     string `json:"ssh_user"`
-	SSHPassword string `json:"ssh_password,omitempty"`
-	SSHKey      string `json:"ssh_key,omitempty"`
-	FolderID    *int64 `json:"folder_id"`
-	Visibility  string `json:"visibility"`
-	OwnerID     int64  `json:"owner_id"`
-	CreatedAt   string `json:"created_at"`
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	Driver       string `json:"driver"`
+	Host         string `json:"host"`
+	Port         int    `json:"port"`
+	Database     string `json:"database"`
+	Username     string `json:"username"`
+	Password     string `json:"password,omitempty"`
+	SSL          bool   `json:"ssl"`
+	Tags         string `json:"tags"`
+	SSHHost      string `json:"ssh_host"`
+	SSHPort      int    `json:"ssh_port"`
+	SSHUser      string `json:"ssh_user"`
+	SSHPassword  string `json:"ssh_password,omitempty"`
+	SSHKey       string `json:"ssh_key,omitempty"`
+	FolderID     *int64 `json:"folder_id"`
+	Visibility   string `json:"visibility"`
+	OwnerID      int64  `json:"owner_id"`
+	Disconnected bool   `json:"disconnected"`
+	CreatedAt    string `json:"created_at"`
 }
 
 type ConnectionInput struct {
@@ -151,7 +154,7 @@ type ConnectionInput struct {
 func validateConnectionInput(in *ConnectionInput) error {
 	// Validate driver
 	if !allowedDrivers[in.Driver] {
-		return fmt.Errorf("invalid driver: must be postgres, mysql, mariadb, mssql, or redis")
+		return fmt.Errorf("invalid driver: must be postgres, mysql, mariadb, mssql, redis, or kafka")
 	}
 
 	// Validate port
@@ -192,21 +195,29 @@ func isValidHostname(host string) bool {
 
 func buildDSN(in ConnectionInput) (string, error) {
 	switch in.Driver {
-	case "redis":
-		return "", fmt.Errorf("redis does not use SQL DSN")
+	case "redis", "kafka":
+		return "", fmt.Errorf("%s does not use SQL DSN", in.Driver)
 	case "postgres":
 		sslMode := "disable"
 		if in.SSL {
 			sslMode = "require"
 		}
-		// Use proper escaping for special characters in password
+		dbName := in.Database
+		if dbName == "" {
+			dbName = "postgres"
+		}
+		username := in.Username
+		if username == "" {
+			username = "postgres"
+		}
+		// URL format handles all special characters robustly
 		return fmt.Sprintf(
-			"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-			escapePostgresValue(in.Host),
+			"postgres://%s:%s@%s:%d/%s?sslmode=%s",
+			url.QueryEscape(username),
+			url.QueryEscape(in.Password),
+			in.Host,
 			in.Port,
-			escapePostgresValue(in.Username),
-			escapePostgresValue(in.Password),
-			escapePostgresValue(in.Database),
+			url.PathEscape(dbName),
 			sslMode,
 		), nil
 	case "mysql", "mariadb":
@@ -291,14 +302,14 @@ func ListConnections() http.HandlerFunc {
 			query = `SELECT c.id, c.name, c.driver, COALESCE(c.host,''), COALESCE(c.port,0), c.database,
 			        COALESCE(c.username,''), c.ssl, COALESCE(c.tags,''),
 			        COALESCE(c.ssh_host,''), COALESCE(c.ssh_port,22), COALESCE(c.ssh_user,''),
-			        c.folder_id, COALESCE(c.visibility,'shared'), COALESCE(c.owner_id,0), c.created_at
+			        c.folder_id, COALESCE(c.visibility,'shared'), COALESCE(c.owner_id,0), COALESCE(c.disconnected,0), c.created_at
 			 FROM connections c ORDER BY c.id`
 		} else {
 			// Regular user: filter by visibility, ownership, explicit permissions, and folder membership
 			query = `SELECT DISTINCT c.id, c.name, c.driver, COALESCE(c.host,''), COALESCE(c.port,0), c.database,
 			        COALESCE(c.username,''), c.ssl, COALESCE(c.tags,''),
 			        COALESCE(c.ssh_host,''), COALESCE(c.ssh_port,22), COALESCE(c.ssh_user,''),
-			        c.folder_id, COALESCE(c.visibility,'shared'), COALESCE(c.owner_id,0), c.created_at
+			        c.folder_id, COALESCE(c.visibility,'shared'), COALESCE(c.owner_id,0), COALESCE(c.disconnected,0), c.created_at
 			 FROM connections c
 			 LEFT JOIN connection_folders f ON c.folder_id = f.id
 			 LEFT JOIN user_connections uc ON c.id = uc.conn_id AND uc.user_id = ?
@@ -329,12 +340,13 @@ func ListConnections() http.HandlerFunc {
 		var conns []Connection
 		for rows.Next() {
 			var c Connection
-			var ssl int
+			var ssl, disconnected int
 			rows.Scan(&c.ID, &c.Name, &c.Driver, &c.Host, &c.Port, &c.Database,
 				&c.Username, &ssl, &c.Tags,
 				&c.SSHHost, &c.SSHPort, &c.SSHUser,
-				&c.FolderID, &c.Visibility, &c.OwnerID, &c.CreatedAt)
+				&c.FolderID, &c.Visibility, &c.OwnerID, &disconnected, &c.CreatedAt)
 			c.SSL = ssl == 1
+			c.Disconnected = disconnected == 1
 			conns = append(conns, c)
 		}
 		if conns == nil {
@@ -427,17 +439,19 @@ func CreateConnection() http.HandlerFunc {
 		}
 
 		// Fetch the created connection
+		var discV int
 		appdb.DB.QueryRow(
 			appdb.ConvertQuery(`SELECT id, name, driver, COALESCE(host,''), COALESCE(port,0), database,
 			        COALESCE(username,''), ssl, COALESCE(tags,''),
 			        COALESCE(ssh_host,''), COALESCE(ssh_port,22), COALESCE(ssh_user,''),
-			        folder_id, COALESCE(visibility,'shared'), COALESCE(owner_id,0), created_at
+			        folder_id, COALESCE(visibility,'shared'), COALESCE(owner_id,0), COALESCE(disconnected,0), created_at
 			 FROM connections WHERE id=?`), id,
 		).Scan(&c.ID, &c.Name, &c.Driver, &c.Host, &c.Port, &c.Database,
 			&c.Username, &sslV, &c.Tags,
 			&c.SSHHost, &c.SSHPort, &c.SSHUser,
-			&c.FolderID, &c.Visibility, &c.OwnerID, &c.CreatedAt)
+			&c.FolderID, &c.Visibility, &c.OwnerID, &discV, &c.CreatedAt)
 		c.SSL = sslV == 1
+		c.Disconnected = discV == 1
 
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(c)
@@ -471,14 +485,16 @@ func GetConnection() http.HandlerFunc {
 		query := appdb.ConvertQuery(`SELECT id, name, driver, COALESCE(host,''), COALESCE(port,0), database,
 			COALESCE(username,''), password, ssl, COALESCE(tags,''),
 			COALESCE(ssh_host,''), COALESCE(ssh_port,22), COALESCE(ssh_user,''), ssh_password, ssh_key,
-			folder_id, COALESCE(visibility,'shared'), COALESCE(owner_id,0), created_at
+			folder_id, COALESCE(visibility,'shared'), COALESCE(owner_id,0), COALESCE(disconnected,0), created_at
 			FROM connections WHERE id=?`)
 
+		var disconnected int
 		err = appdb.DB.QueryRow(query, connID).Scan(
 			&c.ID, &c.Name, &c.Driver, &c.Host, &c.Port, &c.Database,
 			&c.Username, &encPassword, &ssl, &c.Tags,
 			&c.SSHHost, &c.SSHPort, &c.SSHUser, &encSSHPassword, &encSSHKey,
-			&c.FolderID, &c.Visibility, &c.OwnerID, &c.CreatedAt)
+			&c.FolderID, &c.Visibility, &c.OwnerID, &disconnected, &c.CreatedAt)
+		c.Disconnected = disconnected == 1
 
 		if err != nil {
 			http.Error(w, `{"error":"connection not found"}`, http.StatusNotFound)
@@ -623,18 +639,19 @@ func UpdateConnection() http.HandlerFunc {
 
 		// Fetch updated connection
 		var c Connection
-		var sslV int
+		var sslV, discV2 int
 		appdb.DB.QueryRow(
 			appdb.ConvertQuery(`SELECT id, name, driver, COALESCE(host,''), COALESCE(port,0), database,
 			        COALESCE(username,''), ssl, COALESCE(tags,''),
 			        COALESCE(ssh_host,''), COALESCE(ssh_port,22), COALESCE(ssh_user,''),
-			        folder_id, COALESCE(visibility,'shared'), COALESCE(owner_id,0), created_at
+			        folder_id, COALESCE(visibility,'shared'), COALESCE(owner_id,0), COALESCE(disconnected,0), created_at
 			 FROM connections WHERE id=?`), connID,
 		).Scan(&c.ID, &c.Name, &c.Driver, &c.Host, &c.Port, &c.Database,
 			&c.Username, &sslV, &c.Tags,
 			&c.SSHHost, &c.SSHPort, &c.SSHUser,
-			&c.FolderID, &c.Visibility, &c.OwnerID, &c.CreatedAt)
+			&c.FolderID, &c.Visibility, &c.OwnerID, &discV2, &c.CreatedAt)
 		c.SSL = sslV == 1
+		c.Disconnected = discV2 == 1
 
 		json.NewEncoder(w).Encode(c)
 	}
@@ -812,6 +829,16 @@ func TestConnection() http.HandlerFunc {
 			json.NewEncoder(w).Encode(map[string]string{"message": "Connection successful"})
 			return
 		}
+		if in.Driver == "kafka" {
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			if _, err := readKafkaTopics(ctx, in); err != nil {
+				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"message": "Connection successful"})
+			return
+		}
 
 		dsn, err := buildDSN(in)
 		if err != nil {
@@ -835,16 +862,79 @@ func TestConnection() http.HandlerFunc {
 	}
 }
 
+// DisconnectConnection marks a connection as disconnected, evicts it from the
+// pool, and blocks all future queries until ReconnectConnection is called.
+func DisconnectConnection() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		path := strings.TrimPrefix(r.URL.Path, "/api/connections/")
+		parts := strings.Split(path, "/")
+		connID, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			http.Error(w, `{"error":"invalid connection id"}`, http.StatusBadRequest)
+			return
+		}
+
+		var exists int
+		err = appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT 1 FROM connections WHERE id=?`), connID).Scan(&exists)
+		if err != nil {
+			http.Error(w, `{"error":"connection not found"}`, http.StatusNotFound)
+			return
+		}
+
+		if _, err = appdb.DB.Exec(appdb.ConvertQuery(`UPDATE connections SET disconnected=1 WHERE id=?`), connID); err != nil {
+			http.Error(w, `{"error":"failed to disconnect"}`, http.StatusInternalServerError)
+			return
+		}
+		EvictFromPool(connID)
+
+		json.NewEncoder(w).Encode(map[string]string{"message": "disconnected"})
+	}
+}
+
+// ReconnectConnection clears the disconnected flag so the connection can be used again.
+func ReconnectConnection() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		path := strings.TrimPrefix(r.URL.Path, "/api/connections/")
+		parts := strings.Split(path, "/")
+		connID, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			http.Error(w, `{"error":"invalid connection id"}`, http.StatusBadRequest)
+			return
+		}
+
+		var exists int
+		err = appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT 1 FROM connections WHERE id=?`), connID).Scan(&exists)
+		if err != nil {
+			http.Error(w, `{"error":"connection not found"}`, http.StatusNotFound)
+			return
+		}
+
+		if _, err = appdb.DB.Exec(appdb.ConvertQuery(`UPDATE connections SET disconnected=0 WHERE id=?`), connID); err != nil {
+			http.Error(w, `{"error":"failed to reconnect"}`, http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]string{"message": "reconnected"})
+	}
+}
+
 // openRemoteDB opens a connection to the stored remote database by ID.
 func openRemoteDB(connID int64) (*sql.DB, string, error) {
 	var in ConnectionInput
-	var ssl int
+	var ssl, disconnected int
 	var encPassword string
 	err := appdb.DB.QueryRow(
-		appdb.ConvertQuery(`SELECT driver, COALESCE(host,''), COALESCE(port,0), database, COALESCE(username,''), COALESCE(password,''), ssl FROM connections WHERE id=?`), connID,
-	).Scan(&in.Driver, &in.Host, &in.Port, &in.Database, &in.Username, &encPassword, &ssl)
+		appdb.ConvertQuery(`SELECT driver, COALESCE(host,''), COALESCE(port,0), database, COALESCE(username,''), COALESCE(password,''), ssl, COALESCE(disconnected,0) FROM connections WHERE id=?`), connID,
+	).Scan(&in.Driver, &in.Host, &in.Port, &in.Database, &in.Username, &encPassword, &ssl, &disconnected)
 	if err != nil {
 		return nil, "", fmt.Errorf("connection not found")
+	}
+	if disconnected == 1 {
+		return nil, "", fmt.Errorf("connection is disconnected")
 	}
 	in.SSL = ssl == 1
 
