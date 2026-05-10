@@ -919,6 +919,8 @@ func migrate() error {
 		`UPDATE roles SET permissions = '["connections.view","analytics.view","dashboards.manage","query.execute","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","er.view","redis.view","queues.view","operations.view","watchers.manage","ai.use","security.self","notifications.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view"]' WHERE name = 'user'`,
 		`ALTER TABLE query_approval_request ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE query_approval ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE connections ADD COLUMN disconnected INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE analytics_dashboards ADD COLUMN connection_id INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, s := range stmts {
 		convertedSQL := convertSQL(s)

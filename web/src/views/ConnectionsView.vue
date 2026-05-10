@@ -7,7 +7,7 @@ import { useFolders } from '@/composables/useFolders'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 
-const { connections, loading, testConnection, saveConnection, removeConnection, fetchConnections } = useConnections()
+const { connections, loading, testConnection, saveConnection, removeConnection, fetchConnections, disconnectConnection, reconnectConnection } = useConnections()
 const { folders, fetchFolders, moveConnection, setConnectionVisibility } = useFolders()
 const toast = useToast()
 const { confirm } = useConfirm()
@@ -84,9 +84,21 @@ const driverGroups: Array<{ key: string; label: string; options: DriverOption[] 
   },
 ]
 
+const defaultDatabases: Record<DbDriver, string> = {
+  postgres: 'postgres',
+  mysql: '',
+  mariadb: '',
+  mssql: '',
+  redis: '0',
+  kafka: '',
+}
+
 function selectDriver(d: DbDriver) {
   form.driver = d
   form.port = defaultPorts[d]
+  if (!form.database || Object.values(defaultDatabases).includes(form.database)) {
+    form.database = defaultDatabases[d]
+  }
   testResult.value = null
 }
 
@@ -96,7 +108,7 @@ function resetForm() {
   form.driver = 'postgres'
   form.host = 'localhost'
   form.port = 5432
-  form.database = ''
+  form.database = 'postgres'
   form.username = ''
   form.password = ''
   form.ssl = false
@@ -139,7 +151,16 @@ async function editConnection(id: number) {
   }
 }
 
+function validateForm(): string | null {
+  if (!form.name.trim()) return 'Connection name is required'
+  const needsDb = ['postgres', 'mysql', 'mariadb', 'mssql']
+  if (needsDb.includes(form.driver) && !form.database.trim()) return 'Database name is required'
+  return null
+}
+
 async function handleTest() {
+  const err = validateForm()
+  if (err) { toast.error(err); return }
   testing.value = true
   testResult.value = null
   testResult.value = await testConnection({ ...form })
@@ -147,10 +168,8 @@ async function handleTest() {
 }
 
 async function handleSave() {
-  if (!form.name.trim()) {
-    toast.error('Connection name is required')
-    return
-  }
+  const err = validateForm()
+  if (err) { toast.error(err); return }
   
   saving.value = true
   let conn
@@ -234,6 +253,18 @@ async function handleDelete(id: number, name: string) {
   if (success) toast.success('Connection deleted')
   else toast.error('Failed to delete connection')
 }
+
+async function handleDisconnect(id: number, name: string) {
+  const success = await disconnectConnection(id)
+  if (success) toast.success(`"${name}" disconnected`)
+  else toast.error('Failed to disconnect')
+}
+
+async function handleReconnect(id: number, name: string) {
+  const success = await reconnectConnection(id)
+  if (success) toast.success(`"${name}" reconnected`)
+  else toast.error('Failed to reconnect')
+}
 </script>
 
 <template>
@@ -247,7 +278,7 @@ async function handleDelete(id: number, name: string) {
             <div class="page-subtitle">Add, organize, and validate the database endpoints your team works against every day.</div>
           </div>
           <div class="page-hero__actions">
-            <button class="base-btn base-btn--primary base-btn--sm" @click="showForm = !showForm">
+            <button class="base-btn base-btn--primary base-btn--sm" @click="resetForm(); showForm = true">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               New Connection
             </button>
@@ -301,8 +332,14 @@ async function handleDelete(id: number, name: string) {
 
             <!-- Actions -->
             <div class="conn-row__actions">
-              <button class="base-btn base-btn--primary base-btn--sm" @click="openConnection(conn.id, conn.driver)">
-                Open
+              <button
+                class="base-btn base-btn--sm"
+                :class="conn.disconnected ? 'base-btn--secondary' : 'base-btn--primary'"
+                :disabled="conn.disconnected"
+                :title="conn.disconnected ? 'Connection is disconnected' : ''"
+                @click="openConnection(conn.id, conn.driver)"
+              >
+                {{ conn.disconnected ? 'Disconnected' : 'Open' }}
               </button>
               <select
                 :value="conn.folder_id ?? ''"
@@ -323,6 +360,23 @@ async function handleDelete(id: number, name: string) {
               </button>
               <button class="icon-btn" @click="editConnection(conn.id)" title="Edit">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </button>
+              <button
+                v-if="!conn.disconnected"
+                class="icon-btn"
+                title="Disconnect"
+                @click="handleDisconnect(conn.id, conn.name)"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+              </button>
+              <button
+                v-else
+                class="icon-btn"
+                style="color: var(--color-success, #22c55e)"
+                title="Reconnect"
+                @click="handleReconnect(conn.id, conn.name)"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
               </button>
               <button class="icon-btn danger" @click="handleDelete(conn.id, conn.name)" title="Delete">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
@@ -413,7 +467,7 @@ async function handleDelete(id: number, name: string) {
 
               <div class="form-group">
               <label class="form-label">{{ form.driver === 'redis' ? 'Database Index' : form.driver === 'kafka' ? 'Client ID / Notes' : 'Database' }}</label>
-                <input v-model="form.database" class="base-input" :placeholder="form.driver === 'redis' ? '0' : form.driver === 'kafka' ? 'optional' : 'mydb'" />
+                <input v-model="form.database" class="base-input" :placeholder="defaultDatabases[form.driver] || (form.driver === 'kafka' ? 'optional' : 'required')" />
               </div>
 
               <div class="form-row">

@@ -50,6 +50,11 @@ type Config struct {
 	RedisDB       int
 	RedisPrefix   string
 
+	// AI provider (global defaults, overridable per-user in the UI)
+	AIAPIKey  string
+	AIBaseURL string
+	AIModel   string
+
 	// Logging
 	LogLevel  string // "debug" | "info" | "warn" | "error"
 	LogFormat string // "text" | "json"
@@ -149,6 +154,11 @@ func Load() (*Config, error) {
 		log.Printf("WARNING: Invalid REDIS_DB=%d, using default 0", cfg.RedisDB)
 		cfg.RedisDB = 0
 	}
+
+	// AI provider
+	cfg.AIAPIKey = strings.TrimSpace(getEnv("AI_API_KEY", ""))
+	cfg.AIBaseURL = strings.TrimSpace(getEnv("AI_BASE_URL", ""))
+	cfg.AIModel = strings.TrimSpace(getEnv("AI_MODEL", ""))
 
 	// Logging
 	cfg.LogLevel = getEnv("LOG_LEVEL", "info")

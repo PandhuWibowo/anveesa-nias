@@ -320,6 +320,7 @@ function handleTableSelected(sessionId: string, db: string, table: string) {
             :key="s.id"
             :conn-id="s.connId"
             :dark-mode="mode === 'dark'"
+            :active="activeSessionId === s.id"
             :initial-s-q-l="s.initialSQL"
             :initial-db="s.initialDb"
             :initial-table="s.initialTable"

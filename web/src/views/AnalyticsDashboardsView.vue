@@ -2,6 +2,8 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
 import { useRoute } from 'vue-router'
+
+const props = defineProps<{ activeConnId?: number | null }>()
 import { useSavedQueries } from '@/composables/useSavedQueries'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
@@ -25,6 +27,7 @@ interface Dashboard {
   visibility: 'private' | 'shared' | 'public'
   share_token: string
   default_preset: string
+  connection_id: number
   created_at: string
   updated_at: string
 }
@@ -239,7 +242,7 @@ const filteredRenderedBlocks = computed(() => {
     return {
       ...block,
       rows,
-      row_count: rows.length,
+      row_count: (rows ?? []).length,
     }
   })
 })
@@ -247,7 +250,7 @@ const semanticFilterOptions = computed<SemanticFilterOption[]>(() => {
   const blocks = rendered.value?.blocks ?? []
   const byKey = new Map<string, SemanticFilterOption>()
   for (const block of blocks) {
-    for (const [index, column] of block.columns.entries()) {
+    for (const [index, column] of (block.columns ?? []).entries()) {
       if (!isSemanticFilterCandidate(column, block.rows, index)) continue
       const key = normalizeSemanticKey(column)
       const existing = byKey.get(key) ?? {
@@ -323,7 +326,9 @@ async function loadDashboards() {
   if (isSharedView.value) return
   loading.value = true
   try {
-    const { data } = await axios.get<Dashboard[]>('/api/analytics-dashboards')
+    const connId = props.activeConnId
+    const url = connId ? `/api/analytics-dashboards?conn_id=${connId}` : '/api/analytics-dashboards'
+    const { data } = await axios.get<Dashboard[]>(url)
     dashboards.value = data ?? []
     if (!selectedDashboardId.value && dashboards.value.length) {
       selectedDashboardId.value = dashboards.value[0].id
@@ -407,6 +412,7 @@ async function createDashboard() {
     const { data } = await axios.post<Dashboard>('/api/analytics-dashboards', {
       name: newDashboardName.value.trim(),
       description: newDashboardDescription.value.trim(),
+      connection_id: props.activeConnId ?? 0,
     })
     newDashboardName.value = ''
     newDashboardDescription.value = ''
@@ -1232,16 +1238,18 @@ function blockFilterOptions(block: RenderBlock) {
 }
 
 function filteredRowsForBlock(block: RenderBlock) {
-  if (block.error) return block.rows
+  const rows = block.rows ?? []
+  const columns = block.columns ?? []
+  if (block.error) return rows
   const q = (blockTextFilters.value[block.id] ?? '').trim().toLowerCase()
   const columnFilters = Object.entries(blockColumnFilters.value[block.id] ?? {})
     .filter(([, value]) => String(value ?? '').trim() !== '')
-  if (!q && !columnFilters.length) return block.rows
-  return block.rows.filter((row) => {
+  if (!q && !columnFilters.length) return rows
+  return rows.filter((row) => {
     const textMatch = !q || row.some((value) => String(value ?? '').toLowerCase().includes(q))
     if (!textMatch) return false
     return columnFilters.every(([column, expected]) => {
-      const index = block.columns.indexOf(column)
+      const index = columns.indexOf(column)
       if (index < 0) return true
       return normalizeSemanticOptionValue(row[index]) === expected
     })
@@ -2373,6 +2381,17 @@ watch(semanticFilterOptions, (options) => {
     if (filtered.length) next[key] = filtered
   }
   semanticFilters.value = next
+})
+
+watch(() => props.activeConnId, async (newId, oldId) => {
+  if (isSharedView.value || newId === oldId) return
+  selectedDashboardId.value = null
+  rendered.value = null
+  await loadDashboards()
+  if (selectedDashboardId.value) {
+    await loadDashboardDetail(selectedDashboardId.value)
+    await renderDashboard(selectedDashboardId.value)
+  }
 })
 
 onMounted(async () => {

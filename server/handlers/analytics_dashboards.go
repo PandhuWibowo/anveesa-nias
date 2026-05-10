@@ -25,6 +25,7 @@ type AnalyticsDashboard struct {
 	DefaultPreset string                          `json:"default_preset"`
 	Presets       []AnalyticsDashboardViewPreset  `json:"presets,omitempty"`
 	Access        []AnalyticsDashboardAccessEntry `json:"access,omitempty"`
+	ConnectionID  int64                           `json:"connection_id"`
 	CreatedAt     string                          `json:"created_at"`
 	UpdatedAt     string                          `json:"updated_at"`
 	Blocks        []AnalyticsDashboardBlock       `json:"blocks,omitempty"`
@@ -103,7 +104,7 @@ func ListAnalyticsDashboards() http.HandlerFunc {
 		items := []AnalyticsDashboard{}
 		for rows.Next() {
 			var item AnalyticsDashboard
-			if err := rows.Scan(&item.ID, &item.Name, &item.Description, &item.Visibility, &item.DefaultPreset, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			if err := rows.Scan(&item.ID, &item.Name, &item.Description, &item.Visibility, &item.DefaultPreset, &item.ConnectionID, &item.CreatedAt, &item.UpdatedAt); err != nil {
 				http.Error(w, jsonError("failed to read dashboards"), http.StatusInternalServerError)
 				return
 			}
@@ -118,8 +119,9 @@ func CreateAnalyticsDashboard() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		userID, _, _ := currentUserFromHeaders(r)
 		var body struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
+			Name         string `json:"name"`
+			Description  string `json:"description"`
+			ConnectionID int64  `json:"connection_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
 			http.Error(w, `{"error":"name required"}`, http.StatusBadRequest)
@@ -127,9 +129,9 @@ func CreateAnalyticsDashboard() http.HandlerFunc {
 		}
 		now := time.Now().UTC().Format("2006-01-02 15:04:05")
 		id, err := insertRowReturningID(appdb.ConvertQuery(`
-			INSERT INTO analytics_dashboards (name, description, user_id, visibility, share_token, presets_json, default_preset, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`), strings.TrimSpace(body.Name), strings.TrimSpace(body.Description), nullableUserID(userID), "private", "", "[]", "", now, now)
+			INSERT INTO analytics_dashboards (name, description, user_id, visibility, share_token, presets_json, default_preset, connection_id, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`), strings.TrimSpace(body.Name), strings.TrimSpace(body.Description), nullableUserID(userID), "private", "", "[]", "", body.ConnectionID, now, now)
 		if err != nil {
 			http.Error(w, jsonError("failed to create dashboard"), http.StatusInternalServerError)
 			return
@@ -712,16 +714,37 @@ func renderAnalyticsDashboardForHeaders(userIDStr, role string, dashboardID int6
 }
 
 func queryAnalyticsDashboardsForRequest(r *http.Request) (*sql.Rows, error) {
+	connIDStr := r.URL.Query().Get("conn_id")
+	connID, _ := strconv.ParseInt(connIDStr, 10, 64)
+
 	if !isAuthEnabled() || r.Header.Get("X-User-Role") == "admin" {
+		if connID > 0 {
+			return appdb.DB.Query(appdb.ConvertQuery(`
+				SELECT id, name, COALESCE(description,''), COALESCE(visibility,'private'), COALESCE(default_preset,''), COALESCE(connection_id,0), created_at, updated_at
+				FROM analytics_dashboards
+				WHERE connection_id = ?
+				ORDER BY updated_at DESC, id DESC
+			`), connID)
+		}
 		return appdb.DB.Query(appdb.ConvertQuery(`
-			SELECT id, name, COALESCE(description,''), COALESCE(visibility,'private'), COALESCE(default_preset,''), created_at, updated_at
+			SELECT id, name, COALESCE(description,''), COALESCE(visibility,'private'), COALESCE(default_preset,''), COALESCE(connection_id,0), created_at, updated_at
 			FROM analytics_dashboards
 			ORDER BY updated_at DESC, id DESC
 		`))
 	}
 	userID, _, _ := currentUserFromHeaders(r)
+	if connID > 0 {
+		return appdb.DB.Query(appdb.ConvertQuery(`
+			SELECT DISTINCT d.id, d.name, COALESCE(d.description,''), COALESCE(d.visibility,'private'), COALESCE(d.default_preset,''), COALESCE(d.connection_id,0), d.created_at, d.updated_at
+			FROM analytics_dashboards d
+			LEFT JOIN analytics_dashboard_access a ON a.dashboard_id = d.id AND a.user_id = ?
+			WHERE (d.user_id = ? OR COALESCE(d.visibility,'private') IN ('shared','public') OR a.user_id IS NOT NULL)
+			  AND d.connection_id = ?
+			ORDER BY updated_at DESC, id DESC
+		`), userID, userID, connID)
+	}
 	return appdb.DB.Query(appdb.ConvertQuery(`
-		SELECT DISTINCT d.id, d.name, COALESCE(d.description,''), COALESCE(d.visibility,'private'), COALESCE(d.default_preset,''), d.created_at, d.updated_at
+		SELECT DISTINCT d.id, d.name, COALESCE(d.description,''), COALESCE(d.visibility,'private'), COALESCE(d.default_preset,''), COALESCE(d.connection_id,0), d.created_at, d.updated_at
 		FROM analytics_dashboards d
 		LEFT JOIN analytics_dashboard_access a ON a.dashboard_id = d.id AND a.user_id = ?
 		WHERE d.user_id = ? OR COALESCE(d.visibility,'private') IN ('shared','public') OR a.user_id IS NOT NULL
@@ -820,10 +843,10 @@ func getAnalyticsDashboardByID(id int64) (*AnalyticsDashboard, error) {
 	var item AnalyticsDashboard
 	var presetsJSON string
 	err := appdb.DB.QueryRow(appdb.ConvertQuery(`
-		SELECT id, name, COALESCE(description,''), COALESCE(visibility,'private'), COALESCE(share_token,''), COALESCE(default_preset,''), COALESCE(presets_json,'[]'), created_at, updated_at
+		SELECT id, name, COALESCE(description,''), COALESCE(visibility,'private'), COALESCE(share_token,''), COALESCE(default_preset,''), COALESCE(presets_json,'[]'), COALESCE(connection_id,0), created_at, updated_at
 		FROM analytics_dashboards
 		WHERE id = ?
-	`), id).Scan(&item.ID, &item.Name, &item.Description, &item.Visibility, &item.ShareToken, &item.DefaultPreset, &presetsJSON, &item.CreatedAt, &item.UpdatedAt)
+	`), id).Scan(&item.ID, &item.Name, &item.Description, &item.Visibility, &item.ShareToken, &item.DefaultPreset, &presetsJSON, &item.ConnectionID, &item.CreatedAt, &item.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -842,10 +865,10 @@ func getAnalyticsDashboardByShareToken(token string) (*AnalyticsDashboard, error
 	var item AnalyticsDashboard
 	var presetsJSON string
 	err := appdb.DB.QueryRow(appdb.ConvertQuery(`
-		SELECT id, name, COALESCE(description,''), COALESCE(visibility,'private'), COALESCE(share_token,''), COALESCE(default_preset,''), COALESCE(presets_json,'[]'), created_at, updated_at
+		SELECT id, name, COALESCE(description,''), COALESCE(visibility,'private'), COALESCE(share_token,''), COALESCE(default_preset,''), COALESCE(presets_json,'[]'), COALESCE(connection_id,0), created_at, updated_at
 		FROM analytics_dashboards
 		WHERE share_token = ?
-	`), strings.TrimSpace(token)).Scan(&item.ID, &item.Name, &item.Description, &item.Visibility, &item.ShareToken, &item.DefaultPreset, &presetsJSON, &item.CreatedAt, &item.UpdatedAt)
+	`), strings.TrimSpace(token)).Scan(&item.ID, &item.Name, &item.Description, &item.Visibility, &item.ShareToken, &item.DefaultPreset, &presetsJSON, &item.ConnectionID, &item.CreatedAt, &item.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

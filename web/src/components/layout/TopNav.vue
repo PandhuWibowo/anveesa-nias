@@ -49,6 +49,7 @@ const notificationUnread = ref(0)
 const navRef = ref<HTMLElement | null>(null)
 const userRef = ref<HTMLElement | null>(null)
 const connBtnRef = ref<HTMLElement | null>(null)
+const connPanelRef = ref<HTMLElement | null>(null)
 const notificationPoll = ref<number | null>(null)
 const canViewNotifications = computed(() => hasAnyPermission(['notifications.view']))
 
@@ -258,11 +259,15 @@ function stopNotificationPolling() {
 
 function handleOutside(e: MouseEvent) {
   const t = e.target as Node
-  // Close nav dropdowns when clicking outside the nav area
   if (navRef.value && !navRef.value.contains(t)) openMenu.value = null
-  // Close connections panel when clicking outside its wrapper
-  if (connBtnRef.value && !connBtnRef.value.contains(t)) connPanelOpen.value = false
-  // Close user menu when clicking outside it
+  // Only close the connections panel if the click is outside BOTH the trigger
+  // button AND the teleported panel (which lives in <body>)
+  if (
+    connBtnRef.value && !connBtnRef.value.contains(t) &&
+    connPanelRef.value && !connPanelRef.value.contains(t)
+  ) {
+    connPanelOpen.value = false
+  }
   if (userRef.value && !userRef.value.contains(t)) userMenuOpen.value = false
 }
 
@@ -324,7 +329,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 
       <!-- Connections dropdown panel -->
       <Teleport to="body">
-        <div v-if="connPanelOpen" class="topnav__conn-panel" :style="connPanelStyle">
+        <div v-if="connPanelOpen" ref="connPanelRef" class="topnav__conn-panel" :style="connPanelStyle">
           <ConnectionsDropdown
             :activeConnId="activeConnId"
             @select-conn="(id) => { emit('select-conn', id) }"

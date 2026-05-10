@@ -18,7 +18,7 @@ import type { SQLPanelPayload } from '@/components/database/SQLPanel.vue'
 
 type ImportRow = (string | number | null)[]
 
-const props = defineProps<{ connId: number | null; darkMode: boolean; initialSQL?: string | null; initialDb?: string; initialTable?: string }>()
+const props = defineProps<{ connId: number | null; darkMode: boolean; active?: boolean; initialSQL?: string | null; initialDb?: string; initialTable?: string }>()
 const emit = defineEmits<{ (e: 'table-selected', db: string, table: string): void }>()
 
 const { connections } = useConnections()
@@ -189,12 +189,12 @@ const activeDatabase = ref('')
 const selectedObjectKey = ref('')
 const detailLoading = ref(false)
 
-watch(() => props.connId, async (id) => {
+watch([() => props.connId, () => props.active], async ([id, isActive]) => {
   metadata.value = null
   objectDetail.value = null
   selectedObjectKey.value = ''
   activeDatabase.value = ''
-  if (!id || !supportsRelationalSchema.value) return
+  if (!id || !isActive || !supportsRelationalSchema.value) return
   await fetchSchemaList(id)
   activeDatabase.value = databases.value[0]?.name ?? ''
 }, { immediate: true })
@@ -486,7 +486,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ activeConn.name }}</span>
           <span class="driver-badge" :style="{ background: driverColor(activeConn.driver) }">{{ driverLabel(activeConn.driver) }}</span>
         </div>
-        <SchemaTree :connId="connId" @select-table="handleSelectTable" />
+        <SchemaTree :connId="connId" :active="active" @select-table="handleSelectTable" />
       </div>
       <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden">
         <div class="browse-toolbar">
@@ -530,7 +530,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ activeConn.name }}</span>
           <span class="driver-badge" :style="{ background: driverColor(activeConn.driver) }">{{ driverLabel(activeConn.driver) }}</span>
         </div>
-        <SchemaTree :connId="connId" @select-table="handleSchemaSelectTable" />
+        <SchemaTree :connId="connId" :active="active" @select-table="handleSchemaSelectTable" />
       </div>
       <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden">
         <div style="padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg-surface);display:flex;align-items:center;gap:10px;flex-shrink:0;min-height:40px">

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -54,6 +55,19 @@ type KafkaProduceInput struct {
 	Headers []KafkaMessageHeader `json:"headers"`
 }
 
+type KafkaConsumeInput struct {
+	Topic   string `json:"topic"`
+	GroupID string `json:"group_id"`
+	Limit   int    `json:"limit"`
+}
+
+type KafkaConsumeResult struct {
+	GroupID  string             `json:"group_id"`
+	Topic    string             `json:"topic"`
+	Messages []KafkaMessageInfo `json:"messages"`
+	Count    int                `json:"count"`
+}
+
 type KafkaTopicInput struct {
 	Topic             string            `json:"topic"`
 	Partitions        int               `json:"partitions"`
@@ -96,17 +110,27 @@ type KafkaGroupPartitionOffset struct {
 	Error           string `json:"error,omitempty"`
 }
 
+type KafkaAPIError struct {
+	Error       string            `json:"error"`
+	Code        string            `json:"code"`
+	Operation   string            `json:"operation"`
+	Reason      string            `json:"reason"`
+	Suggestions []string          `json:"suggestions"`
+	Context     map[string]string `json:"context,omitempty"`
+	TraceID     string            `json:"trace_id"`
+}
+
 func KafkaTopics() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		connID, err := connectionIDFromPath(r.URL.Path)
 		if err != nil {
-			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "list_topics", "invalid connection id", err, nil)
 			return
 		}
 
 		in, err := kafkaConnectionInput(connID)
 		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusNotFound)
+			writeKafkaError(w, r, http.StatusNotFound, "list_topics", err.Error(), err, kafkaErrorContext(connID, ConnectionInput{}, "", "", nil))
 			return
 		}
 
@@ -114,7 +138,7 @@ func KafkaTopics() http.HandlerFunc {
 		defer cancel()
 		topics, err := readKafkaTopics(ctx, in)
 		if err != nil {
-			http.Error(w, jsonError("failed to read Kafka topics: "+err.Error()), http.StatusBadGateway)
+			writeKafkaError(w, r, http.StatusBadGateway, "list_topics", "failed to read Kafka topics", err, kafkaErrorContext(connID, in, "", "", nil))
 			return
 		}
 
@@ -127,13 +151,13 @@ func KafkaGroups() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		connID, err := connectionIDFromPath(r.URL.Path)
 		if err != nil {
-			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "list_groups", "invalid connection id", err, nil)
 			return
 		}
 
 		in, err := kafkaConnectionInput(connID)
 		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusNotFound)
+			writeKafkaError(w, r, http.StatusNotFound, "list_groups", err.Error(), err, kafkaErrorContext(connID, ConnectionInput{}, "", "", nil))
 			return
 		}
 
@@ -141,7 +165,7 @@ func KafkaGroups() http.HandlerFunc {
 		defer cancel()
 		groups, err := readKafkaGroups(ctx, in)
 		if err != nil {
-			http.Error(w, jsonError("failed to read Kafka groups: "+err.Error()), http.StatusBadGateway)
+			writeKafkaError(w, r, http.StatusBadGateway, "list_groups", "failed to read Kafka groups", err, kafkaErrorContext(connID, in, "", "", nil))
 			return
 		}
 
@@ -154,12 +178,12 @@ func KafkaMessages() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		connID, err := connectionIDFromPath(r.URL.Path)
 		if err != nil {
-			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "read_messages", "invalid connection id", err, nil)
 			return
 		}
 		topic := strings.TrimSpace(r.URL.Query().Get("topic"))
 		if topic == "" {
-			http.Error(w, jsonError("topic is required"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "read_messages", "topic is required", nil, kafkaErrorContext(connID, ConnectionInput{}, topic, "", nil))
 			return
 		}
 		partition := queryInt(r, "partition", -1, -1, 1000000)
@@ -167,7 +191,7 @@ func KafkaMessages() http.HandlerFunc {
 
 		in, err := kafkaConnectionInput(connID)
 		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusNotFound)
+			writeKafkaError(w, r, http.StatusNotFound, "read_messages", err.Error(), err, kafkaErrorContext(connID, ConnectionInput{}, topic, "", nil))
 			return
 		}
 
@@ -175,7 +199,10 @@ func KafkaMessages() http.HandlerFunc {
 		defer cancel()
 		messages, err := readKafkaMessages(ctx, in, topic, partition, limit)
 		if err != nil {
-			http.Error(w, jsonError("failed to read Kafka messages: "+err.Error()), http.StatusBadGateway)
+			writeKafkaError(w, r, http.StatusBadGateway, "read_messages", "failed to read Kafka messages", err, kafkaErrorContext(connID, in, topic, "", map[string]string{
+				"partition": fmt.Sprintf("%d", partition),
+				"limit":     fmt.Sprintf("%d", limit),
+			}))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -187,29 +214,29 @@ func KafkaProduce() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		connID, err := connectionIDFromPath(r.URL.Path)
 		if err != nil {
-			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "produce_message", "invalid connection id", err, nil)
 			return
 		}
 		var payload KafkaProduceInput
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, jsonError("invalid JSON body"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "produce_message", "invalid JSON body", err, kafkaErrorContext(connID, ConnectionInput{}, "", "", nil))
 			return
 		}
 		payload.Topic = strings.TrimSpace(payload.Topic)
 		if payload.Topic == "" {
-			http.Error(w, jsonError("topic is required"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "produce_message", "topic is required", nil, kafkaErrorContext(connID, ConnectionInput{}, "", "", nil))
 			return
 		}
 
 		in, err := kafkaConnectionInput(connID)
 		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusNotFound)
+			writeKafkaError(w, r, http.StatusNotFound, "produce_message", err.Error(), err, kafkaErrorContext(connID, ConnectionInput{}, payload.Topic, "", nil))
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
 		if err := produceKafkaMessage(ctx, in, payload); err != nil {
-			http.Error(w, jsonError("failed to produce Kafka message: "+err.Error()), http.StatusBadGateway)
+			writeKafkaError(w, r, http.StatusBadGateway, "produce_message", "failed to produce Kafka message", err, kafkaErrorContext(connID, in, payload.Topic, "", nil))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -217,28 +244,72 @@ func KafkaProduce() http.HandlerFunc {
 	}
 }
 
+func KafkaConsumeTest() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		connID, err := connectionIDFromPath(r.URL.Path)
+		if err != nil {
+			writeKafkaError(w, r, http.StatusBadRequest, "consume_test", "invalid connection id", err, nil)
+			return
+		}
+		var payload KafkaConsumeInput
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeKafkaError(w, r, http.StatusBadRequest, "consume_test", "invalid JSON body", err, kafkaErrorContext(connID, ConnectionInput{}, "", "", nil))
+			return
+		}
+		payload.Topic = strings.TrimSpace(payload.Topic)
+		payload.GroupID = strings.TrimSpace(payload.GroupID)
+		if payload.Limit <= 0 {
+			payload.Limit = 10
+		}
+		if payload.Limit > 100 {
+			payload.Limit = 100
+		}
+		if payload.Topic == "" || payload.GroupID == "" {
+			writeKafkaError(w, r, http.StatusBadRequest, "consume_test", "topic and group_id are required", nil, kafkaErrorContext(connID, ConnectionInput{}, payload.Topic, payload.GroupID, nil))
+			return
+		}
+
+		in, err := kafkaConnectionInput(connID)
+		if err != nil {
+			writeKafkaError(w, r, http.StatusNotFound, "consume_test", err.Error(), err, kafkaErrorContext(connID, ConnectionInput{}, payload.Topic, payload.GroupID, nil))
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+		result, err := consumeKafkaTest(ctx, in, payload)
+		if err != nil {
+			writeKafkaError(w, r, http.StatusBadGateway, "consume_test", "failed to consume Kafka messages", err, kafkaErrorContext(connID, in, payload.Topic, payload.GroupID, map[string]string{
+				"limit": fmt.Sprintf("%d", payload.Limit),
+			}))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	}
+}
+
 func KafkaGroupDetailHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		connID, err := connectionIDFromPath(r.URL.Path)
 		if err != nil {
-			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "group_detail", "invalid connection id", err, nil)
 			return
 		}
 		groupID := strings.TrimSpace(r.URL.Query().Get("group_id"))
 		if groupID == "" {
-			http.Error(w, jsonError("group_id is required"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "group_detail", "group_id is required", nil, kafkaErrorContext(connID, ConnectionInput{}, "", groupID, nil))
 			return
 		}
 		in, err := kafkaConnectionInput(connID)
 		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusNotFound)
+			writeKafkaError(w, r, http.StatusNotFound, "group_detail", err.Error(), err, kafkaErrorContext(connID, ConnectionInput{}, "", groupID, nil))
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
 		detail, err := readKafkaGroupDetail(ctx, in, groupID)
 		if err != nil {
-			http.Error(w, jsonError("failed to read Kafka group detail: "+err.Error()), http.StatusBadGateway)
+			writeKafkaError(w, r, http.StatusBadGateway, "group_detail", "failed to read Kafka group detail", err, kafkaErrorContext(connID, in, "", groupID, nil))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -250,28 +321,34 @@ func KafkaCreateTopic() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		connID, err := connectionIDFromPath(r.URL.Path)
 		if err != nil {
-			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "create_topic", "invalid connection id", err, nil)
 			return
 		}
 		var payload KafkaTopicInput
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, jsonError("invalid JSON body"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "create_topic", "invalid JSON body", err, kafkaErrorContext(connID, ConnectionInput{}, "", "", nil))
 			return
 		}
 		payload.Topic = strings.TrimSpace(payload.Topic)
 		if payload.Topic == "" || payload.Partitions <= 0 || payload.ReplicationFactor <= 0 {
-			http.Error(w, jsonError("topic, partitions, and replication_factor are required"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "create_topic", "topic, partitions, and replication_factor are required", nil, kafkaErrorContext(connID, ConnectionInput{}, payload.Topic, "", map[string]string{
+				"partitions":         fmt.Sprintf("%d", payload.Partitions),
+				"replication_factor": fmt.Sprintf("%d", payload.ReplicationFactor),
+			}))
 			return
 		}
 		in, err := kafkaConnectionInput(connID)
 		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusNotFound)
+			writeKafkaError(w, r, http.StatusNotFound, "create_topic", err.Error(), err, kafkaErrorContext(connID, ConnectionInput{}, payload.Topic, "", nil))
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
 		if err := createKafkaTopic(ctx, in, payload); err != nil {
-			http.Error(w, jsonError("failed to create Kafka topic: "+err.Error()), http.StatusBadGateway)
+			writeKafkaError(w, r, http.StatusBadGateway, "create_topic", "failed to create Kafka topic", err, kafkaErrorContext(connID, in, payload.Topic, "", map[string]string{
+				"partitions":         fmt.Sprintf("%d", payload.Partitions),
+				"replication_factor": fmt.Sprintf("%d", payload.ReplicationFactor),
+			}))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -283,23 +360,23 @@ func KafkaDeleteTopic() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		connID, err := connectionIDFromPath(r.URL.Path)
 		if err != nil {
-			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "delete_topic", "invalid connection id", err, nil)
 			return
 		}
 		topic := strings.TrimSpace(r.URL.Query().Get("topic"))
 		if topic == "" {
-			http.Error(w, jsonError("topic is required"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "delete_topic", "topic is required", nil, kafkaErrorContext(connID, ConnectionInput{}, topic, "", nil))
 			return
 		}
 		in, err := kafkaConnectionInput(connID)
 		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusNotFound)
+			writeKafkaError(w, r, http.StatusNotFound, "delete_topic", err.Error(), err, kafkaErrorContext(connID, ConnectionInput{}, topic, "", nil))
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
 		if err := deleteKafkaTopic(ctx, in, topic); err != nil {
-			http.Error(w, jsonError("failed to delete Kafka topic: "+err.Error()), http.StatusBadGateway)
+			writeKafkaError(w, r, http.StatusBadGateway, "delete_topic", "failed to delete Kafka topic", err, kafkaErrorContext(connID, in, topic, "", nil))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -311,28 +388,32 @@ func KafkaUpdatePartitions() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		connID, err := connectionIDFromPath(r.URL.Path)
 		if err != nil {
-			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "update_partitions", "invalid connection id", err, nil)
 			return
 		}
 		var payload KafkaPartitionUpdateInput
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, jsonError("invalid JSON body"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "update_partitions", "invalid JSON body", err, kafkaErrorContext(connID, ConnectionInput{}, "", "", nil))
 			return
 		}
 		payload.Topic = strings.TrimSpace(payload.Topic)
 		if payload.Topic == "" || payload.Partitions <= 0 {
-			http.Error(w, jsonError("topic and partitions are required"), http.StatusBadRequest)
+			writeKafkaError(w, r, http.StatusBadRequest, "update_partitions", "topic and partitions are required", nil, kafkaErrorContext(connID, ConnectionInput{}, payload.Topic, "", map[string]string{
+				"partitions": fmt.Sprintf("%d", payload.Partitions),
+			}))
 			return
 		}
 		in, err := kafkaConnectionInput(connID)
 		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusNotFound)
+			writeKafkaError(w, r, http.StatusNotFound, "update_partitions", err.Error(), err, kafkaErrorContext(connID, ConnectionInput{}, payload.Topic, "", nil))
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
 		if err := updateKafkaPartitions(ctx, in, payload); err != nil {
-			http.Error(w, jsonError("failed to update Kafka partitions: "+err.Error()), http.StatusBadGateway)
+			writeKafkaError(w, r, http.StatusBadGateway, "update_partitions", "failed to update Kafka partitions", err, kafkaErrorContext(connID, in, payload.Topic, "", map[string]string{
+				"partitions": fmt.Sprintf("%d", payload.Partitions),
+			}))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -361,6 +442,140 @@ func kafkaConnectionInput(connID int64) (ConnectionInput, error) {
 	}
 	in.Password = password
 	return in, nil
+}
+
+func writeKafkaError(w http.ResponseWriter, r *http.Request, status int, operation, message string, cause error, context map[string]string) {
+	raw := strings.TrimSpace(message)
+	if cause != nil && !strings.Contains(raw, cause.Error()) {
+		raw = strings.TrimSpace(raw + ": " + cause.Error())
+	}
+	if raw == "" {
+		raw = http.StatusText(status)
+	}
+	diagnostic := kafkaDiagnostic(status, operation, raw, context)
+	diagnostic.TraceID = kafkaTraceID(r, operation)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(diagnostic)
+	log.Printf("kafka_error trace_id=%s operation=%s code=%s status=%d reason=%q error=%q context=%v", diagnostic.TraceID, diagnostic.Operation, diagnostic.Code, status, diagnostic.Reason, diagnostic.Error, diagnostic.Context)
+}
+
+func kafkaDiagnostic(status int, operation, raw string, context map[string]string) KafkaAPIError {
+	lower := strings.ToLower(raw)
+	out := KafkaAPIError{
+		Error:     raw,
+		Code:      "kafka_error",
+		Operation: operation,
+		Reason:    "Kafka returned an error while processing this operation.",
+		Context:   context,
+		Suggestions: []string{
+			"Check the raw error and operation context below.",
+			"Verify the selected Kafka connection points to the expected cluster.",
+		},
+	}
+
+	switch {
+	case status == http.StatusBadRequest:
+		out.Code = "invalid_request"
+		out.Reason = "The request is missing required input or contains invalid values."
+		out.Suggestions = []string{
+			"Review the selected topic, partition, group, and numeric fields.",
+			"Retry after correcting the highlighted input.",
+		}
+	case strings.Contains(lower, "connection not found"), strings.Contains(lower, "not kafka"), strings.Contains(lower, "decryption"):
+		out.Code = "connection_configuration"
+		out.Reason = "The saved connection cannot be used as a Kafka connection."
+		out.Suggestions = []string{
+			"Open Admin / Connections and verify the connection driver, host, port, SSL, username, and password.",
+			"If credentials were rotated, save the Kafka connection again.",
+		}
+	case strings.Contains(lower, "context deadline"), strings.Contains(lower, "deadline exceeded"), strings.Contains(lower, "timeout"), strings.Contains(lower, "i/o timeout"):
+		out.Code = "kafka_timeout"
+		out.Reason = "The Kafka operation timed out before the broker returned a response."
+		out.Suggestions = []string{
+			"Confirm the broker is reachable from the NIAS backend host.",
+			"Check broker load, network latency, firewall rules, and advertised.listeners.",
+			"Try a narrower operation, such as one topic or one partition.",
+		}
+	case strings.Contains(lower, "connection refused"), strings.Contains(lower, "no such host"), strings.Contains(lower, "dial tcp"), strings.Contains(lower, "network is unreachable"):
+		out.Code = "broker_unreachable"
+		out.Reason = "The backend could not establish a TCP connection to the Kafka broker."
+		out.Suggestions = []string{
+			"Verify host and port in the Kafka connection.",
+			"Check DNS resolution and firewall or Docker network routing from the backend container or process.",
+			"Validate Kafka advertised.listeners matches the address reachable by NIAS.",
+		}
+	case strings.Contains(lower, "sasl"), strings.Contains(lower, "auth"), strings.Contains(lower, "credential"), strings.Contains(lower, "not authorized"):
+		out.Code = "authentication_or_authorization"
+		out.Reason = "Kafka rejected the request because authentication or ACL authorization failed."
+		out.Suggestions = []string{
+			"Verify SASL username and password on the connection.",
+			"Check Kafka ACLs for the selected operation, topic, and consumer group.",
+			"Confirm the cluster expects the same security protocol configured in NIAS.",
+		}
+	case strings.Contains(lower, "tls"), strings.Contains(lower, "certificate"), strings.Contains(lower, "handshake"):
+		out.Code = "tls_configuration"
+		out.Reason = "The TLS handshake failed or the broker certificate could not be accepted."
+		out.Suggestions = []string{
+			"Confirm SSL is enabled only for TLS listeners.",
+			"Verify broker certificates and CA trust from the backend runtime.",
+			"Check whether the Kafka listener requires a different security protocol.",
+		}
+	case strings.Contains(lower, "unknown topic"), strings.Contains(lower, "no such topic"), strings.Contains(lower, "partition") && strings.Contains(lower, "not found"):
+		out.Code = "topic_or_partition_not_found"
+		out.Reason = "The selected topic or partition does not exist on the cluster metadata returned to NIAS."
+		out.Suggestions = []string{
+			"Refresh topics and select the topic again.",
+			"Verify the topic exists on this exact cluster.",
+			"Check whether the topic was recently deleted or recreated.",
+		}
+	case strings.Contains(lower, "replication factor"), strings.Contains(lower, "replicas"), strings.Contains(lower, "brokers"):
+		out.Code = "replication_factor_invalid"
+		out.Reason = "The requested replication factor is not valid for the current broker count or cluster policy."
+		out.Suggestions = []string{
+			"Use a replication factor less than or equal to the number of available brokers.",
+			"Check broker health before creating the topic.",
+		}
+	case strings.Contains(lower, "leader"), strings.Contains(lower, "not coordinator"), strings.Contains(lower, "coordinator"):
+		out.Code = "metadata_or_leader_changed"
+		out.Reason = "Kafka metadata changed while the operation was running, or the request was sent to the wrong leader/coordinator."
+		out.Suggestions = []string{
+			"Refresh the Kafka browser and retry.",
+			"Check broker/controller health and recent partition leadership changes.",
+		}
+	}
+	return out
+}
+
+func kafkaErrorContext(connID int64, in ConnectionInput, topic, group string, extra map[string]string) map[string]string {
+	ctx := map[string]string{"connection_id": fmt.Sprintf("%d", connID)}
+	if in.Host != "" || in.Port != 0 {
+		ctx["brokers"] = strings.Join(kafkaBrokers(in), ",")
+		ctx["ssl"] = fmt.Sprintf("%t", in.SSL)
+		if in.Username != "" {
+			ctx["sasl"] = "true"
+		} else {
+			ctx["sasl"] = "false"
+		}
+	}
+	if topic != "" {
+		ctx["topic"] = topic
+	}
+	if group != "" {
+		ctx["group_id"] = group
+	}
+	for key, value := range extra {
+		ctx[key] = value
+	}
+	return ctx
+}
+
+func kafkaTraceID(r *http.Request, operation string) string {
+	if id := strings.TrimSpace(r.Header.Get("X-Request-ID")); id != "" {
+		return id
+	}
+	return fmt.Sprintf("kafka-%s-%d", operation, time.Now().UnixNano())
 }
 
 func readKafkaTopics(ctx context.Context, in ConnectionInput) ([]KafkaTopicInfo, error) {
@@ -548,6 +763,40 @@ func produceKafkaMessage(ctx context.Context, in ConnectionInput, payload KafkaP
 		Headers: headers,
 		Time:    time.Now(),
 	})
+}
+
+func consumeKafkaTest(ctx context.Context, in ConnectionInput, payload KafkaConsumeInput) (KafkaConsumeResult, error) {
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:        kafkaBrokers(in),
+		GroupID:        payload.GroupID,
+		Topic:          payload.Topic,
+		Dialer:         kafkaDialer(in),
+		MinBytes:       1,
+		MaxBytes:       10 << 20,
+		MaxWait:        2 * time.Second,
+		CommitInterval: 0,
+	})
+	defer reader.Close()
+
+	result := KafkaConsumeResult{
+		GroupID:  payload.GroupID,
+		Topic:    payload.Topic,
+		Messages: []KafkaMessageInfo{},
+	}
+	for len(result.Messages) < payload.Limit {
+		readCtx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
+		msg, err := reader.ReadMessage(readCtx)
+		cancel()
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) {
+				break
+			}
+			return result, err
+		}
+		result.Messages = append(result.Messages, kafkaMessageInfo(msg))
+	}
+	result.Count = len(result.Messages)
+	return result, nil
 }
 
 func readKafkaGroupDetail(ctx context.Context, in ConnectionInput, groupID string) (KafkaGroupDetail, error) {

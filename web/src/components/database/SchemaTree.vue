@@ -4,6 +4,7 @@ import { useSchema, type SchemaTable } from '@/composables/useSchema'
 
 const props = defineProps<{
   connId: number | null
+  active?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -16,9 +17,9 @@ const expandedDbs = ref<Set<string>>(new Set())
 const activeTable = ref<string>('')
 
 watch(
-  () => props.connId,
-  (id) => {
-    if (id) fetchSchema(id)
+  [() => props.connId, () => props.active],
+  ([id, isActive]) => {
+    if (id && isActive) fetchSchema(id)
   },
   { immediate: true },
 )
