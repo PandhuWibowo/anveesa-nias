@@ -250,7 +250,7 @@ const router = createRouter({
 })
 
 router.beforeEach((to) => {
-  const { isAuthenticated, authEnabled, hasAnyPermission } = useAuth()
+  const { isAuthenticated, authEnabled, hasAnyPermission, mustSetupMfa } = useAuth()
 
   // Skip auth check if auth is not enabled
   if (!authEnabled.value) {
@@ -268,6 +268,14 @@ router.beforeEach((to) => {
   // If not authenticated and trying to access protected route, redirect to login
   if (!isAuthenticated.value && !to.meta.guest) {
     return { name: 'login' }
+  }
+
+  if (isAuthenticated.value && mustSetupMfa.value && to.name !== 'security' && !to.meta.guest) {
+    return { name: 'security', query: { setup: 'mfa' } }
+  }
+
+  if (isAuthenticated.value && mustSetupMfa.value && to.name === 'security') {
+    return
   }
 
   const requiredPermissions = to.meta.requiredPermissionsAny as string[] | undefined

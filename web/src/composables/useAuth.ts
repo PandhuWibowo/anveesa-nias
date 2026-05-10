@@ -6,6 +6,9 @@ interface User {
   username: string
   role: string
   permissions: string[]
+  mfa_enabled?: boolean
+  mfa_enforced?: boolean
+  mfa_required_setup?: boolean
 }
 
 const STORAGE_KEY = 'nias-token'
@@ -63,6 +66,7 @@ export function useAuth() {
   const isAuthenticated = computed(() => !!user.value || !authEnabled.value)
   const isAdmin = computed(() => user.value?.role === 'admin')
   const permissions = computed(() => user.value?.permissions ?? [])
+  const mustSetupMfa = computed(() => !!user.value?.mfa_required_setup)
 
   function hasPermission(permission: string): boolean {
     if (!authEnabled.value) return true
@@ -99,7 +103,7 @@ export function useAuth() {
     }
   }
 
-  async function login(username: string, password: string, totpCode?: string): Promise<{ success: boolean; requires2fa?: boolean; username?: string; error?: string }> {
+  async function login(username: string, password: string, totpCode?: string): Promise<{ success: boolean; requires2fa?: boolean; username?: string; mustSetupMfa?: boolean; error?: string }> {
     try {
       const { data } = await axios.post('/api/auth/login', { username, password, totp_code: totpCode })
       
@@ -116,9 +120,18 @@ export function useAuth() {
       }
       localStorage.setItem(STORAGE_KEY, data.token)
       sessionStorage.removeItem(LEGACY_STORAGE_KEY)
-      return { success: true }
+      return { success: true, mustSetupMfa: !!data.user?.mfa_required_setup }
     } catch (error: any) {
       return { success: false, error: error.response?.data?.error || 'Login failed' }
+    }
+  }
+
+  function markMfaSetupComplete() {
+    if (!user.value) return
+    user.value = {
+      ...user.value,
+      mfa_enabled: true,
+      mfa_required_setup: false,
     }
   }
 
@@ -144,10 +157,12 @@ export function useAuth() {
     isAuthenticated,
     isAdmin,
     permissions,
+    mustSetupMfa,
     hasPermission,
     hasAnyPermission,
     fetchMe,
     login,
+    markMfaSetupComplete,
     logout,
   }
 }

@@ -25,9 +25,9 @@ const (
 )
 
 type Claims struct {
-	UserID   int64  `json:"user_id"`
-	Username string `json:"username"`
-	Role     string `json:"role"`
+	UserID    int64  `json:"user_id"`
+	Username  string `json:"username"`
+	Role      string `json:"role"`
 	SessionID string `json:"session_id"`
 	jwt.RegisteredClaims
 }
@@ -67,13 +67,13 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 			totpEnabled int
 			totpSecret  string
 		)
-		
+
 		// Use appropriate parameter placeholder for database
 		query := `SELECT id, username, password, role, COALESCE(is_active, 1), COALESCE(totp_enabled, 0), COALESCE(totp_secret, '') FROM users WHERE username = ?`
 		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
 			query = `SELECT id, username, password, role, COALESCE(is_active, 1), COALESCE(totp_enabled, 0), COALESCE(totp_secret, '') FROM users WHERE username = $1`
 		}
-		
+
 		err := appdb.DB.QueryRow(query, body.Username).Scan(&id, &username, &hash, &role, &isActive, &totpEnabled, &totpSecret)
 		if err != nil {
 			_ = appdb.RecordLoginEvent(nil, body.Username, clientIP(r), r.UserAgent(), false, "invalid_credentials")
@@ -109,10 +109,10 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 				// Check backup codes
 				var backupCodesJSON string
 				appdb.DB.QueryRow(`SELECT COALESCE(backup_codes, '[]') FROM users WHERE id = ?`, id).Scan(&backupCodesJSON)
-				
+
 				var backupCodes []string
 				json.Unmarshal([]byte(backupCodesJSON), &backupCodes)
-				
+
 				valid := false
 				for i, code := range backupCodes {
 					if code == body.TotpCode {
@@ -124,7 +124,7 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 						break
 					}
 				}
-				
+
 				if !valid {
 					_ = appdb.RecordLoginEvent(&id, username, clientIP(r), r.UserAgent(), false, "invalid_2fa")
 					http.Error(w, `{"error":"invalid 2FA code"}`, http.StatusUnauthorized)
@@ -141,9 +141,9 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 		}
 
 		token := jwt.NewWithClaims(jwt.SigningMethodHS256, &Claims{
-			UserID:   id,
-			Username: username,
-			Role:     role,
+			UserID:    id,
+			Username:  username,
+			Role:      role,
 			SessionID: sessionID,
 			RegisteredClaims: jwt.RegisteredClaims{
 				Issuer:    "anveesa-nias",
@@ -164,10 +164,12 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 			http.Error(w, `{"error":"permissions error"}`, http.StatusInternalServerError)
 			return
 		}
+		mfaEnforced := isMFAEnforced()
+		mfaRequiredSetup := mfaEnforced && totpEnabled != 1
 
 		json.NewEncoder(w).Encode(map[string]any{
 			"token": tokenStr,
-			"user":  map[string]any{"id": id, "username": username, "role": role, "permissions": perms},
+			"user":  map[string]any{"id": id, "username": username, "role": role, "permissions": perms, "mfa_enabled": totpEnabled == 1, "mfa_enforced": mfaEnforced, "mfa_required_setup": mfaRequiredSetup},
 		})
 		_ = appdb.RecordLoginEvent(&id, username, clientIP(r), r.UserAgent(), true, "")
 	}
@@ -233,7 +235,7 @@ func RegisterHandler(cfg *config.Config) http.HandlerFunc {
 
 		var count int
 		appdb.DB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
-		
+
 		// Determine role
 		role := "user"
 		roleID := int64(2)
@@ -346,12 +348,17 @@ func MeHandler() http.HandlerFunc {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
+		mfaEnabled := userMFAEnabled(claims.UserID)
+		mfaEnforced := isMFAEnforced()
 
 		json.NewEncoder(w).Encode(map[string]any{
-			"id":          claims.UserID,
-			"username":    claims.Username,
-			"role":        claims.Role,
-			"permissions": perms,
+			"id":                 claims.UserID,
+			"username":           claims.Username,
+			"role":               claims.Role,
+			"permissions":        perms,
+			"mfa_enabled":        mfaEnabled,
+			"mfa_enforced":       mfaEnforced,
+			"mfa_required_setup": mfaEnforced && !mfaEnabled,
 		})
 	}
 }

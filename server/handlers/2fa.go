@@ -7,11 +7,45 @@ import (
 	"net/http"
 	"strconv"
 
+	appdb "github.com/anveesa/nias/db"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
-	appdb "github.com/anveesa/nias/db"
 	"golang.org/x/crypto/bcrypt"
 )
+
+const mfaPolicyEnforcedKey = "security.mfa_enforced"
+
+func isMFAEnforced() bool {
+	var value string
+	err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT value FROM settings WHERE key = ?`), mfaPolicyEnforcedKey).Scan(&value)
+	return err == nil && value == "true"
+}
+
+func setMFAEnforced(enforced bool) error {
+	value := "false"
+	if enforced {
+		value = "true"
+	}
+	tx, err := appdb.DB.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(appdb.ConvertQuery(`DELETE FROM settings WHERE key = ?`), mfaPolicyEnforcedKey); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if _, err = tx.Exec(appdb.ConvertQuery(`INSERT INTO settings (key, value) VALUES (?, ?)`), mfaPolicyEnforcedKey, value); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+func userMFAEnabled(userID int64) bool {
+	var enabled int
+	err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COALESCE(totp_enabled, 0) FROM users WHERE id = ?`), userID).Scan(&enabled)
+	return err == nil && enabled == 1
+}
 
 // Setup2FA generates a new TOTP secret and QR code for the user
 func Setup2FA() http.HandlerFunc {
@@ -66,9 +100,9 @@ func Setup2FA() http.HandlerFunc {
 
 		// Return secret and QR code URL
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"secret":        key.Secret(),
-			"qr_code":       key.URL(),
-			"backup_codes":  backupCodes,
+			"secret":       key.Secret(),
+			"qr_code":      key.URL(),
+			"backup_codes": backupCodes,
 		})
 	}
 }
@@ -132,6 +166,10 @@ func Disable2FA() http.HandlerFunc {
 		}
 
 		userID, _ := strconv.ParseInt(userIDStr, 10, 64)
+		if isMFAEnforced() {
+			http.Error(w, `{"error":"MFA is enforced for all users. Enable MFA before it can be disabled."}`, http.StatusBadRequest)
+			return
+		}
 
 		var body struct {
 			Password   string `json:"password"`
@@ -209,12 +247,12 @@ func Verify2FA() http.HandlerFunc {
 		var userID int64
 		var secret, backupCodesJSON string
 		var totpEnabled int
-		
+
 		query := `SELECT id, totp_secret, totp_enabled, COALESCE(backup_codes, '[]') FROM users WHERE username = ?`
 		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
 			query = `SELECT id, totp_secret, totp_enabled, COALESCE(backup_codes, '[]') FROM users WHERE username = $1`
 		}
-		
+
 		err := appdb.DB.QueryRow(query, body.Username).Scan(&userID, &secret, &totpEnabled, &backupCodesJSON)
 		if err != nil {
 			http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
@@ -282,10 +320,38 @@ func Get2FAStatus() http.HandlerFunc {
 
 		var backupCodes []string
 		json.Unmarshal([]byte(backupCodesJSON), &backupCodes)
+		policyEnforced := isMFAEnforced()
+		canManagePolicy := r.Header.Get("X-User-Role") == "admin" || appdb.HasUserAppPermission(userID, PermUsersManage)
 
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"enabled":             totpEnabled == 1,
-			"backup_codes_count":  len(backupCodes),
+			"enabled":            totpEnabled == 1,
+			"backup_codes_count": len(backupCodes),
+			"mfa_enforced":       policyEnforced,
+			"mfa_required_setup": policyEnforced && totpEnabled != 1,
+			"can_manage_policy":  canManagePolicy,
 		})
+	}
+}
+
+func UpdateMFAPolicy() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+
+		var body struct {
+			Enforced bool `json:"enforced"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+			return
+		}
+		if err := setMFAEnforced(body.Enforced); err != nil {
+			http.Error(w, `{"error":"failed to update MFA policy"}`, http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]bool{"mfa_enforced": body.Enforced})
 	}
 }
