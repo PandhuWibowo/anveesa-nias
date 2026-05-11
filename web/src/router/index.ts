@@ -2,6 +2,16 @@ import { createRouter, createWebHistory } from 'vue-router'
 import axios from 'axios'
 import { useAuth } from '@/composables/useAuth'
 
+const LAST_ROUTE_KEY = 'nias:lastRoute'
+
+function restoredStartRoute() {
+  const saved = localStorage.getItem(LAST_ROUTE_KEY)
+  if (!saved || saved === '/' || saved.startsWith('/login') || saved.startsWith('/shared-dashboards') || saved.startsWith('/embed/')) {
+    return { name: 'analytics' }
+  }
+  return saved
+}
+
 const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -36,7 +46,7 @@ const router = createRouter({
       children: [
         {
           path: '',
-          redirect: { name: 'analytics' },
+          redirect: restoredStartRoute,
         },
         {
           path: 'analytics',
@@ -141,9 +151,21 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['sqlstudio.access'] },
         },
         {
+          path: 'database-objects',
+          name: 'database-objects',
+          component: () => import('@/views/DatabaseObjectsView.vue'),
+          meta: { requiredPermissionsAny: ['sqlstudio.access'] },
+        },
+        {
           path: 'redis',
           name: 'redis',
           component: () => import('@/views/RedisView.vue'),
+          meta: { requiredPermissionsAny: ['redis.view'] },
+        },
+        {
+          path: 'memcache',
+          name: 'memcache',
+          component: () => import('@/views/MemcacheView.vue'),
           meta: { requiredPermissionsAny: ['redis.view'] },
         },
         {
@@ -297,6 +319,9 @@ router.afterEach((to, from) => {
   }
   if (to.name === 'login') {
     return
+  }
+  if (!to.meta.guest && to.fullPath !== '/') {
+    localStorage.setItem(LAST_ROUTE_KEY, to.fullPath)
   }
   const { authEnabled, isAuthenticated } = useAuth()
   if (authEnabled.value && !isAuthenticated.value) {

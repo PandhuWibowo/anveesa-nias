@@ -17,10 +17,12 @@ interface Session {
   initialSQL: string | null
   initialDb?: string
   initialTable?: string
-  initialTab?: 'data' | 'explorer'
+  initialTab?: DataSessionTab
 }
 
-interface PersistedSession { connId: number; db?: string; table?: string; tab?: 'data' | 'explorer' }
+type DataSessionTab = 'data' | 'explorer' | 'schema' | 'sql'
+
+interface PersistedSession { connId: number; db?: string; table?: string; tab?: DataSessionTab }
 interface PersistedState { sessions: PersistedSession[]; activeConnId: number | null }
 
 const LS_KEY = 'dv_state'
@@ -61,6 +63,9 @@ const activeSessionId = ref<string>(
 watch(sessions, persistState, { deep: true })
 watch(activeSessionId, persistState)
 
+onMounted(() => { window.addEventListener('beforeunload', persistState) })
+onBeforeUnmount(() => { window.removeEventListener('beforeunload', persistState); persistState() })
+
 function sessionLabel(s: Session) {
   const conn = s.connId ? connections.value.find(c => c.id === s.connId) : null
   return conn?.name ?? 'No connection'
@@ -98,17 +103,19 @@ const pickerOpen = ref(false)
 const pickerSearch = ref('')
 const pickerRef = ref<HTMLElement | null>(null)
 const addBtnRef = ref<HTMLButtonElement | null>(null)
-const pickerPos = ref({ top: 0, left: 0 })
+const pickerPos = ref({ top: 0, left: 0, width: 300, maxHeight: 380 })
 
 const pickerStyle = computed(() => ({
   position: 'fixed' as const,
   top: pickerPos.value.top + 'px',
   left: pickerPos.value.left + 'px',
+  width: pickerPos.value.width + 'px',
+  maxHeight: pickerPos.value.maxHeight + 'px',
   zIndex: 9999,
 }))
 
-// Redis connections have no SQL DSN — exclude them from SQL Studio.
-const sqlConns = computed(() => connections.value.filter(c => c.driver !== 'redis' && c.driver !== 'kafka'))
+// Cache and streaming connections have no SQL DSN — exclude them from SQL Studio.
+const sqlConns = computed(() => connections.value.filter(c => c.driver !== 'redis' && c.driver !== 'memcache' && c.driver !== 'kafka'))
 
 const filteredConns = computed(() =>
   pickerSearch.value
@@ -120,12 +127,20 @@ function togglePicker() {
   if (pickerOpen.value) { pickerOpen.value = false; return }
   if (addBtnRef.value) {
     const r = addBtnRef.value.getBoundingClientRect()
-    const dropW = 280
-    // Right-align to the button when it would overflow the right edge
-    const left = (r.right + dropW > window.innerWidth - 8)
-      ? Math.max(8, r.right - dropW)
-      : r.left
-    pickerPos.value = { top: r.bottom + 4, left }
+    const margin = 8
+    const dropW = Math.min(300, window.innerWidth - margin * 2)
+    const estimatedH = 380
+    const belowTop = r.bottom + 4
+    const aboveTop = r.top - estimatedH - 4
+    const top = window.innerHeight - belowTop >= Math.min(estimatedH, 220)
+      ? belowTop
+      : Math.max(margin, aboveTop)
+    const left = Math.min(
+      Math.max(margin, r.right - dropW),
+      Math.max(margin, window.innerWidth - dropW - margin),
+    )
+    const maxHeight = Math.max(180, window.innerHeight - top - margin)
+    pickerPos.value = { top, left, width: dropW, maxHeight }
   }
   pickerOpen.value = true
 }
@@ -148,11 +163,11 @@ onMounted(() => document.addEventListener('mousedown', onDocClick, true))
 onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick, true))
 
 // Bootstrap or switch session when the global active connection changes.
-// Redis connections are excluded — they belong in the Redis Browser, not SQL Studio.
+// Cache connections are excluded — they belong in their cache browsers, not SQL Studio.
 watch(() => props.activeConnId, (id) => {
   if (id == null) return
   const conn = connections.value.find(c => c.id === id)
-  if (conn?.driver === 'redis') return
+  if (conn?.driver === 'redis' || conn?.driver === 'memcache') return
   const existing = sessions.value.find(s => s.connId === id)
   if (existing) {
     // Session already open — just bring it to focus
@@ -183,7 +198,8 @@ function onPickerKeydown(e: KeyboardEvent) { if (e.key === 'Escape') pickerOpen.
 
 const activeConnIsRedis = computed(() => {
   if (props.activeConnId == null) return false
-  return connections.value.find(c => c.id === props.activeConnId)?.driver === 'redis'
+  const driver = connections.value.find(c => c.id === props.activeConnId)?.driver
+  return driver === 'redis' || driver === 'memcache'
 })
 
 // Show landing page when there are no sessions OR active conn is Redis
@@ -206,6 +222,11 @@ function quickOpen(connId: number) {
 function handleTableSelected(sessionId: string, db: string, table: string) {
   const session = sessions.value.find(s => s.id === sessionId)
   if (session) { session.initialDb = db; session.initialTable = table }
+}
+
+function handleTabSelected(sessionId: string, tab: DataSessionTab) {
+  const session = sessions.value.find(s => s.id === sessionId)
+  if (session) session.initialTab = tab
 }
 </script>
 
@@ -324,7 +345,9 @@ function handleTableSelected(sessionId: string, db: string, table: string) {
             :initial-s-q-l="s.initialSQL"
             :initial-db="s.initialDb"
             :initial-table="s.initialTable"
+            :initial-tab="s.initialTab"
             @table-selected="(db, table) => handleTableSelected(s.id, db, table)"
+            @tab-selected="(tab) => handleTabSelected(s.id, tab)"
           />
         </KeepAlive>
       </div>
@@ -442,12 +465,13 @@ function handleTableSelected(sessionId: string, db: string, table: string) {
 
 /* ── Connection picker dropdown (teleported to body) ────────────── */
 .sess-picker {
-  width: 300px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: 0 16px 48px rgba(0,0,0,.35), 0 4px 16px rgba(0,0,0,.25);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .sess-picker__header {
@@ -461,7 +485,7 @@ function handleTableSelected(sessionId: string, db: string, table: string) {
 }
 
 .sess-picker__list {
-  max-height: 280px;
+  min-height: 0;
   overflow-y: auto;
   padding: 6px;
 }

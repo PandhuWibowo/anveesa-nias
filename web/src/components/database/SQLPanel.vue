@@ -22,7 +22,7 @@ export interface ScriptResult {
   row_count: number; affected_rows: number; duration_ms: number; error?: string
 }
 export type SQLPanelPayload =
-  | { kind: 'query'; columns: string[]; rows: unknown[][]; duration_ms: number; row_count: number; affected_rows: number; sql: string }
+  | { kind: 'query'; columns: string[]; rows: unknown[][]; duration_ms: number; row_count: number; affected_rows: number; sql: string; database?: string }
   | { kind: 'explain'; data: any; sql: string }
   | { kind: 'stream'; columns: string[]; rows: unknown[][]; count: number; duration_ms: number }
   | { kind: 'script'; results: ScriptResult[] }
@@ -35,6 +35,7 @@ const props = defineProps<{
   defaultDb?: string
   tableName?: string
   darkMode?: boolean
+  initialSql?: string
 }>()
 
 const emit = defineEmits<{
@@ -64,7 +65,7 @@ function makeTab(sql = 'SELECT 1;'): QueryTab {
   return { id: `sp-tab-${tabCounter++}`, name: `Query ${tabCounter - 1}`, sql, running: false, error: '', notice: '', noticeTone: 'error' }
 }
 
-const tabs = ref<QueryTab[]>([makeTab()])
+const tabs = ref<QueryTab[]>([makeTab(props.initialSql || 'SELECT 1;')])
 const activeTabId = ref(tabs.value[0].id)
 const activeTab = computed(() => tabs.value.find(t => t.id === activeTabId.value) ?? tabs.value[0])
 
@@ -229,6 +230,7 @@ async function runQuery() {
       row_count: data.row_count,
       affected_rows: data.affected_rows ?? 0,
       sql: tab.sql,
+      database: selectedDatabase.value || undefined,
     })
     // Record in history
     axios.post(`/api/connections/${props.connId}/history`, {
@@ -454,7 +456,11 @@ function loadSQL(sql: string) {
   activeTab.value.sql = sql
 }
 
-defineExpose({ loadSQL, exportCurrentResult })
+function currentSQL() {
+  return activeTab.value?.sql ?? ''
+}
+
+defineExpose({ loadSQL, currentSQL, exportCurrentResult })
 </script>
 
 <template>

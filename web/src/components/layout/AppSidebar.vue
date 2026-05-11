@@ -64,15 +64,16 @@ function toggleFolder(id: number) {
   else collapsedFolders.value.add(id)
 }
 
-const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', kafka: 'KF' }
+const driverLabel: Record<string, string> = { sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF' }
 
 function selectConn(conn: Connection) {
   emit('select-conn', conn.id)
-  const stayViews = ['schema', 'data', 'er', 'dashboard', 'query', 'redis', 'laravel-queue', 'kafka']
+  const stayViews = ['schema', 'data', 'er', 'dashboard', 'query', 'redis', 'memcache', 'laravel-queue', 'kafka']
   const current = router.currentRoute.value.name as string
   if (conn.driver === 'redis' && current !== 'redis') router.push({ name: 'redis' })
+  else if (conn.driver === 'memcache' && current !== 'memcache') router.push({ name: 'memcache' })
   else if (conn.driver === 'kafka' && current !== 'kafka') router.push({ name: 'kafka' })
-  else if (conn.driver !== 'redis' && conn.driver !== 'kafka' && ((current === 'redis' || current === 'kafka') || !stayViews.includes(current))) router.push({ name: 'query' })
+  else if (conn.driver !== 'redis' && conn.driver !== 'memcache' && conn.driver !== 'kafka' && ((current === 'redis' || current === 'memcache' || current === 'kafka') || !stayViews.includes(current))) router.push({ name: 'query' })
 }
 
 async function deleteConn(conn: Connection) {

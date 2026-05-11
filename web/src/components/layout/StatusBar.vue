@@ -14,17 +14,20 @@ const activeConn = computed(() =>
 )
 
 const driverLabel: Record<string, string> = {
+  sqlite: 'SQLite',
   postgres: 'PostgreSQL',
   mysql: 'MySQL',
   mariadb: 'MariaDB',
   mssql: 'SQL Server',
   redis: 'Redis',
+  memcache: 'Memcache',
   kafka: 'Kafka',
 }
 
 function activeConnRoute() {
   if (!activeConn.value) return 'connections'
   if (activeConn.value.driver === 'redis') return 'redis'
+  if (activeConn.value.driver === 'memcache') return 'memcache'
   if (activeConn.value.driver === 'kafka') return 'kafka'
   return 'query'
 }
@@ -32,6 +35,7 @@ function activeConnRoute() {
 function activeConnTargetLabel() {
   if (!activeConn.value) return 'Add a connection'
   if (activeConn.value.driver === 'redis') return `Open Redis browser for ${activeConn.value.name}`
+  if (activeConn.value.driver === 'memcache') return `Open Memcache browser for ${activeConn.value.name}`
   if (activeConn.value.driver === 'kafka') return `Open Kafka browser for ${activeConn.value.name}`
   return `Open query editor for ${activeConn.value.name}`
 }
@@ -63,7 +67,7 @@ function activeConnTargetLabel() {
       <div class="statusbar__sep" />
       <div class="statusbar__item">
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.7"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
-        <span>{{ activeConn.driver === 'redis' ? `DB ${activeConn.database || 0}` : activeConn.driver === 'kafka' ? 'Broker' : activeConn.database }}</span>
+        <span>{{ activeConn.driver === 'redis' ? `DB ${activeConn.database || 0}` : activeConn.driver === 'memcache' ? 'Cache' : activeConn.driver === 'kafka' ? 'Broker' : activeConn.database }}</span>
       </div>
     </template>
 

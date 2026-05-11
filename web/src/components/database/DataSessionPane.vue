@@ -18,8 +18,13 @@ import type { SQLPanelPayload } from '@/components/database/SQLPanel.vue'
 
 type ImportRow = (string | number | null)[]
 
-const props = defineProps<{ connId: number | null; darkMode: boolean; active?: boolean; initialSQL?: string | null; initialDb?: string; initialTable?: string }>()
-const emit = defineEmits<{ (e: 'table-selected', db: string, table: string): void }>()
+type DataSessionTab = 'data' | 'explorer' | 'schema' | 'sql'
+
+const props = defineProps<{ connId: number | null; darkMode: boolean; active?: boolean; initialSQL?: string | null; initialDb?: string; initialTable?: string; initialTab?: DataSessionTab }>()
+const emit = defineEmits<{
+  (e: 'table-selected', db: string, table: string): void
+  (e: 'tab-selected', tab: DataSessionTab): void
+}>()
 
 const { connections } = useConnections()
 const { fetchTableData, fetchTableColumns, columns: schemaColumns, fetchColumns } = useSchema()
@@ -30,7 +35,7 @@ const router = useRouter()
 const activeConn = computed(() =>
   props.connId ? connections.value.find(c => c.id === props.connId) ?? null : null
 )
-const supportsRelationalSchema = computed(() => !!activeConn.value && activeConn.value.driver !== 'redis' && activeConn.value.driver !== 'kafka')
+const supportsRelationalSchema = computed(() => !!activeConn.value && activeConn.value.driver !== 'redis' && activeConn.value.driver !== 'memcache' && activeConn.value.driver !== 'kafka')
 
 // ── Data browser state ────────────────────────────────────────────
 const selected = ref<{ db: string; table: string } | null>(null)
@@ -45,6 +50,7 @@ const loading = ref(false)
 const editMode = ref(false)
 const pkColumn = ref('')
 const hasUnsavedTableEdits = ref(false)
+const activeSubTab = ref<string>('data')
 let suppressSubTabGuard = false
 
 watch(() => props.connId, () => {
@@ -165,6 +171,7 @@ async function handleSchemaSelectTable(payload: { db: string; table: string; typ
   schemaLoadingCols.value = true
   await fetchColumns(props.connId ?? 0, payload.db, payload.table)
   schemaLoadingCols.value = false
+  emit('table-selected', payload.db, payload.table)
 }
 
 const schemaColumnRows = computed(() =>
@@ -189,14 +196,36 @@ const activeDatabase = ref('')
 const selectedObjectKey = ref('')
 const detailLoading = ref(false)
 
-watch([() => props.connId, () => props.active], async ([id, isActive]) => {
+async function ensureExplorerReady() {
+  if (!props.connId || !supportsRelationalSchema.value) return
+  if (!databases.value.length) {
+    await fetchSchemaList(props.connId)
+  }
+  if (!activeDatabase.value) {
+    activeDatabase.value = databases.value[0]?.name ?? ''
+    return
+  }
+  if (!metadata.value) {
+    const catalog = await fetchMetadata(props.connId, activeDatabase.value)
+    const firstItem = catalog?.groups.find(group => group.items.length > 0)?.items[0]
+    if (firstItem) {
+      await selectSchemaObject({ type: firstItem.type, name: firstItem.name })
+    }
+  }
+}
+
+watch([() => props.connId, () => props.active, supportsRelationalSchema], async ([id, isActive, canLoad]) => {
   metadata.value = null
   objectDetail.value = null
   selectedObjectKey.value = ''
   activeDatabase.value = ''
-  if (!id || !isActive || !supportsRelationalSchema.value) return
-  await fetchSchemaList(id)
-  activeDatabase.value = databases.value[0]?.name ?? ''
+  if (!id || !isActive || !canLoad) return
+  if (activeSubTab.value === 'explorer') {
+    await ensureExplorerReady()
+  } else {
+    await fetchSchemaList(id)
+    activeDatabase.value = databases.value[0]?.name ?? ''
+  }
 }, { immediate: true })
 
 watch(activeDatabase, async (dbName) => {
@@ -325,18 +354,109 @@ async function exportJson() { if (!rows.value.length) return; const { downloadJS
 // ── Sub-tab + SQL tabs ────────────────────────────────────────────
 type ResultKind = 'query' | 'explain' | 'stream' | 'script' | 'history' | 'saved' | 'error' | 'chart'
 interface PinnedResult { id: string; label: string; columns: string[]; rows: unknown[][] }
-interface SQLViewTab { id: string; label: string; result: SQLPanelPayload | null; activeResultTab: ResultKind; sqlHeight: number; pinnedResults: PinnedResult[]; diffLeft: string; diffRight: string }
+interface SQLViewTab { id: string; label: string; result: SQLPanelPayload | null; activeResultTab: ResultKind; sqlHeight: number; pinnedResults: PinnedResult[]; diffLeft: string; diffRight: string; initialSQL?: string }
+interface SQLEditTarget { db: string; table: string }
+interface PersistedSQLTab { label: string; result: SQLPanelPayload | null; activeResultTab: ResultKind; sqlHeight: number; pinnedResults: PinnedResult[]; diffLeft: string; diffRight: string; sql: string }
+interface PersistedSQLState { tabs: PersistedSQLTab[]; activeIndex: number }
 
-const activeSubTab = ref<string>('data')
 const sqlViewTabs = ref<SQLViewTab[]>([])
 const sqlPanelRefs = ref<Record<string, InstanceType<typeof SQLPanel>>>({})
 let sqlTabCounter = 0
+let restoringSQLState = false
+
+function sqlStateKey() {
+  return props.connId ? `dsp_sql_state:${props.connId}` : ''
+}
+
+function trimPersistedResult(result: SQLPanelPayload | null): SQLPanelPayload | null {
+  if (!result) return null
+  if (result.kind === 'query') {
+    return { ...result, rows: result.rows.slice(0, 1000), row_count: result.row_count }
+  }
+  if (result.kind === 'stream') {
+    return { ...result, rows: result.rows.slice(0, 1000), count: result.count }
+  }
+  return result
+}
+
+function persistSQLState() {
+  if (restoringSQLState) return
+  const key = sqlStateKey()
+  if (!key) return
+  if (!sqlViewTabs.value.length) {
+    localStorage.removeItem(key)
+    return
+  }
+  const state: PersistedSQLState = {
+    tabs: sqlViewTabs.value.map(tab => ({
+      label: tab.label,
+      result: trimPersistedResult(tab.result),
+      activeResultTab: tab.activeResultTab,
+      sqlHeight: tab.sqlHeight,
+      pinnedResults: tab.pinnedResults,
+      diffLeft: tab.diffLeft,
+      diffRight: tab.diffRight,
+      sql: sqlPanelRefs.value[tab.id]?.currentSQL?.() ?? (tab.result as any)?.sql ?? tab.initialSQL ?? '',
+    })),
+    activeIndex: Math.max(0, sqlViewTabs.value.findIndex(tab => tab.id === activeSubTab.value)),
+  }
+  try {
+    localStorage.setItem(key, JSON.stringify(state))
+  } catch {
+    localStorage.removeItem(key)
+  }
+}
+
+function restoreSQLState(activateTab = true) {
+  const key = sqlStateKey()
+  if (!key) return false
+  let state: PersistedSQLState | null = null
+  try {
+    state = JSON.parse(localStorage.getItem(key) ?? 'null')
+  } catch {
+    state = null
+  }
+  if (!state?.tabs?.length) return false
+
+  restoringSQLState = true
+  sqlViewTabs.value = state.tabs.map(tab => {
+    const id = `sql-${++sqlTabCounter}`
+    return {
+      id,
+      label: tab.label || `SQL ${sqlTabCounter}`,
+      result: tab.result,
+      activeResultTab: tab.activeResultTab || 'query',
+      sqlHeight: tab.sqlHeight || 260,
+      pinnedResults: tab.pinnedResults || [],
+      diffLeft: tab.diffLeft || '',
+      diffRight: tab.diffRight || '',
+      initialSQL: tab.sql || (tab.result as any)?.sql || '',
+    }
+  })
+  const active = sqlViewTabs.value[Math.min(Math.max(state.activeIndex || 0, 0), sqlViewTabs.value.length - 1)]
+  if (activateTab) {
+    activeSubTab.value = active?.id ?? 'data'
+  }
+  setTimeout(() => {
+    for (const tab of sqlViewTabs.value) {
+      if (tab.initialSQL) sqlPanelRefs.value[tab.id]?.loadSQL(tab.initialSQL)
+    }
+    restoringSQLState = false
+    persistSQLState()
+  }, 100)
+  return true
+}
 
 // Sync Schema ↔ Data Browser when switching sub-tabs
 watch(activeSubTab, (tab) => {
   if (tab === 'schema' && selected.value) handleSchemaSelectTable({ db: selected.value.db, table: selected.value.table })
   else if (tab === 'data' && schemaSelected.value) handleSelectTable({ db: schemaSelected.value.db, table: schemaSelected.value.table })
+  else if (tab === 'explorer') void ensureExplorerReady()
+  emit('tab-selected', tab.startsWith('sql-') ? 'sql' : tab as DataSessionTab)
+  persistSQLState()
 })
+
+watch(sqlViewTabs, persistSQLState, { deep: true })
 
 watch(activeSubTab, (tab, previous) => {
   if (suppressSubTabGuard || previous !== 'data' || tab === 'data') return
@@ -351,7 +471,7 @@ watch(activeSubTab, (tab, previous) => {
 
 function openSqlTab(preloadSQL?: string) {
   const id = `sql-${++sqlTabCounter}`
-  sqlViewTabs.value.push({ id, label: `SQL ${sqlTabCounter}`, result: null, activeResultTab: 'query', sqlHeight: 260, pinnedResults: [], diffLeft: '', diffRight: '' })
+  sqlViewTabs.value.push({ id, label: `SQL ${sqlTabCounter}`, result: null, activeResultTab: 'query', sqlHeight: 260, pinnedResults: [], diffLeft: '', diffRight: '', initialSQL: preloadSQL ?? '' })
   activeSubTab.value = id
   if (preloadSQL) setTimeout(() => sqlPanelRefs.value[id]?.loadSQL(preloadSQL), 80)
 }
@@ -365,7 +485,12 @@ function closeSqlTab(id: string) {
 
 function onSQLResult(tabId: string, payload: SQLPanelPayload) {
   const tab = sqlViewTabs.value.find(t => t.id === tabId)
-  if (tab) { tab.result = payload; tab.activeResultTab = payload.kind as ResultKind }
+  if (tab) {
+    tab.result = payload
+    tab.activeResultTab = payload.kind as ResultKind
+    tab.initialSQL = (payload as any).sql ?? tab.initialSQL
+    persistSQLState()
+  }
 }
 function clearTabResult(tabId: string) { const tab = sqlViewTabs.value.find(t => t.id === tabId); if (tab) tab.result = null }
 function pinTabResult(tabId: string) {
@@ -375,6 +500,77 @@ function pinTabResult(tabId: string) {
   tab.pinnedResults.unshift({ id: crypto.randomUUID(), label: r.sql.slice(0, 40).replace(/\n/g, ' ').trim(), columns: [...r.columns], rows: [...r.rows] })
 }
 function useSQLInTab(tabId: string, sql: string) { sqlPanelRefs.value[tabId]?.loadSQL(sql) }
+
+function openExplorerTab() {
+  activeSubTab.value = 'explorer'
+  void ensureExplorerReady()
+}
+
+function cleanSQLIdentifier(value: string) {
+  const trimmed = value.trim()
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith('`') && trimmed.endsWith('`'))) {
+    return trimmed.slice(1, -1)
+  }
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    return trimmed.slice(1, -1)
+  }
+  return trimmed
+}
+
+function splitQualifiedTableName(raw: string) {
+  const parts: string[] = []
+  let current = ''
+  let quote: string | null = null
+  for (let i = 0; i < raw.length; i += 1) {
+    const ch = raw[i]
+    if (!quote && (ch === '"' || ch === '`' || ch === '[')) {
+      quote = ch === '[' ? ']' : ch
+      current += ch
+      continue
+    }
+    if (quote && ch === quote) {
+      quote = null
+      current += ch
+      continue
+    }
+    if (!quote && ch === '.') {
+      parts.push(cleanSQLIdentifier(current))
+      current = ''
+      continue
+    }
+    current += ch
+  }
+  if (current.trim()) parts.push(cleanSQLIdentifier(current))
+  return parts.filter(Boolean)
+}
+
+function editableTargetForSQLResult(tab: SQLViewTab): SQLEditTarget | null {
+  if (!tab.result || tab.result.kind !== 'query') return null
+  const sql = ((tab.result as any).sql || '').replace(/--.*$/gm, ' ').replace(/\/\*[\s\S]*?\*\//g, ' ').trim()
+  if (!/^select\b/i.test(sql)) return null
+  if (/\b(join|union|intersect|except)\b/i.test(sql)) return null
+  const fromMatch = sql.match(/\bfrom\s+((?:"[^"]+"|`[^`]+`|\[[^\]]+\]|[a-zA-Z_][\w$]*)(?:\s*\.\s*(?:"[^"]+"|`[^`]+`|\[[^\]]+\]|[a-zA-Z_][\w$]*)){0,2})/i)
+  if (!fromMatch) return null
+  const parts = splitQualifiedTableName(fromMatch[1].replace(/\s+/g, ''))
+  if (!parts.length) return null
+  const table = parts[parts.length - 1]
+  const explicitDb = parts.length >= 2 ? parts[parts.length - 2] : ''
+  const db = explicitDb || (tab.result as any).database || selected.value?.db || activeConn.value?.database || 'public'
+  return { db, table }
+}
+
+async function editSQLResultRows(tab: SQLViewTab) {
+  const target = editableTargetForSQLResult(tab)
+  if (!target) {
+    toast.error('Only simple SELECT results from one table can be opened for editing')
+    return
+  }
+  await handleSelectTable({ db: target.db, table: target.table })
+  activeSubTab.value = 'data'
+  editMode.value = true
+  toast.success(`Opened ${target.table} in edit mode`)
+}
+
 function analyzeTabResultWithAI(tabId: string) {
   const tab = sqlViewTabs.value.find(t => t.id === tabId)
   if (!tab || !tab.result || tab.result.kind !== 'query' || !props.connId) return
@@ -405,6 +601,7 @@ function onSqlResizeMove(e: MouseEvent) {
 }
 function onSqlResizeEnd() { resizingTabId.value = null; window.removeEventListener('mousemove', onSqlResizeMove); window.removeEventListener('mouseup', onSqlResizeEnd) }
 onBeforeUnmount(() => {
+  persistSQLState()
   window.removeEventListener('mousemove', onSqlResizeMove)
   window.removeEventListener('mouseup', onSqlResizeEnd)
   window.removeEventListener('beforeunload', handleBeforeUnload)
@@ -418,13 +615,28 @@ function openSchemaTableInSQL(table: string) { openSqlTab(`SELECT *\nFROM ${tabl
 // Open with initial SQL if provided; restore last selected table
 onMounted(() => {
   window.addEventListener('beforeunload', handleBeforeUnload)
-  if (props.initialSQL) openSqlTab(props.initialSQL)
   if (props.initialDb && props.initialTable) {
-    handleSelectTable({ db: props.initialDb, table: props.initialTable })
+    if (props.initialTab === 'schema') {
+      handleSchemaSelectTable({ db: props.initialDb, table: props.initialTable })
+    } else {
+      handleSelectTable({ db: props.initialDb, table: props.initialTable })
+    }
+  }
+  if (props.initialSQL) {
+    openSqlTab(props.initialSQL)
+  } else if (props.initialTab === 'sql') {
+    if (!restoreSQLState()) openSqlTab()
+  } else if (props.initialTab) {
+    restoreSQLState(false)
+    activeSubTab.value = props.initialTab
+    if (props.initialTab === 'explorer') void ensureExplorerReady()
+  } else if (restoreSQLState()) {
+    return
   }
 })
 
 function handleBeforeUnload(event: BeforeUnloadEvent) {
+  persistSQLState()
   if (!hasUnsavedTableEdits.value) return
   event.preventDefault()
   event.returnValue = ''
@@ -444,7 +656,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
           Browse
         </button>
-        <button class="sp-tab" :class="{ 'sp-tab--active': activeSubTab === 'explorer' }" @click="activeSubTab = 'explorer'">
+        <button class="sp-tab" :class="{ 'sp-tab--active': activeSubTab === 'explorer' }" @click="openExplorerTab">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
           Explorer
         </button>
@@ -477,7 +689,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 
     <!-- DATA BROWSER -->
     <div v-else-if="!supportsRelationalSchema" v-show="activeSubTab === 'data' || activeSubTab === 'schema' || activeSubTab === 'explorer'" class="empty-state" style="flex:1">
-      Redis does not expose relational schema here. Use the Redis or Laravel Queue page for this connection.
+      This connection does not expose relational schema here. Use the matching cache or messaging page for this connection.
     </div>
 
     <div v-else v-show="activeSubTab === 'data'" style="display:flex;flex:1;min-height:0;overflow:hidden">
@@ -486,7 +698,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ activeConn.name }}</span>
           <span class="driver-badge" :style="{ background: driverColor(activeConn.driver) }">{{ driverLabel(activeConn.driver) }}</span>
         </div>
-        <SchemaTree :connId="connId" :active="active" @select-table="handleSelectTable" />
+        <SchemaTree :connId="connId" :active="active" :selected-table="selected ? `${selected.db}.${selected.table}` : undefined" @select-table="handleSelectTable" />
       </div>
       <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden">
         <div class="browse-toolbar">
@@ -530,7 +742,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ activeConn.name }}</span>
           <span class="driver-badge" :style="{ background: driverColor(activeConn.driver) }">{{ driverLabel(activeConn.driver) }}</span>
         </div>
-        <SchemaTree :connId="connId" :active="active" @select-table="handleSchemaSelectTable" />
+        <SchemaTree :connId="connId" :active="active" :selected-table="schemaSelected ? `${schemaSelected.db}.${schemaSelected.table}` : undefined" @select-table="handleSchemaSelectTable" />
       </div>
       <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden">
         <div style="padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg-surface);display:flex;align-items:center;gap:10px;flex-shrink:0;min-height:40px">
@@ -819,6 +1031,14 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
               <span class="res-meta">{{ (tab.result as any).duration_ms }}ms · {{ (tab.result as any).row_count }} rows</span>
               <button class="base-btn base-btn--ghost base-btn--xs" @click="sqlPanelRefs[tab.id]?.exportCurrentResult('csv',(tab.result as any).columns,(tab.result as any).rows)">CSV</button>
               <button class="base-btn base-btn--ghost base-btn--xs" @click="sqlPanelRefs[tab.id]?.exportCurrentResult('json',(tab.result as any).columns,(tab.result as any).rows)">JSON</button>
+              <button
+                class="base-btn base-btn--primary base-btn--xs"
+                :disabled="!editableTargetForSQLResult(tab)"
+                @click="editSQLResultRows(tab)"
+                title="Open this single-table SELECT result in the editable Data tab"
+              >
+                Edit Rows
+              </button>
               <button class="base-btn base-btn--ghost base-btn--xs" @click="analyzeTabResultWithAI(tab.id)" title="Analyze this query result with AI">Analyze with AI</button>
               <button class="base-btn base-btn--ghost base-btn--xs" @click="pinTabResult(tab.id)" title="Pin">Pin</button>
             </template>
@@ -896,6 +1116,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           <SQLPanel
             :ref="(el: any) => { if (el) sqlPanelRefs[tab.id] = el }"
             :conn-id="connId" :default-db="selected?.db" :table-name="selected?.table" :dark-mode="darkMode"
+            :initial-sql="tab.initialSQL"
             @result="(p) => onSQLResult(tab.id, p)"
             @close="closeSqlTab(tab.id)"
           />

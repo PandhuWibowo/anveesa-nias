@@ -22,8 +22,8 @@ const { connections } = useConnections()
 const activeConn = computed(() =>
   props.activeConnId != null ? connections.value.find(c => c.id === props.activeConnId) ?? null : null
 )
-const driverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927', redis: '#c6302b', kafka: '#231f20' }
-const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', kafka: 'KF' }
+const driverColor: Record<string, string> = { sqlite: '#4b5563', postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927', redis: '#c6302b', memcache: '#16a34a', kafka: '#231f20' }
+const driverLabel: Record<string, string> = { sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF' }
 
 // Nav group dropdown
 const openMenu = ref<string | null>(null)
@@ -107,10 +107,12 @@ const allMenuGroups: MenuGroup[] = [
     icon: 'table',
     items: [
       { name: 'data', label: 'SQL Studio', desc: 'Browse tables, inspect schema, and run SQL in the main workbench', icon: 'table', section: 'RDBMS', permissionsAny: ['sqlstudio.access'] },
+      { name: 'database-objects', label: 'Database Objects', desc: 'Browse indexes, views, functions, procedures, triggers, sequences, and types', icon: 'diff', section: 'RDBMS', permissionsAny: ['sqlstudio.access'] },
       { name: 'er', label: 'ER Diagram', desc: 'Visualize relationships between tables before building analysis', icon: 'er', section: 'RDBMS', permissionsAny: ['er.view'] },
       { name: 'diff', label: 'Schema Diff', desc: 'Compare schema structure across environments', icon: 'diff', section: 'RDBMS', permissionsAny: ['schema.diff.view'] },
       { name: 'row-history', label: 'Row History', desc: 'See row-level INSERT, UPDATE, DELETE changes', icon: 'rowhistory', section: 'RDBMS', permissionsAny: ['rowhistory.view'] },
       { name: 'redis', label: 'Redis Browser', desc: 'Scan keys and inspect Redis values from managed connections', icon: 'table', section: 'Database Cache', permissionsAny: ['redis.view'] },
+      { name: 'memcache', label: 'Memcache Browser', desc: 'Read, write, delete, flush, and inspect Memcache values', icon: 'table', section: 'Database Cache', permissionsAny: ['redis.view'] },
     ],
   },
   {

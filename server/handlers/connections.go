@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bufio"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -9,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -18,15 +20,18 @@ import (
 	appdb "github.com/anveesa/nias/db"
 	"github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 // allowedDrivers defines valid database drivers
 var allowedDrivers = map[string]bool{
+	"sqlite":   true,
 	"postgres": true,
 	"mysql":    true,
 	"mariadb":  true, // alias → uses MySQL driver
 	"mssql":    true,
 	"redis":    true,
+	"memcache": true,
 	"kafka":    true,
 }
 
@@ -154,11 +159,15 @@ type ConnectionInput struct {
 func validateConnectionInput(in *ConnectionInput) error {
 	// Validate driver
 	if !allowedDrivers[in.Driver] {
-		return fmt.Errorf("invalid driver: must be postgres, mysql, mariadb, mssql, redis, or kafka")
+		return fmt.Errorf("invalid driver: must be sqlite, postgres, mysql, mariadb, mssql, redis, memcache, or kafka")
 	}
 
 	// Validate port
-	if in.Port < 1 || in.Port > 65535 {
+	if in.Driver == "sqlite" {
+		if strings.TrimSpace(in.Database) == "" {
+			return fmt.Errorf("database file path is required")
+		}
+	} else if in.Port < 1 || in.Port > 65535 {
 		return fmt.Errorf("invalid port: must be 1-65535")
 	}
 
@@ -195,8 +204,14 @@ func isValidHostname(host string) bool {
 
 func buildDSN(in ConnectionInput) (string, error) {
 	switch in.Driver {
-	case "redis", "kafka":
+	case "redis", "memcache", "kafka":
 		return "", fmt.Errorf("%s does not use SQL DSN", in.Driver)
+	case "sqlite":
+		dbPath := strings.TrimSpace(in.Database)
+		if dbPath == "" {
+			return "", fmt.Errorf("sqlite database file path is required")
+		}
+		return dbPath, nil
 	case "postgres":
 		sslMode := "disable"
 		if in.SSL {
@@ -271,6 +286,8 @@ func driverName(d string) string {
 		return "mysql"
 	case "mssql":
 		return "sqlserver"
+	case "sqlite":
+		return "sqlite3"
 	}
 	return d
 }
@@ -829,6 +846,14 @@ func TestConnection() http.HandlerFunc {
 			json.NewEncoder(w).Encode(map[string]string{"message": "Connection successful"})
 			return
 		}
+		if in.Driver == "memcache" {
+			if err := testMemcacheInput(r.Context(), in); err != nil {
+				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"message": "Connection successful"})
+			return
+		}
 		if in.Driver == "kafka" {
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 			defer cancel()
@@ -958,4 +983,40 @@ func openRemoteDB(connID int64) (*sql.DB, string, error) {
 	}
 	db.SetMaxOpenConns(5)
 	return db, goDriver, nil
+}
+
+func testMemcacheInput(ctx context.Context, in ConnectionInput) error {
+	host := strings.TrimSpace(in.Host)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := in.Port
+	if port == 0 {
+		port = 11211
+	}
+
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", host, port))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+
+	if _, err := conn.Write([]byte("version\r\n")); err != nil {
+		return err
+	}
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(strings.ToUpper(strings.TrimSpace(line)), "VERSION") {
+		return fmt.Errorf("unexpected memcache response: %s", strings.TrimSpace(line))
+	}
+	return nil
 }

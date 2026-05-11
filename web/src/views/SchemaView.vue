@@ -22,7 +22,7 @@ const detailLoading = ref(false)
 const activeConn = computed(() =>
   localConnId.value ? connections.value.find(c => c.id === localConnId.value) ?? null : null
 )
-const supportsRelationalSchema = computed(() => !!activeConn.value && activeConn.value.driver !== 'redis' && activeConn.value.driver !== 'kafka')
+const supportsRelationalSchema = computed(() => !!activeConn.value && activeConn.value.driver !== 'redis' && activeConn.value.driver !== 'memcache' && activeConn.value.driver !== 'kafka')
 
 watch(() => props.activeConnId, (id) => {
   if (id != null) localConnId.value = id
