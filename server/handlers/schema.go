@@ -50,6 +50,26 @@ func GetSchema() http.HandlerFunc {
 			var dbs []SchemaDatabase
 
 			switch driver {
+			case "sqlite3":
+				rows, err := db.Query(
+					`SELECT name, type
+					 FROM sqlite_master
+					 WHERE type IN ('table', 'view')
+					   AND name NOT LIKE 'sqlite_%'
+					 ORDER BY type, name`,
+				)
+				if err != nil {
+					return nil, err
+				}
+				defer rows.Close()
+				mainDB := SchemaDatabase{Name: "main"}
+				for rows.Next() {
+					var tableName, tableType string
+					rows.Scan(&tableName, &tableType)
+					mainDB.Tables = append(mainDB.Tables, SchemaTable{Name: tableName, Type: tableType})
+				}
+				dbs = append(dbs, mainDB)
+
 			case "postgres":
 				rows, err := db.Query(
 					`SELECT table_schema, table_name, table_type
@@ -138,6 +158,11 @@ func GetSchema() http.HandlerFunc {
 			if dbs == nil {
 				dbs = []SchemaDatabase{}
 			}
+			for i := range dbs {
+				if dbs[i].Tables == nil {
+					dbs[i].Tables = []SchemaTable{}
+				}
+			}
 			return dbs, nil
 		})
 	}
@@ -171,6 +196,24 @@ func GetTableColumns() http.HandlerFunc {
 			var cols []SchemaColumn
 
 			switch driver {
+			case "sqlite3":
+				rows, err := db.Query(`PRAGMA table_info(` + quoteIdent(driver, tableName) + `)`)
+				if err != nil {
+					return nil, err
+				}
+				defer rows.Close()
+				for rows.Next() {
+					var cid int
+					var col SchemaColumn
+					var notNull, pk int
+					var defVal *string
+					rows.Scan(&cid, &col.Name, &col.DataType, &notNull, &defVal, &pk)
+					col.IsNullable = notNull == 0
+					col.IsPrimaryKey = pk > 0
+					col.DefaultValue = defVal
+					cols = append(cols, col)
+				}
+
 			case "postgres":
 				schemaName := dbName
 				if schemaName == "" {

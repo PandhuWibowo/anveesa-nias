@@ -14,6 +14,7 @@ import (
 	"github.com/anveesa/nias/config"
 	"github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
+	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -27,6 +28,20 @@ func Init(cfg *config.Config) error {
 	dbDriver = cfg.DBDriver
 
 	switch cfg.DBDriver {
+	case "sqlite":
+		db, err = sql.Open("sqlite3", cfg.DBURL)
+		if err != nil {
+			return fmt.Errorf("open sqlite: %w", err)
+		}
+
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+		db.SetConnMaxLifetime(0)
+
+		if err := db.Ping(); err != nil {
+			return fmt.Errorf("ping sqlite: %w", err)
+		}
+
 	case "postgres":
 		// PostgreSQL (including AWS RDS PostgreSQL)
 		db, err = sql.Open("postgres", cfg.DBURL)

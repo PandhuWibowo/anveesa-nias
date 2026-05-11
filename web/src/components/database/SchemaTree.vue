@@ -42,6 +42,10 @@ function selectTable(db: string, table: SchemaTable) {
   activeTable.value = `${db}.${table.name}`
   emit('select-table', { db, table: table.name, type: table.type })
 }
+
+function tablesFor(db: { tables?: SchemaTable[] | null }) {
+  return Array.isArray(db.tables) ? db.tables : []
+}
 </script>
 
 <template>
@@ -73,13 +77,13 @@ function selectTable(db: string, table: SchemaTable) {
           </span>
           <svg class="schema-node__icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg>
           <span class="schema-node__label">{{ db.name }}</span>
-          <span class="schema-node__count">{{ db.tables.length }}</span>
+          <span class="schema-node__count">{{ tablesFor(db).length }}</span>
         </div>
 
         <!-- Tables -->
         <template v-if="expandedDbs.has(db.name)">
           <div
-            v-for="table in db.tables"
+            v-for="table in tablesFor(db)"
             :key="table.name"
             class="schema-node"
             style="padding-left:20px"

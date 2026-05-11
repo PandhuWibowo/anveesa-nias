@@ -61,6 +61,8 @@ func main() {
 		return
 	}
 	switch cfg.DBDriver {
+	case "sqlite":
+		log.Printf("Database initialized: SQLite")
 	case "postgres":
 		log.Printf("Database initialized: PostgreSQL")
 	case "mysql":
@@ -325,6 +327,14 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.RedisGenerateScript())(w, r)
 			case sub == "redis" && len(parts) >= 3 && parts[2] == "script" && r.Method == http.MethodPost:
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.RedisExecuteScript())(w, r)
+			case sub == "memcache" && len(parts) >= 3 && parts[2] == "ping" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.MemcachePing())(w, r)
+			case sub == "memcache" && len(parts) >= 3 && parts[2] == "stats" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.MemcacheStats())(w, r)
+			case sub == "memcache" && len(parts) >= 3 && parts[2] == "key" && (r.Method == http.MethodGet || r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete):
+				requireAny(handlers.PermConnectionsView, handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.MemcacheKey())(w, r)
+			case sub == "memcache" && len(parts) >= 3 && parts[2] == "flush" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.MemcacheFlush())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "queues" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueQueues())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "jobs" && r.Method == http.MethodGet:

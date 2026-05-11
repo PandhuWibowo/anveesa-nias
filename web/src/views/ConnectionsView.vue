@@ -23,11 +23,13 @@ const saving = ref(false)
 const testResult = ref<{ ok: boolean; message: string } | null>(null)
 
 const defaultPorts: Record<DbDriver, number> = {
+  sqlite: 0,
   postgres: 5432,
   mysql: 3306,
   mariadb: 3306,
   mssql: 1433,
   redis: 6379,
+  memcache: 11211,
   kafka: 9092,
 }
 
@@ -57,6 +59,7 @@ const driverGroups: Array<{ key: string; label: string; options: DriverOption[] 
     key: 'rdbms',
     label: 'RDBMS',
     options: [
+      { key: 'sqlite',   label: 'SQLite',     badge: 'SL',  sub: 'file' },
       { key: 'postgres', label: 'PostgreSQL', badge: 'PG',  sub: 'v12+' },
       { key: 'mysql',    label: 'MySQL',      badge: 'MY',  sub: 'v8+' },
       { key: 'mariadb',  label: 'MariaDB',    badge: 'MB',  sub: 'v10+' },
@@ -73,6 +76,7 @@ const driverGroups: Array<{ key: string; label: string; options: DriverOption[] 
     label: 'Database Cache',
     options: [
       { key: 'redis', label: 'Redis', badge: 'RD', sub: 'v6+' },
+      { key: 'memcache', label: 'Memcache', badge: 'MC', sub: 'v1.6+' },
     ],
   },
   {
@@ -85,11 +89,13 @@ const driverGroups: Array<{ key: string; label: string; options: DriverOption[] 
 ]
 
 const defaultDatabases: Record<DbDriver, string> = {
+  sqlite: 'nias.db',
   postgres: 'postgres',
   mysql: '',
   mariadb: '',
   mssql: '',
   redis: '0',
+  memcache: '',
   kafka: '',
 }
 
@@ -153,8 +159,8 @@ async function editConnection(id: number) {
 
 function validateForm(): string | null {
   if (!form.name.trim()) return 'Connection name is required'
-  const needsDb = ['postgres', 'mysql', 'mariadb', 'mssql']
-  if (needsDb.includes(form.driver) && !form.database.trim()) return 'Database name is required'
+  const needsDb = ['sqlite', 'postgres', 'mysql', 'mariadb', 'mssql']
+  if (needsDb.includes(form.driver) && !form.database.trim()) return form.driver === 'sqlite' ? 'SQLite file path is required' : 'Database name is required'
   return null
 }
 
@@ -214,6 +220,7 @@ function parseConnectionURL(raw: string) {
       mysql: 'mysql', mariadb: 'mariadb',
       mssql: 'mssql', sqlserver: 'mssql',
       redis: 'redis', rediss: 'redis',
+      memcache: 'memcache', memcached: 'memcache',
       kafka: 'kafka',
     }
     const driver = driverMap[scheme] ?? ('postgres' as DbDriver)
@@ -224,7 +231,7 @@ function parseConnectionURL(raw: string) {
     form.username = decodeURIComponent(url.username || '')
     form.password = decodeURIComponent(url.password || '')
     form.ssl = scheme === 'rediss' || url.searchParams.get('sslmode') === 'require' || url.searchParams.get('ssl') === 'true'
-    if (!form.name) form.name = driver === 'kafka' ? `${driver} / ${form.host}` : `${driver} / ${form.database}`
+    if (!form.name) form.name = driver === 'kafka' || driver === 'memcache' ? `${driver} / ${form.host}` : `${driver} / ${form.database}`
     showURLImport.value = false
     urlInput.value = ''
     testResult.value = null
@@ -234,16 +241,16 @@ function parseConnectionURL(raw: string) {
 }
 
 function driverBadge(driver: DbDriver) {
-  return ({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', kafka: 'KF' } as Record<DbDriver, string>)[driver] ?? driver.slice(0, 2).toUpperCase()
+  return ({ sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF' } as Record<DbDriver, string>)[driver] ?? driver.slice(0, 2).toUpperCase()
 }
 
 function driverFullName(driver: DbDriver) {
-  return ({ postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', mssql: 'SQL Server', redis: 'Redis', kafka: 'Kafka' } as Record<DbDriver, string>)[driver] ?? driver
+  return ({ sqlite: 'SQLite', postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', mssql: 'SQL Server', redis: 'Redis', memcache: 'Memcache', kafka: 'Kafka' } as Record<DbDriver, string>)[driver] ?? driver
 }
 
 function openConnection(id: number, driver: DbDriver) {
   emit('set-conn', id)
-  router.push({ name: driver === 'redis' ? 'redis' : driver === 'kafka' ? 'kafka' : 'data' })
+  router.push({ name: driver === 'redis' ? 'redis' : driver === 'memcache' ? 'memcache' : driver === 'kafka' ? 'kafka' : 'data' })
 }
 
 async function handleDelete(id: number, name: string) {
@@ -323,7 +330,7 @@ async function handleReconnect(id: number, name: string) {
                 <span class="conn-row__vis" :title="conn.visibility">{{ conn.visibility === 'shared' ? '🌐' : '🔒' }}</span>
               </div>
               <div class="conn-row__host">
-                {{ conn.username ? `${conn.username}@` : '' }}{{ conn.host }}{{ conn.port ? `:${conn.port}` : '' }}{{ (conn.driver === 'redis' ? `/db${conn.database || 0}` : conn.database ? `/${conn.database}` : '') }}
+                {{ conn.username ? `${conn.username}@` : '' }}{{ conn.host }}{{ conn.port ? `:${conn.port}` : '' }}{{ (conn.driver === 'redis' ? `/db${conn.database || 0}` : conn.driver === 'memcache' ? '' : conn.database ? `/${conn.database}` : '') }}
               </div>
               <div v-if="conn.folder_id" class="conn-row__folder">
                 {{ folders.find(f => f.id === conn.folder_id)?.name ?? 'Folder' }}
@@ -410,7 +417,7 @@ async function handleReconnect(id: number, name: string) {
                 <input
                   v-model="urlInput"
                   class="base-input"
-                  placeholder="postgres://user:pass@host:5432/dbname, redis://host:6379/0, or kafka://broker:9092"
+                  placeholder="postgres://user:pass@host:5432/dbname, redis://host:6379/0, memcache://host:11211, or kafka://broker:9092"
                   style="flex:1;font-family:var(--font-mono);font-size:11px"
                   @keydown.enter="parseConnectionURL(urlInput)"
                 />
@@ -466,14 +473,14 @@ async function handleReconnect(id: number, name: string) {
               </div>
 
               <div class="form-group">
-              <label class="form-label">{{ form.driver === 'redis' ? 'Database Index' : form.driver === 'kafka' ? 'Client ID / Notes' : 'Database' }}</label>
-                <input v-model="form.database" class="base-input" :placeholder="defaultDatabases[form.driver] || (form.driver === 'kafka' ? 'optional' : 'required')" />
+              <label class="form-label">{{ form.driver === 'redis' ? 'Database Index' : form.driver === 'memcache' ? 'Namespace / Notes' : form.driver === 'kafka' ? 'Client ID / Notes' : 'Database' }}</label>
+                <input v-model="form.database" class="base-input" :placeholder="defaultDatabases[form.driver] || (form.driver === 'kafka' || form.driver === 'memcache' ? 'optional' : 'required')" />
               </div>
 
               <div class="form-row">
                 <div class="form-group">
                   <label class="form-label">Username</label>
-                  <input v-model="form.username" class="base-input" :placeholder="form.driver === 'redis' ? 'default' : form.driver === 'kafka' ? 'SASL username' : 'postgres'" />
+                  <input v-model="form.username" class="base-input" :placeholder="form.driver === 'redis' ? 'default' : form.driver === 'memcache' ? 'unused' : form.driver === 'kafka' ? 'SASL username' : 'postgres'" />
                 </div>
                 <div class="form-group">
                   <label class="form-label">Password</label>

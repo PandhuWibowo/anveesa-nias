@@ -151,9 +151,21 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['sqlstudio.access'] },
         },
         {
+          path: 'database-objects',
+          name: 'database-objects',
+          component: () => import('@/views/DatabaseObjectsView.vue'),
+          meta: { requiredPermissionsAny: ['sqlstudio.access'] },
+        },
+        {
           path: 'redis',
           name: 'redis',
           component: () => import('@/views/RedisView.vue'),
+          meta: { requiredPermissionsAny: ['redis.view'] },
+        },
+        {
+          path: 'memcache',
+          name: 'memcache',
+          component: () => import('@/views/MemcacheView.vue'),
           meta: { requiredPermissionsAny: ['redis.view'] },
         },
         {

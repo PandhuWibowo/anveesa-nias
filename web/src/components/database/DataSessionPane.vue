@@ -35,7 +35,7 @@ const router = useRouter()
 const activeConn = computed(() =>
   props.connId ? connections.value.find(c => c.id === props.connId) ?? null : null
 )
-const supportsRelationalSchema = computed(() => !!activeConn.value && activeConn.value.driver !== 'redis' && activeConn.value.driver !== 'kafka')
+const supportsRelationalSchema = computed(() => !!activeConn.value && activeConn.value.driver !== 'redis' && activeConn.value.driver !== 'memcache' && activeConn.value.driver !== 'kafka')
 
 // ── Data browser state ────────────────────────────────────────────
 const selected = ref<{ db: string; table: string } | null>(null)
@@ -50,6 +50,7 @@ const loading = ref(false)
 const editMode = ref(false)
 const pkColumn = ref('')
 const hasUnsavedTableEdits = ref(false)
+const activeSubTab = ref<string>('data')
 let suppressSubTabGuard = false
 
 watch(() => props.connId, () => {
@@ -358,7 +359,6 @@ interface SQLEditTarget { db: string; table: string }
 interface PersistedSQLTab { label: string; result: SQLPanelPayload | null; activeResultTab: ResultKind; sqlHeight: number; pinnedResults: PinnedResult[]; diffLeft: string; diffRight: string; sql: string }
 interface PersistedSQLState { tabs: PersistedSQLTab[]; activeIndex: number }
 
-const activeSubTab = ref<string>('data')
 const sqlViewTabs = ref<SQLViewTab[]>([])
 const sqlPanelRefs = ref<Record<string, InstanceType<typeof SQLPanel>>>({})
 let sqlTabCounter = 0
@@ -689,7 +689,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 
     <!-- DATA BROWSER -->
     <div v-else-if="!supportsRelationalSchema" v-show="activeSubTab === 'data' || activeSubTab === 'schema' || activeSubTab === 'explorer'" class="empty-state" style="flex:1">
-      Redis does not expose relational schema here. Use the Redis or Laravel Queue page for this connection.
+      This connection does not expose relational schema here. Use the matching cache or messaging page for this connection.
     </div>
 
     <div v-else v-show="activeSubTab === 'data'" style="display:flex;flex:1;min-height:0;overflow:hidden">
