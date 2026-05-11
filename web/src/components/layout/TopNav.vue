@@ -622,6 +622,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 }
 .topnav__conn-panel {
   max-width: calc(100vw - 16px);
+  width: min(300px, calc(100vw - 16px));
 }
 
 /* ── Nav ── */
@@ -930,5 +931,173 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__user-menu-item--logout:hover { 
   background: var(--bg-surface); 
   color: var(--danger); 
+}
+
+@media (max-width: 960px) {
+  .topnav {
+    gap: 6px;
+    padding-inline: 8px;
+  }
+
+  .topnav__brand-text {
+    display: none;
+  }
+
+  .topnav__divider {
+    margin-inline: 2px;
+  }
+
+  .topnav__conn-btn {
+    max-width: 220px;
+  }
+
+  .topnav__nav {
+    overflow-x: auto;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .topnav__nav::-webkit-scrollbar {
+    height: 3px;
+  }
+}
+
+@media (max-width: 760px) {
+  .topnav {
+    height: auto;
+    min-height: var(--topbar-h);
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 6px 8px;
+  }
+
+  .topnav__logo {
+    width: 28px;
+    height: 28px;
+  }
+
+  .topnav__divider {
+    display: none;
+  }
+
+  .topnav__conn-wrap {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .topnav__conn-btn {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    height: 32px;
+  }
+
+  .topnav__conn-name {
+    max-width: none;
+    min-width: 0;
+  }
+
+  .topnav__conn-host {
+    display: none;
+  }
+
+  .topnav__actions {
+    margin-left: auto;
+  }
+
+  .topnav__kbd,
+  .topnav__username {
+    display: none;
+  }
+
+  .topnav__user-btn {
+    width: 34px;
+    height: 32px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .topnav__nav {
+    order: 10;
+    flex: 1 0 100%;
+    width: 100%;
+    padding-top: 4px;
+    gap: 4px;
+  }
+
+  .topnav__link,
+  .topnav__menu-trigger {
+    height: 32px;
+    padding: 0 10px;
+    border-radius: 8px;
+  }
+
+  .topnav__dropdown {
+    position: fixed;
+    top: 82px;
+    left: 8px;
+    right: 8px;
+    min-width: 0;
+    max-height: min(68vh, 520px);
+    overflow-y: auto;
+    border-radius: 12px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .topnav__dropdown-item {
+    align-items: flex-start;
+    padding: 10px;
+  }
+
+  .topnav__dropdown-desc {
+    display: -webkit-box;
+    overflow: hidden;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .topnav__user-menu {
+    position: fixed;
+    top: 48px;
+    right: 8px;
+    width: min(260px, calc(100vw - 16px));
+    min-width: 0;
+    max-height: calc(100dvh - 60px);
+    overflow-y: auto;
+  }
+}
+
+@media (max-width: 460px) {
+  .topnav {
+    padding-inline: 6px;
+  }
+
+  .topnav__conn-badge {
+    display: none;
+  }
+
+  .topnav__conn-btn {
+    padding-inline: 8px;
+  }
+
+  .topnav__actions {
+    gap: 2px;
+  }
+
+  .topnav__action-btn--icon {
+    width: 30px;
+    height: 30px;
+  }
+
+  .topnav__link,
+  .topnav__menu-trigger {
+    font-size: 12px;
+    padding-inline: 8px;
+  }
+
+  .topnav__dropdown {
+    top: 80px;
+  }
 }
 </style>
