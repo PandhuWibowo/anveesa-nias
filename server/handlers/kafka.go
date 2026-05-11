@@ -668,14 +668,28 @@ func readKafkaMessages(ctx context.Context, in ConnectionInput, topic string, pa
 	messages := make([]KafkaMessageInfo, 0, limit)
 	perPartitionLimit := limit
 	if partition < 0 && len(partitions) > 0 {
-		perPartitionLimit = limit
+		perPartitionLimit = (limit+len(partitions)-1)/len(partitions) + 2
+		if perPartitionLimit < 5 {
+			perPartitionLimit = 5
+		}
+		if perPartitionLimit > limit {
+			perPartitionLimit = limit
+		}
 	}
+	var readErrs []string
 	for _, p := range partitions {
 		partitionMessages, err := readKafkaPartitionMessages(ctx, in, topic, p, perPartitionLimit)
 		if err != nil {
-			return nil, err
+			readErrs = append(readErrs, fmt.Sprintf("partition %d: %v", p, err))
+			continue
 		}
 		messages = append(messages, partitionMessages...)
+	}
+	if len(messages) == 0 && len(readErrs) > 0 {
+		return nil, fmt.Errorf("failed to read Kafka partitions: %s", strings.Join(readErrs, "; "))
+	}
+	if len(readErrs) > 0 {
+		log.Printf("kafka_messages_partial topic=%s skipped_partitions=%d errors=%q", topic, len(readErrs), strings.Join(readErrs, "; "))
 	}
 	sort.Slice(messages, func(i, j int) bool {
 		if messages[i].Timestamp.Equal(messages[j].Timestamp) {

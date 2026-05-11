@@ -431,6 +431,7 @@ function isDropTarget(folderId: number | null) {
   display: flex;
   flex-direction: column;
   width: 300px;
+  max-width: calc(100vw - 16px);
   max-height: 520px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
@@ -544,6 +545,7 @@ function isDropTarget(folderId: number | null) {
   flex: 1;
   overflow-y: auto;
   padding: 4px 0 8px;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Folder rows */
@@ -706,4 +708,45 @@ function isDropTarget(folderId: number | null) {
 }
 .cdrop-modal__body { padding: 14px; display: flex; flex-direction: column; gap: 6px; }
 .cdrop-modal__label { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+
+@media (max-width: 520px) {
+  .cdrop {
+    width: calc(100vw - 16px);
+    max-height: min(68vh, 520px);
+    border-radius: 10px;
+  }
+
+  .cdrop__form-row,
+  .cdrop__form-actions {
+    flex-direction: column;
+  }
+
+  .cdrop__btn {
+    width: 100%;
+  }
+
+  .cdrop__folder,
+  .cdrop__conn {
+    min-height: 34px;
+  }
+
+  .cdrop__conn--nested {
+    padding-left: 22px;
+  }
+
+  .cdrop__conn--deep {
+    padding-left: 32px;
+  }
+
+  .cdrop-modal-overlay {
+    align-items: flex-start;
+    padding: 12px 8px;
+  }
+
+  .cdrop-modal {
+    width: 100%;
+    max-height: calc(100dvh - 24px);
+    overflow: auto;
+  }
+}
 </style>
