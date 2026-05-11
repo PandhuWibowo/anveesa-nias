@@ -5,6 +5,7 @@ import { useSchema, type SchemaTable } from '@/composables/useSchema'
 const props = defineProps<{
   connId: number | null
   active?: boolean
+  selectedTable?: string
 }>()
 
 const emit = defineEmits<{
@@ -23,6 +24,14 @@ watch(
   },
   { immediate: true },
 )
+
+watch(() => props.selectedTable, (sel) => {
+  if (!sel) return
+  const dotIdx = sel.indexOf('.')
+  const db = dotIdx !== -1 ? sel.slice(0, dotIdx) : sel
+  if (db) expandedDbs.value.add(db)
+  activeTable.value = sel
+}, { immediate: true })
 
 function toggleDb(name: string) {
   if (expandedDbs.value.has(name)) expandedDbs.value.delete(name)
