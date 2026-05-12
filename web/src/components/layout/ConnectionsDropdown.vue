@@ -38,8 +38,9 @@ const editFolderVisibility = ref<'private' | 'shared'>('private')
 const contextMenu = ref<{ x: number; y: number; type: 'folder' | 'conn'; item: ConnectionFolder | Connection } | null>(null)
 
 const FOLDER_COLORS = ['#4f9cf9','#56c490','#f97f4f','#c45ef9','#f9d44f','#f9584f','#4fc8f9','#9cf94f','#f94f9c']
-const driverLabel: Record<string, string> = { sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF' }
-const driverColor: Record<string, string> = { sqlite: '#4b5563', postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927', redis: '#c6302b', memcache: '#16a34a', kafka: '#231f20' }
+const driverLabel: Record<string, string> = { sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF', s3_aws: 'S3', s3_gcp: 'GCS', s3_oss: 'OSS', s3_obs: 'OBS' }
+const driverColor: Record<string, string> = { sqlite: '#4b5563', postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927', redis: '#c6302b', memcache: '#16a34a', kafka: '#231f20', s3_aws: '#f59e0b', s3_gcp: '#4285f4', s3_oss: '#ff6a00', s3_obs: '#c00000' }
+function isObjectStorageDriver(driver: string) { return driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs' }
 
 onMounted(async () => {
   await fetchFolders()
@@ -85,6 +86,7 @@ function selectConn(conn: Connection) {
   if (conn.driver === 'redis' && current !== 'redis') router.push({ name: 'redis' })
   else if (conn.driver === 'memcache' && current !== 'memcache') router.push({ name: 'memcache' })
   else if (conn.driver === 'kafka' && current !== 'kafka') router.push({ name: 'kafka' })
+  else if (isObjectStorageDriver(conn.driver)) router.push({ name: 'connections' })
   else if (conn.driver !== 'redis' && conn.driver !== 'memcache' && conn.driver !== 'kafka' && ((current === 'redis' || current === 'memcache' || current === 'kafka') || !stayViews.includes(current))) router.push({ name: 'data' })
 }
 

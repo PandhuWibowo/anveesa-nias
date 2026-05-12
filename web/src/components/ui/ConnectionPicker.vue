@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useConnections, type Connection } from '@/composables/useConnections'
+import DriverIcon from '@/components/ui/DriverIcon.vue'
 
 const props = defineProps<{
   modelValue: number | null
@@ -22,14 +23,32 @@ const selected = computed<Connection | null>(() =>
 )
 
 const driverColors: Record<string, string> = {
+  sqlite: '#4b5563',
   postgres: '#336791',
   mysql:    '#f29111',
+  mariadb:  '#c0392b',
   mssql:    '#cc2927',
+  redis:    '#c6302b',
+  memcache: '#16a34a',
+  kafka:    '#231f20',
+  s3_aws:   '#f59e0b',
+  s3_gcp:   '#4285f4',
+  s3_oss:   '#ff6a00',
+  s3_obs:   '#c00000',
 }
 const driverLabels: Record<string, string> = {
+  sqlite: 'SL',
   postgres: 'PG',
   mysql:    'MY',
+  mariadb:  'MB',
   mssql:    'MS',
+  redis:    'RD',
+  memcache: 'MC',
+  kafka:    'KF',
+  s3_aws:   'S3',
+  s3_gcp:   'GCS',
+  s3_oss:   'OSS',
+  s3_obs:   'OBS',
 }
 
 function pick(conn: Connection) {
@@ -65,7 +84,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
         v-if="selected"
         class="cp-badge"
         :style="{ background: driverColors[selected.driver] ?? '#555' }"
-      >{{ driverLabels[selected.driver] ?? '??' }}</span>
+      ><DriverIcon :driver="selected.driver" :size="12" /></span>
       <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="cp-icon-plug">
         <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/>
       </svg>
@@ -91,7 +110,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
           <span
             class="cp-badge cp-badge--sm"
             :style="{ background: driverColors[conn.driver] ?? '#555' }"
-          >{{ driverLabels[conn.driver] ?? '??' }}</span>
+          ><DriverIcon :driver="conn.driver" :size="11" /></span>
           <div class="cp-option-info">
             <span class="cp-option-name">{{ conn.name }}</span>
             <span class="cp-option-host" v-if="conn.host">
@@ -159,16 +178,14 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
   align-items: center;
   justify-content: center;
   width: 22px;
-  height: 16px;
-  border-radius: 3px;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
+  height: 22px;
+  border-radius: 4px;
   color: #fff;
 }
 .cp-badge--sm {
   width: 20px;
-  height: 15px;
+  height: 20px;
+  border-radius: 4px;
 }
 
 .cp-icon-plug {

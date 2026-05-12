@@ -342,8 +342,6 @@ body {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  font-size: 10px;
-  font-weight: 700;
 }
 .conn-badge--pg      { background: var(--pg-bg);     color: var(--pg); }
 .conn-badge--postgres { background: var(--pg-bg);    color: var(--pg); }
@@ -397,7 +395,7 @@ body {
 
 .conn-item--nested { padding-left: 22px; }
 .conn-item--deep   { padding-left: 38px; }
-.conn-badge--sm { width: 18px; height: 18px; font-size: 9px; }
+.conn-badge--sm { width: 20px; height: 20px; border-radius: var(--r-xs); }
 .conn-vis-icon { font-size: 10px; flex-shrink: 0; }
 
 /* New folder form */
@@ -1049,7 +1047,7 @@ html[data-theme='light'] .data-table tbody tr:nth-child(even) td {
   position: fixed;
   bottom: 20px;
   right: 20px;
-  z-index: 300;
+  z-index: 9999;
   display: flex;
   flex-direction: column;
   gap: 6px;
