@@ -4,6 +4,7 @@ import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
+import { useSearchCache } from '@/composables/useSearchCache'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -57,6 +58,7 @@ type ShardSetting = {
 const { connections, fetchConnections } = useConnections()
 const toast = useToast()
 const { confirm } = useConfirm()
+const searchCache = useSearchCache()
 
 const searchConnections = computed(() => connections.value.filter(c => c.driver === 'elasticsearch' || c.driver === 'opensearch'))
 const activeConn = computed(() => props.activeConnId != null ? connections.value.find(c => c.id === props.activeConnId) ?? null : null)
@@ -117,30 +119,40 @@ watch(activeTab, async (tab) => {
   if (isSearch.value) await loadTab(tab)
 })
 
-async function loadTab(tab: Tab) {
+async function loadTab(tab: Tab, force = false) {
   switch (tab) {
-    case 'ilm': return loadILM()
-    case 'templates': return loadTemplates()
-    case 'app-policies': return loadAppPolicies()
-    case 'shard-rules': return loadShardSettings()
+    case 'ilm': return loadILM(force)
+    case 'templates': return loadTemplates(force)
+    case 'app-policies': return loadAppPolicies(force)
+    case 'shard-rules': return loadShardSettings(force)
   }
 }
 
 // ── ILM ──────────────────────────────────────────────────────────────────────
 
-async function loadILM() {
+function parseILM(data: Record<string, any>): ILMPolicy[] {
+  return Object.entries(data).map(([name, v]) => ({
+    name,
+    phases: v.policy?.phases ?? {},
+    modified_date: v.modified_date,
+    version: v.version,
+    in_use_by: v.in_use_by,
+    raw: v,
+  }))
+}
+
+async function loadILM(force = false) {
   if (!activeConn.value) return
+  const id = activeConn.value.id
+  if (!force) {
+    const cached = searchCache.get<Record<string, any>>(id, 'ilm-policies')
+    if (cached) { ilmPolicies.value = parseILM(cached); return }
+  }
   loading.value = true
   try {
-    const { data } = await axios.get(`/api/connections/${activeConn.value.id}/search/ilm-policies`)
-    ilmPolicies.value = Object.entries(data as Record<string, any>).map(([name, v]) => ({
-      name,
-      phases: v.policy?.phases ?? {},
-      modified_date: v.modified_date,
-      version: v.version,
-      in_use_by: v.in_use_by,
-      raw: v,
-    }))
+    const { data } = await axios.get(`/api/connections/${id}/search/ilm-policies`)
+    searchCache.set(id, 'ilm-policies', data, 'policies')
+    ilmPolicies.value = parseILM(data)
   } catch (e: any) {
     toast.error(e?.response?.data?.error ?? 'Failed to load ILM policies')
   } finally {
@@ -176,8 +188,9 @@ async function saveILM() {
     const body = JSON.parse(ilmEditJson.value)
     await axios.put(`/api/connections/${activeConn.value.id}/search/ilm-policy?name=${encodeURIComponent(ilmEditName.value.trim())}`, body)
     toast.success('ILM policy saved')
+    searchCache.invalidate(activeConn.value.id, 'ilm-policies')
     ilmShowEditor.value = false
-    await loadILM()
+    await loadILM(true)
   } catch (e: any) {
     toast.error(e instanceof SyntaxError ? 'JSON is invalid' : e?.response?.data?.error ?? 'Save failed')
   } finally {
@@ -192,7 +205,8 @@ async function deleteILM(name: string) {
   try {
     await axios.delete(`/api/connections/${activeConn.value!.id}/search/ilm-policy?name=${encodeURIComponent(name)}`)
     toast.success('ILM policy deleted')
-    await loadILM()
+    searchCache.invalidate(activeConn.value!.id, 'ilm-policies')
+    await loadILM(true)
   } catch (e: any) {
     toast.error(e?.response?.data?.error ?? 'Delete failed')
   } finally {
@@ -202,19 +216,29 @@ async function deleteILM(name: string) {
 
 // ── Templates ─────────────────────────────────────────────────────────────────
 
-async function loadTemplates() {
+function parseTemplates(data: any): IndexTemplate[] {
+  const list: any[] = data?.index_templates ?? []
+  return list.map((t: any) => ({
+    name: t.name,
+    index_patterns: t.index_template?.index_patterns ?? [],
+    priority: t.index_template?.priority,
+    data_stream: t.index_template?.data_stream,
+    raw: t.index_template ?? t,
+  }))
+}
+
+async function loadTemplates(force = false) {
   if (!activeConn.value) return
+  const id = activeConn.value.id
+  if (!force) {
+    const cached = searchCache.get<any>(id, 'templates')
+    if (cached) { templates.value = parseTemplates(cached); return }
+  }
   loading.value = true
   try {
-    const { data } = await axios.get(`/api/connections/${activeConn.value.id}/search/templates`)
-    const list: any[] = data?.index_templates ?? []
-    templates.value = list.map((t: any) => ({
-      name: t.name,
-      index_patterns: t.index_template?.index_patterns ?? [],
-      priority: t.index_template?.priority,
-      data_stream: t.index_template?.data_stream,
-      raw: t.index_template ?? t,
-    }))
+    const { data } = await axios.get(`/api/connections/${id}/search/templates`)
+    searchCache.set(id, 'templates', data, 'policies')
+    templates.value = parseTemplates(data)
   } catch (e: any) {
     toast.error(e?.response?.data?.error ?? 'Failed to load templates')
   } finally {
@@ -250,8 +274,9 @@ async function saveTemplate() {
     const body = JSON.parse(tplEditJson.value)
     await axios.put(`/api/connections/${activeConn.value.id}/search/template?name=${encodeURIComponent(tplEditName.value.trim())}`, body)
     toast.success('Template saved')
+    searchCache.invalidate(activeConn.value.id, 'templates')
     tplShowEditor.value = false
-    await loadTemplates()
+    await loadTemplates(true)
   } catch (e: any) {
     toast.error(e instanceof SyntaxError ? 'JSON is invalid' : e?.response?.data?.error ?? 'Save failed')
   } finally {
@@ -266,7 +291,8 @@ async function deleteTemplate(name: string) {
   try {
     await axios.delete(`/api/connections/${activeConn.value!.id}/search/template?name=${encodeURIComponent(name)}`)
     toast.success('Template deleted')
-    await loadTemplates()
+    searchCache.invalidate(activeConn.value!.id, 'templates')
+    await loadTemplates(true)
   } catch (e: any) {
     toast.error(e?.response?.data?.error ?? 'Delete failed')
   } finally {
@@ -276,11 +302,17 @@ async function deleteTemplate(name: string) {
 
 // ── App Policies ──────────────────────────────────────────────────────────────
 
-async function loadAppPolicies() {
+async function loadAppPolicies(force = false) {
   if (!activeConn.value) return
+  const id = activeConn.value.id
+  if (!force) {
+    const cached = searchCache.get<AppPolicy[]>(id, 'app-policies')
+    if (cached) { appPolicies.value = cached; return }
+  }
   loading.value = true
   try {
-    const { data } = await axios.get<AppPolicy[]>(`/api/search-app-policies?conn_id=${activeConn.value.id}`)
+    const { data } = await axios.get<AppPolicy[]>(`/api/search-app-policies?conn_id=${id}`)
+    searchCache.set(id, 'app-policies', data, 'appPolicies')
     appPolicies.value = data
   } catch (e: any) {
     toast.error(e?.response?.data?.error ?? 'Failed to load policies')
@@ -320,8 +352,9 @@ async function saveAppPolicy() {
       await axios.post('/api/search-app-policies', appPolicyForm.value)
     }
     toast.success('Policy saved')
+    searchCache.invalidate(activeConn.value.id, 'app-policies')
     appPolicyShowForm.value = false
-    await loadAppPolicies()
+    await loadAppPolicies(true)
   } catch (e: any) {
     toast.error(e?.response?.data?.error ?? 'Save failed')
   } finally {
@@ -336,7 +369,8 @@ async function deleteAppPolicy(p: AppPolicy) {
   try {
     await axios.delete(`/api/search-app-policies/${p.id}`)
     toast.success('Policy deleted')
-    await loadAppPolicies()
+    searchCache.invalidate(p.conn_id, 'app-policies')
+    await loadAppPolicies(true)
   } catch (e: any) {
     toast.error(e?.response?.data?.error ?? 'Delete failed')
   } finally {
@@ -350,7 +384,8 @@ async function runAppPolicy(p: AppPolicy) {
     const { data } = await axios.post(`/api/search-app-policies/${p.id}/run`)
     runResults.value[p.id] = { violations: data.violations ?? [], summary: data.summary ?? '' }
     toast.success(data.summary ?? 'Policy evaluated')
-    await loadAppPolicies()
+    searchCache.invalidate(p.conn_id, 'app-policies')
+    await loadAppPolicies(true)
   } catch (e: any) {
     toast.error(e?.response?.data?.error ?? 'Run failed')
   } finally {
@@ -360,23 +395,33 @@ async function runAppPolicy(p: AppPolicy) {
 
 // ── Shard Rules ───────────────────────────────────────────────────────────────
 
-async function loadShardSettings() {
+function parseShardSettings(data: Record<string, any>): ShardSetting[] {
+  return Object.entries(data).map(([index, v]) => {
+    const settings = v?.settings?.index ?? {}
+    return {
+      index,
+      number_of_shards: settings.number_of_shards ?? '-',
+      number_of_replicas: settings.number_of_replicas ?? '-',
+      routing_allocation_include: settings.routing?.allocation?.include?._tier_preference ?? '',
+      routing_allocation_exclude: settings.routing?.allocation?.exclude?.toString() ?? '',
+      routing_allocation_require: settings.routing?.allocation?.require?.toString() ?? '',
+      raw: v,
+    }
+  })
+}
+
+async function loadShardSettings(force = false) {
   if (!activeConn.value) return
+  const id = activeConn.value.id
+  if (!force) {
+    const cached = searchCache.get<Record<string, any>>(id, 'index-settings:_all')
+    if (cached) { shardSettings.value = parseShardSettings(cached); return }
+  }
   loading.value = true
   try {
-    const { data } = await axios.get(`/api/connections/${activeConn.value.id}/search/index-settings`)
-    shardSettings.value = Object.entries(data as Record<string, any>).map(([index, v]) => {
-      const settings = v?.settings?.index ?? {}
-      return {
-        index,
-        number_of_shards: settings.number_of_shards ?? '-',
-        number_of_replicas: settings.number_of_replicas ?? '-',
-        routing_allocation_include: settings.routing?.allocation?.include?._tier_preference ?? '',
-        routing_allocation_exclude: settings.routing?.allocation?.exclude?.toString() ?? '',
-        routing_allocation_require: settings.routing?.allocation?.require?.toString() ?? '',
-        raw: v,
-      }
-    })
+    const { data } = await axios.get(`/api/connections/${id}/search/index-settings`)
+    searchCache.set(id, 'index-settings:_all', data, 'settings')
+    shardSettings.value = parseShardSettings(data)
   } catch (e: any) {
     toast.error(e?.response?.data?.error ?? 'Failed to load index settings')
   } finally {
@@ -401,8 +446,9 @@ async function saveShardSettings() {
     const body = JSON.parse(shardEditJson.value)
     await axios.put(`/api/connections/${activeConn.value.id}/search/index-settings?index=${encodeURIComponent(shardEditing.value.index)}`, body)
     toast.success('Settings updated')
+    searchCache.invalidate(activeConn.value!.id, 'index-settings:_all', `index-settings:${shardEditing.value!.index}`)
     shardShowEditor.value = false
-    await loadShardSettings()
+    await loadShardSettings(true)
   } catch (e: any) {
     toast.error(e instanceof SyntaxError ? 'JSON is invalid' : e?.response?.data?.error ?? 'Update failed')
   } finally {
@@ -474,7 +520,7 @@ function formatDate(v: string) {
           <option value="" disabled>Select search cluster</option>
           <option v-for="conn in searchConnections" :key="conn.id" :value="conn.id">{{ conn.name }}</option>
         </select>
-        <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!isSearch || loading" @click="loadTab(activeTab)">Refresh</button>
+        <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!isSearch || loading" @click="loadTab(activeTab, true)">Refresh</button>
       </div>
     </header>
 
