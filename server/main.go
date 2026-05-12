@@ -377,6 +377,32 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermKafkaView)(handlers.KafkaGroups())(w, r)
 			case sub == "kafka" && len(parts) >= 3 && parts[2] == "groups-detail" && r.Method == http.MethodGet:
 				requireAny(handlers.PermKafkaView)(handlers.KafkaGroupDetailHandler())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "info" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchInfo())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "indices" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchIndices())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "query" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchQuery())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "document" && (r.Method == http.MethodGet || r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete):
+				requireAny(handlers.PermConnectionsView, handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchDocument())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "index" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchDeleteIndex())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "ilm-policies" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchListILMPolicies())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "ilm-policy" && r.Method == http.MethodPut:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchSaveILMPolicy())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "ilm-policy" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchDeleteILMPolicy())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "templates" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchListTemplates())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "template" && r.Method == http.MethodPut:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchSaveTemplate())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "template" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchDeleteTemplate())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "index-settings" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchGetIndexSettings())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "index-settings" && r.Method == http.MethodPut:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchUpdateIndexSettings())(w, r)
 			case sub == "backup" && r.Method == http.MethodGet:
 				requireAny(handlers.PermBackupsManage)(handlers.GetBackup())(w, r)
 			case sub == "restore" && r.Method == http.MethodPost:
@@ -1038,6 +1064,30 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		if r.Method == http.MethodDelete {
 			requireAny(handlers.PermAIUse)(handlers.DeleteAIReport())(w, r)
 		} else {
+			http.NotFound(w, r)
+		}
+	})
+
+	// ── Search App Policies ───────────────────────────────────────
+	mux.HandleFunc("/api/search-app-policies", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.ListSearchAppPolicies())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.CreateSearchAppPolicy())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/search-app-policies/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/run") && r.Method == http.MethodPost:
+			requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.RunSearchAppPolicy())(w, r)
+		case r.Method == http.MethodPut:
+			requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.UpdateSearchAppPolicy())(w, r)
+		case r.Method == http.MethodDelete:
+			requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.DeleteSearchAppPolicy())(w, r)
+		default:
 			http.NotFound(w, r)
 		}
 	})

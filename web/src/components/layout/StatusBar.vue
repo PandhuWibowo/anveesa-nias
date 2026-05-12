@@ -22,6 +22,8 @@ const driverLabel: Record<string, string> = {
   redis: 'Redis',
   memcache: 'Memcache',
   kafka: 'Kafka',
+  elasticsearch: 'Elasticsearch',
+  opensearch: 'OpenSearch',
   s3_aws: 'AWS S3',
   s3_gcp: 'GCP Cloud Storage',
   s3_oss: 'Alibaba OSS',
@@ -29,12 +31,14 @@ const driverLabel: Record<string, string> = {
 }
 
 function isObjectStorageDriver(driver: string) { return driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs' }
+function isSearchDriver(driver: string) { return driver === 'elasticsearch' || driver === 'opensearch' }
 
 function activeConnRoute() {
   if (!activeConn.value) return 'connections'
   if (activeConn.value.driver === 'redis') return 'redis'
   if (activeConn.value.driver === 'memcache') return 'memcache'
   if (activeConn.value.driver === 'kafka') return 'kafka'
+  if (isSearchDriver(activeConn.value.driver)) return 'search'
   if (isObjectStorageDriver(activeConn.value.driver)) return 'connections'
   return 'query'
 }
@@ -44,6 +48,7 @@ function activeConnTargetLabel() {
   if (activeConn.value.driver === 'redis') return `Open Redis browser for ${activeConn.value.name}`
   if (activeConn.value.driver === 'memcache') return `Open Memcache browser for ${activeConn.value.name}`
   if (activeConn.value.driver === 'kafka') return `Open Kafka browser for ${activeConn.value.name}`
+  if (isSearchDriver(activeConn.value.driver)) return `Open search browser for ${activeConn.value.name}`
   if (isObjectStorageDriver(activeConn.value.driver)) return `Manage object storage connection ${activeConn.value.name}`
   return `Open query editor for ${activeConn.value.name}`
 }

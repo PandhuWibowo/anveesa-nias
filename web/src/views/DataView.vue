@@ -116,7 +116,7 @@ const pickerStyle = computed(() => ({
 
 // Cache and streaming connections have no SQL DSN — exclude them from SQL Studio.
 function isNonSqlDriver(driver: string) {
-  return driver === 'redis' || driver === 'memcache' || driver === 'kafka' || driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs'
+  return driver === 'redis' || driver === 'memcache' || driver === 'kafka' || driver === 'elasticsearch' || driver === 'opensearch' || driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs'
 }
 
 const sqlConns = computed(() => connections.value.filter(c => !isNonSqlDriver(c.driver)))

@@ -32,6 +32,8 @@ const defaultPorts: Record<DbDriver, number> = {
   redis: 6379,
   memcache: 11211,
   kafka: 9092,
+  elasticsearch: 9200,
+  opensearch: 9200,
   s3_aws: 443,
   s3_gcp: 443,
   s3_oss: 443,
@@ -47,6 +49,8 @@ const defaultHosts: Record<DbDriver, string> = {
   redis: 'localhost',
   memcache: 'localhost',
   kafka: 'localhost',
+  elasticsearch: 'localhost',
+  opensearch: 'localhost',
   s3_aws: 's3.us-east-1.amazonaws.com',
   s3_gcp: 'storage.googleapis.com',
   s3_oss: 'oss-cn-hangzhou.aliyuncs.com',
@@ -102,6 +106,14 @@ const driverGroups: Array<{ key: string; label: string; options: DriverOption[] 
     ],
   },
   {
+    key: 'search',
+    label: 'Search & Observability',
+    options: [
+      { key: 'elasticsearch', label: 'Elasticsearch', badge: 'ES', sub: 'v8+' },
+      { key: 'opensearch', label: 'OpenSearch', badge: 'OS', sub: 'v2+' },
+    ],
+  },
+  {
     key: 'object-storage',
     label: 'Object Storage',
     options: [
@@ -122,6 +134,8 @@ const defaultDatabases: Record<DbDriver, string> = {
   redis: '0',
   memcache: '',
   kafka: '',
+  elasticsearch: '',
+  opensearch: '',
   s3_aws: '',
   s3_gcp: '',
   s3_oss: '',
@@ -137,6 +151,8 @@ const driverDescriptions: Record<DbDriver, string> = {
   redis:    'In-memory key-value store. Only host, port, and an optional password are required. The "database" is a numeric index (0–15).',
   memcache: 'Distributed memory caching — no authentication. Just a host and port.',
   kafka:    'Distributed event streaming. Provide a broker host and port. SASL username/password are optional.',
+  elasticsearch: 'Search and observability datastore. Provide the HTTP endpoint, optional credentials, and an optional default index.',
+  opensearch:    'OpenSearch-compatible search cluster. Provide the HTTP endpoint, optional credentials, and an optional default index.',
   s3_aws:   'Amazon S3 object storage. Provide your bucket name, endpoint, Access Key ID, and Secret Access Key.',
   s3_gcp:   'Google Cloud Storage via the S3-compatible API. Endpoint, bucket, and service-account credentials are required.',
   s3_oss:   'Alibaba Cloud OSS via the S3-compatible API. Provide your OSS endpoint, bucket, and access credentials.',
@@ -148,6 +164,7 @@ const isSQLite    = computed(() => form.driver === 'sqlite')
 const isRedis     = computed(() => form.driver === 'redis')
 const isMemcache  = computed(() => form.driver === 'memcache')
 const isKafka     = computed(() => form.driver === 'kafka')
+const isSearch    = computed(() => form.driver === 'elasticsearch' || form.driver === 'opensearch')
 const isS3        = computed(() => isObjectStorageDriver(form.driver))
 const isRDBMS     = computed(() => ['postgres', 'mysql', 'mariadb', 'mssql'].includes(form.driver))
 
@@ -159,20 +176,21 @@ function driverCategory(driver: DbDriver): string {
   if (['postgres', 'mysql', 'mariadb', 'mssql', 'sqlite'].includes(driver)) return 'rdbms'
   if (driver === 'redis' || driver === 'memcache') return 'cache'
   if (driver === 'kafka') return 'streaming'
+  if (driver === 'elasticsearch' || driver === 'opensearch') return 'search'
   return 's3'
 }
 
 function categoryLabel(driver: DbDriver): string {
   const cat = driverCategory(driver)
-  return { rdbms: 'Relational DB', cache: 'Cache', streaming: 'Streaming', s3: 'Object Storage' }[cat] ?? cat
+  return { rdbms: 'Relational DB', cache: 'Cache', streaming: 'Streaming', search: 'Search', s3: 'Object Storage' }[cat] ?? cat
 }
 
 function driverBadge(driver: DbDriver) {
-  return ({ sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF', s3_aws: 'S3', s3_gcp: 'GCS', s3_oss: 'OSS', s3_obs: 'OBS' } as Record<DbDriver, string>)[driver] ?? driver.slice(0, 2).toUpperCase()
+  return ({ sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF', elasticsearch: 'ES', opensearch: 'OS', s3_aws: 'S3', s3_gcp: 'GCS', s3_oss: 'OSS', s3_obs: 'OBS' } as Record<DbDriver, string>)[driver] ?? driver.slice(0, 2).toUpperCase()
 }
 
 function driverFullName(driver: DbDriver) {
-  return ({ sqlite: 'SQLite', postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', mssql: 'SQL Server', redis: 'Redis', memcache: 'Memcache', kafka: 'Kafka', s3_aws: 'AWS S3', s3_gcp: 'GCP Storage', s3_oss: 'Alibaba OSS', s3_obs: 'Huawei OBS' } as Record<DbDriver, string>)[driver] ?? driver
+  return ({ sqlite: 'SQLite', postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', mssql: 'SQL Server', redis: 'Redis', memcache: 'Memcache', kafka: 'Kafka', elasticsearch: 'Elasticsearch', opensearch: 'OpenSearch', s3_aws: 'AWS S3', s3_gcp: 'GCP Storage', s3_oss: 'Alibaba OSS', s3_obs: 'Huawei OBS' } as Record<DbDriver, string>)[driver] ?? driver
 }
 
 function connDetailLine(conn: { driver: DbDriver; host: string; port: number; database: string; username: string }): string {
@@ -188,6 +206,11 @@ function connDetailLine(conn: { driver: DbDriver; host: string; port: number; da
     const sasl = conn.username ? `  ·  SASL: ${conn.username}` : ''
     return `${conn.host}${conn.port ? ':' + conn.port : ''}${sasl}`
   }
+  if (conn.driver === 'elasticsearch' || conn.driver === 'opensearch') {
+    const index = conn.database ? `  ·  ${conn.database}` : ''
+    const auth = conn.username ? `  ·  ${conn.username}` : ''
+    return `${conn.host}${conn.port ? ':' + conn.port : ''}${index}${auth}`
+  }
   if (conn.driver === 'redis') {
     const db = conn.database ? `  ·  db ${conn.database}` : '  ·  db 0'
     return `${conn.host}${conn.port ? ':' + conn.port : ''}${db}`
@@ -202,6 +225,7 @@ function openConnectionLabel(driver: DbDriver): string {
   if (driver === 'redis') return 'Browse'
   if (driver === 'memcache') return 'Browse'
   if (driver === 'kafka') return 'Browse'
+  if (driver === 'elasticsearch' || driver === 'opensearch') return 'Browse'
   if (isObjectStorageDriver(driver)) return 'Browse'
   return 'Open'
 }
@@ -276,6 +300,9 @@ function validateForm(): string | null {
     if (!form.username.trim()) return 'Access key is required'
     if (!form.password.trim()) return 'Secret key is required'
   }
+  if ((form.driver === 'elasticsearch' || form.driver === 'opensearch') && !form.host.trim()) {
+    return 'Search endpoint host is required'
+  }
   const needsDb = ['sqlite', 'postgres', 'mysql', 'mariadb', 'mssql']
   if (needsDb.includes(form.driver) && !form.database.trim()) {
     return form.driver === 'sqlite' ? 'SQLite file path is required' : 'Database name is required'
@@ -330,6 +357,8 @@ function parseConnectionURL(raw: string) {
       redis: 'redis', rediss: 'redis',
       memcache: 'memcache', memcached: 'memcache',
       kafka: 'kafka',
+      elasticsearch: 'elasticsearch', elastic: 'elasticsearch', es: 'elasticsearch',
+      opensearch: 'opensearch', os: 'opensearch',
       s3: 's3_aws', s3a: 's3_aws',
       gcs: 's3_gcp', gs: 's3_gcp',
       oss: 's3_oss',
@@ -342,9 +371,9 @@ function parseConnectionURL(raw: string) {
     form.database = url.pathname.replace(/^\//, '')
     form.username = decodeURIComponent(url.username || '')
     form.password = decodeURIComponent(url.password || '')
-    form.ssl = scheme === 'rediss' || url.searchParams.get('sslmode') === 'require' || url.searchParams.get('ssl') === 'true'
+    form.ssl = scheme === 'rediss' || scheme === 'https' || url.searchParams.get('sslmode') === 'require' || url.searchParams.get('ssl') === 'true'
     if (!form.name) {
-      form.name = driver === 'kafka' || driver === 'memcache'
+      form.name = driver === 'kafka' || driver === 'memcache' || driver === 'elasticsearch' || driver === 'opensearch'
         ? `${driver} / ${form.host}`
         : isObjectStorageDriver(driver)
           ? `${driverFullName(driver)} / ${form.database || form.host}`
@@ -360,7 +389,7 @@ function parseConnectionURL(raw: string) {
 
 function openConnection(id: number, driver: DbDriver) {
   emit('set-conn', id)
-  router.push({ name: driver === 'redis' ? 'redis' : driver === 'memcache' ? 'memcache' : driver === 'kafka' ? 'kafka' : isObjectStorageDriver(driver) ? 'connections' : 'data' })
+  router.push({ name: driver === 'redis' ? 'redis' : driver === 'memcache' ? 'memcache' : driver === 'kafka' ? 'kafka' : driver === 'elasticsearch' || driver === 'opensearch' ? 'search' : isObjectStorageDriver(driver) ? 'connections' : 'data' })
 }
 
 async function handleDelete(id: number, name: string) {
@@ -755,6 +784,47 @@ async function handleReconnect(id: number, name: string) {
                   </div>
                 </template>
 
+                <!-- ── Elasticsearch / OpenSearch ──────────────────────── -->
+                <template v-else-if="isSearch">
+                  <div class="form-row">
+                    <div class="form-group" style="flex:2">
+                      <label class="form-label">Endpoint Host</label>
+                      <input v-model="form.host" class="base-input" placeholder="localhost" />
+                    </div>
+                    <div class="form-group" style="flex:1">
+                      <label class="form-label">Port</label>
+                      <input v-model.number="form.port" class="base-input" type="number" />
+                    </div>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">
+                      Default Index
+                      <span class="field-optional">optional</span>
+                    </label>
+                    <input v-model="form.database" class="base-input" placeholder="logs-*, traces-*, metrics-*" />
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label class="form-label">
+                        Username
+                        <span class="field-optional">optional</span>
+                      </label>
+                      <input v-model="form.username" class="base-input" placeholder="elastic" autocomplete="off" />
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">
+                        Password / API Key
+                        <span class="field-optional">optional</span>
+                      </label>
+                      <input v-model="form.password" class="base-input" type="password" placeholder="(leave blank if none)" />
+                    </div>
+                  </div>
+                  <div class="field-check-row">
+                    <input id="search-ssl" type="checkbox" v-model="form.ssl" style="accent-color:var(--brand)" />
+                    <label for="search-ssl" class="field-check-label">Enable SSL/TLS</label>
+                  </div>
+                </template>
+
                 <!-- ── Relational DB (postgres / mysql / mariadb / mssql) ── -->
                 <template v-else>
                   <div class="form-row">
@@ -986,6 +1056,8 @@ async function handleReconnect(id: number, name: string) {
 .conn-card--cache:hover  { border-left-color: #c6302b; }
 .conn-card--streaming    { border-left-color: #231f20; }
 .conn-card--streaming:hover { border-left-color: #231f20; }
+.conn-card--search       { border-left-color: #00bfb3; }
+.conn-card--search:hover { border-left-color: #00bfb3; }
 .conn-card--s3           { border-left-color: #f59e0b; }
 .conn-card--s3:hover     { border-left-color: #f59e0b; }
 
@@ -1177,6 +1249,8 @@ async function handleReconnect(id: number, name: string) {
 .conn-badge--redis     { background: #c6302b; }
 .conn-badge--memcache  { background: #16a34a; }
 .conn-badge--kafka     { background: #231f20; }
+.conn-badge--elasticsearch { background: #00bfb3; }
+.conn-badge--opensearch    { background: #005eb8; }
 .conn-badge--sqlite    { background: #4b5563; }
 .conn-badge--s3_aws    { background: #f59e0b; }
 .conn-badge--s3_gcp    { background: #4285f4; }
@@ -1457,6 +1531,8 @@ async function handleReconnect(id: number, name: string) {
 .provider-card__icon--redis    { background: #c6302b; }
 .provider-card__icon--memcache { background: #16a34a; }
 .provider-card__icon--kafka    { background: #231f20; }
+.provider-card__icon--elasticsearch { background: #00bfb3; }
+.provider-card__icon--opensearch    { background: #005eb8; }
 .provider-card__icon--sqlite   { background: #4b5563; }
 .provider-card__icon--s3_aws   { background: #f59e0b; }
 .provider-card__icon--s3_gcp   { background: #4285f4; }

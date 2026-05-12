@@ -65,18 +65,20 @@ function toggleFolder(id: number) {
   else collapsedFolders.value.add(id)
 }
 
-const driverLabel: Record<string, string> = { sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF', s3_aws: 'S3', s3_gcp: 'GCS', s3_oss: 'OSS', s3_obs: 'OBS' }
+const driverLabel: Record<string, string> = { sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF', elasticsearch: 'ES', opensearch: 'OS', s3_aws: 'S3', s3_gcp: 'GCS', s3_oss: 'OSS', s3_obs: 'OBS' }
 function isObjectStorageDriver(driver: string) { return driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs' }
+function isSearchDriver(driver: string) { return driver === 'elasticsearch' || driver === 'opensearch' }
 
 function selectConn(conn: Connection) {
   emit('select-conn', conn.id)
-  const stayViews = ['schema', 'data', 'er', 'dashboard', 'query', 'redis', 'memcache', 'laravel-queue', 'kafka']
+  const stayViews = ['schema', 'data', 'er', 'dashboard', 'query', 'redis', 'memcache', 'search', 'search-policies', 'laravel-queue', 'kafka']
   const current = router.currentRoute.value.name as string
   if (conn.driver === 'redis' && current !== 'redis') router.push({ name: 'redis' })
   else if (conn.driver === 'memcache' && current !== 'memcache') router.push({ name: 'memcache' })
   else if (conn.driver === 'kafka' && current !== 'kafka') router.push({ name: 'kafka' })
+  else if (isSearchDriver(conn.driver) && current !== 'search' && current !== 'search-policies') router.push({ name: 'search' })
   else if (isObjectStorageDriver(conn.driver)) router.push({ name: 'connections' })
-  else if (conn.driver !== 'redis' && conn.driver !== 'memcache' && conn.driver !== 'kafka' && ((current === 'redis' || current === 'memcache' || current === 'kafka') || !stayViews.includes(current))) router.push({ name: 'query' })
+  else if (conn.driver !== 'redis' && conn.driver !== 'memcache' && conn.driver !== 'kafka' && !isSearchDriver(conn.driver) && ((current === 'redis' || current === 'memcache' || current === 'kafka' || current === 'search') || !stayViews.includes(current))) router.push({ name: 'query' })
 }
 
 async function deleteConn(conn: Connection) {

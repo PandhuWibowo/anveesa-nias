@@ -28,18 +28,20 @@ import (
 
 // allowedDrivers defines valid database drivers
 var allowedDrivers = map[string]bool{
-	"sqlite":   true,
-	"postgres": true,
-	"mysql":    true,
-	"mariadb":  true, // alias → uses MySQL driver
-	"mssql":    true,
-	"redis":    true,
-	"memcache": true,
-	"kafka":    true,
-	"s3_aws":   true,
-	"s3_gcp":   true,
-	"s3_oss":   true,
-	"s3_obs":   true,
+	"sqlite":        true,
+	"postgres":      true,
+	"mysql":         true,
+	"mariadb":       true, // alias → uses MySQL driver
+	"mssql":         true,
+	"redis":         true,
+	"memcache":      true,
+	"kafka":         true,
+	"elasticsearch": true,
+	"opensearch":    true,
+	"s3_aws":        true,
+	"s3_gcp":        true,
+	"s3_oss":        true,
+	"s3_obs":        true,
 }
 
 // encryptionKey for credential encryption (should be set from environment)
@@ -166,7 +168,7 @@ type ConnectionInput struct {
 func validateConnectionInput(in *ConnectionInput) error {
 	// Validate driver
 	if !allowedDrivers[in.Driver] {
-		return fmt.Errorf("invalid driver: must be sqlite, postgres, mysql, mariadb, mssql, redis, memcache, kafka, s3_aws, s3_gcp, s3_oss, or s3_obs")
+		return fmt.Errorf("invalid driver: must be sqlite, postgres, mysql, mariadb, mssql, redis, memcache, kafka, elasticsearch, opensearch, s3_aws, s3_gcp, s3_oss, or s3_obs")
 	}
 
 	// Validate port
@@ -186,6 +188,10 @@ func validateConnectionInput(in *ConnectionInput) error {
 		}
 		if strings.TrimSpace(in.Password) == "" {
 			return fmt.Errorf("secret key is required")
+		}
+	} else if isSearchDriver(in.Driver) {
+		if strings.TrimSpace(in.Host) == "" {
+			return fmt.Errorf("search endpoint host is required")
 		}
 	} else if in.Port < 1 || in.Port > 65535 {
 		return fmt.Errorf("invalid port: must be 1-65535")
@@ -224,7 +230,7 @@ func isValidHostname(host string) bool {
 
 func buildDSN(in ConnectionInput) (string, error) {
 	switch in.Driver {
-	case "redis", "memcache", "kafka", "s3_aws", "s3_gcp", "s3_oss", "s3_obs":
+	case "redis", "memcache", "kafka", "elasticsearch", "opensearch", "s3_aws", "s3_gcp", "s3_oss", "s3_obs":
 		return "", fmt.Errorf("%s does not use SQL DSN", in.Driver)
 	case "sqlite":
 		dbPath := strings.TrimSpace(in.Database)
@@ -884,6 +890,16 @@ func TestConnection() http.HandlerFunc {
 			json.NewEncoder(w).Encode(map[string]string{"message": "Connection successful"})
 			return
 		}
+		if isSearchDriver(in.Driver) {
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			if err := testSearchInput(ctx, in); err != nil {
+				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"message": "Connection successful"})
+			return
+		}
 		if isObjectStorageDriver(in.Driver) {
 			if err := testObjectStorageInput(r.Context(), in); err != nil {
 				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
@@ -1056,6 +1072,44 @@ func isObjectStorageDriver(driver string) bool {
 	default:
 		return false
 	}
+}
+
+func isSearchDriver(driver string) bool {
+	switch driver {
+	case "elasticsearch", "opensearch":
+		return true
+	default:
+		return false
+	}
+}
+
+func testSearchInput(ctx context.Context, in ConnectionInput) error {
+	baseURL, err := searchBaseURL(in)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/", nil)
+	if err != nil {
+		return err
+	}
+	authMode := strings.ToLower(strings.TrimSpace(in.Username))
+	if in.Password != "" && (authMode == "" || authMode == "apikey" || authMode == "api_key") {
+		req.Header.Set("Authorization", "ApiKey "+in.Password)
+	} else if in.Username != "" || in.Password != "" {
+		req.SetBasicAuth(in.Username, in.Password)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("%s returned %s", in.Driver, resp.Status)
 }
 
 func testObjectStorageInput(ctx context.Context, in ConnectionInput) error {
