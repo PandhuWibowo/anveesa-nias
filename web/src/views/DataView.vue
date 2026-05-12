@@ -115,7 +115,11 @@ const pickerStyle = computed(() => ({
 }))
 
 // Cache and streaming connections have no SQL DSN — exclude them from SQL Studio.
-const sqlConns = computed(() => connections.value.filter(c => c.driver !== 'redis' && c.driver !== 'memcache' && c.driver !== 'kafka'))
+function isNonSqlDriver(driver: string) {
+  return driver === 'redis' || driver === 'memcache' || driver === 'kafka' || driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs'
+}
+
+const sqlConns = computed(() => connections.value.filter(c => !isNonSqlDriver(c.driver)))
 
 const filteredConns = computed(() =>
   pickerSearch.value
@@ -167,7 +171,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocClick, true
 watch(() => props.activeConnId, (id) => {
   if (id == null) return
   const conn = connections.value.find(c => c.id === id)
-  if (conn?.driver === 'redis' || conn?.driver === 'memcache') return
+  if (conn && isNonSqlDriver(conn.driver)) return
   const existing = sessions.value.find(s => s.connId === id)
   if (existing) {
     // Session already open — just bring it to focus
@@ -199,7 +203,7 @@ function onPickerKeydown(e: KeyboardEvent) { if (e.key === 'Escape') pickerOpen.
 const activeConnIsRedis = computed(() => {
   if (props.activeConnId == null) return false
   const driver = connections.value.find(c => c.id === props.activeConnId)?.driver
-  return driver === 'redis' || driver === 'memcache'
+  return !!driver && isNonSqlDriver(driver)
 })
 
 // Show landing page when there are no sessions OR active conn is Redis

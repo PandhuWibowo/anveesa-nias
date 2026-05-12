@@ -35,7 +35,11 @@ const router = useRouter()
 const activeConn = computed(() =>
   props.connId ? connections.value.find(c => c.id === props.connId) ?? null : null
 )
-const supportsRelationalSchema = computed(() => !!activeConn.value && activeConn.value.driver !== 'redis' && activeConn.value.driver !== 'memcache' && activeConn.value.driver !== 'kafka')
+function isNonSqlDriver(driver: string) {
+  return driver === 'redis' || driver === 'memcache' || driver === 'kafka' || driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs'
+}
+
+const supportsRelationalSchema = computed(() => !!activeConn.value && !isNonSqlDriver(activeConn.value.driver))
 
 // ── Data browser state ────────────────────────────────────────────
 const selected = ref<{ db: string; table: string } | null>(null)

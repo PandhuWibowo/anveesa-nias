@@ -335,7 +335,7 @@ func DownloadApprovedBackupRequest() http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/sql")
 		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
-		if err := writeBackupDump(r.Context(), w, db, driver, req.DatabaseName); err != nil {
+		if err := writeBackupDump(r.Context(), w, db, driver, req.DatabaseName, DefaultBackupOptions()); err != nil {
 			_, _ = appdb.DB.Exec(appdb.ConvertQuery(`UPDATE backup_download_requests SET status = 'failed', execute_error = ?, updated_at = ? WHERE id = ?`), sanitizeDBError(err), time.Now().UTC().Format("2006-01-02 15:04:05"), id)
 			EmitNotification(NotificationEventInput{
 				EventType:     "backup_request.failed",

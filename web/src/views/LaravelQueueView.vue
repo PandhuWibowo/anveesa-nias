@@ -123,12 +123,16 @@ interface MainDataResult {
 
 const redisDbIndexes = Array.from({ length: 16 }, (_, index) => index)
 const redisConnections = computed(() => connections.value.filter((c) => c.driver === 'redis'))
-const sqlConnections = computed(() => connections.value.filter((c) => c.driver !== 'redis' && c.driver !== 'memcache' && c.driver !== 'kafka'))
+function isNonSqlDriver(driver: string) {
+  return driver === 'redis' || driver === 'memcache' || driver === 'kafka' || driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs'
+}
+
+const sqlConnections = computed(() => connections.value.filter((c) => !isNonSqlDriver(c.driver)))
 const activeConn = computed(() =>
   props.activeConnId != null ? connections.value.find((c) => c.id === props.activeConnId) ?? null : null,
 )
 const isRedis = computed(() => activeConn.value?.driver === 'redis')
-const isSql = computed(() => activeConn.value != null && activeConn.value.driver !== 'redis' && activeConn.value.driver !== 'memcache' && activeConn.value.driver !== 'kafka')
+const isSql = computed(() => activeConn.value != null && !isNonSqlDriver(activeConn.value.driver))
 // When in SQL-only mode, the user picks a Redis conn just for the retry-push step
 const retryRedisConnId = ref<number | null>(null)
 const filteredJobs = computed(() => {

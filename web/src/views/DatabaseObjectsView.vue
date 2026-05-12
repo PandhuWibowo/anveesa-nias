@@ -39,6 +39,10 @@ const activeConn = computed(() =>
   connId.value != null ? connections.value.find(c => c.id === connId.value) ?? null : null
 )
 
+function isNonSqlDriver(driver: string) {
+  return driver === 'redis' || driver === 'memcache' || driver === 'kafka' || driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs'
+}
+
 const availableTabs = computed(() => {
   if (!metadata.value) return []
   return tabDefs.filter(t => {
@@ -75,7 +79,7 @@ const filteredItems = computed(() => {
 watch(() => props.activeConnId, async (id) => {
   if (id == null) return
   const conn = connections.value.find(c => c.id === id)
-  if (!conn || conn.driver === 'redis' || conn.driver === 'memcache' || conn.driver === 'kafka') return
+  if (!conn || isNonSqlDriver(conn.driver)) return
   if (connId.value === id) return
   connId.value = id
 }, { immediate: true })
@@ -170,7 +174,7 @@ function countForTab(key: string): number {
             >
               <option :value="null">— select —</option>
               <option
-                v-for="c in connections.filter(c => c.driver !== 'redis' && c.driver !== 'memcache' && c.driver !== 'kafka')"
+                v-for="c in connections.filter(c => !isNonSqlDriver(c.driver))"
                 :key="c.id"
                 :value="c.id"
               >{{ c.name }}</option>
