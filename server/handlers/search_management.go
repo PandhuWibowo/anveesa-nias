@@ -19,6 +19,10 @@ func SearchListILMPolicies() http.HandlerFunc {
 			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
 			return
 		}
+		cacheKey := searchCacheKey(connID, "ilm-policies")
+		if searchCacheGet(r.Context(), cacheKey, w) {
+			return
+		}
 		client, err := openSearchClient(connID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
@@ -29,7 +33,10 @@ func SearchListILMPolicies() http.HandlerFunc {
 			http.Error(w, jsonError("list ILM policies failed: "+err.Error()), http.StatusBadGateway)
 			return
 		}
-		json.NewEncoder(w).Encode(result)
+		out, _ := json.Marshal(result)
+		searchCacheSet(r.Context(), cacheKey, out, searchCacheTTLPolicies)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(out)
 	}
 }
 
@@ -62,6 +69,7 @@ func SearchSaveILMPolicy() http.HandlerFunc {
 			http.Error(w, jsonError("save ILM policy failed: "+err.Error()), http.StatusBadGateway)
 			return
 		}
+		searchCacheInvalidate(r.Context(), connID, "ilm-policies")
 		json.NewEncoder(w).Encode(result)
 	}
 }
@@ -90,6 +98,7 @@ func SearchDeleteILMPolicy() http.HandlerFunc {
 			http.Error(w, jsonError("delete ILM policy failed: "+err.Error()), http.StatusBadGateway)
 			return
 		}
+		searchCacheInvalidate(r.Context(), connID, "ilm-policies")
 		json.NewEncoder(w).Encode(result)
 	}
 }
@@ -104,6 +113,10 @@ func SearchListTemplates() http.HandlerFunc {
 			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
 			return
 		}
+		cacheKey := searchCacheKey(connID, "templates")
+		if searchCacheGet(r.Context(), cacheKey, w) {
+			return
+		}
 		client, err := openSearchClient(connID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
@@ -114,7 +127,10 @@ func SearchListTemplates() http.HandlerFunc {
 			http.Error(w, jsonError("list templates failed: "+err.Error()), http.StatusBadGateway)
 			return
 		}
-		json.NewEncoder(w).Encode(result)
+		out, _ := json.Marshal(result)
+		searchCacheSet(r.Context(), cacheKey, out, searchCacheTTLPolicies)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(out)
 	}
 }
 
@@ -147,6 +163,7 @@ func SearchSaveTemplate() http.HandlerFunc {
 			http.Error(w, jsonError("save template failed: "+err.Error()), http.StatusBadGateway)
 			return
 		}
+		searchCacheInvalidate(r.Context(), connID, "templates")
 		json.NewEncoder(w).Encode(result)
 	}
 }
@@ -175,6 +192,7 @@ func SearchDeleteTemplate() http.HandlerFunc {
 			http.Error(w, jsonError("delete template failed: "+err.Error()), http.StatusBadGateway)
 			return
 		}
+		searchCacheInvalidate(r.Context(), connID, "templates")
 		json.NewEncoder(w).Encode(result)
 	}
 }
@@ -193,6 +211,10 @@ func SearchGetIndexSettings() http.HandlerFunc {
 		if index == "" {
 			index = "_all"
 		}
+		cacheKey := searchCacheKey(connID, "index-settings:"+index)
+		if searchCacheGet(r.Context(), cacheKey, w) {
+			return
+		}
 		client, err := openSearchClient(connID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
@@ -204,7 +226,10 @@ func SearchGetIndexSettings() http.HandlerFunc {
 			http.Error(w, jsonError("get settings failed: "+err.Error()), http.StatusBadGateway)
 			return
 		}
-		json.NewEncoder(w).Encode(result)
+		out, _ := json.Marshal(result)
+		searchCacheSet(r.Context(), cacheKey, out, searchCacheTTLSettings)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(out)
 	}
 }
 
@@ -237,6 +262,7 @@ func SearchUpdateIndexSettings() http.HandlerFunc {
 			http.Error(w, jsonError("update settings failed: "+err.Error()), http.StatusBadGateway)
 			return
 		}
+		searchCacheInvalidate(r.Context(), connID, "index-settings:"+index, "index-settings:_all")
 		json.NewEncoder(w).Encode(result)
 	}
 }

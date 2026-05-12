@@ -13,8 +13,41 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anveesa/nias/cache"
 	appdb "github.com/anveesa/nias/db"
 )
+
+const (
+	searchCacheTTLInfo     = 30 * time.Second
+	searchCacheTTLIndices  = 60 * time.Second
+	searchCacheTTLPolicies = 5 * time.Minute
+	searchCacheTTLSettings = 2 * time.Minute
+)
+
+func searchCacheKey(connID int64, resource string) string {
+	return fmt.Sprintf("search:%d:%s", connID, resource)
+}
+
+func searchCacheGet(ctx context.Context, key string, w http.ResponseWriter) bool {
+	val, ok, _ := cache.Default().Get(ctx, key)
+	if !ok {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache", "HIT")
+	w.Write([]byte(val))
+	return true
+}
+
+func searchCacheSet(ctx context.Context, key string, data []byte, ttl time.Duration) {
+	_ = cache.Default().Set(ctx, key, string(data), ttl)
+}
+
+func searchCacheInvalidate(ctx context.Context, connID int64, resources ...string) {
+	for _, r := range resources {
+		_ = cache.Default().Delete(ctx, searchCacheKey(connID, r))
+	}
+}
 
 type SearchIndexInfo struct {
 	Health        string `json:"health"`
@@ -148,6 +181,10 @@ func SearchInfo() http.HandlerFunc {
 			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
 			return
 		}
+		cacheKey := searchCacheKey(connID, "info")
+		if searchCacheGet(r.Context(), cacheKey, w) {
+			return
+		}
 		client, err := openSearchClient(connID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
@@ -159,12 +196,16 @@ func SearchInfo() http.HandlerFunc {
 			http.Error(w, jsonError("search info failed: "+err.Error()), http.StatusBadGateway)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{
+		result := map[string]any{
 			"status":     "ok",
 			"driver":     client.driver,
 			"cluster":    info,
 			"latency_ms": time.Since(start).Milliseconds(),
-		})
+		}
+		out, _ := json.Marshal(result)
+		searchCacheSet(r.Context(), cacheKey, out, searchCacheTTLInfo)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(out)
 	}
 }
 
@@ -174,6 +215,10 @@ func SearchIndices() http.HandlerFunc {
 		connID, err := connectionIDFromPath(r.URL.Path)
 		if err != nil {
 			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
+			return
+		}
+		cacheKey := searchCacheKey(connID, "indices")
+		if searchCacheGet(r.Context(), cacheKey, w) {
 			return
 		}
 		client, err := openSearchClient(connID)
@@ -221,7 +266,10 @@ func SearchIndices() http.HandlerFunc {
 				})
 			}
 		}
-		json.NewEncoder(w).Encode(indices)
+		out, _ := json.Marshal(indices)
+		searchCacheSet(r.Context(), cacheKey, out, searchCacheTTLIndices)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(out)
 	}
 }
 
@@ -365,6 +413,7 @@ func SearchDeleteIndex() http.HandlerFunc {
 			http.Error(w, jsonError("delete index failed: "+err.Error()), http.StatusBadGateway)
 			return
 		}
+		searchCacheInvalidate(r.Context(), connID, "indices", "index-settings")
 		json.NewEncoder(w).Encode(result)
 	}
 }

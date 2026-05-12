@@ -4,6 +4,7 @@ import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
+import { useSearchCache } from '@/composables/useSearchCache'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -45,6 +46,7 @@ type IndexSortField = 'name' | 'docs' | 'size' | 'date' | 'health' | 'kind'
 const { connections, fetchConnections } = useConnections()
 const toast = useToast()
 const { confirm } = useConfirm()
+const searchCache = useSearchCache()
 
 const searchConnections = computed(() => connections.value.filter(c => c.driver === 'elasticsearch' || c.driver === 'opensearch'))
 const activeConn = computed(() => props.activeConnId != null ? connections.value.find(c => c.id === props.activeConnId) ?? null : null)
@@ -113,18 +115,35 @@ watch(() => props.activeConnId, async () => {
   if (isSearch.value) await refresh()
 })
 
-async function refresh() {
+async function refresh(force = false) {
   if (!activeConn.value) return
+  const id = activeConn.value.id
+
+  const cachedInfo = !force && searchCache.get<any>(id, 'info')
+  const cachedIdx  = !force && searchCache.get<SearchIndex[]>(id, 'indices')
+
+  if (cachedInfo && cachedIdx) {
+    connected.value = true
+    latencyMs.value = cachedInfo.latency_ms ?? null
+    clusterInfo.value = cachedInfo.cluster ?? null
+    indices.value = cachedIdx
+    if (!selectedIndex.value && activeConn.value.database) selectedIndex.value = activeConn.value.database
+    if (!selectedIndex.value && cachedIdx.length) selectedIndex.value = cachedIdx[0].name
+    return
+  }
+
   loading.value = true
   try {
     const [{ data: info }, { data: idx }] = await Promise.all([
-      axios.get(`/api/connections/${activeConn.value.id}/search/info`),
-      axios.get<SearchIndex[]>(`/api/connections/${activeConn.value.id}/search/indices`),
+      axios.get(`/api/connections/${id}/search/info`),
+      axios.get<SearchIndex[]>(`/api/connections/${id}/search/indices`),
     ])
     connected.value = true
     latencyMs.value = info.latency_ms ?? null
     clusterInfo.value = info.cluster ?? null
     indices.value = idx
+    searchCache.set(id, 'info', info, 'info')
+    searchCache.set(id, 'indices', idx, 'indices')
     if (!selectedIndex.value && activeConn.value.database) selectedIndex.value = activeConn.value.database
     if (!selectedIndex.value && idx.length) selectedIndex.value = idx[0].name
   } catch (e: any) {
@@ -224,8 +243,9 @@ async function deleteIndex(name: string) {
   try {
     await axios.delete(`/api/connections/${activeConn.value!.id}/search/index`, { params: { index: name } })
     toast.success(`Index "${name}" deleted`)
+    searchCache.invalidate(activeConn.value!.id, 'indices')
     if (selectedIndex.value === name) selectedIndex.value = ''
-    await refresh()
+    await refresh(true)
   } catch (e: any) {
     toast.error(e?.response?.data?.error ?? 'Failed to delete index')
   } finally {
@@ -475,7 +495,7 @@ function indexKindLabel(index: SearchIndex) {
           <option value="" disabled>Select search cluster</option>
           <option v-for="conn in searchConnections" :key="conn.id" :value="conn.id">{{ conn.name }}</option>
         </select>
-        <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!isSearch || loading" @click="refresh">Refresh</button>
+        <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!isSearch || loading" @click="refresh(true)">Refresh</button>
       </div>
     </header>
 
