@@ -613,10 +613,25 @@ async function handleReconnect(id: number, name: string) {
                   Connection details
                 </div>
 
-                <!-- Connection name (always shown) -->
-                <div class="form-group">
-                  <label class="form-label">Connection Name</label>
-                  <input v-model="form.name" class="base-input" placeholder="e.g. Production DB, Local Redis, Dev S3" />
+                <!-- Connection name + visibility (always shown) -->
+                <div class="form-row">
+                  <div class="form-group" style="flex:2">
+                    <label class="form-label">Connection Name</label>
+                    <input v-model="form.name" class="base-input" placeholder="e.g. Production DB, Local Redis, Dev S3" />
+                  </div>
+                  <div class="form-group" style="flex:1">
+                    <label class="form-label">Visibility</label>
+                    <div style="display:flex;gap:6px;height:32px">
+                      <label class="vis-radio" :class="{ active: form.visibility === 'shared' }" style="flex:1;justify-content:center">
+                        <input type="radio" v-model="form.visibility" value="shared" style="display:none" />
+                        🌐 Shared
+                      </label>
+                      <label class="vis-radio" :class="{ active: form.visibility === 'private' }" style="flex:1;justify-content:center">
+                        <input type="radio" v-model="form.visibility" value="private" style="display:none" />
+                        🔒 Private
+                      </label>
+                    </div>
+                  </div>
                 </div>
 
                 <!-- ── SQLite ─────────────────────────────────────────── -->
@@ -778,7 +793,7 @@ async function handleReconnect(id: number, name: string) {
                 <summary class="conn-advanced__trigger">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93A10 10 0 0 0 5 5.07M4.93 19.07A10 10 0 0 0 19 18.93M2 12h1m18 0h1M12 2v1m0 18v1M6.34 17.66l-.7.7m11.32-11.32.7.7M6.34 6.34l-.7-.7m11.32 11.32.7.7"/></svg>
                   Advanced options
-                  <span class="conn-advanced__hint">SSH tunnel, tags, folder, visibility</span>
+                  <span class="conn-advanced__hint">SSH tunnel, tags, folder</span>
                 </summary>
                 <div class="conn-advanced__body">
 
@@ -815,30 +830,15 @@ async function handleReconnect(id: number, name: string) {
                     <input v-model="form.tags" class="base-input" placeholder="Production, Analytics, Reporting" />
                   </div>
 
-                  <!-- Folder & Visibility -->
-                  <div class="form-row">
-                    <div class="form-group">
-                      <label class="form-label">Folder</label>
-                      <select v-model="form.folder_id" class="base-input">
-                        <option :value="null">No folder (Unfiled)</option>
-                        <option v-for="f in folders" :key="f.id" :value="f.id">
-                          {{ f.visibility === 'shared' ? '🌐' : '🔒' }} {{ f.name }}
-                        </option>
-                      </select>
-                    </div>
-                    <div class="form-group">
-                      <label class="form-label">Visibility</label>
-                      <div style="display:flex;gap:8px;height:100%;align-items:flex-end">
-                        <label class="vis-radio" :class="{ active: form.visibility === 'shared' }">
-                          <input type="radio" v-model="form.visibility" value="shared" style="display:none" />
-                          🌐 Shared
-                        </label>
-                        <label class="vis-radio" :class="{ active: form.visibility === 'private' }">
-                          <input type="radio" v-model="form.visibility" value="private" style="display:none" />
-                          🔒 Private
-                        </label>
-                      </div>
-                    </div>
+                  <!-- Folder -->
+                  <div class="form-group">
+                    <label class="form-label">Folder</label>
+                    <select v-model="form.folder_id" class="base-input">
+                      <option :value="null">No folder (Unfiled)</option>
+                      <option v-for="f in folders" :key="f.id" :value="f.id">
+                        {{ f.visibility === 'shared' ? '🌐' : '🔒' }} {{ f.name }}
+                      </option>
+                    </select>
                   </div>
                 </div>
               </details>
@@ -1241,6 +1241,8 @@ async function handleReconnect(id: number, name: string) {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   padding: 20px;
   display: flex;
   flex-direction: column;
@@ -1403,8 +1405,9 @@ async function handleReconnect(id: number, name: string) {
 
 .provider-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
   gap: 5px;
+  min-width: 0;
 }
 
 .provider-card {
@@ -1412,9 +1415,9 @@ async function handleReconnect(id: number, name: string) {
   align-items: center;
   gap: 7px;
   padding: 8px 10px;
-  border: 1.5px solid var(--border);
+  border: 1.5px solid var(--border-2);
   border-radius: 9px;
-  background: var(--bg-body);
+  background: var(--bg-surface);
   cursor: pointer;
   transition: border-color 0.13s, background 0.13s, box-shadow 0.13s;
   position: relative;
@@ -1424,13 +1427,14 @@ async function handleReconnect(id: number, name: string) {
 
 .provider-card:hover {
   border-color: var(--brand);
-  background: color-mix(in srgb, var(--brand) 6%, var(--bg-elevated));
+  background: color-mix(in srgb, var(--brand) 8%, var(--bg-elevated));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 20%, transparent);
 }
 
 .provider-card.is-active {
   border-color: var(--brand);
-  background: color-mix(in srgb, var(--brand) 10%, var(--bg-elevated));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 15%, transparent);
+  background: color-mix(in srgb, var(--brand) 12%, var(--bg-elevated));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 18%, transparent);
 }
 
 .provider-card__icon {
@@ -1573,14 +1577,23 @@ async function handleReconnect(id: number, name: string) {
   }
 
   .conn-modal-backdrop {
-    padding: 12px;
+    padding: 0;
     align-items: flex-end;
   }
 
   .conn-modal-shell {
     max-width: 100%;
-    max-height: calc(100dvh - 24px);
-    border-radius: 16px 16px 0 0;
+    width: 100%;
+    max-height: calc(100dvh - 16px);
+    border-radius: 20px 20px 0 0;
+  }
+
+  .conn-modal-body {
+    padding: 16px;
+  }
+
+  .conn-modal-foot {
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
   }
 
   .provider-grid {
