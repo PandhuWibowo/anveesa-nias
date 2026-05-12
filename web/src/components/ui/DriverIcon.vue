@@ -129,6 +129,21 @@ defineProps<{
       <circle cx="19" cy="18.5" r="2" fill="white" opacity="0.85"/>
     </g>
 
+    <!-- ── Elasticsearch: search cluster rings ────────────────── -->
+    <g v-else-if="driver === 'elasticsearch'">
+      <circle cx="10" cy="10" r="5.5" stroke="white" stroke-width="2.2" fill="none" opacity="0.95"/>
+      <path d="M14.2 14.2L20 20" stroke="white" stroke-width="2.5" stroke-linecap="round" opacity="0.9"/>
+      <path d="M6.5 10H13.5" stroke="white" stroke-width="1.8" stroke-linecap="round" opacity="0.75"/>
+      <path d="M10 6.5V13.5" stroke="white" stroke-width="1.8" stroke-linecap="round" opacity="0.55"/>
+    </g>
+
+    <!-- ── OpenSearch: open lens wave ─────────────────────────── -->
+    <g v-else-if="driver === 'opensearch'">
+      <circle cx="10" cy="10" r="5.5" stroke="white" stroke-width="2.2" fill="none" opacity="0.95"/>
+      <path d="M14.2 14.2L20 20" stroke="white" stroke-width="2.5" stroke-linecap="round" opacity="0.9"/>
+      <path d="M4.5 15.5C7.5 13.5 10.5 13.5 13.5 15.5C15.5 16.8 17.2 17 19.5 15.8" stroke="white" stroke-width="1.7" stroke-linecap="round" fill="none" opacity="0.75"/>
+    </g>
+
     <!-- ── AWS S3: bucket ─────────────────────────────────────── -->
     <g v-else-if="driver === 's3_aws'">
       <!-- handle arc -->

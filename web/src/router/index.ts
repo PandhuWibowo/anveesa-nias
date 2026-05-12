@@ -169,6 +169,18 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['redis.view'] },
         },
         {
+          path: 'search',
+          name: 'search',
+          component: () => import('@/views/SearchView.vue'),
+          meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
+        },
+        {
+          path: 'search-policies',
+          name: 'search-policies',
+          component: () => import('@/views/SearchPoliciesView.vue'),
+          meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
+        },
+        {
           path: 'laravel-queue',
           name: 'laravel-queue',
           component: () => import('@/views/LaravelQueueView.vue'),
