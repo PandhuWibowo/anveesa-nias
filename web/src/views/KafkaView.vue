@@ -86,7 +86,7 @@ const loadingTopics = ref(false)
 const loadingGroups = ref(false)
 const topicFilter = ref('')
 const showInternalTopics = ref(false)
-const activeTab = ref<'topics' | 'messages' | 'produce' | 'groups' | 'health' | 'manage'>('topics')
+const activeTab = ref<'topics' | 'messages' | 'jobs' | 'produce' | 'groups' | 'health' | 'manage'>('topics')
 const selectedTopic = ref<KafkaTopic | null>(null)
 const messages = ref<KafkaMessage[]>([])
 const loadingMessages = ref(false)
@@ -137,6 +137,32 @@ const groupsHealth = ref<GroupHealthSummary[]>([])
 const loadingHealth = ref(false)
 const healthFilter = ref<'all' | 'ok' | 'warn' | 'critical'>('all')
 let healthAutoRefreshTimer: ReturnType<typeof setInterval> | null = null
+
+// ── Jobs View ─────────────────────────────────────────────────────
+interface KafkaJob {
+  jobId: string
+  topic: string
+  partition: number
+  offset: number
+  timestamp: string
+  key: string
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'retry' | 'unknown'
+  statusReason: string
+  errorMessage: string
+  stackTrace: string
+  payload: Record<string, unknown> | null
+  rawValue: string
+  headers: KafkaMessageHeader[]
+  dlqMessage: KafkaMessage | null
+  retryCount: number
+  source: 'primary' | 'dlq' | 'retry'
+}
+const jobsList = ref<KafkaJob[]>([])
+const loadingJobs = ref(false)
+const selectedJob = ref<KafkaJob | null>(null)
+const jobsFilter = ref<'all' | 'failed' | 'retry' | 'pending'>('all')
+const jobsRetryTopics = ref('')
+const jobsLimit = ref(100)
 
 const canProduce = computed(() => hasAnyPermission(['kafka.produce']))
 const canManage = computed(() => hasAnyPermission(['kafka.manage']))
@@ -344,6 +370,199 @@ async function loadGroupsHealth() {
     loadingHealth.value = false
   }
 }
+
+// ── Jobs View Functions ───────────────────────────────────────────
+function extractJobId(message: KafkaMessage): string {
+  try {
+    const p = JSON.parse(message.value) as Record<string, unknown>
+    const candidate = p.job_id ?? p.jobId ?? p.id ?? p.uuid ?? p.trace_id ?? p.traceId ?? p.request_id ?? p.correlation_id
+    if (candidate) return String(candidate).trim()
+  } catch { /* not JSON */ }
+  return message.key?.trim() || `${message.partition}:${message.offset}`
+}
+
+function extractJobStatus(message: KafkaMessage, source: 'primary' | 'dlq' | 'retry'): { status: KafkaJob['status']; reason: string } {
+  if (source === 'dlq') return { status: 'failed', reason: 'Found in DLQ topic' }
+  if (source === 'retry') return { status: 'retry', reason: 'Found in retry topic' }
+  
+  try {
+    const p = JSON.parse(message.value) as Record<string, unknown>
+    const statusField = String(p.status ?? p.state ?? p.job_status ?? '').toLowerCase()
+    
+    if (['failed', 'error', 'failure'].includes(statusField)) return { status: 'failed', reason: `status: ${statusField}` }
+    if (['retry', 'retrying', 'queued_retry'].includes(statusField)) return { status: 'retry', reason: `status: ${statusField}` }
+    if (['completed', 'done', 'success', 'processed'].includes(statusField)) return { status: 'completed', reason: `status: ${statusField}` }
+    if (['processing', 'running', 'in_progress'].includes(statusField)) return { status: 'processing', reason: `status: ${statusField}` }
+    if (['pending', 'queued', 'waiting'].includes(statusField)) return { status: 'pending', reason: `status: ${statusField}` }
+    
+    // Check for error field presence
+    if (p.error || p.error_message || p.exception || p.errorMessage) {
+      return { status: 'failed', reason: 'Has error field in payload' }
+    }
+    
+    return { status: 'pending', reason: 'No status field (assuming pending)' }
+  } catch {
+    return { status: 'unknown', reason: 'Payload is not JSON' }
+  }
+}
+
+function extractJobError(message: KafkaMessage): { errorMessage: string; stackTrace: string } {
+  try {
+    const p = JSON.parse(message.value) as Record<string, unknown>
+    const errorMessage = String(
+      p.error ?? p.error_message ?? p.errorMessage ?? p.exception ?? p.err ?? p.message ?? ''
+    ).trim()
+    const stackTrace = String(
+      p.stack ?? p.stacktrace ?? p.stack_trace ?? p.stackTrace ?? p.exception_trace ?? ''
+    ).trim()
+    return { errorMessage, stackTrace }
+  } catch {
+    return { errorMessage: '', stackTrace: '' }
+  }
+}
+
+function messageToJob(message: KafkaMessage, source: 'primary' | 'dlq' | 'retry', dlqMessage: KafkaMessage | null = null): KafkaJob {
+  const jobId = extractJobId(message)
+  const { status, reason } = extractJobStatus(message, source)
+  const { errorMessage, stackTrace } = extractJobError(dlqMessage || message)
+  
+  let payload: Record<string, unknown> | null = null
+  try {
+    payload = JSON.parse(message.value) as Record<string, unknown>
+  } catch { /* not JSON */ }
+  
+  const retryCount = payload ? Number(payload.retry_count ?? payload.retryCount ?? payload.attempts ?? 0) : 0
+  
+  return {
+    jobId,
+    topic: message.topic,
+    partition: message.partition,
+    offset: message.offset,
+    timestamp: message.timestamp,
+    key: message.key,
+    status,
+    statusReason: reason,
+    errorMessage,
+    stackTrace,
+    payload,
+    rawValue: message.value,
+    headers: message.headers || [],
+    dlqMessage,
+    retryCount,
+    source,
+  }
+}
+
+async function loadJobs() {
+  if (!activeConn.value || !selectedTopic.value) return
+  if (isKafkaInternalTopic(selectedTopic.value.name)) {
+    jobsList.value = []
+    return
+  }
+  
+  loadingJobs.value = true
+  selectedJob.value = null
+  
+  try {
+    const primaryTopic = selectedTopic.value.name
+    const dlqTopics = parseTopicLines(traceDlqTopics.value)
+    const retryTopics = parseTopicLines(jobsRetryTopics.value)
+    
+    // Fetch from all topics in parallel
+    const [primaryData, ...otherData] = await Promise.all([
+      axios.get<KafkaMessage[]>(`/api/connections/${activeConn.value!.id}/kafka/messages`, {
+        params: { topic: primaryTopic, partition: -1, limit: jobsLimit.value },
+      }).then(r => r.data || []),
+      ...dlqTopics.map(topic =>
+        axios.get<KafkaMessage[]>(`/api/connections/${activeConn.value!.id}/kafka/messages`, {
+          params: { topic, partition: -1, limit: jobsLimit.value },
+        }).then(r => ({ topic, kind: 'dlq' as const, messages: r.data || [] })).catch(() => ({ topic, kind: 'dlq' as const, messages: [] }))
+      ),
+      ...retryTopics.map(topic =>
+        axios.get<KafkaMessage[]>(`/api/connections/${activeConn.value!.id}/kafka/messages`, {
+          params: { topic, partition: -1, limit: jobsLimit.value },
+        }).then(r => ({ topic, kind: 'retry' as const, messages: r.data || [] })).catch(() => ({ topic, kind: 'retry' as const, messages: [] }))
+      ),
+    ])
+    
+    // Build lookup maps for DLQ and retry messages by job ID
+    const dlqByJobId = new Map<string, KafkaMessage>()
+    const retryByJobId = new Map<string, KafkaMessage>()
+    
+    for (const result of otherData) {
+      if (typeof result === 'object' && 'kind' in result) {
+        for (const msg of result.messages) {
+          const jobId = extractJobId(msg)
+          if (result.kind === 'dlq') {
+            dlqByJobId.set(jobId, msg)
+          } else {
+            retryByJobId.set(jobId, msg)
+          }
+        }
+      }
+    }
+    
+    // Convert primary messages to jobs, enriched with DLQ info
+    const jobs: KafkaJob[] = []
+    const seenJobIds = new Set<string>()
+    
+    for (const msg of primaryData) {
+      const jobId = extractJobId(msg)
+      const dlqMsg = dlqByJobId.get(jobId)
+      const retryMsg = retryByJobId.get(jobId)
+      
+      // Determine source and create job
+      let source: 'primary' | 'dlq' | 'retry' = 'primary'
+      if (dlqMsg) source = 'dlq' // Override if found in DLQ
+      
+      const job = messageToJob(msg, source, dlqMsg || null)
+      
+      // If in retry topic, mark as retry
+      if (retryMsg && !dlqMsg) {
+        job.status = 'retry'
+        job.statusReason = 'Found in retry topic'
+        job.retryCount = Math.max(job.retryCount, 1)
+      }
+      
+      jobs.push(job)
+      seenJobIds.add(jobId)
+    }
+    
+    // Add DLQ-only jobs (failed jobs not in primary topic anymore)
+    for (const [jobId, msg] of dlqByJobId) {
+      if (!seenJobIds.has(jobId)) {
+        jobs.push(messageToJob(msg, 'dlq', msg))
+        seenJobIds.add(jobId)
+      }
+    }
+    
+    // Sort by timestamp descending (newest first)
+    jobs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+    
+    jobsList.value = jobs
+  } catch (error) {
+    console.error('Failed to load jobs:', error)
+    jobsList.value = []
+  } finally {
+    loadingJobs.value = false
+  }
+}
+
+const filteredJobs = computed(() => {
+  if (jobsFilter.value === 'all') return jobsList.value
+  if (jobsFilter.value === 'failed') return jobsList.value.filter(j => j.status === 'failed')
+  if (jobsFilter.value === 'retry') return jobsList.value.filter(j => j.status === 'retry')
+  if (jobsFilter.value === 'pending') return jobsList.value.filter(j => j.status === 'pending' || j.status === 'processing')
+  return jobsList.value
+})
+
+const jobsStats = computed(() => ({
+  total: jobsList.value.length,
+  failed: jobsList.value.filter(j => j.status === 'failed').length,
+  retry: jobsList.value.filter(j => j.status === 'retry').length,
+  pending: jobsList.value.filter(j => j.status === 'pending' || j.status === 'processing').length,
+  completed: jobsList.value.filter(j => j.status === 'completed').length,
+}))
 
 async function loadMessages() {
   if (!activeConn.value || !selectedTopic.value) return
@@ -633,9 +852,19 @@ function defaultKafkaSuggestions(raw: string): string[] {
 }
 
 // ── Message detail panel ─────────────────────────────────────────
-const selectedMessage    = ref<KafkaMessage | null>(null)
-const msgDetailTab       = ref<'parsed' | 'raw' | 'headers'>('parsed')
+const selectedMessage     = ref<KafkaMessage | null>(null)
+const msgDetailTab        = ref<'parsed' | 'raw' | 'headers' | 'traceback'>('parsed')
 const msgDetailFullscreen = ref(false)
+
+// Per-message traceback result
+interface TracebackResult {
+  query: string
+  dlqMatches: Array<{ topic: string; message: KafkaMessage; signals: MessageSignals }>
+  primaryMatches: Array<{ topic: string; message: KafkaMessage }>
+  loading: boolean
+  ran: boolean
+}
+const msgTraceback = ref<TracebackResult>({ query: '', dlqMatches: [], primaryMatches: [], loading: false, ran: false })
 
 interface MessageSignals {
   level: 'error' | 'warn' | 'ok' | 'unknown'
@@ -692,6 +921,53 @@ function openMsgDetail(message: KafkaMessage) {
   selectedMessage.value = message
   msgDetailTab.value = 'parsed'
   msgDetailFullscreen.value = false
+  msgTraceback.value = { query: '', dlqMatches: [], primaryMatches: [], loading: false, ran: false }
+}
+
+// Build a search key from the message: prefer trace_id/id from payload, then key, then offset
+function buildTraceKey(message: KafkaMessage): string {
+  try {
+    const p = JSON.parse(message.value) as Record<string, unknown>
+    const candidate = p.trace_id ?? p.traceId ?? p.request_id ?? p.requestId ?? p.correlation_id ?? p.id
+    if (candidate) return String(candidate).trim()
+  } catch { /* not JSON */ }
+  return message.key?.trim() || String(message.offset)
+}
+
+async function traceFromMessage(message: KafkaMessage) {
+  if (!activeConn.value) return
+  msgDetailTab.value = 'traceback'
+  const query = buildTraceKey(message)
+  msgTraceback.value = { query, dlqMatches: [], primaryMatches: [], loading: true, ran: false }
+
+  try {
+    const dlqTopics = parseTopicLines(traceDlqTopics.value)
+    const primaryTopic = selectedTopic.value?.name && !isKafkaInternalTopic(selectedTopic.value.name) ? selectedTopic.value.name : ''
+    const allTopics = Array.from(new Set([primaryTopic, ...dlqTopics].filter(Boolean)))
+    const q = query.toLowerCase()
+
+    const results = await Promise.all(allTopics.map(async topic => {
+      const { data } = await axios.get<KafkaMessage[]>(`/api/connections/${activeConn.value!.id}/kafka/messages`, {
+        params: { topic, partition: -1, limit: 100 },
+      })
+      const matched = (data || []).filter(m =>
+        m.offset !== message.offset || m.partition !== message.partition || m.topic !== message.topic
+      ).filter(m => messageMatchesTrace(m, q))
+      return { topic, kind: dlqTopics.includes(topic) ? 'dlq' as const : 'primary' as const, matched }
+    }))
+
+    const dlqMatches: TracebackResult['dlqMatches'] = []
+    const primaryMatches: TracebackResult['primaryMatches'] = []
+    for (const r of results) {
+      for (const m of r.matched) {
+        if (r.kind === 'dlq') dlqMatches.push({ topic: r.topic, message: m, signals: extractMessageSignals(m) })
+        else primaryMatches.push({ topic: r.topic, message: m })
+      }
+    }
+    msgTraceback.value = { query, dlqMatches, primaryMatches, loading: false, ran: true }
+  } catch {
+    msgTraceback.value = { query, dlqMatches: [], primaryMatches: [], loading: false, ran: true }
+  }
 }
 
 function parsedEntries(message: KafkaMessage): Array<{ key: string; value: unknown; isError: boolean }> {
@@ -879,6 +1155,14 @@ watch(selectedTopic, (topic) => {
               </button>
               <button class="kafka-tab" :class="{ active: activeTab === 'messages' }" @click="activeTab = 'messages'; loadMessages()">
                 <span>Messages</span>
+              </button>
+              <button class="kafka-tab" :class="{ active: activeTab === 'jobs' }" @click="activeTab = 'jobs'; loadJobs()">
+                <span>Jobs</span>
+                <b
+                  v-if="jobsStats.failed > 0"
+                  style="background:var(--danger,#ef4444);color:#fff"
+                >{{ jobsStats.failed }}</b>
+                <b v-else-if="jobsList.length">{{ jobsList.length }}</b>
               </button>
               <button v-if="canProduce" class="kafka-tab" :class="{ active: activeTab === 'produce' }" @click="activeTab = 'produce'">
                 <span>Produce</span>
@@ -1331,9 +1615,14 @@ watch(selectedTopic, (topic) => {
                   <button :class="{ active: msgDetailTab === 'headers' }" @click="msgDetailTab = 'headers'">
                     Headers <span v-if="selectedMessage.headers?.length">({{ selectedMessage.headers.length }})</span>
                   </button>
+                  <button :class="{ active: msgDetailTab === 'traceback' }" @click="traceFromMessage(selectedMessage)">
+                    Traceback
+                    <span v-if="msgTraceback.ran" class="msg-tb-badge" :class="msgTraceback.dlqMatches.length ? 'msg-tb-badge--hit' : ''">
+                      {{ msgTraceback.dlqMatches.length + msgTraceback.primaryMatches.length }}
+                    </span>
+                  </button>
                 </div>
 
-                <!-- Fields tab -->
                 <div v-if="msgDetailTab === 'parsed'" class="msg-detail__body">
                   <div v-if="!extractMessageSignals(selectedMessage).parsedOk" class="kafka-muted" style="padding:12px">
                     Payload is not valid JSON — switch to Raw tab to see the full value.
@@ -1354,7 +1643,6 @@ watch(selectedTopic, (topic) => {
                   </table>
                 </div>
 
-                <!-- Raw tab -->
                 <div v-else-if="msgDetailTab === 'raw'" class="msg-detail__body">
                   <div class="msg-detail__raw-toolbar">
                     <select v-model="messageDecodeMode" class="base-input" style="font-size:11px;padding:2px 6px;height:auto">
@@ -1368,8 +1656,7 @@ watch(selectedTopic, (topic) => {
                   <pre class="msg-detail__pre">{{ decodedMessageValue(selectedMessage) }}</pre>
                 </div>
 
-                <!-- Headers tab -->
-                <div v-else class="msg-detail__body">
+                <div v-else-if="msgDetailTab === 'headers'" class="msg-detail__body">
                   <div v-if="!selectedMessage.headers?.length" class="kafka-muted" style="padding:12px">No headers on this message.</div>
                   <table v-else class="msg-fields-table">
                     <tbody>
@@ -1379,6 +1666,98 @@ watch(selectedTopic, (topic) => {
                       </tr>
                     </tbody>
                   </table>
+                </div>
+                <div v-else-if="msgDetailTab === 'traceback'" class="msg-detail__body">
+                  <div v-if="msgTraceback.loading" class="kafka-muted" style="padding:20px;display:flex;align-items:center;gap:8px">
+                    <svg class="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                    Searching DLQ and primary topics for <code style="font-family:var(--mono)">{{ msgTraceback.query }}</code>…
+                  </div>
+                  <template v-else-if="msgTraceback.ran">
+                    <!-- Trace key used -->
+                    <div class="msg-tb-key">
+                      <span>Searched for</span>
+                      <code>{{ msgTraceback.query }}</code>
+                      <button class="base-btn base-btn--ghost base-btn--xs" @click="traceFromMessage(selectedMessage!)">↺ Re-run</button>
+                    </div>
+
+                    <!-- DLQ / failure matches -->
+                    <div class="msg-tb-section">
+                      <div class="msg-tb-section__head">
+                        <span :class="msgTraceback.dlqMatches.length ? 'msg-tb-hit' : 'msg-tb-miss'">
+                          {{ msgTraceback.dlqMatches.length ? '✕ Found in DLQ / failure topics' : '✓ Not found in DLQ topics' }}
+                        </span>
+                        <span class="msg-tb-count">{{ msgTraceback.dlqMatches.length }} match</span>
+                      </div>
+                      <div v-for="(hit, i) in msgTraceback.dlqMatches" :key="i" class="msg-tb-card msg-tb-card--error">
+                        <div class="msg-tb-card__meta">
+                          <span>{{ hit.topic }}</span>
+                          <span>p{{ hit.message.partition }} · off{{ hit.message.offset }}</span>
+                          <span>{{ new Date(hit.message.timestamp).toLocaleString() }}</span>
+                        </div>
+                        <!-- Error alert -->
+                        <div v-if="hit.signals.errorText" class="msg-tb-card__error">
+                          <strong>Error:</strong> {{ hit.signals.errorText }}
+                        </div>
+                        <!-- Stack trace if present -->
+                        <template v-if="hit.signals.parsed">
+                          <div v-for="stackKey in ['stack','stacktrace','stack_trace','exception','Exception'] as string[]" :key="stackKey">
+                            <pre v-if="(hit.signals.parsed as any)[stackKey]" class="msg-tb-stack">{{ (hit.signals.parsed as any)[stackKey] }}</pre>
+                          </div>
+                        </template>
+                        <!-- All fields collapsed -->
+                        <details class="msg-tb-card__fields">
+                          <summary>Full DLQ payload</summary>
+                          <table class="msg-fields-table">
+                            <tbody>
+                              <tr v-for="entry in parsedEntries(hit.message)" :key="entry.key" :class="{ 'msg-field--error': entry.isError && entry.value }">
+                                <td class="msg-field__key">{{ entry.key }}</td>
+                                <td class="msg-field__value"><pre>{{ formatDetailValue(entry.value) }}</pre></td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </details>
+                        <div v-if="canProduce" class="msg-tb-card__actions">
+                          <button class="base-btn base-btn--ghost base-btn--xs" @click="replayMessage(hit.message)">↩ Replay this DLQ message</button>
+                        </div>
+                      </div>
+                      <div v-if="!msgTraceback.dlqMatches.length" class="msg-tb-empty">
+                        No matching records found in DLQ topics.<br>
+                        <span class="kafka-muted">Configure DLQ topics in the Topics tab → End-to-end trace → DLQ Topics.</span>
+                      </div>
+                    </div>
+
+                    <!-- Primary topic matches (other occurrences of same key) -->
+                    <div v-if="msgTraceback.primaryMatches.length" class="msg-tb-section">
+                      <div class="msg-tb-section__head">
+                        <span>Related messages in primary topic</span>
+                        <span class="msg-tb-count">{{ msgTraceback.primaryMatches.length }}</span>
+                      </div>
+                      <div v-for="(hit, i) in msgTraceback.primaryMatches" :key="i" class="msg-tb-card">
+                        <div class="msg-tb-card__meta">
+                          <span>{{ hit.topic }}</span>
+                          <span>p{{ hit.message.partition }} · off{{ hit.message.offset }}</span>
+                          <span>{{ new Date(hit.message.timestamp).toLocaleString() }}</span>
+                          <span v-if="hit.message.key">key: {{ hit.message.key }}</span>
+                        </div>
+                        <pre class="msg-tb-card__value">{{ decodedMessageValue(hit.message).slice(0, 300) }}{{ decodedMessageValue(hit.message).length > 300 ? '…' : '' }}</pre>
+                      </div>
+                    </div>
+
+                    <!-- Consumer group lag hint -->
+                    <div class="msg-tb-section">
+                      <div class="msg-tb-section__head"><span>Consumer lag for this topic</span></div>
+                      <div v-if="selectedTopicLag > 0" class="msg-tb-card msg-tb-card--warn">
+                        <strong>⚠ {{ selectedTopicLag }} messages behind</strong> — the consumer group may not have processed this message yet.
+                        <br><span class="kafka-muted">Go to Consumer Groups tab to inspect which group is lagging.</span>
+                      </div>
+                      <div v-else class="msg-tb-empty">
+                        No lag detected for the selected consumer group. The consumer is caught up.
+                      </div>
+                    </div>
+                  </template>
+                  <div v-else class="kafka-muted" style="padding:20px;text-align:center">
+                    Click <strong>Traceback</strong> tab to search DLQ topics for this message key.
+                  </div>
                 </div>
 
                 <!-- Replay button at bottom if allowed -->
@@ -1390,6 +1769,220 @@ watch(selectedTopic, (topic) => {
               <div v-else class="msg-detail msg-detail--empty">
                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" style="opacity:.3"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="9"/><line x1="9" y1="13" x2="13" y2="13"/></svg>
                 <span>Select a message to inspect</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── Jobs Tab ─────────────────────────────────────────────── -->
+          <div v-else-if="activeTab === 'jobs'" class="kafka-pane jobs-pane">
+            <div class="kafka-panel-head">
+              <div>
+                <div class="kafka-kicker">Jobs / Queue</div>
+                <h1>{{ selectedTopic?.name || 'Select a topic' }}</h1>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <button
+                  class="base-btn base-btn--ghost base-btn--sm"
+                  :disabled="loadingJobs || !selectedTopic"
+                  @click="loadJobs"
+                >
+                  <svg v-if="loadingJobs" class="spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            <!-- Config bar -->
+            <div class="jobs-config">
+              <div class="jobs-config__topics">
+                <div class="jobs-config__item">
+                  <label>DLQ Topics</label>
+                  <input v-model="traceDlqTopics" class="base-input" placeholder="topic.dlq, topic.failed" style="width:200px" />
+                </div>
+                <div class="jobs-config__item">
+                  <label>Retry Topics</label>
+                  <input v-model="jobsRetryTopics" class="base-input" placeholder="topic.retry" style="width:160px" />
+                </div>
+                <div class="jobs-config__item">
+                  <label>Limit</label>
+                  <input v-model.number="jobsLimit" type="number" class="base-input" min="10" max="500" style="width:70px" />
+                </div>
+              </div>
+              <div class="jobs-filter-row">
+                <button
+                  v-for="f in (['all','failed','retry','pending'] as const)"
+                  :key="f"
+                  class="jobs-filter-btn"
+                  :class="{ active: jobsFilter === f, [`jobs-filter-btn--${f}`]: f !== 'all' }"
+                  @click="jobsFilter = f"
+                >
+                  {{ f === 'all' ? `All (${jobsStats.total})` : f === 'failed' ? `Failed (${jobsStats.failed})` : f === 'retry' ? `Retry (${jobsStats.retry})` : `Pending (${jobsStats.pending})` }}
+                </button>
+              </div>
+            </div>
+
+            <!-- Stats summary -->
+            <div class="jobs-stats">
+              <div class="jobs-stat"><span class="jobs-stat__num">{{ jobsStats.total }}</span><span class="jobs-stat__label">Total</span></div>
+              <div class="jobs-stat jobs-stat--failed"><span class="jobs-stat__num">{{ jobsStats.failed }}</span><span class="jobs-stat__label">Failed</span></div>
+              <div class="jobs-stat jobs-stat--retry"><span class="jobs-stat__num">{{ jobsStats.retry }}</span><span class="jobs-stat__label">Retry</span></div>
+              <div class="jobs-stat jobs-stat--pending"><span class="jobs-stat__num">{{ jobsStats.pending }}</span><span class="jobs-stat__label">Pending</span></div>
+              <div class="jobs-stat jobs-stat--completed"><span class="jobs-stat__num">{{ jobsStats.completed }}</span><span class="jobs-stat__label">Completed</span></div>
+            </div>
+
+            <!-- Internal topic notice -->
+            <div v-if="selectedTopic && isKafkaInternalTopic(selectedTopic.name)" class="kafka-internal-notice">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <div><strong>Internal topic</strong><p>Select a regular application topic to view jobs.</p></div>
+            </div>
+
+            <!-- Empty state -->
+            <div v-else-if="!loadingJobs && !jobsList.length && selectedTopic" class="jobs-empty">
+              <p>No jobs found. Click <strong>Refresh</strong> to load jobs from this topic.</p>
+              <p class="kafka-muted">Configure DLQ and Retry topics above to see failed/retrying jobs.</p>
+            </div>
+
+            <!-- Loading -->
+            <div v-else-if="loadingJobs" class="kafka-muted" style="padding:24px;display:flex;align-items:center;gap:8px">
+              <svg class="spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+              Loading jobs from topic and DLQ…
+            </div>
+
+            <!-- Jobs workspace (list + detail) -->
+            <div v-else class="jobs-workspace">
+              <!-- Jobs list table -->
+              <div class="jobs-list">
+                <table class="jobs-table">
+                  <thead>
+                    <tr>
+                      <th style="width:40px">Status</th>
+                      <th>Job ID</th>
+                      <th style="width:100px">Timestamp</th>
+                      <th style="width:60px">Part</th>
+                      <th style="width:80px">Offset</th>
+                      <th>Error</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="job in filteredJobs"
+                      :key="`${job.topic}:${job.partition}:${job.offset}`"
+                      class="jobs-row"
+                      :class="[`jobs-row--${job.status}`, { 'jobs-row--selected': selectedJob === job }]"
+                      @click="selectedJob = job"
+                    >
+                      <td>
+                        <span class="jobs-status-badge" :class="`jobs-status--${job.status}`">
+                          {{ job.status === 'failed' ? '✕' : job.status === 'retry' ? '↻' : job.status === 'completed' ? '✓' : job.status === 'processing' ? '⟳' : '○' }}
+                        </span>
+                      </td>
+                      <td class="jobs-cell-id">{{ job.jobId }}</td>
+                      <td class="jobs-cell-time">{{ new Date(job.timestamp).toLocaleTimeString() }}</td>
+                      <td class="jobs-cell-mono">{{ job.partition }}</td>
+                      <td class="jobs-cell-mono">{{ job.offset }}</td>
+                      <td class="jobs-cell-error">{{ job.errorMessage ? job.errorMessage.slice(0, 60) + (job.errorMessage.length > 60 ? '…' : '') : '—' }}</td>
+                    </tr>
+                    <tr v-if="!filteredJobs.length">
+                      <td colspan="6" class="kafka-empty-cell">No jobs match the current filter.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Job detail panel -->
+              <div v-if="selectedJob" class="jobs-detail">
+                <div class="jobs-detail__head">
+                  <div>
+                    <span class="jobs-status-badge jobs-status-badge--lg" :class="`jobs-status--${selectedJob.status}`">
+                      {{ selectedJob.status.toUpperCase() }}
+                    </span>
+                    <span class="jobs-detail__id">{{ selectedJob.jobId }}</span>
+                  </div>
+                  <button class="base-btn base-btn--ghost base-btn--xs" @click="selectedJob = null">✕</button>
+                </div>
+
+                <!-- Error alert -->
+                <div v-if="selectedJob.errorMessage" class="jobs-detail__error">
+                  <div class="jobs-detail__error-head">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                    <strong>Error</strong>
+                  </div>
+                  <p>{{ selectedJob.errorMessage }}</p>
+                </div>
+
+                <!-- Stack trace -->
+                <div v-if="selectedJob.stackTrace" class="jobs-detail__stack">
+                  <div class="jobs-detail__section-head">Stack Trace</div>
+                  <pre>{{ selectedJob.stackTrace }}</pre>
+                </div>
+
+                <!-- Metadata -->
+                <div class="jobs-detail__meta">
+                  <div><span>Topic</span><code>{{ selectedJob.topic }}</code></div>
+                  <div><span>Partition</span><code>{{ selectedJob.partition }}</code></div>
+                  <div><span>Offset</span><code>{{ selectedJob.offset }}</code></div>
+                  <div><span>Timestamp</span><code>{{ new Date(selectedJob.timestamp).toLocaleString() }}</code></div>
+                  <div><span>Key</span><code>{{ selectedJob.key || '(none)' }}</code></div>
+                  <div><span>Status Reason</span><code>{{ selectedJob.statusReason }}</code></div>
+                  <div v-if="selectedJob.retryCount"><span>Retry Count</span><code>{{ selectedJob.retryCount }}</code></div>
+                  <div><span>Source</span><code>{{ selectedJob.source }}</code></div>
+                </div>
+
+                <!-- Headers -->
+                <details v-if="selectedJob.headers.length" class="jobs-detail__section">
+                  <summary>Headers ({{ selectedJob.headers.length }})</summary>
+                  <table class="msg-fields-table">
+                    <tbody>
+                      <tr v-for="h in selectedJob.headers" :key="h.key">
+                        <td class="msg-field__key">{{ h.key }}</td>
+                        <td class="msg-field__value"><code>{{ h.value }}</code></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </details>
+
+                <!-- Payload -->
+                <details class="jobs-detail__section" open>
+                  <summary>Payload</summary>
+                  <div v-if="selectedJob.payload" class="jobs-detail__payload">
+                    <table class="msg-fields-table">
+                      <tbody>
+                        <tr
+                          v-for="(val, key) in selectedJob.payload"
+                          :key="String(key)"
+                          :class="{ 'msg-field--error': ['error','error_message','exception','stack','stacktrace'].includes(String(key)) && val }"
+                        >
+                          <td class="msg-field__key">{{ key }}</td>
+                          <td class="msg-field__value"><pre>{{ typeof val === 'object' ? JSON.stringify(val, null, 2) : String(val) }}</pre></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <pre v-else class="jobs-detail__raw">{{ selectedJob.rawValue }}</pre>
+                </details>
+
+                <!-- DLQ message if different -->
+                <details v-if="selectedJob.dlqMessage && selectedJob.dlqMessage.offset !== selectedJob.offset" class="jobs-detail__section">
+                  <summary>DLQ Record</summary>
+                  <div class="jobs-detail__dlq-info">
+                    <div><span>DLQ Topic</span><code>{{ selectedJob.dlqMessage.topic }}</code></div>
+                    <div><span>Offset</span><code>{{ selectedJob.dlqMessage.offset }}</code></div>
+                    <div><span>Time</span><code>{{ new Date(selectedJob.dlqMessage.timestamp).toLocaleString() }}</code></div>
+                  </div>
+                  <pre class="jobs-detail__raw">{{ selectedJob.dlqMessage.value }}</pre>
+                </details>
+
+                <!-- Actions -->
+                <div v-if="canProduce" class="jobs-detail__actions">
+                  <button class="base-btn base-btn--primary base-btn--sm" @click="replayMessage({ topic: selectedJob.topic, partition: selectedJob.partition, offset: selectedJob.offset, key: selectedJob.key, value: selectedJob.rawValue, headers: selectedJob.headers, timestamp: selectedJob.timestamp, high_water_mark: 0 })">
+                    ↩ Replay Job
+                  </button>
+                </div>
+              </div>
+
+              <div v-else class="jobs-detail jobs-detail--empty">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" style="opacity:.25"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="9"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="12" y2="17"/></svg>
+                <span>Select a job to view details</span>
               </div>
             </div>
           </div>
@@ -2818,6 +3411,106 @@ watch(selectedTopic, (topic) => {
   word-break: break-word;
 }
 
+/* ── Traceback ──────────────────────────────────────────────── */
+.msg-tb-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+.msg-tb-badge--hit { background: rgba(239,68,68,.15); color: var(--danger,#ef4444); }
+
+.msg-tb-key {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+  font-size: 12px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.msg-tb-key code { font-family: var(--mono); color: var(--text-primary); font-size: 12px; }
+
+.msg-tb-section {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.msg-tb-section__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.msg-tb-hit  { color: var(--danger,#ef4444); }
+.msg-tb-miss { color: #22c55e; }
+.msg-tb-count { font-size: 11px; color: var(--text-muted); font-weight: 400; }
+
+.msg-tb-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: var(--bg-surface);
+  font-size: 12px;
+}
+.msg-tb-card--error { border-color: rgba(239,68,68,.3); background: rgba(239,68,68,.04); }
+.msg-tb-card--warn  { border-color: rgba(245,158,11,.3); background: rgba(245,158,11,.04); }
+.msg-tb-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.msg-tb-card__error {
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  background: rgba(239,68,68,.08);
+  border-radius: 4px;
+  color: var(--danger,#ef4444);
+  font-size: 12px;
+}
+.msg-tb-stack {
+  margin: 0 0 8px;
+  padding: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: var(--mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--danger,#ef4444);
+  max-height: 220px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+.msg-tb-card__value {
+  margin: 0;
+  font-size: 11px;
+  font-family: var(--mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-muted);
+  max-height: 100px;
+  overflow: hidden;
+}
+.msg-tb-card__fields { margin-top: 8px; }
+.msg-tb-card__fields summary { font-size: 11px; color: var(--text-muted); cursor: pointer; }
+.msg-tb-card__actions { margin-top: 8px; }
+.msg-tb-empty { font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+
 /* ── Internal topic notice ──────────────────────────────────── */
 .kafka-internal-notice {
   display: flex;
@@ -2834,6 +3527,299 @@ watch(selectedTopic, (topic) => {
 }
 .kafka-internal-notice strong { display: block; margin-bottom: 4px; color: var(--text-primary); }
 .kafka-internal-notice p { margin: 0; color: var(--text-muted); font-size: 12px; }
+
+/* ── Jobs Tab ──────────────────────────────────────────────── */
+.jobs-pane { display: flex; flex-direction: column; }
+
+.jobs-config {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.jobs-config__topics {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.jobs-config__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.jobs-config__item label {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.jobs-config__item input { font-size: 12px; padding: 4px 8px; }
+
+.jobs-filter-row { display: flex; gap: 4px; }
+.jobs-filter-btn {
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.jobs-filter-btn.active,
+.jobs-filter-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.jobs-filter-btn--failed.active { border-color: var(--danger,#ef4444); color: var(--danger,#ef4444); }
+.jobs-filter-btn--retry.active  { border-color: #f59e0b; color: #f59e0b; }
+.jobs-filter-btn--pending.active { border-color: var(--brand); color: var(--brand); }
+
+.jobs-stats {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.jobs-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 16px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-width: 70px;
+}
+.jobs-stat__num { font-size: 18px; font-weight: 700; color: var(--text-primary); }
+.jobs-stat__label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; margin-top: 2px; }
+.jobs-stat--failed .jobs-stat__num { color: var(--danger,#ef4444); }
+.jobs-stat--retry .jobs-stat__num { color: #f59e0b; }
+.jobs-stat--pending .jobs-stat__num { color: var(--brand); }
+.jobs-stat--completed .jobs-stat__num { color: #22c55e; }
+
+.jobs-empty {
+  padding: 32px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.jobs-workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.jobs-list {
+  flex: 0 0 55%;
+  min-width: 400px;
+  overflow: auto;
+  border-right: 1px solid var(--border);
+}
+.jobs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.jobs-table thead th {
+  position: sticky;
+  top: 0;
+  padding: 8px 10px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  text-align: left;
+  white-space: nowrap;
+}
+.jobs-row {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.jobs-row:hover td { background: var(--bg-hover); }
+.jobs-row--selected td { background: color-mix(in srgb, var(--brand) 10%, transparent) !important; }
+.jobs-row--failed td { background: rgba(239,68,68,.03); }
+.jobs-row--retry td { background: rgba(245,158,11,.03); }
+.jobs-table tbody td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.jobs-cell-id {
+  font-family: var(--mono);
+  font-size: 11px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jobs-cell-time { font-family: var(--mono); font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.jobs-cell-mono { font-family: var(--mono); font-size: 11px; text-align: center; }
+.jobs-cell-error {
+  font-size: 11px;
+  color: var(--danger,#ef4444);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jobs-status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+}
+.jobs-status-badge--lg { width: auto; height: auto; padding: 3px 10px; border-radius: 4px; font-size: 10px; }
+.jobs-status--failed { background: rgba(239,68,68,.15); color: var(--danger,#ef4444); }
+.jobs-status--retry { background: rgba(245,158,11,.15); color: #f59e0b; }
+.jobs-status--pending { background: rgba(99,102,241,.12); color: var(--brand); }
+.jobs-status--processing { background: rgba(99,102,241,.12); color: var(--brand); }
+.jobs-status--completed { background: rgba(34,197,94,.15); color: #22c55e; }
+.jobs-status--unknown { background: var(--bg-hover); color: var(--text-muted); }
+
+.jobs-detail {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  background: var(--bg-surface);
+}
+.jobs-detail--empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.jobs-detail__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+  gap: 12px;
+}
+.jobs-detail__head > div { display: flex; align-items: center; gap: 10px; }
+.jobs-detail__id {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.jobs-detail__error {
+  margin: 12px 16px;
+  padding: 12px;
+  background: rgba(239,68,68,.06);
+  border: 1px solid rgba(239,68,68,.2);
+  border-radius: 6px;
+}
+.jobs-detail__error-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--danger,#ef4444);
+  margin-bottom: 6px;
+}
+.jobs-detail__error p { margin: 0; font-size: 13px; color: var(--text-primary); line-height: 1.5; }
+
+.jobs-detail__stack {
+  margin: 0 16px 12px;
+}
+.jobs-detail__section-head {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.jobs-detail__stack pre {
+  margin: 0;
+  padding: 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--danger,#ef4444);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+
+.jobs-detail__meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+.jobs-detail__meta > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.jobs-detail__meta span { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
+.jobs-detail__meta code { font-size: 12px; font-family: var(--mono); color: var(--text-primary); }
+
+.jobs-detail__section {
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+}
+.jobs-detail__section summary {
+  padding: 10px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  background: var(--bg-elevated);
+}
+.jobs-detail__section summary:hover { background: var(--bg-hover); }
+.jobs-detail__payload { padding: 0; }
+.jobs-detail__raw {
+  margin: 0;
+  padding: 12px 16px;
+  font-size: 11px;
+  font-family: var(--mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+.jobs-detail__dlq-info {
+  display: flex;
+  gap: 16px;
+  padding: 8px 16px;
+  background: rgba(239,68,68,.04);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.jobs-detail__dlq-info span { color: var(--text-muted); margin-right: 4px; }
+.jobs-detail__dlq-info code { font-family: var(--mono); color: var(--text-primary); }
+
+.jobs-detail__actions {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
 
 /* ── Queue Health tab ──────────────────────────────────────── */
 .qh-filter-row {
