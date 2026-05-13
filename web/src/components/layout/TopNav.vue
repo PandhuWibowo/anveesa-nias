@@ -104,6 +104,15 @@ const allMenuGroups: MenuGroup[] = [
     ],
   },
   {
+    id: 'observability',
+    label: 'Observability',
+    icon: 'observability',
+    items: [
+      { name: 'discover', label: 'Discover', desc: 'Explore and trace logs — filter by level, app, environment with a live log stream', icon: 'discover', permissionsAny: ['schema.browse', 'connections.view'] },
+      { name: 'uptime', label: 'Uptime', desc: 'Heartbeat monitor status, response times, TLS expiry, and 24h timeline per endpoint', icon: 'uptime', permissionsAny: ['schema.browse', 'connections.view'] },
+    ],
+  },
+  {
     id: 'database',
     label: 'Database',
     icon: 'table',
@@ -115,13 +124,8 @@ const allMenuGroups: MenuGroup[] = [
       { name: 'row-history', label: 'Row History', desc: 'See row-level INSERT, UPDATE, DELETE changes', icon: 'rowhistory', section: 'RDBMS', permissionsAny: ['rowhistory.view'] },
       { name: 'redis', label: 'Redis Browser', desc: 'Scan keys and inspect Redis values from managed connections', icon: 'table', section: 'Database Cache', permissionsAny: ['redis.view'] },
       { name: 'memcache', label: 'Memcache Browser', desc: 'Read, write, delete, flush, and inspect Memcache values', icon: 'table', section: 'Database Cache', permissionsAny: ['redis.view'] },
-      { name: 'search', label: 'Search Browser', desc: 'Inspect Elasticsearch and OpenSearch indices, queries, and documents', icon: 'search', section: 'Search & Observability', permissionsAny: ['schema.browse', 'connections.view'] },
-      { name: 'search-policies', label: 'Search Policies', desc: 'Manage ILM policies, index templates, app-level rules, and shard allocation', icon: 'policy', section: 'Search & Observability', permissionsAny: ['schema.browse', 'connections.view'] },
-      { name: 'observability', label: 'Observability', desc: 'Monitor cluster health, node stats, shard allocation, and index mappings in real time', icon: 'observability', section: 'Search & Observability', permissionsAny: ['schema.browse', 'connections.view'] },
-      { name: 'discover', label: 'Discover', desc: 'Kibana-style log explorer: histogram, field sidebar, live tail, and one-click filters', icon: 'discover', section: 'Search & Observability', permissionsAny: ['schema.browse', 'connections.view'] },
-      { name: 'search-watcher', label: 'Watcher', desc: 'Manage Elasticsearch Watcher alert watches, simulate and view execution history', icon: 'watcher-es', section: 'Search & Observability', permissionsAny: ['schema.browse', 'connections.view'] },
-      { name: 'service-health', label: 'Service Health', desc: 'Real-time service status: log error rates, infrastructure CPU/memory, and ElastAlert history', icon: 'service-health', section: 'Search & Observability', permissionsAny: ['schema.browse', 'connections.view'] },
-      { name: 'uptime', label: 'Uptime', desc: 'Heartbeat monitor status, response times, TLS expiry, and 24h timeline per endpoint', icon: 'uptime', section: 'Search & Observability', permissionsAny: ['schema.browse', 'connections.view'] },
+      { name: 'search', label: 'Search Browser', desc: 'Inspect Elasticsearch and OpenSearch indices, queries, and documents', icon: 'search', section: 'Search', permissionsAny: ['schema.browse', 'connections.view'] },
+      { name: 'search-policies', label: 'Search Policies', desc: 'Manage ILM policies, index templates, app-level rules, and shard allocation', icon: 'policy', section: 'Search', permissionsAny: ['schema.browse', 'connections.view'] },
     ],
   },
   {
@@ -466,6 +470,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
           <!-- Group icons -->
           <svg v-if="group.icon === 'table'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
           <svg v-else-if="group.icon === 'dashboard'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="9" height="11" rx="1"/><rect x="13" y="2" width="9" height="7" rx="1"/><rect x="2" y="15" width="9" height="7" rx="1"/><rect x="13" y="11" width="9" height="11" rx="1"/></svg>
+          <svg v-else-if="group.icon === 'observability'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
           <svg v-else-if="group.icon === 'settings'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           <svg v-else-if="group.icon === 'wrench'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
           <svg v-else-if="group.icon === 'activity'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
