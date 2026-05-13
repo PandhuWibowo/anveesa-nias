@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
@@ -86,7 +86,7 @@ const loadingTopics = ref(false)
 const loadingGroups = ref(false)
 const topicFilter = ref('')
 const showInternalTopics = ref(false)
-const activeTab = ref<'topics' | 'messages' | 'produce' | 'groups' | 'manage'>('topics')
+const activeTab = ref<'topics' | 'messages' | 'produce' | 'groups' | 'health' | 'manage'>('topics')
 const selectedTopic = ref<KafkaTopic | null>(null)
 const messages = ref<KafkaMessage[]>([])
 const loadingMessages = ref(false)
@@ -120,6 +120,23 @@ const messageDecodeMode = ref<'json' | 'text' | 'base64' | 'raw'>('json')
 const schemaRequiredFields = ref('event\nid')
 const replayTargetTopic = ref('')
 let kafkaActivitySeq = 0
+
+// ── Queue Health ──────────────────────────────────────────────────
+interface GroupHealthSummary {
+  group_id: string
+  state: string
+  members: number
+  topic_count: number
+  part_count: number
+  total_lag: number
+  health: 'ok' | 'warn' | 'critical'
+  health_reason: string
+  error?: string
+}
+const groupsHealth = ref<GroupHealthSummary[]>([])
+const loadingHealth = ref(false)
+const healthFilter = ref<'all' | 'ok' | 'warn' | 'critical'>('all')
+let healthAutoRefreshTimer: ReturnType<typeof setInterval> | null = null
 
 const canProduce = computed(() => hasAnyPermission(['kafka.produce']))
 const canManage = computed(() => hasAnyPermission(['kafka.manage']))
@@ -315,12 +332,24 @@ async function loadGroups() {
   }
 }
 
+async function loadGroupsHealth() {
+  if (!activeConn.value) return
+  loadingHealth.value = true
+  try {
+    const { data } = await axios.get<GroupHealthSummary[]>(`/api/connections/${activeConn.value.id}/kafka/groups-health`)
+    groupsHealth.value = data || []
+  } catch {
+    groupsHealth.value = []
+  } finally {
+    loadingHealth.value = false
+  }
+}
+
 async function loadMessages() {
   if (!activeConn.value || !selectedTopic.value) return
   if (isKafkaInternalTopic(selectedTopic.value.name)) {
     messages.value = []
-    toast.error('Internal Kafka topics are hidden from message browsing because their payloads are binary Kafka protocol data.')
-    return
+    return   // silently clear — the template shows an inline notice for internal topics
   }
   const started = performance.now()
   loadingMessages.value = true
@@ -603,6 +632,86 @@ function defaultKafkaSuggestions(raw: string): string[] {
   return ['Check the selected Kafka connection and retry.', 'Use the raw error and context to narrow the failing broker, topic, partition, or group.']
 }
 
+// ── Message detail panel ─────────────────────────────────────────
+const selectedMessage    = ref<KafkaMessage | null>(null)
+const msgDetailTab       = ref<'parsed' | 'raw' | 'headers'>('parsed')
+const msgDetailFullscreen = ref(false)
+
+interface MessageSignals {
+  level: 'error' | 'warn' | 'ok' | 'unknown'
+  errorText: string
+  status: string
+  eventType: string
+  parsedOk: boolean
+  parsed: Record<string, unknown> | null
+}
+
+function extractMessageSignals(message: KafkaMessage): MessageSignals {
+  let parsed: Record<string, unknown> | null = null
+  let parsedOk = false
+  try {
+    parsed = JSON.parse(message.value)
+    parsedOk = true
+  } catch { /* not JSON */ }
+
+  const p = parsed ?? {}
+  const errorText = String(
+    p.error ?? p.error_message ?? p.errorMessage ?? p.exception ??
+    p.err ?? p.Error ?? p.message_error ?? ''
+  ).trim()
+  const statusRaw = String(p.status ?? p.Status ?? p.level ?? p.severity ?? p.log_level ?? '').trim()
+  const eventType = String(p.event ?? p.event_type ?? p.type ?? p.action ?? '').trim()
+
+  const isError = !!(
+    errorText ||
+    ['error', 'err', 'fatal', 'critical', 'failure', 'failed'].some(k =>
+      statusRaw.toLowerCase().includes(k) ||
+      (message.key || '').toLowerCase().includes(k)
+    )
+  )
+  const isWarn = !isError && ['warn', 'warning', 'retry', 'timeout'].some(k =>
+    statusRaw.toLowerCase().includes(k)
+  )
+
+  return {
+    level: isError ? 'error' : isWarn ? 'warn' : parsedOk ? 'ok' : 'unknown',
+    errorText,
+    status: statusRaw,
+    eventType,
+    parsedOk,
+    parsed,
+  }
+}
+
+function msgSignalClass(message: KafkaMessage) {
+  const s = extractMessageSignals(message)
+  return { 'msg-row--error': s.level === 'error', 'msg-row--warn': s.level === 'warn', 'msg-row--ok': s.level === 'ok' }
+}
+
+function openMsgDetail(message: KafkaMessage) {
+  selectedMessage.value = message
+  msgDetailTab.value = 'parsed'
+  msgDetailFullscreen.value = false
+}
+
+function parsedEntries(message: KafkaMessage): Array<{ key: string; value: unknown; isError: boolean }> {
+  try {
+    const p = JSON.parse(message.value) as Record<string, unknown>
+    const errorKeys = new Set(['error', 'error_message', 'errorMessage', 'exception', 'err', 'Error', 'message_error', 'stack', 'stacktrace', 'stack_trace'])
+    return Object.entries(p).map(([key, value]) => ({
+      key, value, isError: errorKeys.has(key),
+    }))
+  } catch {
+    return []
+  }
+}
+
+function formatDetailValue(val: unknown): string {
+  if (val === null || val === undefined) return 'null'
+  if (typeof val === 'object') return JSON.stringify(val, null, 2)
+  return String(val)
+}
+
 function messageMatchesTrace(message: KafkaMessage, query: string) {
   const headerText = (message.headers || []).map(header => `${header.key}=${header.value}`).join('\n')
   return [
@@ -710,6 +819,26 @@ watch(() => props.activeConnId, () => {
   if (activeConn.value) void loadKafka()
 })
 
+watch(activeTab, (tab) => {
+  if (tab === 'health') {
+    void loadGroupsHealth()
+    if (!healthAutoRefreshTimer) {
+      healthAutoRefreshTimer = setInterval(() => {
+        if (activeTab.value === 'health') void loadGroupsHealth()
+      }, 30_000)
+    }
+  } else {
+    if (healthAutoRefreshTimer) {
+      clearInterval(healthAutoRefreshTimer)
+      healthAutoRefreshTimer = null
+    }
+  }
+})
+
+onBeforeUnmount(() => {
+  if (healthAutoRefreshTimer) clearInterval(healthAutoRefreshTimer)
+})
+
 watch(selectedTopic, (topic) => {
   updatePartitionCount.value = topic?.partitions ?? 0
   messages.value = []
@@ -757,6 +886,17 @@ watch(selectedTopic, (topic) => {
               <button class="kafka-tab" :class="{ active: activeTab === 'groups' }" @click="activeTab = 'groups'">
                 <span>Consumer Groups</span>
                 <b>{{ groups.length }}</b>
+              </button>
+              <button class="kafka-tab" :class="{ active: activeTab === 'health' }" @click="activeTab = 'health'">
+                <span>Queue Health</span>
+                <b
+                  v-if="groupsHealth.some(g => g.health === 'critical')"
+                  style="background:var(--danger,#ef4444);color:#fff"
+                >{{ groupsHealth.filter(g => g.health === 'critical').length }}</b>
+                <b
+                  v-else-if="groupsHealth.some(g => g.health === 'warn')"
+                  style="background:#f59e0b;color:#fff"
+                >{{ groupsHealth.filter(g => g.health === 'warn').length }}</b>
               </button>
               <button v-if="canManage" class="kafka-tab" :class="{ active: activeTab === 'manage' }" @click="activeTab = 'manage'">
                 <span>Topic Tools</span>
@@ -1090,33 +1230,167 @@ watch(selectedTopic, (topic) => {
                 </div>
               </div>
             </details>
-            <div v-if="loadingMessages" class="kafka-muted">Loading messages...</div>
-            <div v-else class="kafka-message-list">
-              <article
-                v-for="message in filteredMessages"
-                :key="`${message.partition}:${message.offset}`"
-                class="kafka-message"
-                :class="{ matched: normalizedTraceQuery && messageMatchesTrace(message, normalizedTraceQuery) }"
-              >
-                <div class="kafka-message__meta">
-                  <span>{{ message.topic }}</span>
-                  <span>partition {{ message.partition }}</span>
-                  <span>offset {{ message.offset }}</span>
-                  <span>{{ new Date(message.timestamp).toLocaleString() }}</span>
-                  <span>consumer status: inspect groups</span>
+            <div v-if="loadingMessages" class="kafka-muted" style="padding:16px">Loading messages…</div>
+            <div v-else-if="selectedTopicIsInternal && !messages.length" class="kafka-internal-notice">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="flex-shrink:0;opacity:.7"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <div>
+                <strong>Internal topic — message browsing disabled</strong>
+                <p>{{ selectedTopic?.name }} is a Kafka system topic. Its records contain binary protocol data. Select a regular application topic to browse messages.</p>
+              </div>
+            </div>
+            <div v-else-if="!messages.length" class="kafka-empty-cell" style="padding:24px">
+              Click <strong>Load</strong> to fetch the latest messages.
+            </div>
+            <div v-else-if="!filteredMessages.length" class="kafka-empty-cell" style="padding:24px">
+              No messages match the trace filter.
+            </div>
+
+            <!-- ── Message stream + detail side panel ──────────────────── -->
+            <div v-else class="msg-workspace">
+              <!-- Compact message list -->
+              <div class="msg-list">
+                <!-- Summary bar -->
+                <div class="msg-list__bar">
+                  <span>{{ filteredMessages.length }} message{{ filteredMessages.length === 1 ? '' : 's' }}</span>
+                  <span>
+                    <span class="msg-badge msg-badge--error">{{ filteredMessages.filter(m => extractMessageSignals(m).level === 'error').length }} error</span>
+                    <span class="msg-badge msg-badge--warn">{{ filteredMessages.filter(m => extractMessageSignals(m).level === 'warn').length }} warn</span>
+                  </span>
                 </div>
-                <div class="kafka-message__actions">
-                  <span class="kafka-pill" :class="{ warn: !messageValidation(message).ok }">{{ messageValidation(message).reason }}</span>
-                  <button v-if="canProduce" class="base-btn base-btn--ghost base-btn--xs" @click="replayMessage(message)">Replay</button>
+
+                <div
+                  v-for="message in filteredMessages"
+                  :key="`${message.partition}:${message.offset}`"
+                  class="msg-row"
+                  :class="[msgSignalClass(message), { 'msg-row--selected': selectedMessage === message, matched: normalizedTraceQuery && messageMatchesTrace(message, normalizedTraceQuery) }]"
+                  @click="openMsgDetail(message)"
+                >
+                  <!-- Level indicator bar -->
+                  <div class="msg-row__level-bar"></div>
+
+                  <div class="msg-row__main">
+                    <div class="msg-row__top">
+                      <!-- Level badge -->
+                      <span class="msg-level-dot" :class="`msg-level-dot--${extractMessageSignals(message).level}`"></span>
+                      <!-- Event type or key -->
+                      <span class="msg-row__event">
+                        {{ extractMessageSignals(message).eventType || message.key || '(no key)' }}
+                      </span>
+                      <!-- Error excerpt -->
+                      <span v-if="extractMessageSignals(message).errorText" class="msg-row__error-excerpt">
+                        {{ extractMessageSignals(message).errorText.slice(0, 80) }}{{ extractMessageSignals(message).errorText.length > 80 ? '…' : '' }}
+                      </span>
+                      <span v-else-if="extractMessageSignals(message).status" class="msg-row__status">
+                        {{ extractMessageSignals(message).status }}
+                      </span>
+                    </div>
+                    <div class="msg-row__bottom">
+                      <span class="msg-row__meta">p{{ message.partition }}·off{{ message.offset }}</span>
+                      <span class="msg-row__meta">{{ new Date(message.timestamp).toLocaleTimeString() }}</span>
+                      <span v-if="message.headers?.length" class="msg-row__meta">{{ message.headers.length }} hdr</span>
+                      <span v-if="!messageValidation(message).ok" class="msg-row__meta msg-row__meta--warn">⚠ {{ messageValidation(message).reason }}</span>
+                    </div>
+                  </div>
+                  <svg class="msg-row__chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
                 </div>
-                <div class="kafka-message__kv"><span>Key</span><code>{{ message.key || '(empty)' }}</code></div>
-                <pre>{{ decodedMessageValue(message) }}</pre>
-                <div v-if="message.headers?.length" class="kafka-message__headers">
-                  <span v-for="header in message.headers" :key="`${message.partition}:${message.offset}:${header.key}`">{{ header.key }}={{ header.value }}</span>
+              </div>
+
+              <!-- Detail panel -->
+              <div v-if="selectedMessage" class="msg-detail" :class="{ 'msg-detail--full': msgDetailFullscreen }">
+                <div class="msg-detail__head">
+                  <div class="msg-detail__title">
+                    <span class="msg-level-dot" :class="`msg-level-dot--${extractMessageSignals(selectedMessage).level}`" style="width:10px;height:10px"></span>
+                    <span>{{ selectedMessage.topic }} · p{{ selectedMessage.partition }} · off{{ selectedMessage.offset }}</span>
+                  </div>
+                  <div style="display:flex;gap:6px;align-items:center">
+                    <button class="base-btn base-btn--ghost base-btn--xs" @click="msgDetailFullscreen = !msgDetailFullscreen">
+                      {{ msgDetailFullscreen ? '⊡ Exit' : '⊞ Full' }}
+                    </button>
+                    <button class="base-btn base-btn--ghost base-btn--xs" @click="selectedMessage = null">✕</button>
+                  </div>
                 </div>
-              </article>
-              <div v-if="!messages.length" class="kafka-empty-cell">No messages loaded.</div>
-              <div v-else-if="!filteredMessages.length" class="kafka-empty-cell">No messages match the trace filter.</div>
+
+                <!-- Error alert at the top -->
+                <div v-if="extractMessageSignals(selectedMessage).errorText" class="msg-detail__error-alert">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                  <span>{{ extractMessageSignals(selectedMessage).errorText }}</span>
+                </div>
+
+                <!-- Key metadata row -->
+                <div class="msg-detail__meta-row">
+                  <div class="msg-detail__meta-item"><span>Key</span><code>{{ selectedMessage.key || '(empty)' }}</code></div>
+                  <div class="msg-detail__meta-item"><span>Time</span><code>{{ new Date(selectedMessage.timestamp).toLocaleString() }}</code></div>
+                  <div class="msg-detail__meta-item"><span>HWM</span><code>{{ selectedMessage.high_water_mark }}</code></div>
+                  <div v-if="extractMessageSignals(selectedMessage).status" class="msg-detail__meta-item"><span>Status</span><code>{{ extractMessageSignals(selectedMessage).status }}</code></div>
+                </div>
+
+                <!-- Tabs -->
+                <div class="msg-detail__tabs">
+                  <button :class="{ active: msgDetailTab === 'parsed' }" @click="msgDetailTab = 'parsed'">Fields</button>
+                  <button :class="{ active: msgDetailTab === 'raw' }"    @click="msgDetailTab = 'raw'">Raw</button>
+                  <button :class="{ active: msgDetailTab === 'headers' }" @click="msgDetailTab = 'headers'">
+                    Headers <span v-if="selectedMessage.headers?.length">({{ selectedMessage.headers.length }})</span>
+                  </button>
+                </div>
+
+                <!-- Fields tab -->
+                <div v-if="msgDetailTab === 'parsed'" class="msg-detail__body">
+                  <div v-if="!extractMessageSignals(selectedMessage).parsedOk" class="kafka-muted" style="padding:12px">
+                    Payload is not valid JSON — switch to Raw tab to see the full value.
+                  </div>
+                  <table v-else class="msg-fields-table">
+                    <tbody>
+                      <tr
+                        v-for="entry in parsedEntries(selectedMessage)"
+                        :key="entry.key"
+                        :class="{ 'msg-field--error': entry.isError && entry.value }"
+                      >
+                        <td class="msg-field__key">{{ entry.key }}</td>
+                        <td class="msg-field__value">
+                          <pre>{{ formatDetailValue(entry.value) }}</pre>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <!-- Raw tab -->
+                <div v-else-if="msgDetailTab === 'raw'" class="msg-detail__body">
+                  <div class="msg-detail__raw-toolbar">
+                    <select v-model="messageDecodeMode" class="base-input" style="font-size:11px;padding:2px 6px;height:auto">
+                      <option value="json">JSON pretty</option>
+                      <option value="text">Plain text</option>
+                      <option value="base64">Base64</option>
+                      <option value="raw">Hex bytes</option>
+                    </select>
+                    <button class="base-btn base-btn--ghost base-btn--xs" @click="navigator.clipboard.writeText(decodedMessageValue(selectedMessage))">Copy</button>
+                  </div>
+                  <pre class="msg-detail__pre">{{ decodedMessageValue(selectedMessage) }}</pre>
+                </div>
+
+                <!-- Headers tab -->
+                <div v-else class="msg-detail__body">
+                  <div v-if="!selectedMessage.headers?.length" class="kafka-muted" style="padding:12px">No headers on this message.</div>
+                  <table v-else class="msg-fields-table">
+                    <tbody>
+                      <tr v-for="h in selectedMessage.headers" :key="h.key">
+                        <td class="msg-field__key">{{ h.key }}</td>
+                        <td class="msg-field__value"><code>{{ h.value }}</code></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <!-- Replay button at bottom if allowed -->
+                <div v-if="canProduce" class="msg-detail__footer">
+                  <button class="base-btn base-btn--ghost base-btn--sm" @click="replayMessage(selectedMessage)">↩ Replay to {{ replayTargetTopic || selectedMessage.topic }}</button>
+                </div>
+              </div>
+
+              <div v-else class="msg-detail msg-detail--empty">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" style="opacity:.3"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="9"/><line x1="9" y1="13" x2="13" y2="13"/></svg>
+                <span>Select a message to inspect</span>
+              </div>
             </div>
           </div>
 
@@ -1251,6 +1525,114 @@ watch(selectedTopic, (topic) => {
               </template>
               <div v-else class="kafka-empty-work">Pick a group to inspect offsets, lag, and members.</div>
             </section>
+          </div>
+
+          <!-- ── Queue Health ─────────────────────────────────── -->
+          <div v-else-if="activeTab === 'health'" class="kafka-pane">
+            <div class="kafka-panel-head">
+              <div>
+                <div class="kafka-kicker">Queue monitoring</div>
+                <h1>Queue Health Overview</h1>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <div class="qh-filter-row">
+                  <button
+                    v-for="f in (['all','ok','warn','critical'] as const)"
+                    :key="f"
+                    class="qh-filter-btn"
+                    :class="{ active: healthFilter === f, [`qh-filter-btn--${f}`]: f !== 'all' }"
+                    @click="healthFilter = f"
+                  >{{ f === 'all' ? 'All' : f === 'ok' ? 'Healthy' : f === 'warn' ? 'Warning' : 'Critical' }}</button>
+                </div>
+                <button
+                  class="base-btn base-btn--ghost base-btn--sm"
+                  :disabled="loadingHealth"
+                  @click="loadGroupsHealth"
+                >
+                  <svg v-if="loadingHealth" class="spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            <!-- Summary banner -->
+            <div class="qh-summary-row">
+              <div class="qh-stat qh-stat--ok">
+                <span class="qh-stat-num">{{ groupsHealth.filter(g => g.health === 'ok').length }}</span>
+                <span class="qh-stat-label">Healthy</span>
+              </div>
+              <div class="qh-stat qh-stat--warn">
+                <span class="qh-stat-num">{{ groupsHealth.filter(g => g.health === 'warn').length }}</span>
+                <span class="qh-stat-label">Warning</span>
+              </div>
+              <div class="qh-stat qh-stat--critical">
+                <span class="qh-stat-num">{{ groupsHealth.filter(g => g.health === 'critical').length }}</span>
+                <span class="qh-stat-label">Critical</span>
+              </div>
+              <div class="qh-stat">
+                <span class="qh-stat-num">{{ groupsHealth.reduce((s,g) => s + g.total_lag, 0).toLocaleString() }}</span>
+                <span class="qh-stat-label">Total Lag</span>
+              </div>
+            </div>
+
+            <div v-if="loadingHealth && !groupsHealth.length" class="kafka-muted" style="padding:24px">
+              Loading health for all consumer groups…
+            </div>
+            <div v-else-if="!groupsHealth.length" class="kafka-empty-work">
+              No consumer groups found. Click Refresh to load.
+            </div>
+            <template v-else>
+              <table class="kafka-table qh-table">
+                <thead>
+                  <tr>
+                    <th>Group ID</th>
+                    <th>State</th>
+                    <th style="text-align:right">Members</th>
+                    <th style="text-align:right">Topics</th>
+                    <th style="text-align:right">Partitions</th>
+                    <th style="text-align:right">Total Lag</th>
+                    <th>Status</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template v-for="g in groupsHealth.filter(g => healthFilter === 'all' || g.health === healthFilter)" :key="g.group_id">
+                    <tr
+                      class="qh-row kafka-click-row"
+                      :class="`qh-row--${g.health}`"
+                      @click="activeTab = 'groups'; selectedGroupId = g.group_id; loadGroupDetail(g.group_id)"
+                    >
+                      <td class="qh-group-id">{{ g.group_id }}</td>
+                      <td>
+                        <span class="qh-state-badge" :class="`qh-state--${(g.state||'unknown').toLowerCase()}`">
+                          {{ g.state || 'unknown' }}
+                        </span>
+                      </td>
+                      <td style="text-align:right">{{ g.members }}</td>
+                      <td style="text-align:right">{{ g.topic_count }}</td>
+                      <td style="text-align:right">{{ g.part_count }}</td>
+                      <td style="text-align:right">
+                        <span :class="g.total_lag > 1000 ? 'qh-lag-critical' : g.total_lag > 0 ? 'qh-lag-warn' : 'qh-lag-ok'">
+                          {{ g.total_lag.toLocaleString() }}
+                        </span>
+                      </td>
+                      <td>
+                        <span class="qh-health-badge" :class="`qh-health--${g.health}`">
+                          {{ g.health === 'ok' ? '✓ Healthy' : g.health === 'warn' ? '⚠ Warning' : '✕ Critical' }}
+                        </span>
+                      </td>
+                      <td class="qh-reason">{{ g.error || g.health_reason }}</td>
+                    </tr>
+                  </template>
+                  <tr v-if="groupsHealth.filter(g => healthFilter === 'all' || g.health === healthFilter).length === 0">
+                    <td colspan="8" class="kafka-empty-cell">No groups match the selected filter.</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p class="kafka-helper" style="margin-top:8px">
+                Auto-refreshes every 30 s while this tab is open. Click any row to open full group detail.
+              </p>
+            </template>
           </div>
 
           <div v-else class="kafka-pane">
@@ -2132,6 +2514,416 @@ watch(selectedTopic, (topic) => {
 .kafka-manage-danger h2 {
   font-size: 16px;
 }
+
+/* ── Message workspace (list + detail) ─────────────────────── */
+.msg-workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 0;
+  overflow: hidden;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* ── Message list ── */
+.msg-list {
+  flex: 0 0 380px;
+  min-width: 260px;
+  max-width: 460px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  background: var(--bg-surface);
+}
+.msg-list__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  gap: 8px;
+  flex-shrink: 0;
+}
+.msg-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  margin-left: 4px;
+}
+.msg-badge--error { background: rgba(239,68,68,.15); color: var(--danger,#ef4444); }
+.msg-badge--warn  { background: rgba(245,158,11,.12); color: #f59e0b; }
+
+.msg-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 0;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.1s;
+  position: relative;
+}
+.msg-row:hover { background: var(--bg-hover); }
+.msg-row--selected { background: color-mix(in srgb, var(--brand) 8%, transparent) !important; }
+
+.msg-row__level-bar {
+  width: 3px;
+  align-self: stretch;
+  flex-shrink: 0;
+  background: var(--border);
+  border-radius: 0;
+}
+.msg-row--error .msg-row__level-bar { background: var(--danger,#ef4444); }
+.msg-row--warn  .msg-row__level-bar { background: #f59e0b; }
+.msg-row--ok    .msg-row__level-bar { background: #22c55e; }
+
+.msg-row__main {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+}
+.msg-row__top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.msg-level-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-muted);
+}
+.msg-level-dot--error  { background: var(--danger,#ef4444); }
+.msg-level-dot--warn   { background: #f59e0b; }
+.msg-level-dot--ok     { background: #22c55e; }
+.msg-level-dot--unknown { background: var(--text-muted); }
+
+.msg-row__event {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+  flex-shrink: 0;
+}
+.msg-row__error-excerpt {
+  font-size: 11px;
+  color: var(--danger,#ef4444);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.msg-row__status {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.msg-row__bottom {
+  display: flex;
+  gap: 8px;
+  margin-top: 3px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+.msg-row__meta {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+.msg-row__meta--warn { color: #f59e0b; }
+.msg-row__chevron {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-right: 8px;
+  opacity: 0;
+}
+.msg-row:hover .msg-row__chevron,
+.msg-row--selected .msg-row__chevron { opacity: 1; }
+
+/* ── Detail panel ── */
+.msg-detail {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-surface);
+}
+.msg-detail--full {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: var(--bg-surface);
+}
+.msg-detail--empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.msg-detail__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+  flex-shrink: 0;
+  gap: 8px;
+}
+.msg-detail__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-detail__error-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 14px 0;
+  padding: 10px 12px;
+  background: rgba(239,68,68,.08);
+  border: 1px solid rgba(239,68,68,.25);
+  border-radius: 6px;
+  color: var(--danger,#ef4444);
+  font-size: 12px;
+  line-height: 1.5;
+  flex-shrink: 0;
+}
+.msg-detail__meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  background: var(--bg-elevated);
+}
+.msg-detail__meta-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.msg-detail__meta-item span { color: var(--text-muted); }
+.msg-detail__meta-item code { font-family: var(--mono); font-size: 11px; color: var(--text-primary); }
+
+.msg-detail__tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  background: var(--bg-elevated);
+}
+.msg-detail__tabs button {
+  padding: 7px 14px;
+  font-size: 12px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.msg-detail__tabs button:hover  { color: var(--text-primary); }
+.msg-detail__tabs button.active { color: var(--brand); border-bottom-color: var(--brand); }
+
+.msg-detail__body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+.msg-detail__raw-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+.msg-detail__pre {
+  padding: 14px;
+  margin: 0;
+  font-size: 12px;
+  font-family: var(--mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+.msg-detail__footer {
+  border-top: 1px solid var(--border);
+  padding: 8px 14px;
+  flex-shrink: 0;
+  background: var(--bg-elevated);
+}
+
+/* ── Fields table ── */
+.msg-fields-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.msg-fields-table tr { border-bottom: 1px solid var(--border); }
+.msg-fields-table tr:last-child { border-bottom: none; }
+.msg-field--error td { background: rgba(239,68,68,.05); }
+.msg-field__key {
+  padding: 7px 12px;
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  width: 160px;
+  vertical-align: top;
+}
+.msg-field--error .msg-field__key { color: var(--danger,#ef4444); }
+.msg-field__value {
+  padding: 7px 12px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+.msg-field__value pre {
+  margin: 0;
+  font-size: 12px;
+  font-family: var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Internal topic notice ──────────────────────────────────── */
+.kafka-internal-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  margin: 12px 0;
+  background: color-mix(in srgb, var(--bg-elevated) 80%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.kafka-internal-notice strong { display: block; margin-bottom: 4px; color: var(--text-primary); }
+.kafka-internal-notice p { margin: 0; color: var(--text-muted); font-size: 12px; }
+
+/* ── Queue Health tab ──────────────────────────────────────── */
+.qh-filter-row {
+  display: flex;
+  gap: 4px;
+}
+.qh-filter-btn {
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.qh-filter-btn.active,
+.qh-filter-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.qh-filter-btn--ok.active    { border-color: #22c55e; color: #22c55e; }
+.qh-filter-btn--warn.active  { border-color: #f59e0b; color: #f59e0b; }
+.qh-filter-btn--critical.active { border-color: var(--danger,#ef4444); color: var(--danger,#ef4444); }
+
+.qh-summary-row {
+  display: flex;
+  gap: 12px;
+  margin: 16px 0;
+  flex-wrap: wrap;
+}
+.qh-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 20px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 90px;
+}
+.qh-stat-num {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-primary);
+}
+.qh-stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.qh-stat--ok     .qh-stat-num { color: #22c55e; }
+.qh-stat--warn   .qh-stat-num { color: #f59e0b; }
+.qh-stat--critical .qh-stat-num { color: var(--danger,#ef4444); }
+
+.qh-table { margin-top: 8px; }
+.qh-row--warn td   { background: rgba(245,158,11,0.04); }
+.qh-row--critical td { background: rgba(239,68,68,0.06); }
+
+.qh-group-id { font-family: var(--mono); font-size: 12px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qh-reason   { font-size: 12px; color: var(--text-muted); max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.qh-health-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.qh-health--ok       { background: rgba(34,197,94,.15);  color: #22c55e; }
+.qh-health--warn     { background: rgba(245,158,11,.15); color: #f59e0b; }
+.qh-health--critical { background: rgba(239,68,68,.15);  color: var(--danger,#ef4444); }
+
+.qh-state-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.qh-state--stable { background: rgba(34,197,94,.1); color: #22c55e; }
+.qh-state--dead   { background: rgba(239,68,68,.1); color: var(--danger,#ef4444); }
+.qh-state--empty  { background: rgba(245,158,11,.1); color: #f59e0b; }
+
+.qh-lag-ok       { color: #22c55e; font-weight: 600; }
+.qh-lag-warn     { color: #f59e0b; font-weight: 600; }
+.qh-lag-critical { color: var(--danger,#ef4444); font-weight: 600; }
 
 .kafka-manage-danger p {
   margin-top: 4px;
