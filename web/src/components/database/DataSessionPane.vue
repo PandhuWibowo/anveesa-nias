@@ -223,12 +223,12 @@ watch([() => props.connId, () => props.active, supportsRelationalSchema], async 
   objectDetail.value = null
   selectedObjectKey.value = ''
   activeDatabase.value = ''
-  if (!id || !isActive || !canLoad) return
-  if (activeSubTab.value === 'explorer') {
+  // Load schema list eagerly so Explorer + Schema tabs have data immediately
+  if (!id || !canLoad) return
+  await fetchSchemaList(id)
+  activeDatabase.value = databases.value[0]?.name ?? ''
+  if (isActive && activeSubTab.value === 'explorer') {
     await ensureExplorerReady()
-  } else {
-    await fetchSchemaList(id)
-    activeDatabase.value = databases.value[0]?.name ?? ''
   }
 }, { immediate: true })
 
@@ -354,6 +354,7 @@ async function confirmImport() {
 
 async function exportCsv() { if (!rows.value.length) return; const { downloadCSV } = await import('@/utils/export'); downloadCSV(columns.value, rows.value, selected.value?.table ?? 'export'); toast.success('CSV exported') }
 async function exportJson() { if (!rows.value.length) return; const { downloadJSON } = await import('@/utils/export'); downloadJSON(columns.value, rows.value, selected.value?.table ?? 'export'); toast.success('JSON exported') }
+async function exportExcel() { if (!rows.value.length) return; const { downloadExcel } = await import('@/utils/export'); downloadExcel(columns.value, rows.value, selected.value?.table ?? 'export'); toast.success('Excel exported') }
 
 // ── Sub-tab + SQL tabs ────────────────────────────────────────────
 type ResultKind = 'query' | 'explain' | 'stream' | 'script' | 'history' | 'saved' | 'error' | 'chart'
@@ -687,8 +688,9 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 
     <!-- No connection -->
     <div v-if="!activeConn" class="sp-no-conn">
-      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="color:var(--text-muted)"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
-      <p style="font-size:13px;color:var(--text-muted);margin:0">No connection — pick one from the session tabs above</p>
+      <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="color:var(--text-secondary);opacity:0.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+      <p style="font-size:13px;color:var(--text-secondary);margin:0;font-weight:500">No connection selected</p>
+      <p style="font-size:12px;color:var(--text-muted);margin:0">Pick a connection from the session tabs above, or click <strong>+ DB</strong> to add one.</p>
     </div>
 
     <!-- DATA BROWSER -->
@@ -721,6 +723,9 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
               <button class="base-btn base-btn--ghost base-btn--sm" @click="openImport">Import</button>
               <button class="base-btn base-btn--ghost base-btn--sm" @click="exportCsv" :disabled="!rows.length">CSV</button>
               <button class="base-btn base-btn--ghost base-btn--sm" @click="exportJson" :disabled="!rows.length">JSON</button>
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportExcel" :disabled="!rows.length" title="Export to Excel (.xlsx)">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>Excel
+              </button>
               <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!columns.length" @click="profilerShow=true">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
                 Profile
@@ -1035,6 +1040,9 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
               <span class="res-meta">{{ (tab.result as any).duration_ms }}ms · {{ (tab.result as any).row_count }} rows</span>
               <button class="base-btn base-btn--ghost base-btn--xs" @click="sqlPanelRefs[tab.id]?.exportCurrentResult('csv',(tab.result as any).columns,(tab.result as any).rows)">CSV</button>
               <button class="base-btn base-btn--ghost base-btn--xs" @click="sqlPanelRefs[tab.id]?.exportCurrentResult('json',(tab.result as any).columns,(tab.result as any).rows)">JSON</button>
+              <button class="base-btn base-btn--ghost base-btn--xs" title="Export to Excel (.xlsx)" @click="sqlPanelRefs[tab.id]?.exportCurrentResult('excel',(tab.result as any).columns,(tab.result as any).rows)">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>Excel
+              </button>
               <button
                 class="base-btn base-btn--primary base-btn--xs"
                 :disabled="!editableTargetForSQLResult(tab)"

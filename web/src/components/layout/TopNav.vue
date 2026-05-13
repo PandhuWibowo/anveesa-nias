@@ -101,8 +101,8 @@ const allMenuGroups: MenuGroup[] = [
     label: 'Observability',
     icon: 'observability',
     items: [
-      { name: 'discover', label: 'Discover', desc: 'Explore and trace logs — filter by level, app, environment with a live log stream', icon: 'discover', permissionsAny: ['schema.browse', 'connections.view'] },
-      { name: 'uptime', label: 'Uptime', desc: 'Heartbeat monitor status, response times, TLS expiry, and 24h timeline per endpoint', icon: 'uptime', permissionsAny: ['schema.browse', 'connections.view'] },
+        { name: 'discover', label: 'Discover', desc: 'Explore and trace logs — filter by level, app, environment with a live log stream', icon: 'discover', permissionsAny: ['discover.view', 'observability.view', 'connections.view'] },
+                { name: 'uptime', label: 'Uptime', desc: 'Heartbeat monitor status, response times, TLS expiry, and 24h timeline per endpoint', icon: 'uptime', permissionsAny: ['uptime.view', 'observability.view', 'connections.view'] },
     ],
   },
   {

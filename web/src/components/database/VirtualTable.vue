@@ -97,7 +97,10 @@ onMounted(() => {
   updateSize()
   window.addEventListener('resize', updateSize)
 })
-onBeforeUnmount(() => window.removeEventListener('resize', updateSize))
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', updateSize)
+  // pointer capture releases automatically; no manual cleanup needed
+})
 
 watch(() => props.rows, () => {
   if (scrollEl.value) scrollEl.value.scrollTop = 0
@@ -157,6 +160,7 @@ const displayPaddingBottom = computed(() =>
 const displayVisible = computed(() => displayRows.value.slice(displayStart.value, displayEnd.value))
 
 function handleSort(col: string) {
+  if (_resizeMoved) return   // don't sort after a real resize drag
   if (sortCol.value === col) {
     sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
   } else {
@@ -166,10 +170,72 @@ function handleSort(col: string) {
   if (scrollEl.value) scrollEl.value.scrollTop = 0
   scrollTop.value = 0
 }
+
+// ── Column resize ─────────────────────────────────────────────────
+const COL_MIN_W = 50
+const COL_DEFAULT_W = 120
+
+const colWidths = ref<Record<string, number>>({})
+const isResizing = ref(false)
+
+watch(() => props.columns, (cols) => {
+  const next: Record<string, number> = {}
+  for (const col of cols) {
+    // keep existing width, or init from column name length
+    next[col] = colWidths.value[col] ?? Math.max(COL_MIN_W, Math.min(260, col.length * 9 + 40))
+  }
+  colWidths.value = next
+}, { immediate: true })
+
+function colStyle(col: string): Record<string, string> {
+  const w = colWidths.value[col] ?? COL_DEFAULT_W
+  return { flex: 'none', width: `${w}px`, minWidth: `${w}px`, maxWidth: `${w}px` }
+}
+
+let _resizeCol = ''
+let _resizeStartX = 0
+let _resizeStartW = 0
+let _resizeMoved = false
+
+// Use Pointer Events + setPointerCapture to bypass any drag interception
+function startResize(col: string, e: PointerEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  _resizeCol    = col
+  _resizeStartX = e.clientX
+  _resizeStartW = colWidths.value[col] ?? COL_DEFAULT_W
+  _resizeMoved  = false
+  isResizing.value = true
+}
+
+function onResizeMove(e: PointerEvent) {
+  if (!_resizeCol) return
+  e.preventDefault()
+  const delta = e.clientX - _resizeStartX
+  if (Math.abs(delta) > 2) _resizeMoved = true
+  colWidths.value = { ...colWidths.value, [_resizeCol]: Math.max(COL_MIN_W, _resizeStartW + delta) }
+}
+
+function onResizeEnd(e: PointerEvent) {
+  if (!_resizeCol) return
+  ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+  _resizeCol = ''
+  isResizing.value = false
+  setTimeout(() => { _resizeMoved = false }, 0)
+}
+
+// double-click handle → auto-fit width from visible data
+function autoFitCol(col: string) {
+  const cIdx = props.columns.indexOf(col)
+  const sample = displayRows.value.slice(0, 100)
+  const maxLen = sample.reduce((m, row) => Math.max(m, String(row[cIdx] ?? '').length), col.length)
+  colWidths.value = { ...colWidths.value, [col]: Math.max(COL_MIN_W, Math.min(480, maxLen * 8 + 24)) }
+}
 </script>
 
 <template>
-  <div class="vt-root">
+  <div class="vt-root" :class="{ 'vt-resizing': isResizing }">
     <!-- Loading -->
     <div v-if="loading" class="vt-loading">
       <svg class="spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
@@ -190,37 +256,53 @@ function handleSort(col: string) {
         <button class="base-btn base-btn--ghost base-btn--sm" @click="clearSelection">Clear</button>
       </div>
 
-      <!-- Sticky header -->
-      <div class="vt-header">
-        <div class="vt-row vt-row--head">
-          <div v-if="selectable" class="vt-cell vt-cell--check vt-cell--head">
-            <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" />
-          </div>
-          <div v-if="showRowNumbers" class="vt-cell vt-cell--rownum vt-cell--head">#</div>
-          <div
-            v-for="col in columns"
-            :key="col"
-            class="vt-cell vt-cell--head"
-            :class="{ 'vt-cell--sorted': sortCol === col }"
-            @click="handleSort(col)"
-          >
-            {{ col }}
-            <span class="vt-sort-icon">
-              <template v-if="sortCol === col">{{ sortDir === 'asc' ? '↑' : '↓' }}</template>
-              <template v-else>↕</template>
-            </span>
-            <span
-              v-if="tableName"
-              class="vt-profile-btn"
-              title="Profile column"
-              @click.stop="emit('profile-column', col)"
-            >⊞</span>
+      <!-- Single scroll container: header sticky inside, body virtual-scrolls below -->
+      <div class="vt-scroll-wrap" ref="scrollEl" @scroll="onScroll">
+        <!-- Sticky header -->
+        <div class="vt-header">
+          <div class="vt-row vt-row--head">
+            <div v-if="selectable" class="vt-cell vt-cell--check vt-cell--head">
+              <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" />
+            </div>
+            <div v-if="showRowNumbers" class="vt-cell vt-cell--rownum vt-cell--head">#</div>
+            <div
+              v-for="col in columns"
+              :key="col"
+              class="vt-cell vt-cell--head"
+              :class="{ 'vt-cell--sorted': sortCol === col }"
+              :style="colStyle(col)"
+              @click="handleSort(col)"
+            >
+              <span class="vt-head-label">
+                {{ col }}
+                <span class="vt-sort-icon">
+                  <template v-if="sortCol === col">{{ sortDir === 'asc' ? '↑' : '↓' }}</template>
+                  <template v-else>↕</template>
+                </span>
+              </span>
+              <span
+                v-if="tableName"
+                class="vt-profile-btn"
+                title="Profile column"
+                @click.stop="emit('profile-column', col)"
+              >⊞</span>
+              <!-- Resize handle — pointer events bypass header drag interception -->
+              <div
+                class="vt-resize-handle"
+                draggable="false"
+                title="Drag to resize · Double-click to auto-fit"
+                @pointerdown.stop.prevent="startResize(col, $event)"
+                @pointermove.stop="onResizeMove($event)"
+                @pointerup.stop="onResizeEnd($event)"
+                @pointercancel.stop="onResizeEnd($event)"
+                @dragstart.stop.prevent
+                @dblclick.stop="autoFitCol(col)"
+              />
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- Virtual body -->
-      <div class="vt-body" ref="scrollEl" @scroll="onScroll">
+        <!-- Virtual body -->
         <div :style="{ height: totalDisplayHeight + 'px', position: 'relative' }">
           <div :style="{ paddingTop: displayPaddingTop + 'px', paddingBottom: displayPaddingBottom + 'px' }">
             <div
@@ -241,6 +323,7 @@ function handleSort(col: string) {
                 :key="cIdx"
                 class="vt-cell"
                 :class="cellCls(val)"
+                :style="colStyle(columns[cIdx])"
                 :title="formatCell(val)"
                 @click="openInspector(displayStart + i, cIdx)"
               >
@@ -280,14 +363,20 @@ function handleSort(col: string) {
   flex: 1; display: flex; align-items: center; justify-content: center;
   gap: 8px; color: var(--text-muted);
 }
+/* Single container handles both axes — header is sticky inside it */
+.vt-scroll-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;       /* scroll both axes here */
+}
 .vt-header {
-  flex-shrink: 0;
-  overflow: hidden;
+  position: sticky;
+  top: 0;
+  z-index: 2;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elevated);
-}
-.vt-body {
-  flex: 1; min-height: 0; overflow-y: auto; overflow-x: auto;
+  /* min-width mirrors the row width so it never shrinks below content */
+  min-width: max-content;
 }
 .vt-footer {
   flex-shrink: 0; display: flex; align-items: center; gap: 8px;
@@ -300,6 +389,7 @@ function handleSort(col: string) {
   display: flex; align-items: stretch;
   border-bottom: 1px solid var(--border);
   transition: background 0.1s;
+  min-width: max-content;
 }
 .vt-row:hover { background: var(--bg-hover); }
 .vt-row--head { cursor: default; }
@@ -340,9 +430,52 @@ function handleSort(col: string) {
   color: var(--text-muted);
   background: var(--bg-elevated);
   justify-content: space-between;
+  position: relative;         /* anchor the resize handle */
+  user-select: none;
+  overflow: visible;          /* let handle bleed outside */
 }
 .vt-cell--head:hover { background: var(--bg-hover); }
 .vt-cell--sorted { color: var(--brand); }
+
+/* Resize handle — 6 px zone on the right edge of each header cell */
+.vt-resize-handle {
+  position: absolute;
+  right: -3px;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.vt-resize-handle::after {
+  content: '';
+  display: block;
+  width: 2px;
+  height: 60%;
+  border-radius: 1px;
+  background: transparent;
+  transition: background 0.12s;
+}
+.vt-cell--head:hover .vt-resize-handle::after { background: var(--border); }
+.vt-resize-handle:hover::after,
+.vt-resize-handle:active::after { background: var(--brand) !important; }
+
+/* Suppress text selection and pointer cursor while actively resizing */
+.vt-resizing { cursor: col-resize !important; }
+.vt-resizing * { user-select: none !important; cursor: col-resize !important; }
+
+/* Label inside header keeps flex layout tidy */
+.vt-head-label {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+}
 .vt-cell--rownum {
   min-width: 44px; max-width: 44px;
   flex: none; font-variant-numeric: tabular-nums;
