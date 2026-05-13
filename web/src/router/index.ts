@@ -95,6 +95,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['databaseaudit.view'] },
         },
         {
+          path: 'database-logs',
+          name: 'database-logs',
+          component: () => import('@/views/DatabaseLogsView.vue'),
+          meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
+        },
+        {
           path: 'diff',
           name: 'diff',
           component: () => import('@/views/SchemaDiffView.vue'),

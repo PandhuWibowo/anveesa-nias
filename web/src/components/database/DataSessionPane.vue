@@ -56,6 +56,7 @@ const pkColumn = ref('')
 const hasUnsavedTableEdits = ref(false)
 const activeSubTab = ref<string>('data')
 let suppressSubTabGuard = false
+let suppressSubTabTableSelect = false
 
 watch(() => props.connId, () => {
   selected.value = null
@@ -76,7 +77,7 @@ function confirmDiscardPendingEdits(actionLabel = 'continue') {
   return window.confirm(`You have unsaved row edits. Discard them and ${actionLabel}?`)
 }
 
-async function handleSelectTable(payload: { db: string; table: string }) {
+async function handleSelectTable(payload: { db: string; table: string }, openInEditMode = false) {
   if (selected.value && (selected.value.db !== payload.db || selected.value.table !== payload.table) && !confirmDiscardPendingEdits('open another table')) {
     return
   }
@@ -90,6 +91,7 @@ async function handleSelectTable(payload: { db: string; table: string }) {
     const pk = cols?.find((c: any) => c.is_primary_key)
     pkColumn.value = pk?.name ?? (cols?.[0]?.name ?? '')
   }
+  if (openInEditMode) editMode.value = true
   emit('table-selected', payload.db, payload.table)
 }
 
@@ -359,7 +361,7 @@ async function exportExcel() { if (!rows.value.length) return; const { downloadE
 // ── Sub-tab + SQL tabs ────────────────────────────────────────────
 type ResultKind = 'query' | 'explain' | 'stream' | 'script' | 'history' | 'saved' | 'error' | 'chart'
 interface PinnedResult { id: string; label: string; columns: string[]; rows: unknown[][] }
-interface SQLViewTab { id: string; label: string; result: SQLPanelPayload | null; activeResultTab: ResultKind; sqlHeight: number; pinnedResults: PinnedResult[]; diffLeft: string; diffRight: string; initialSQL?: string }
+interface SQLViewTab { id: string; label: string; result: SQLPanelPayload | null; activeResultTab: ResultKind; sqlHeight: number; pinnedResults: PinnedResult[]; diffLeft: string; diffRight: string; initialSQL?: string; sqlEditMode?: boolean; sqlEditPkColumn?: string; sqlEditTarget?: SQLEditTarget }
 interface SQLEditTarget { db: string; table: string }
 interface PersistedSQLTab { label: string; result: SQLPanelPayload | null; activeResultTab: ResultKind; sqlHeight: number; pinnedResults: PinnedResult[]; diffLeft: string; diffRight: string; sql: string }
 interface PersistedSQLState { tabs: PersistedSQLTab[]; activeIndex: number }
@@ -455,7 +457,7 @@ function restoreSQLState(activateTab = true) {
 // Sync Schema ↔ Data Browser when switching sub-tabs
 watch(activeSubTab, (tab) => {
   if (tab === 'schema' && selected.value) handleSchemaSelectTable({ db: selected.value.db, table: selected.value.table })
-  else if (tab === 'data' && schemaSelected.value) handleSelectTable({ db: schemaSelected.value.db, table: schemaSelected.value.table })
+  else if (tab === 'data' && schemaSelected.value && !suppressSubTabTableSelect) handleSelectTable({ db: schemaSelected.value.db, table: schemaSelected.value.table })
   else if (tab === 'explorer') void ensureExplorerReady()
   emit('tab-selected', tab.startsWith('sql-') ? 'sql' : tab as DataSessionTab)
   persistSQLState()
@@ -567,13 +569,43 @@ function editableTargetForSQLResult(tab: SQLViewTab): SQLEditTarget | null {
 async function editSQLResultRows(tab: SQLViewTab) {
   const target = editableTargetForSQLResult(tab)
   if (!target) {
-    toast.error('Only simple SELECT results from one table can be opened for editing')
+    toast.error('Only simple single-table SELECT results can be edited inline')
     return
   }
-  await handleSelectTable({ db: target.db, table: target.table })
-  activeSubTab.value = 'data'
-  editMode.value = true
-  toast.success(`Opened ${target.table} in edit mode`)
+  // Toggle: if already in edit mode for this tab, exit
+  if (tab.sqlEditMode) {
+    tab.sqlEditMode = false
+    return
+  }
+  // Fetch PK column for the target table
+  let pkCol = ''
+  if (props.connId) {
+    try {
+      const cols = await fetchTableColumns(props.connId, target.db, target.table)
+      const pk = cols?.find((c: any) => c.is_primary_key)
+      pkCol = pk?.name ?? (cols?.[0]?.name ?? '')
+    } catch { /* best effort */ }
+  }
+  tab.sqlEditMode = true
+  tab.sqlEditPkColumn = pkCol
+  tab.sqlEditTarget = target
+}
+
+async function handleSQLResultSaveRow(
+  tab: SQLViewTab,
+  payload: { rowIdx: number; pkValue: unknown; changes: Record<string, unknown> },
+) {
+  const target = tab.sqlEditTarget
+  if (!target || !props.connId) return
+  try {
+    await axios.put(
+      `/api/connections/${props.connId}/schema/${target.db}/tables/${target.table}/rows`,
+      { pk_column: tab.sqlEditPkColumn, pk_value: payload.pkValue, updates: payload.changes },
+    )
+    toast.success('Row updated')
+  } catch (e: any) {
+    toast.error(e.response?.data?.error ?? 'Update failed')
+  }
 }
 
 function analyzeTabResultWithAI(tabId: string) {
@@ -1044,12 +1076,13 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>Excel
               </button>
               <button
-                class="base-btn base-btn--primary base-btn--xs"
+                class="base-btn base-btn--xs"
+                :class="tab.sqlEditMode ? 'base-btn--primary' : 'base-btn--ghost'"
                 :disabled="!editableTargetForSQLResult(tab)"
                 @click="editSQLResultRows(tab)"
-                title="Open this single-table SELECT result in the editable Data tab"
+                :title="tab.sqlEditMode ? 'Exit edit mode' : 'Edit rows inline (double-click a cell to edit)'"
               >
-                Edit Rows
+                {{ tab.sqlEditMode ? 'Editing…' : 'Edit Rows' }}
               </button>
               <button class="base-btn base-btn--ghost base-btn--xs" @click="analyzeTabResultWithAI(tab.id)" title="Analyze this query result with AI">Analyze with AI</button>
               <button class="base-btn base-btn--ghost base-btn--xs" @click="pinTabResult(tab.id)" title="Pin">Pin</button>
@@ -1064,7 +1097,14 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
               {{ (tab.result as any).error }}
             </div>
             <template v-else-if="(tab.result.kind==='query'||tab.result.kind==='stream')&&tab.activeResultTab!=='chart'">
-              <VirtualTable :columns="(tab.result as any).columns" :rows="(tab.result as any).rows" :selectable="true" />
+              <VirtualTable
+                :columns="(tab.result as any).columns"
+                :rows="(tab.result as any).rows"
+                :selectable="true"
+                :editable="tab.sqlEditMode ?? false"
+                :pk-column="tab.sqlEditPkColumn ?? ''"
+                @save-row="handleSQLResultSaveRow(tab, $event)"
+              />
             </template>
             <template v-else-if="tab.result.kind==='query'&&tab.activeResultTab==='chart'">
               <div style="flex:1;min-height:0;padding:12px;overflow:hidden;display:flex;flex-direction:column">
