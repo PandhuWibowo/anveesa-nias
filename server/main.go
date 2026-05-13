@@ -403,6 +403,40 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchGetIndexSettings())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "index-settings" && r.Method == http.MethodPut:
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchUpdateIndexSettings())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "cluster-health" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchClusterHealth())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "nodes" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchNodes())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "shards" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchShards())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "mapping" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchIndexMapping())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "index-stats" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchIndexStats())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "list-indices" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchListIndices())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "aggregate" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchAggregate())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "fields" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchIndexFields())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watcher-stats" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchWatcherStats())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watches" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchListWatches())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watch" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchGetWatch())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watch" && r.Method == http.MethodPut:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchSaveWatch())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watch" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchDeleteWatch())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watch-execute" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchExecuteWatch())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watch-activate" && r.Method == http.MethodPut:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchActivateWatch())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watch-deactivate" && r.Method == http.MethodPut:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchDeactivateWatch())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watch-history" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchWatchHistory())(w, r)
 			case sub == "backup" && r.Method == http.MethodGet:
 				requireAny(handlers.PermBackupsManage)(handlers.GetBackup())(w, r)
 			case sub == "restore" && r.Method == http.MethodPost:

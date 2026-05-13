@@ -117,6 +117,11 @@ const allMenuGroups: MenuGroup[] = [
       { name: 'memcache', label: 'Memcache Browser', desc: 'Read, write, delete, flush, and inspect Memcache values', icon: 'table', section: 'Database Cache', permissionsAny: ['redis.view'] },
       { name: 'search', label: 'Search Browser', desc: 'Inspect Elasticsearch and OpenSearch indices, queries, and documents', icon: 'search', section: 'Search & Observability', permissionsAny: ['schema.browse', 'connections.view'] },
       { name: 'search-policies', label: 'Search Policies', desc: 'Manage ILM policies, index templates, app-level rules, and shard allocation', icon: 'policy', section: 'Search & Observability', permissionsAny: ['schema.browse', 'connections.view'] },
+      { name: 'observability', label: 'Observability', desc: 'Monitor cluster health, node stats, shard allocation, and index mappings in real time', icon: 'observability', section: 'Search & Observability', permissionsAny: ['schema.browse', 'connections.view'] },
+      { name: 'discover', label: 'Discover', desc: 'Kibana-style log explorer: histogram, field sidebar, live tail, and one-click filters', icon: 'discover', section: 'Search & Observability', permissionsAny: ['schema.browse', 'connections.view'] },
+      { name: 'search-watcher', label: 'Watcher', desc: 'Manage Elasticsearch Watcher alert watches, simulate and view execution history', icon: 'watcher-es', section: 'Search & Observability', permissionsAny: ['schema.browse', 'connections.view'] },
+      { name: 'service-health', label: 'Service Health', desc: 'Real-time service status: log error rates, infrastructure CPU/memory, and ElastAlert history', icon: 'service-health', section: 'Search & Observability', permissionsAny: ['schema.browse', 'connections.view'] },
+      { name: 'uptime', label: 'Uptime', desc: 'Heartbeat monitor status, response times, TLS expiry, and 24h timeline per endpoint', icon: 'uptime', section: 'Search & Observability', permissionsAny: ['schema.browse', 'connections.view'] },
     ],
   },
   {
@@ -246,6 +251,11 @@ const ICON_PATHS: Record<string, string> = {
   kafka: '<circle cx="12" cy="12" r="2.5"/><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 7.7l3.1 2.7"/><path d="M17 7.7l-3.1 2.7"/><path d="M7 16.3l3.1-2.7"/><path d="M17 16.3l-3.1-2.7"/>',
   search: '<circle cx="10" cy="10" r="6"/><path d="M14.5 14.5L21 21"/><path d="M7 10h6"/>',
   policy: '<path d="M12 2l7 4v6c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6l7-4z"/><path d="M9 12l2 2 4-4"/>',
+  observability: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/><path d="M12 5v-2"/><path d="M12 21v-2"/><path d="M5 12H3"/><path d="M21 12h-2"/>',
+  discover: '<path d="M3 3h7v7H3z"/><path d="M14 3h7v7h-7z"/><path d="M3 14h7v7H3z"/><circle cx="17.5" cy="17.5" r="3.5"/><path d="M20 20l2 2"/>',
+  'watcher-es': '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/><path d="M7 17l-2 2"/><path d="M17 17l2 2"/>',
+  'service-health': '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  uptime: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/><path d="M12 22v-2"/><path d="M12 4V2"/><path d="M4.93 4.93l1.41 1.41"/><path d="M17.66 17.66l1.41 1.41"/>',
   layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
 }
 
