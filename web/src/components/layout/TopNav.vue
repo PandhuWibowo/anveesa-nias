@@ -78,14 +78,7 @@ type MenuGroup = {
 
 // Direct links (no dropdown)
 const directLinks = computed(() => {
-  const links: NavLink[] = [
-    {
-      name: 'docs',
-      label: 'Docs',
-      icon: 'book',
-    },
-  ]
-
+  const links: NavLink[] = []
   return links.filter((link) => !link.permissionsAny?.length || hasAnyPermission(link.permissionsAny))
 })
 
@@ -117,24 +110,17 @@ const allMenuGroups: MenuGroup[] = [
     label: 'Database',
     icon: 'table',
     items: [
-      { name: 'data', label: 'SQL Studio', desc: 'Browse tables, inspect schema, and run SQL in the main workbench', icon: 'table', section: 'RDBMS', permissionsAny: ['sqlstudio.access'] },
-      { name: 'database-objects', label: 'Database Objects', desc: 'Browse indexes, views, functions, procedures, triggers, sequences, and types', icon: 'diff', section: 'RDBMS', permissionsAny: ['sqlstudio.access'] },
-      { name: 'er', label: 'ER Diagram', desc: 'Visualize relationships between tables before building analysis', icon: 'er', section: 'RDBMS', permissionsAny: ['er.view'] },
-      { name: 'diff', label: 'Schema Diff', desc: 'Compare schema structure across environments', icon: 'diff', section: 'RDBMS', permissionsAny: ['schema.diff.view'] },
-      { name: 'row-history', label: 'Row History', desc: 'See row-level INSERT, UPDATE, DELETE changes', icon: 'rowhistory', section: 'RDBMS', permissionsAny: ['rowhistory.view'] },
-      { name: 'redis', label: 'Redis Browser', desc: 'Scan keys and inspect Redis values from managed connections', icon: 'table', section: 'Database Cache', permissionsAny: ['redis.view'] },
-      { name: 'memcache', label: 'Memcache Browser', desc: 'Read, write, delete, flush, and inspect Memcache values', icon: 'table', section: 'Database Cache', permissionsAny: ['redis.view'] },
-      { name: 'search', label: 'Search Browser', desc: 'Inspect Elasticsearch and OpenSearch indices, queries, and documents', icon: 'search', section: 'Search', permissionsAny: ['schema.browse', 'connections.view'] },
-      { name: 'search-policies', label: 'Search Policies', desc: 'Manage ILM policies, index templates, app-level rules, and shard allocation', icon: 'policy', section: 'Search', permissionsAny: ['schema.browse', 'connections.view'] },
-    ],
-  },
-  {
-    id: 'messaging',
-    label: 'Messaging',
-    icon: 'activity',
-    items: [
-      { name: 'laravel-queue', label: 'Laravel Queue', desc: 'Inspect Redis-backed Laravel queue jobs, delayed jobs, and reserved jobs', icon: 'queue', permissionsAny: ['queues.view'] },
-      { name: 'kafka', label: 'Kafka', desc: 'Inspect Kafka topics, partitions, and consumer groups', icon: 'kafka', permissionsAny: ['kafka.view'] },
+      { name: 'data', label: 'SQL Studio', desc: 'Browse tables, inspect schema, and run SQL in the main workbench', icon: 'table', section: 'Relational', permissionsAny: ['sqlstudio.access'] },
+      { name: 'database-objects', label: 'DB Objects', desc: 'Browse indexes, views, functions, procedures, triggers, sequences, and types', icon: 'diff', section: 'Relational', permissionsAny: ['sqlstudio.access'] },
+      { name: 'er', label: 'ER Diagram', desc: 'Visualize relationships between tables before building analysis', icon: 'er', section: 'Relational', permissionsAny: ['er.view'] },
+      { name: 'diff', label: 'Schema Diff', desc: 'Compare schema structure across environments', icon: 'diff', section: 'Relational', permissionsAny: ['schema.diff.view'] },
+      { name: 'row-history', label: 'Row History', desc: 'See row-level INSERT, UPDATE, DELETE changes', icon: 'rowhistory', section: 'Relational', permissionsAny: ['rowhistory.view'] },
+      { name: 'redis', label: 'Redis', desc: 'Scan keys and inspect Redis values from managed connections', icon: 'table', section: 'Cache & Search', permissionsAny: ['redis.view'] },
+      { name: 'memcache', label: 'Memcache', desc: 'Read, write, delete, flush, and inspect Memcache values', icon: 'table', section: 'Cache & Search', permissionsAny: ['redis.view'] },
+      { name: 'search', label: 'Search Browser', desc: 'Inspect Elasticsearch and OpenSearch indices, queries, and documents', icon: 'search', section: 'Cache & Search', permissionsAny: ['schema.browse', 'connections.view'] },
+      { name: 'search-policies', label: 'Search Policies', desc: 'Manage ILM policies, index templates, app-level rules, and shard allocation', icon: 'policy', section: 'Cache & Search', permissionsAny: ['schema.browse', 'connections.view'] },
+      { name: 'laravel-queue', label: 'Laravel Queue', desc: 'Inspect Redis-backed Laravel queue jobs, delayed jobs, and reserved jobs', icon: 'queue', section: 'Messaging', permissionsAny: ['queues.view'] },
+      { name: 'kafka', label: 'Kafka', desc: 'Inspect Kafka topics, partitions, and consumer groups', icon: 'kafka', section: 'Messaging', permissionsAny: ['kafka.view'] },
     ],
   },
   {
@@ -142,27 +128,18 @@ const allMenuGroups: MenuGroup[] = [
     label: 'Operations',
     icon: 'activity',
     items: [
-      { name: 'dashboard', label: 'Operations Overview', desc: 'Connection footprint, size, and slow-query pressure across environments', icon: 'dashboard', permissionsAny: ['operations.view'] },
-      { name: 'query-performance', label: 'Query Performance', desc: 'Slow queries, errors, and execution trends', icon: 'performance', permissionsAny: ['performance.view'] },
-      { name: 'database-audit', label: 'Database Audit', desc: 'Live sessions and external access signals', icon: 'shieldlog', permissionsAny: ['databaseaudit.view'] },
-      { name: 'audit',       label: 'Audit Log',   desc: 'Track access, actions, and query events', icon: 'audit', permissionsAny: ['audit.view'] },
-      { name: 'notifications', label: 'Notifications', desc: 'Inbox, integrations, routing rules, and delivery logs', icon: 'audit', permissionsAny: ['notifications.view'] },
-      { name: 'watcher',     label: 'Watchers',    desc: 'Monitor important table or query activity', icon: 'watcher', permissionsAny: ['watchers.manage'] },
-      { name: 'health',      label: 'Health',      desc: 'Connection and service health status', icon: 'health', permissionsAny: ['health.view'] },
-    ],
-  },
-  {
-    id: 'govern',
-    label: 'Governance',
-    icon: 'wrench',
-    items: [
-      { name: 'approvals',   label: 'Approvals',   desc: 'Review and approve controlled SQL changes', icon: 'workflow', permissionsAny: ['approvals.view', 'query.approve'] },
-      { name: 'change-sets', label: 'Change Sets', desc: 'Plan, validate, and run database changes', icon: 'changeset', permissionsAny: ['changesets.manage', 'query.approve'] },
-      { name: 'data-scripts', label: 'Data Scripts', desc: 'Preview programmable data updates before approval', icon: 'changeset', permissionsAny: ['datascripts.manage', 'query.approve'] },
-      { name: 'data-script-requests', label: 'Script Requests', desc: 'Global queue of data script plans and approvals', icon: 'workflow', permissionsAny: ['scriptrequests.view', 'query.approve'] },
-      { name: 'backup',      label: 'Backup',      desc: 'Request database downloads or use direct backup and restore', icon: 'backup', permissionsAny: ['backups.manage', 'query.execute', 'query.approve'] },
-      { name: 'scheduler',   label: 'Scheduler',   desc: 'Schedule recurring queries and jobs', icon: 'scheduler', permissionsAny: ['schedules.manage'] },
-      { name: 'workflows',   label: 'Workflows',   desc: 'Configure approval workflows and routing', icon: 'workflow', permissionsAny: ['workflows.manage'] },
+      { name: 'dashboard',        label: 'Overview',        desc: 'Connection footprint, size, and slow-query pressure across environments', icon: 'dashboard',   section: 'Monitoring', permissionsAny: ['operations.view'] },
+      { name: 'query-performance',label: 'Query Performance',desc: 'Slow queries, errors, and execution trends', icon: 'performance',  section: 'Monitoring', permissionsAny: ['performance.view'] },
+      { name: 'database-audit',   label: 'DB Audit',        desc: 'Live sessions and external access signals', icon: 'shieldlog',    section: 'Monitoring', permissionsAny: ['databaseaudit.view'] },
+      { name: 'audit',            label: 'Audit Log',       desc: 'Track access, actions, and query events', icon: 'audit',         section: 'Monitoring', permissionsAny: ['audit.view'] },
+      { name: 'health',           label: 'Health',          desc: 'Connection and service health status', icon: 'health',           section: 'Monitoring', permissionsAny: ['health.view'] },
+      { name: 'watcher',          label: 'Watchers',        desc: 'Monitor important table or query activity', icon: 'watcher',     section: 'Monitoring', permissionsAny: ['watchers.manage'] },
+      { name: 'approvals',        label: 'Approvals',       desc: 'Review and approve controlled SQL changes', icon: 'workflow',    section: 'Governance', permissionsAny: ['approvals.view', 'query.approve'] },
+      { name: 'change-sets',      label: 'Change Sets',     desc: 'Plan, validate, and run database changes', icon: 'changeset',   section: 'Governance', permissionsAny: ['changesets.manage', 'query.approve'] },
+      { name: 'data-scripts',     label: 'Data Scripts',    desc: 'Preview programmable data updates before approval', icon: 'changeset', section: 'Governance', permissionsAny: ['datascripts.manage', 'query.approve'] },
+      { name: 'backup',           label: 'Backup',          desc: 'Request database downloads or use direct backup and restore', icon: 'backup', section: 'Governance', permissionsAny: ['backups.manage', 'query.execute', 'query.approve'] },
+      { name: 'scheduler',        label: 'Scheduler',       desc: 'Schedule recurring queries and jobs', icon: 'scheduler',        section: 'Governance', permissionsAny: ['schedules.manage'] },
+      { name: 'workflows',        label: 'Workflows',       desc: 'Configure approval workflows and routing', icon: 'workflow',    section: 'Governance', permissionsAny: ['workflows.manage'] },
     ],
   },
   {
@@ -589,6 +566,12 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
             </div>
           </div>
           <div class="topnav__menu-sep"></div>
+          <button class="topnav__user-menu-item topnav__user-menu-item--nav" @click="userMenuOpen = false; router.push({ name: 'docs' })">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+            Docs
+          </button>
           <button class="topnav__user-menu-item topnav__user-menu-item--nav" @click="userMenuOpen = false; router.push({ name: 'security' })">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
@@ -612,12 +595,12 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav {
   display: flex;
   align-items: center;
-  height: 48px;
+  height: 44px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  padding: 0 14px;
-  gap: 6px;
+  padding: 0 12px;
+  gap: 4px;
   z-index: 200;
   position: relative;
 }
@@ -626,15 +609,15 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__brand {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 7px;
   flex-shrink: 0;
 }
 .topnav__logo {
-  width: 30px;
-  height: 30px;
+  width: 26px;
+  height: 26px;
   background: var(--brand-dim);
   border: 1px solid var(--brand-ring);
-  border-radius: 8px;
+  border-radius: 7px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -647,7 +630,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   line-height: 1.2;
 }
 .topnav__brand-name {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-secondary);
   font-weight: 400;
 }
@@ -656,17 +639,17 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   font-weight: 700;
 }
 .topnav__brand-version {
-  font-size: 9.5px;
+  font-size: 9px;
   color: var(--text-muted);
   letter-spacing: 0.3px;
 }
 
 .topnav__divider {
   width: 1px;
-  height: 20px;
+  height: 16px;
   background: var(--border);
   flex-shrink: 0;
-  margin: 0 4px;
+  margin: 0 2px;
 }
 
 /* ── Connections button ── */
@@ -677,16 +660,16 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__conn-btn {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 5px 10px;
+  gap: 6px;
+  padding: 4px 8px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--bg-elevated);
   cursor: pointer;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text-muted);
   white-space: nowrap;
-  max-width: 240px;
+  max-width: 200px;
   transition: border-color 0.12s, background 0.12s, color 0.12s;
 }
 .topnav__conn-btn:hover,
@@ -717,11 +700,11 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   max-width: 120px;
 }
 .topnav__conn-host {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 80px;
+  max-width: 70px;
 }
 .topnav__conn-panel {
   max-width: calc(100vw - 16px);
@@ -741,10 +724,10 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__link {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  border-radius: 6px;
-  font-size: 13px;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  font-size: 12.5px;
   font-weight: 500;
   color: var(--text-muted);
   text-decoration: none;
@@ -761,12 +744,12 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__menu-trigger {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: 5px;
+  padding: 4px 8px;
   border: none;
-  border-radius: 6px;
+  border-radius: 5px;
   background: transparent;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
   color: var(--text-muted);
   cursor: pointer;
@@ -907,8 +890,8 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__actions {
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin-left: 8px;
+  gap: 2px;
+  margin-left: 4px;
   flex-shrink: 0;
 }
 
