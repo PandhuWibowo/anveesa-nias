@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { useAuth } from '@/composables/useAuth'
@@ -22,11 +22,13 @@ const { connections } = useConnections()
 const activeConn = computed(() =>
   props.activeConnId != null ? connections.value.find(c => c.id === props.activeConnId) ?? null : null
 )
-const driverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927', redis: '#c6302b', kafka: '#231f20' }
-const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', kafka: 'KF' }
+const driverColor: Record<string, string> = { sqlite: '#4b5563', postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927', redis: '#c6302b', memcache: '#16a34a', kafka: '#231f20', elasticsearch: '#00bfb3', opensearch: '#005eb8', s3_aws: '#f59e0b', s3_gcp: '#4285f4', s3_oss: '#ff6a00', s3_obs: '#c00000' }
+const driverLabel: Record<string, string> = { sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF', elasticsearch: 'ES', opensearch: 'OS', s3_aws: 'S3', s3_gcp: 'GCS', s3_oss: 'OSS', s3_obs: 'OBS' }
 
 // Nav group dropdown
 const openMenu = ref<string | null>(null)
+const dropdownPos = ref<{ top: number; left: number } | null>(null)
+const dropdownPanelEl = ref<HTMLElement | null>(null)
 // Connections panel — kept separate so outside-click logic doesn't conflict
 const connPanelOpen = ref(false)
 
@@ -76,14 +78,7 @@ type MenuGroup = {
 
 // Direct links (no dropdown)
 const directLinks = computed(() => {
-  const links: NavLink[] = [
-    {
-      name: 'docs',
-      label: 'Docs',
-      icon: 'book',
-    },
-  ]
-
+  const links: NavLink[] = []
   return links.filter((link) => !link.permissionsAny?.length || hasAnyPermission(link.permissionsAny))
 })
 
@@ -102,24 +97,30 @@ const allMenuGroups: MenuGroup[] = [
     ],
   },
   {
+    id: 'observability',
+    label: 'Observability',
+    icon: 'observability',
+    items: [
+      { name: 'discover', label: 'Discover', desc: 'Explore and trace logs — filter by level, app, environment with a live log stream', icon: 'discover', permissionsAny: ['schema.browse', 'connections.view'] },
+      { name: 'uptime', label: 'Uptime', desc: 'Heartbeat monitor status, response times, TLS expiry, and 24h timeline per endpoint', icon: 'uptime', permissionsAny: ['schema.browse', 'connections.view'] },
+    ],
+  },
+  {
     id: 'database',
     label: 'Database',
     icon: 'table',
     items: [
-      { name: 'data', label: 'SQL Studio', desc: 'Browse tables, inspect schema, and run SQL in the main workbench', icon: 'table', section: 'RDBMS', permissionsAny: ['sqlstudio.access'] },
-      { name: 'er', label: 'ER Diagram', desc: 'Visualize relationships between tables before building analysis', icon: 'er', section: 'RDBMS', permissionsAny: ['er.view'] },
-      { name: 'diff', label: 'Schema Diff', desc: 'Compare schema structure across environments', icon: 'diff', section: 'RDBMS', permissionsAny: ['schema.diff.view'] },
-      { name: 'row-history', label: 'Row History', desc: 'See row-level INSERT, UPDATE, DELETE changes', icon: 'rowhistory', section: 'RDBMS', permissionsAny: ['rowhistory.view'] },
-      { name: 'redis', label: 'Redis Browser', desc: 'Scan keys and inspect Redis values from managed connections', icon: 'table', section: 'Database Cache', permissionsAny: ['redis.view'] },
-    ],
-  },
-  {
-    id: 'messaging',
-    label: 'Messaging',
-    icon: 'activity',
-    items: [
-      { name: 'laravel-queue', label: 'Laravel Queue', desc: 'Inspect Redis-backed Laravel queue jobs, delayed jobs, and reserved jobs', icon: 'queue', permissionsAny: ['queues.view'] },
-      { name: 'kafka', label: 'Kafka', desc: 'Inspect Kafka topics, partitions, and consumer groups', icon: 'kafka', permissionsAny: ['kafka.view'] },
+      { name: 'data', label: 'SQL Studio', desc: 'Browse tables, inspect schema, and run SQL in the main workbench', icon: 'table', section: 'Relational', permissionsAny: ['sqlstudio.access'] },
+      { name: 'database-objects', label: 'DB Objects', desc: 'Browse indexes, views, functions, procedures, triggers, sequences, and types', icon: 'diff', section: 'Relational', permissionsAny: ['sqlstudio.access'] },
+      { name: 'er', label: 'ER Diagram', desc: 'Visualize relationships between tables before building analysis', icon: 'er', section: 'Relational', permissionsAny: ['er.view'] },
+      { name: 'diff', label: 'Schema Diff', desc: 'Compare schema structure across environments', icon: 'diff', section: 'Relational', permissionsAny: ['schema.diff.view'] },
+      { name: 'row-history', label: 'Row History', desc: 'See row-level INSERT, UPDATE, DELETE changes', icon: 'rowhistory', section: 'Relational', permissionsAny: ['rowhistory.view'] },
+      { name: 'redis', label: 'Redis', desc: 'Scan keys and inspect Redis values from managed connections', icon: 'table', section: 'Cache & Search', permissionsAny: ['redis.view'] },
+      { name: 'memcache', label: 'Memcache', desc: 'Read, write, delete, flush, and inspect Memcache values', icon: 'table', section: 'Cache & Search', permissionsAny: ['redis.view'] },
+      { name: 'search', label: 'Search Browser', desc: 'Inspect Elasticsearch and OpenSearch indices, queries, and documents', icon: 'search', section: 'Cache & Search', permissionsAny: ['schema.browse', 'connections.view'] },
+      { name: 'search-policies', label: 'Search Policies', desc: 'Manage ILM policies, index templates, app-level rules, and shard allocation', icon: 'policy', section: 'Cache & Search', permissionsAny: ['schema.browse', 'connections.view'] },
+      { name: 'laravel-queue', label: 'Laravel Queue', desc: 'Inspect Redis-backed Laravel queue jobs, delayed jobs, and reserved jobs', icon: 'queue', section: 'Messaging', permissionsAny: ['queues.view'] },
+      { name: 'kafka', label: 'Kafka', desc: 'Inspect Kafka topics, partitions, and consumer groups', icon: 'kafka', section: 'Messaging', permissionsAny: ['kafka.view'] },
     ],
   },
   {
@@ -127,27 +128,18 @@ const allMenuGroups: MenuGroup[] = [
     label: 'Operations',
     icon: 'activity',
     items: [
-      { name: 'dashboard', label: 'Operations Overview', desc: 'Connection footprint, size, and slow-query pressure across environments', icon: 'dashboard', permissionsAny: ['operations.view'] },
-      { name: 'query-performance', label: 'Query Performance', desc: 'Slow queries, errors, and execution trends', icon: 'performance', permissionsAny: ['performance.view'] },
-      { name: 'database-audit', label: 'Database Audit', desc: 'Live sessions and external access signals', icon: 'shieldlog', permissionsAny: ['databaseaudit.view'] },
-      { name: 'audit',       label: 'Audit Log',   desc: 'Track access, actions, and query events', icon: 'audit', permissionsAny: ['audit.view'] },
-      { name: 'notifications', label: 'Notifications', desc: 'Inbox, integrations, routing rules, and delivery logs', icon: 'audit', permissionsAny: ['notifications.view'] },
-      { name: 'watcher',     label: 'Watchers',    desc: 'Monitor important table or query activity', icon: 'watcher', permissionsAny: ['watchers.manage'] },
-      { name: 'health',      label: 'Health',      desc: 'Connection and service health status', icon: 'health', permissionsAny: ['health.view'] },
-    ],
-  },
-  {
-    id: 'govern',
-    label: 'Governance',
-    icon: 'wrench',
-    items: [
-      { name: 'approvals',   label: 'Approvals',   desc: 'Review and approve controlled SQL changes', icon: 'workflow', permissionsAny: ['approvals.view', 'query.approve'] },
-      { name: 'change-sets', label: 'Change Sets', desc: 'Plan, validate, and run database changes', icon: 'changeset', permissionsAny: ['changesets.manage', 'query.approve'] },
-      { name: 'data-scripts', label: 'Data Scripts', desc: 'Preview programmable data updates before approval', icon: 'changeset', permissionsAny: ['datascripts.manage', 'query.approve'] },
-      { name: 'data-script-requests', label: 'Script Requests', desc: 'Global queue of data script plans and approvals', icon: 'workflow', permissionsAny: ['scriptrequests.view', 'query.approve'] },
-      { name: 'backup',      label: 'Backup',      desc: 'Request database downloads or use direct backup and restore', icon: 'backup', permissionsAny: ['backups.manage', 'query.execute', 'query.approve'] },
-      { name: 'scheduler',   label: 'Scheduler',   desc: 'Schedule recurring queries and jobs', icon: 'scheduler', permissionsAny: ['schedules.manage'] },
-      { name: 'workflows',   label: 'Workflows',   desc: 'Configure approval workflows and routing', icon: 'workflow', permissionsAny: ['workflows.manage'] },
+      { name: 'dashboard',        label: 'Overview',        desc: 'Connection footprint, size, and slow-query pressure across environments', icon: 'dashboard',   section: 'Monitoring', permissionsAny: ['operations.view'] },
+      { name: 'query-performance',label: 'Query Performance',desc: 'Slow queries, errors, and execution trends', icon: 'performance',  section: 'Monitoring', permissionsAny: ['performance.view'] },
+      { name: 'database-audit',   label: 'DB Audit',        desc: 'Live sessions and external access signals', icon: 'shieldlog',    section: 'Monitoring', permissionsAny: ['databaseaudit.view'] },
+      { name: 'audit',            label: 'Audit Log',       desc: 'Track access, actions, and query events', icon: 'audit',         section: 'Monitoring', permissionsAny: ['audit.view'] },
+      { name: 'health',           label: 'Health',          desc: 'Connection and service health status', icon: 'health',           section: 'Monitoring', permissionsAny: ['health.view'] },
+      { name: 'watcher',          label: 'Watchers',        desc: 'Monitor important table or query activity', icon: 'watcher',     section: 'Monitoring', permissionsAny: ['watchers.manage'] },
+      { name: 'approvals',        label: 'Approvals',       desc: 'Review and approve controlled SQL changes', icon: 'workflow',    section: 'Governance', permissionsAny: ['approvals.view', 'query.approve'] },
+      { name: 'change-sets',      label: 'Change Sets',     desc: 'Plan, validate, and run database changes', icon: 'changeset',   section: 'Governance', permissionsAny: ['changesets.manage', 'query.approve'] },
+      { name: 'data-scripts',     label: 'Data Scripts',    desc: 'Preview programmable data updates before approval', icon: 'changeset', section: 'Governance', permissionsAny: ['datascripts.manage', 'query.approve'] },
+      { name: 'backup',           label: 'Backup',          desc: 'Request database downloads or use direct backup and restore', icon: 'backup', section: 'Governance', permissionsAny: ['backups.manage', 'query.execute', 'query.approve'] },
+      { name: 'scheduler',        label: 'Scheduler',       desc: 'Schedule recurring queries and jobs', icon: 'scheduler',        section: 'Governance', permissionsAny: ['schedules.manage'] },
+      { name: 'workflows',        label: 'Workflows',       desc: 'Configure approval workflows and routing', icon: 'workflow',    section: 'Governance', permissionsAny: ['workflows.manage'] },
     ],
   },
   {
@@ -211,10 +203,85 @@ function itemActive(item: MenuItem) {
   return !route.query.tab
 }
 
-function toggleMenu(id: string) {
-  openMenu.value = openMenu.value === id ? null : id
-  connPanelOpen.value = false
+function iconProps(icon: string) {
+  return { width: '14', height: '14', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }
 }
+
+const ICON_PATHS: Record<string, string> = {
+  dashboard: '<rect x="2" y="2" width="9" height="11" rx="1"/><rect x="13" y="2" width="9" height="7" rx="1"/><rect x="2" y="15" width="9" height="7" rx="1"/><rect x="13" y="11" width="9" height="11" rx="1"/>',
+  table: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>',
+  er: '<rect x="2" y="3" width="6" height="6" rx="1"/><rect x="16" y="3" width="6" height="6" rx="1"/><rect x="9" y="15" width="6" height="6" rx="1"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="12" y1="9" x2="12" y2="15"/>',
+  saved: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
+  spark: '<path d="M12 3l1.9 4.6L18.5 9 13.9 10.4 12 15l-1.9-4.6L5.5 9l4.6-1.4L12 3z"/><path d="M19 14l.95 2.05L22 17l-2.05.95L19 20l-.95-2.05L16 17l2.05-.95L19 14z"/><path d="M5 14l.95 2.05L8 17l-2.05.95L5 20l-.95-2.05L2 17l2.05-.95L5 14z"/>',
+  workflow: '<circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M7 6h10"/><path d="M6.5 7.5l4 8"/><path d="M17.5 7.5l-4 8"/>',
+  changeset: '<path d="M14 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8z"/><polyline points="14 3 14 8 19 8"/><path d="M8 13h8"/><path d="M8 17h6"/>',
+  plug: '<path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+  users: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  rbac: '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  diff: '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>',
+  backup: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  scheduler: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  watcher: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+  audit: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
+  performance: '<path d="M3 12a9 9 0 1 1 18 0"/><path d="M12 12l4-4"/><path d="M12 12l-2 5"/><path d="M7 17h10"/>',
+  shieldlog: '<path d="M12 3l7 3v6c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6l7-3z"/><path d="M9 12h6"/><path d="M12 9v6"/>',
+  health: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+  rowhistory: '<path d="M3 3h18v4H3z"/><path d="M3 10h18v4H3z"/><path d="M3 17h18v4H3z"/>',
+  queue: '<path d="M4 6h11"/><path d="M4 12h11"/><path d="M4 18h11"/><path d="M18 7l3 3-3 3"/><path d="M15 10h6"/>',
+  kafka: '<circle cx="12" cy="12" r="2.5"/><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 7.7l3.1 2.7"/><path d="M17 7.7l-3.1 2.7"/><path d="M7 16.3l3.1-2.7"/><path d="M17 16.3l-3.1-2.7"/>',
+  search: '<circle cx="10" cy="10" r="6"/><path d="M14.5 14.5L21 21"/><path d="M7 10h6"/>',
+  policy: '<path d="M12 2l7 4v6c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6l7-4z"/><path d="M9 12l2 2 4-4"/>',
+  observability: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/><path d="M12 5v-2"/><path d="M12 21v-2"/><path d="M5 12H3"/><path d="M21 12h-2"/>',
+  discover: '<path d="M3 3h7v7H3z"/><path d="M14 3h7v7h-7z"/><path d="M3 14h7v7H3z"/><circle cx="17.5" cy="17.5" r="3.5"/><path d="M20 20l2 2"/>',
+  'watcher-es': '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/><path d="M7 17l-2 2"/><path d="M17 17l2 2"/>',
+  'service-health': '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  uptime: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/><path d="M12 22v-2"/><path d="M12 4V2"/><path d="M4.93 4.93l1.41 1.41"/><path d="M17.66 17.66l1.41 1.41"/>',
+  layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
+}
+
+function iconPath(icon: string): string {
+  return ICON_PATHS[icon] ?? '<circle cx="12" cy="12" r="4"/>'
+}
+
+function toggleMenu(id: string, event: MouseEvent) {
+  if (openMenu.value === id) {
+    openMenu.value = null
+    dropdownPos.value = null
+    connPanelOpen.value = false
+    return
+  }
+  connPanelOpen.value = false
+  const trigger = event.currentTarget as HTMLElement
+  const rect = trigger.getBoundingClientRect()
+  // Anchor below the trigger — left will be clamped after render
+  dropdownPos.value = { top: rect.bottom + 6, left: rect.left }
+  openMenu.value = id
+}
+
+const dropdownStyle = computed(() => {
+  if (!dropdownPos.value) return {}
+  return {
+    position: 'fixed' as const,
+    top: `${dropdownPos.value.top}px`,
+    left: `${dropdownPos.value.left}px`,
+  }
+})
+
+// After the dropdown renders, clamp it so it never overflows the right edge
+watch(openMenu, async () => {
+  if (!openMenu.value) return
+  await nextTick()
+  const el = dropdownPanelEl.value
+  if (!el || !dropdownPos.value) return
+  const rect = el.getBoundingClientRect()
+  if (rect.right > window.innerWidth - 8) {
+    dropdownPos.value = {
+      top: dropdownPos.value.top,
+      left: Math.max(8, dropdownPos.value.left - (rect.right - (window.innerWidth - 8))),
+    }
+  }
+})
 
 function navigate(item: MenuItem) {
   openMenu.value = null
@@ -374,12 +441,13 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
             'topnav__menu-trigger--active': groupActive(group),
             'topnav__menu-trigger--open': openMenu === group.id,
           }"
-          @click="toggleMenu(group.id)"
+          @click="toggleMenu(group.id, $event)"
           type="button"
         >
           <!-- Group icons -->
           <svg v-if="group.icon === 'table'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
           <svg v-else-if="group.icon === 'dashboard'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="9" height="11" rx="1"/><rect x="13" y="2" width="9" height="7" rx="1"/><rect x="2" y="15" width="9" height="7" rx="1"/><rect x="13" y="11" width="9" height="11" rx="1"/></svg>
+          <svg v-else-if="group.icon === 'observability'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
           <svg v-else-if="group.icon === 'settings'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           <svg v-else-if="group.icon === 'wrench'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
           <svg v-else-if="group.icon === 'activity'" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
@@ -395,12 +463,18 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
         </button>
 
         <!-- Dropdown panel -->
-        <div v-if="openMenu === group.id" class="topnav__dropdown">
-          <div class="topnav__dropdown-label">{{ group.label }}</div>
-          <template v-for="section in groupedDropdownSections(group.items)" :key="section.label || 'default'">
-            <div v-if="section.label" class="topnav__dropdown-section">{{ section.label }}</div>
+        <div
+          v-if="openMenu === group.id"
+          :ref="el => { dropdownPanelEl = el as HTMLElement | null }"
+          class="topnav__dropdown"
+          :class="{ 'topnav__dropdown--cols': groupedDropdownSections(group.items).length > 1 }"
+          :style="dropdownStyle"
+        >
+          <!-- Single-section: flat list with header -->
+          <template v-if="groupedDropdownSections(group.items).length === 1">
+            <div class="topnav__dropdown-label">{{ group.label }}</div>
             <button
-              v-for="item in section.items"
+              v-for="item in groupedDropdownSections(group.items)[0].items"
               :key="`${item.name}:${item.label}`"
               class="topnav__dropdown-item"
               :class="{ 'topnav__dropdown-item--active': itemActive(item) }"
@@ -408,38 +482,44 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
               type="button"
             >
               <div class="topnav__dropdown-icon">
-              <svg v-if="item.icon === 'dashboard'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="9" height="11" rx="1"/><rect x="13" y="2" width="9" height="7" rx="1"/><rect x="2" y="15" width="9" height="7" rx="1"/><rect x="13" y="11" width="9" height="11" rx="1"/></svg>
-              <svg v-else-if="item.icon === 'layers'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
-              <svg v-else-if="item.icon === 'table'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
-              <svg v-else-if="item.icon === 'er'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="6" height="6" rx="1"/><rect x="16" y="3" width="6" height="6" rx="1"/><rect x="9" y="15" width="6" height="6" rx="1"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="12" y1="9" x2="12" y2="15"/></svg>
-              <svg v-else-if="item.icon === 'saved'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-              <svg v-else-if="item.icon === 'spark'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9 13.9 10.4 12 15l-1.9-4.6L5.5 9l4.6-1.4L12 3z"/><path d="M19 14l.95 2.05L22 17l-2.05.95L19 20l-.95-2.05L16 17l2.05-.95L19 14z"/><path d="M5 14l.95 2.05L8 17l-2.05.95L5 20l-.95-2.05L2 17l2.05-.95L5 14z"/></svg>
-              <svg v-else-if="item.icon === 'workflow'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M7 6h10"/><path d="M6.5 7.5l4 8"/><path d="M17.5 7.5l-4 8"/></svg>
-              <svg v-else-if="item.icon === 'changeset'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8z"/><polyline points="14 3 14 8 19 8"/><path d="M8 13h8"/><path d="M8 17h6"/></svg>
-              <svg v-else-if="item.icon === 'plug'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
-              <svg v-else-if="item.icon === 'settings'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-              <svg v-else-if="item.icon === 'users'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-              <svg v-else-if="item.icon === 'rbac'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-              <svg v-else-if="item.icon === 'diff'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-              <svg v-else-if="item.icon === 'backup'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              <svg v-else-if="item.icon === 'scheduler'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-              <svg v-else-if="item.icon === 'watcher'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-              <svg v-else-if="item.icon === 'audit'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-              <svg v-else-if="item.icon === 'performance'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 1 18 0"/><path d="M12 12l4-4"/><path d="M12 12l-2 5"/><path d="M7 17h10"/></svg>
-              <svg v-else-if="item.icon === 'shieldlog'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6l7-3z"/><path d="M9 12h6"/><path d="M12 9v6"/></svg>
-              <svg v-else-if="item.icon === 'health'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-              <svg v-else-if="item.icon === 'rowhistory'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h18v4H3z"/><path d="M3 10h18v4H3z"/><path d="M3 17h18v4H3z"/></svg>
-              <svg v-else-if="item.icon === 'queue'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h11"/><path d="M4 12h11"/><path d="M4 18h11"/><path d="M18 7l3 3-3 3"/><path d="M15 10h6"/></svg>
-              <svg v-else-if="item.icon === 'kafka'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2.5"/><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 7.7l3.1 2.7"/><path d="M17 7.7l-3.1 2.7"/><path d="M7 16.3l3.1-2.7"/><path d="M17 16.3l-3.1-2.7"/></svg>
+                <component :is="'svg'" v-bind="iconProps(item.icon)" v-html="iconPath(item.icon)" />
               </div>
               <div class="topnav__dropdown-info">
                 <span class="topnav__dropdown-name">{{ item.label }}</span>
                 <span class="topnav__dropdown-desc">{{ item.desc }}</span>
               </div>
-              <svg v-if="itemActive(item)" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:var(--brand);flex-shrink:0">
-                <polyline points="20 6 9 17 4 12"/>
-              </svg>
+              <svg v-if="itemActive(item)" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:var(--brand);flex-shrink:0"><polyline points="20 6 9 17 4 12"/></svg>
             </button>
+          </template>
+
+          <!-- Multi-section: columns layout -->
+          <template v-else>
+            <div class="topnav__dropdown-cols-wrap">
+              <div
+                v-for="section in groupedDropdownSections(group.items)"
+                :key="section.label || 'default'"
+                class="topnav__dropdown-col"
+              >
+                <div class="topnav__dropdown-section">{{ section.label || group.label }}</div>
+                <button
+                  v-for="item in section.items"
+                  :key="`${item.name}:${item.label}`"
+                  class="topnav__dropdown-item"
+                  :class="{ 'topnav__dropdown-item--active': itemActive(item) }"
+                  @click="navigate(item)"
+                  type="button"
+                >
+                  <div class="topnav__dropdown-icon">
+                    <component :is="'svg'" v-bind="iconProps(item.icon)" v-html="iconPath(item.icon)" />
+                  </div>
+                  <div class="topnav__dropdown-info">
+                    <span class="topnav__dropdown-name">{{ item.label }}</span>
+                    <span class="topnav__dropdown-desc">{{ item.desc }}</span>
+                  </div>
+                  <svg v-if="itemActive(item)" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:var(--brand);flex-shrink:0"><polyline points="20 6 9 17 4 12"/></svg>
+                </button>
+              </div>
+            </div>
           </template>
         </div>
       </div>
@@ -486,6 +566,12 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
             </div>
           </div>
           <div class="topnav__menu-sep"></div>
+          <button class="topnav__user-menu-item topnav__user-menu-item--nav" @click="userMenuOpen = false; router.push({ name: 'docs' })">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+            Docs
+          </button>
           <button class="topnav__user-menu-item topnav__user-menu-item--nav" @click="userMenuOpen = false; router.push({ name: 'security' })">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
@@ -509,12 +595,12 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav {
   display: flex;
   align-items: center;
-  height: 48px;
+  height: 44px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  padding: 0 14px;
-  gap: 6px;
+  padding: 0 12px;
+  gap: 4px;
   z-index: 200;
   position: relative;
 }
@@ -523,15 +609,15 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__brand {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 7px;
   flex-shrink: 0;
 }
 .topnav__logo {
-  width: 30px;
-  height: 30px;
+  width: 26px;
+  height: 26px;
   background: var(--brand-dim);
   border: 1px solid var(--brand-ring);
-  border-radius: 8px;
+  border-radius: 7px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -544,7 +630,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   line-height: 1.2;
 }
 .topnav__brand-name {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-secondary);
   font-weight: 400;
 }
@@ -553,17 +639,17 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   font-weight: 700;
 }
 .topnav__brand-version {
-  font-size: 9.5px;
+  font-size: 9px;
   color: var(--text-muted);
   letter-spacing: 0.3px;
 }
 
 .topnav__divider {
   width: 1px;
-  height: 20px;
+  height: 16px;
   background: var(--border);
   flex-shrink: 0;
-  margin: 0 4px;
+  margin: 0 2px;
 }
 
 /* ── Connections button ── */
@@ -574,16 +660,16 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__conn-btn {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 5px 10px;
+  gap: 6px;
+  padding: 4px 8px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--bg-elevated);
   cursor: pointer;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text-muted);
   white-space: nowrap;
-  max-width: 240px;
+  max-width: 200px;
   transition: border-color 0.12s, background 0.12s, color 0.12s;
 }
 .topnav__conn-btn:hover,
@@ -614,14 +700,15 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   max-width: 120px;
 }
 .topnav__conn-host {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 80px;
+  max-width: 70px;
 }
 .topnav__conn-panel {
   max-width: calc(100vw - 16px);
+  width: min(300px, calc(100vw - 16px));
 }
 
 /* ── Nav ── */
@@ -637,10 +724,10 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__link {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  border-radius: 6px;
-  font-size: 13px;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  font-size: 12.5px;
   font-weight: 500;
   color: var(--text-muted);
   text-decoration: none;
@@ -657,12 +744,12 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__menu-trigger {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: 5px;
+  padding: 4px 8px;
   border: none;
-  border-radius: 6px;
+  border-radius: 5px;
   background: transparent;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
   color: var(--text-muted);
   cursor: pointer;
@@ -691,9 +778,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 
 /* Dropdown panel */
 .topnav__dropdown {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
+  position: fixed;
   min-width: 260px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
@@ -702,6 +787,29 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   z-index: 9999;
   overflow: hidden;
   padding: 6px;
+}
+
+/* Multi-column mega-menu variant */
+.topnav__dropdown--cols {
+  min-width: 0;
+  padding: 0;
+}
+
+.topnav__dropdown-cols-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+}
+
+.topnav__dropdown-col {
+  flex: 1;
+  min-width: 190px;
+  max-width: 240px;
+  padding: 6px;
+}
+
+.topnav__dropdown-col + .topnav__dropdown-col {
+  border-left: 1px solid var(--border);
 }
 
 .topnav__dropdown-label {
@@ -782,8 +890,8 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__actions {
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin-left: 8px;
+  gap: 2px;
+  margin-left: 4px;
   flex-shrink: 0;
 }
 
@@ -930,5 +1038,179 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__user-menu-item--logout:hover { 
   background: var(--bg-surface); 
   color: var(--danger); 
+}
+
+@media (max-width: 960px) {
+  .topnav {
+    gap: 6px;
+    padding-inline: 8px;
+  }
+
+  .topnav__brand-text {
+    display: none;
+  }
+
+  .topnav__divider {
+    margin-inline: 2px;
+  }
+
+  .topnav__conn-btn {
+    max-width: 220px;
+  }
+
+  .topnav__nav {
+    overflow-x: auto;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .topnav__nav::-webkit-scrollbar {
+    height: 3px;
+  }
+}
+
+@media (max-width: 760px) {
+  .topnav {
+    height: auto;
+    min-height: var(--topbar-h);
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 6px 8px;
+  }
+
+  .topnav__logo {
+    width: 28px;
+    height: 28px;
+  }
+
+  .topnav__divider {
+    display: none;
+  }
+
+  .topnav__conn-wrap {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .topnav__conn-btn {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    height: 32px;
+  }
+
+  .topnav__conn-name {
+    max-width: none;
+    min-width: 0;
+  }
+
+  .topnav__conn-host {
+    display: none;
+  }
+
+  .topnav__actions {
+    margin-left: auto;
+  }
+
+  .topnav__kbd,
+  .topnav__username {
+    display: none;
+  }
+
+  .topnav__user-btn {
+    width: 34px;
+    height: 32px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .topnav__nav {
+    order: 10;
+    flex: 1 0 100%;
+    width: 100%;
+    padding-top: 4px;
+    gap: 4px;
+  }
+
+  .topnav__link,
+  .topnav__menu-trigger {
+    height: 32px;
+    padding: 0 10px;
+    border-radius: 8px;
+  }
+
+  .topnav__dropdown {
+    max-width: calc(100vw - 16px);
+    max-height: min(68vh, 520px);
+    overflow-y: auto;
+    border-radius: 12px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .topnav__dropdown-cols-wrap {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .topnav__dropdown-col + .topnav__dropdown-col {
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+
+  .topnav__dropdown-item {
+    align-items: flex-start;
+    padding: 10px;
+  }
+
+  .topnav__dropdown-desc {
+    display: -webkit-box;
+    overflow: hidden;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .topnav__user-menu {
+    position: fixed;
+    top: 48px;
+    right: 8px;
+    width: min(260px, calc(100vw - 16px));
+    min-width: 0;
+    max-height: calc(100dvh - 60px);
+    overflow-y: auto;
+  }
+}
+
+@media (max-width: 460px) {
+  .topnav {
+    padding-inline: 6px;
+  }
+
+  .topnav__conn-badge {
+    display: none;
+  }
+
+  .topnav__conn-btn {
+    padding-inline: 8px;
+  }
+
+  .topnav__actions {
+    gap: 2px;
+  }
+
+  .topnav__action-btn--icon {
+    width: 30px;
+    height: 30px;
+  }
+
+  .topnav__link,
+  .topnav__menu-trigger {
+    font-size: 12px;
+    padding-inline: 8px;
+  }
+
+  .topnav__dropdown {
+    max-width: calc(100vw - 12px);
+  }
 }
 </style>

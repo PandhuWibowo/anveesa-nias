@@ -22,8 +22,8 @@ type Config struct {
 	TLSKeyFile  string
 
 	// Database
-	DBDriver      string // "postgres" | "mysql"
-	DBURL         string // PostgreSQL/MySQL: connection string
+	DBDriver      string // "sqlite" | "postgres" | "mysql"
+	DBURL         string // SQLite file path or PostgreSQL/MySQL connection string
 	DBSSLMode     string // PostgreSQL SSL mode: disable, require, verify-ca, verify-full
 	DBSSLRootCert string // Path to SSL root certificate (for RDS)
 	BackupEnabled bool
@@ -76,9 +76,12 @@ func Load() (*Config, error) {
 	cfg.TLSCertFile = getEnv("TLS_CERT_FILE", "")
 	cfg.TLSKeyFile = getEnv("TLS_KEY_FILE", "")
 
-	// Database - PostgreSQL/MySQL only
+	// Database - SQLite/PostgreSQL/MySQL
 	cfg.DBDriver = strings.ToLower(getEnv("DB_DRIVER", "postgres"))
 	cfg.DBURL = getEnv("DATABASE_URL", "")
+	if cfg.DBDriver == "sqlite" && cfg.DBURL == "" {
+		cfg.DBURL = "nias.db"
+	}
 	cfg.DBSSLMode = getEnv("DB_SSL_MODE", "disable")
 	cfg.DBSSLRootCert = getEnv("DB_SSL_ROOT_CERT", "")
 	cfg.BackupEnabled = getEnvBool("BACKUP_ENABLED", false)
@@ -188,10 +191,10 @@ func (c *Config) Validate() error {
 	if c.Port == "" {
 		return fmt.Errorf("PORT is required")
 	}
-	if c.DBDriver != "postgres" && c.DBDriver != "mysql" {
-		return fmt.Errorf("unsupported DB_DRIVER: %s (must be 'postgres' or 'mysql')", c.DBDriver)
+	if c.DBDriver != "sqlite" && c.DBDriver != "postgres" && c.DBDriver != "mysql" {
+		return fmt.Errorf("unsupported DB_DRIVER: %s (must be 'sqlite', 'postgres', or 'mysql')", c.DBDriver)
 	}
-	if (c.DBDriver == "postgres" || c.DBDriver == "mysql") && c.DBURL == "" {
+	if c.DBURL == "" {
 		return fmt.Errorf("DATABASE_URL is required for %s", c.DBDriver)
 	}
 	if c.IsProduction() && len(c.JWTSecret) < 32 {

@@ -14,6 +14,7 @@ import (
 	"github.com/anveesa/nias/config"
 	"github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
+	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -27,6 +28,20 @@ func Init(cfg *config.Config) error {
 	dbDriver = cfg.DBDriver
 
 	switch cfg.DBDriver {
+	case "sqlite":
+		db, err = sql.Open("sqlite3", cfg.DBURL)
+		if err != nil {
+			return fmt.Errorf("open sqlite: %w", err)
+		}
+
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+		db.SetConnMaxLifetime(0)
+
+		if err := db.Ping(); err != nil {
+			return fmt.Errorf("ping sqlite: %w", err)
+		}
+
 	case "postgres":
 		// PostgreSQL (including AWS RDS PostgreSQL)
 		db, err = sql.Open("postgres", cfg.DBURL)
@@ -921,6 +936,20 @@ func migrate() error {
 		`ALTER TABLE query_approval ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE connections ADD COLUMN disconnected INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE analytics_dashboards ADD COLUMN connection_id INTEGER NOT NULL DEFAULT 0`,
+		`CREATE TABLE IF NOT EXISTS search_app_policies (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			conn_id         INTEGER NOT NULL,
+			name            TEXT NOT NULL,
+			type            TEXT NOT NULL DEFAULT 'size_alert',
+			threshold_value REAL NOT NULL DEFAULT 0,
+			threshold_unit  TEXT NOT NULL DEFAULT 'GB',
+			action          TEXT NOT NULL DEFAULT 'alert',
+			enabled         INTEGER NOT NULL DEFAULT 1,
+			last_run_at     DATETIME,
+			last_result     TEXT DEFAULT '',
+			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_search_app_policies_conn ON search_app_policies(conn_id)`,
 	}
 	for _, s := range stmts {
 		convertedSQL := convertSQL(s)

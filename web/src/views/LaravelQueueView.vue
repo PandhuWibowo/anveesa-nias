@@ -51,6 +51,9 @@ const selectedFailedJobId = ref<number | null>(null)
 const activeState = ref<'all' | 'ready' | 'delayed' | 'reserved' | 'failed'>('all')
 const detailTab = ref<'summary' | 'main' | 'payload' | 'command' | 'exception'>('summary')
 const insightTab = ref<'health' | 'timeline' | 'groups' | 'patterns' | 'quarantine' | 'controls' | 'settings' | 'audit'>('health')
+const sidebarCollapsed = ref(false)
+const insightsCollapsed = ref(false)
+const detailFullscreenOpen = ref(false)
 const failedGroupBy = ref<'job' | 'exception' | 'queue' | 'date'>('job')
 const search = ref('')
 const retryAfter = ref(90)
@@ -72,6 +75,7 @@ const sandboxQueue = ref('debug')
 const businessFieldsInput = ref('tenant_id,user_id,order_id,invoice_id,email,amount')
 const quarantine = ref<LaravelQueueQuarantineItem[]>([])
 const queueAudit = ref<LaravelQueueAuditItem[]>([])
+const expandedAuditEntryId = ref<number | null>(null)
 const opsSettingsLoaded = ref(false)
 const savingOpsSettings = ref(false)
 const featureFlags = ref<LaravelQueueFeatureFlags>({
@@ -119,12 +123,16 @@ interface MainDataResult {
 
 const redisDbIndexes = Array.from({ length: 16 }, (_, index) => index)
 const redisConnections = computed(() => connections.value.filter((c) => c.driver === 'redis'))
-const sqlConnections = computed(() => connections.value.filter((c) => c.driver !== 'redis' && c.driver !== 'kafka'))
+function isNonSqlDriver(driver: string) {
+  return driver === 'redis' || driver === 'memcache' || driver === 'kafka' || driver === 'elasticsearch' || driver === 'opensearch' || driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs'
+}
+
+const sqlConnections = computed(() => connections.value.filter((c) => !isNonSqlDriver(c.driver)))
 const activeConn = computed(() =>
   props.activeConnId != null ? connections.value.find((c) => c.id === props.activeConnId) ?? null : null,
 )
 const isRedis = computed(() => activeConn.value?.driver === 'redis')
-const isSql = computed(() => activeConn.value != null && activeConn.value.driver !== 'redis' && activeConn.value.driver !== 'kafka')
+const isSql = computed(() => activeConn.value != null && !isNonSqlDriver(activeConn.value.driver))
 // When in SQL-only mode, the user picks a Redis conn just for the retry-push step
 const retryRedisConnId = ref<number | null>(null)
 const filteredJobs = computed(() => {
@@ -157,6 +165,15 @@ const filteredFailedJobs = computed(() => {
 })
 const selectedFailedJob = computed(() => failedJobs.value.find(job => job.id === selectedFailedJobId.value) ?? filteredFailedJobs.value[0] ?? null)
 const selectedSummary = computed(() => queues.value.find(queue => queue.name === selectedQueue.value) ?? null)
+const detailFullscreenTitle = computed(() => {
+  if (activeState.value === 'failed' && selectedFailedJob.value) {
+    return selectedFailedJob.value.payload?.displayName || selectedFailedJob.value.payload?.job || 'Failed job'
+  }
+  if (selectedJob.value) {
+    return selectedJob.value.display_name || selectedJob.value.command_name || 'Laravel job'
+  }
+  return 'Job detail'
+})
 const stuckJobs = computed(() => jobs.value.filter(isStuckJob))
 const selectedJobs = computed(() => jobs.value.filter(job => selectedJobIds.value.has(job.id)))
 const selectedFailedJobs = computed(() => failedJobs.value.filter(job => selectedFailedJobIds.value.has(job.id)))
@@ -483,6 +500,21 @@ function formatDate(raw?: string) {
   if (!raw) return '-'
   const date = new Date(raw)
   return Number.isNaN(date.getTime()) ? raw : date.toLocaleString()
+}
+
+function formatAuditDetails(entry: LaravelQueueAuditItem) {
+  const details = entry.details && Object.keys(entry.details).length ? entry.details : null
+  return JSON.stringify({
+    action: entry.action,
+    status: entry.status,
+    queue: entry.queue || undefined,
+    target_queue: entry.target_queue || undefined,
+    failed_job_id: entry.failed_job_id || undefined,
+    job_uuid: entry.job_uuid || undefined,
+    payload_edited: entry.payload_edited || undefined,
+    error: entry.error || undefined,
+    details: details || undefined,
+  }, null, 2)
 }
 
 function formatPayload(job: LaravelQueueJob | null) {
@@ -1295,7 +1327,7 @@ function errorMessage(err: unknown, fallback: string) {
 </script>
 
 <template>
-  <div class="lq-view">
+  <div class="lq-view" :class="{ 'is-sidebar-collapsed': sidebarCollapsed }">
     <section v-if="!isRedis && !isSql" class="page-panel lq-empty">
       <div class="lq-empty__title">No connection selected</div>
       <div class="lq-empty__hint">Select a Redis connection to monitor queues, or a SQL database connection to browse failed jobs.</div>
@@ -1323,8 +1355,23 @@ function errorMessage(err: unknown, fallback: string) {
     <template v-else-if="isRedis || isSql">
       <aside class="lq-sidebar">
         <div class="lq-panel-header">
-          <span>{{ activeConn?.name }}</span>
-          <span class="lq-driver">{{ (({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD' } as Record<string, string>)[activeConn?.driver ?? ''] ?? (activeConn?.driver ?? 'DB').slice(0,2).toUpperCase()) }}</span>
+          <span class="lq-sidebar-title">{{ activeConn?.name }}</span>
+          <div class="lq-sidebar-head-actions">
+            <span class="lq-driver">{{ (({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD' } as Record<string, string>)[activeConn?.driver ?? ''] ?? (activeConn?.driver ?? 'DB').slice(0,2).toUpperCase()) }}</span>
+            <button class="lq-sidebar-toggle" :title="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'" @click="sidebarCollapsed = !sidebarCollapsed">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="4" width="18" height="16" rx="2" />
+                <path d="M9 4v16" />
+                <path d="M6 8h.01M6 12h.01M6 16h.01" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="lq-sidebar-rail">
+          <button class="lq-sidebar-rail-btn" title="Expand sidebar" @click="sidebarCollapsed = false">
+            <span>{{ (({ postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD' } as Record<string, string>)[activeConn?.driver ?? ''] ?? (activeConn?.driver ?? 'DB').slice(0,2).toUpperCase()) }}</span>
+          </button>
         </div>
 
         <div class="lq-controls">
@@ -1441,18 +1488,28 @@ function errorMessage(err: unknown, fallback: string) {
           <span v-if="!horizon?.detected" class="lq-health">Horizon <strong>not detected</strong></span>
         </div>
 
-        <section class="lq-insights">
+        <section class="lq-insights" :class="{ 'is-collapsed': insightsCollapsed }">
           <div class="lq-insight-tabs">
-            <button class="lq-insight-tab" :class="{ active: insightTab === 'health' }" @click="insightTab = 'health'">Health</button>
-            <button class="lq-insight-tab" :class="{ active: insightTab === 'timeline' }" @click="insightTab = 'timeline'">Timeline</button>
-            <button class="lq-insight-tab" :class="{ active: insightTab === 'groups' }" @click="insightTab = 'groups'">Failed Groups</button>
-            <button class="lq-insight-tab" :class="{ active: insightTab === 'patterns' }" @click="insightTab = 'patterns'">Patterns</button>
-            <button class="lq-insight-tab" :class="{ active: insightTab === 'quarantine' }" @click="insightTab = 'quarantine'">Quarantine</button>
-            <button class="lq-insight-tab" :class="{ active: insightTab === 'controls' }" @click="insightTab = 'controls'">Controls</button>
-            <button class="lq-insight-tab" :class="{ active: insightTab === 'settings' }" @click="insightTab = 'settings'">Settings</button>
-            <button class="lq-insight-tab" :class="{ active: insightTab === 'audit' }" @click="insightTab = 'audit'; loadQueueAudit()">Audit</button>
+            <div class="lq-insight-tab-list">
+              <button class="lq-insight-tab" :class="{ active: insightTab === 'health' }" @click="insightTab = 'health'; insightsCollapsed = false">Health</button>
+              <button class="lq-insight-tab" :class="{ active: insightTab === 'timeline' }" @click="insightTab = 'timeline'; insightsCollapsed = false">Timeline</button>
+              <button class="lq-insight-tab" :class="{ active: insightTab === 'groups' }" @click="insightTab = 'groups'; insightsCollapsed = false">Failed Groups</button>
+              <button class="lq-insight-tab" :class="{ active: insightTab === 'patterns' }" @click="insightTab = 'patterns'; insightsCollapsed = false">Patterns</button>
+              <button class="lq-insight-tab" :class="{ active: insightTab === 'quarantine' }" @click="insightTab = 'quarantine'; insightsCollapsed = false">Quarantine</button>
+              <button class="lq-insight-tab" :class="{ active: insightTab === 'controls' }" @click="insightTab = 'controls'; insightsCollapsed = false">Controls</button>
+              <button class="lq-insight-tab" :class="{ active: insightTab === 'settings' }" @click="insightTab = 'settings'; insightsCollapsed = false">Settings</button>
+              <button class="lq-insight-tab" :class="{ active: insightTab === 'audit' }" @click="insightTab = 'audit'; insightsCollapsed = false; loadQueueAudit()">Audit</button>
+            </div>
+            <button class="lq-insights-toggle" :title="insightsCollapsed ? 'Show insights' : 'Hide insights'" @click="insightsCollapsed = !insightsCollapsed">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path :d="insightsCollapsed ? 'M6 9l6 6 6-6' : 'M18 15l-6-6-6 6'" />
+              </svg>
+              <span>{{ insightsCollapsed ? 'Show' : 'Hide' }}</span>
+            </button>
           </div>
 
+          <Transition name="lq-insights-slide">
+            <div v-show="!insightsCollapsed" class="lq-insight-body">
           <div v-if="insightTab === 'health'" class="lq-insight-grid">
             <div v-if="queueAlerts.length" class="lq-insight is-warning">
               <div class="lq-insight__title">Notifications</div>
@@ -1573,15 +1630,26 @@ function errorMessage(err: unknown, fallback: string) {
 
           <div v-if="insightTab === 'audit'" class="lq-audit-list">
             <div v-if="queueAudit.length === 0" class="lq-muted">No Laravel Queue audit entries yet.</div>
-            <div v-for="entry in queueAudit" :key="entry.id" class="lq-audit-row">
-              <span class="lq-audit-action">{{ entry.action }}</span>
-              <span>{{ entry.status }}</span>
-              <span>{{ entry.queue || entry.target_queue || '-' }}</span>
-              <span>{{ entry.failed_job_id || entry.job_uuid || '-' }}</span>
-              <span>{{ entry.username || `user #${entry.user_id}` }}</span>
-              <span>{{ formatDate(entry.created_at) }}</span>
+            <div v-for="entry in queueAudit" :key="entry.id" class="lq-audit-item" :class="{ 'is-open': expandedAuditEntryId === entry.id }">
+              <button class="lq-audit-row" @click="expandedAuditEntryId = expandedAuditEntryId === entry.id ? null : entry.id">
+                <span class="lq-audit-caret">{{ expandedAuditEntryId === entry.id ? '-' : '+' }}</span>
+                <span class="lq-audit-action">{{ entry.action }}</span>
+                <span class="lq-audit-status" :data-status="entry.status">{{ entry.status }}</span>
+                <span>{{ entry.queue || entry.target_queue || '-' }}</span>
+                <span>{{ entry.failed_job_id || entry.job_uuid || '-' }}</span>
+                <span>{{ entry.username || `user #${entry.user_id}` }}</span>
+                <span>{{ formatDate(entry.created_at) }}</span>
+              </button>
+              <Transition name="lq-audit-slide">
+                <div v-show="expandedAuditEntryId === entry.id" class="lq-audit-detail">
+                  <div v-if="entry.error" class="lq-audit-error">{{ entry.error }}</div>
+                  <pre>{{ formatAuditDetails(entry) }}</pre>
+                </div>
+              </Transition>
             </div>
           </div>
+            </div>
+          </Transition>
         </section>
 
         <div class="lq-filterbar">
@@ -1727,6 +1795,11 @@ function errorMessage(err: unknown, fallback: string) {
                 <button class="lq-detail-tab" :class="{ active: detailTab === 'main' }" @click="detailTab = 'main'">Main Data</button>
                 <button class="lq-detail-tab" :class="{ active: detailTab === 'payload' }" @click="detailTab = 'payload'">Payload</button>
                 <button class="lq-detail-tab" :class="{ active: detailTab === 'command' }" @click="detailTab = 'command'">Command</button>
+                <button class="lq-detail-fullscreen" title="Open current tab fullscreen" @click="detailFullscreenOpen = true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />
+                  </svg>
+                </button>
               </div>
               <div v-if="detailTab === 'summary'" class="lq-props">
                 <span>Queue</span><code>{{ selectedJob.queue }}</code>
@@ -1775,6 +1848,11 @@ function errorMessage(err: unknown, fallback: string) {
                 <button class="lq-detail-tab" :class="{ active: detailTab === 'payload' }" @click="detailTab = 'payload'">Payload</button>
                 <button class="lq-detail-tab" :class="{ active: detailTab === 'command' }" @click="detailTab = 'command'">Command</button>
                 <button class="lq-detail-tab" :class="{ active: detailTab === 'exception' }" @click="detailTab = 'exception'">Exception</button>
+                <button class="lq-detail-fullscreen" title="Open current tab fullscreen" @click="detailFullscreenOpen = true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />
+                  </svg>
+                </button>
               </div>
               <div v-if="detailTab === 'summary'" class="lq-props">
                 <span>ID</span><code>{{ selectedFailedJob.id }}</code>
@@ -1799,6 +1877,69 @@ function errorMessage(err: unknown, fallback: string) {
         </div>
       </main>
     </template>
+
+    <Teleport to="body">
+      <div v-if="detailFullscreenOpen" class="lq-fullscreen-overlay" @click.self="detailFullscreenOpen = false">
+        <div class="lq-fullscreen-panel">
+          <div class="lq-fullscreen-head">
+            <div>
+              <div class="lq-fullscreen-title">{{ detailFullscreenTitle }}</div>
+              <div class="lq-fullscreen-sub">{{ detailTab === 'main' ? 'Main Data' : detailTab === 'payload' ? 'Payload' : detailTab === 'command' ? 'Command' : detailTab === 'exception' ? 'Exception' : 'Summary' }}</div>
+            </div>
+            <div class="lq-fullscreen-actions">
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="detailFullscreenOpen = false">Close</button>
+            </div>
+          </div>
+
+          <div class="lq-fullscreen-tabs">
+            <button class="lq-detail-tab" :class="{ active: detailTab === 'summary' }" @click="detailTab = 'summary'">Summary</button>
+            <button class="lq-detail-tab" :class="{ active: detailTab === 'main' }" @click="detailTab = 'main'">Main Data</button>
+            <button class="lq-detail-tab" :class="{ active: detailTab === 'payload' }" @click="detailTab = 'payload'">Payload</button>
+            <button class="lq-detail-tab" :class="{ active: detailTab === 'command' }" @click="detailTab = 'command'">Command</button>
+            <button v-if="activeState === 'failed'" class="lq-detail-tab" :class="{ active: detailTab === 'exception' }" @click="detailTab = 'exception'">Exception</button>
+          </div>
+
+          <div class="lq-fullscreen-body">
+            <template v-if="activeState !== 'failed' && selectedJob">
+              <div v-if="detailTab === 'summary'" class="lq-props lq-props--fullscreen">
+                <span>Queue</span><code>{{ selectedJob.queue }}</code>
+                <span>Handler</span><code>{{ selectedJob.job || '-' }}</code>
+                <span>Command</span><code>{{ selectedJob.command_name || '-' }}</code>
+                <span>Attempts</span><code>{{ selectedJob.attempts }}</code>
+                <span>Max Tries</span><code>{{ selectedJob.max_tries || '-' }}</code>
+                <span>Timeout</span><code>{{ selectedJob.timeout ? `${selectedJob.timeout}s` : '-' }}</code>
+                <span>Backoff</span><code>{{ selectedJob.backoff == null ? '-' : JSON.stringify(selectedJob.backoff) }}</code>
+                <span>Available</span><code>{{ formatDate(selectedJob.available_at) }}</code>
+                <span>Age</span><code>{{ selectedJob.score ? ageLabel(selectedJob.score) : '-' }}</code>
+              </div>
+              <pre v-if="detailTab === 'main'" class="lq-payload lq-payload--fullscreen">{{ mainDataForJob(selectedJob) }}</pre>
+              <pre v-if="detailTab === 'payload'" class="lq-payload lq-payload--fullscreen">{{ formatPayload(selectedJob) }}</pre>
+              <pre v-if="detailTab === 'command'" class="lq-payload lq-payload--fullscreen">{{ commandData(selectedJob) || 'No command data found.' }}</pre>
+            </template>
+
+            <template v-else-if="activeState === 'failed' && selectedFailedJob">
+              <div v-if="detailTab === 'summary'" class="lq-props lq-props--fullscreen">
+                <span>ID</span><code>{{ selectedFailedJob.id }}</code>
+                <span>Connection</span><code>{{ selectedFailedJob.connection }}</code>
+                <span>Queue</span><code>{{ selectedFailedJob.queue }}</code>
+                <span>Failed At</span><code>{{ formatDate(selectedFailedJob.failed_at) }}</code>
+              </div>
+              <pre v-if="detailTab === 'main'" class="lq-payload lq-payload--fullscreen">{{ mainDataForFailedJob(selectedFailedJob) }}</pre>
+              <div v-if="detailTab === 'payload'" class="lq-editor-block lq-editor-block--fullscreen">
+                <textarea v-model="editedFailedPayload" class="base-input lq-payload-editor lq-payload-editor--fullscreen" />
+                <div class="lq-editor-actions lq-editor-actions--fullscreen">
+                  <button class="base-btn base-btn--ghost base-btn--sm" @click="editedFailedPayload = formatFailedPayload(selectedFailedJob)">Reset</button>
+                  <button class="base-btn base-btn--primary base-btn--sm" :disabled="!canAction('editedReplay') || (isSql && !retryRedisConnId)" @click="retrySelectedFailedJob(selectedFailedJob, false)">Retry Edited</button>
+                  <button class="base-btn base-btn--primary base-btn--sm" :disabled="!canAction('editedReplay') || !canAction('delete') || (isSql && !retryRedisConnId)" @click="retrySelectedFailedJob(selectedFailedJob, true)">Retry Edited & Delete</button>
+                </div>
+              </div>
+              <pre v-if="detailTab === 'command'" class="lq-payload lq-payload--fullscreen">{{ failedCommandData(selectedFailedJob) || 'No command data found.' }}</pre>
+              <pre v-if="detailTab === 'exception'" class="lq-exception lq-exception--fullscreen">{{ selectedFailedJob.exception }}</pre>
+            </template>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -1810,6 +1951,11 @@ function errorMessage(err: unknown, fallback: string) {
   overflow: hidden;
   background: var(--bg-body);
   border-top: 1px solid var(--border);
+  transition: grid-template-columns 0.22s var(--ease);
+}
+
+.lq-view.is-sidebar-collapsed {
+  grid-template-columns: 48px minmax(0, 1fr);
 }
 
 .lq-empty {
@@ -1846,17 +1992,135 @@ function errorMessage(err: unknown, fallback: string) {
   background: var(--bg-surface);
   overflow: hidden;
   box-shadow: 2px 0 12px rgba(0,0,0,.03);
+  transition: border-color 0.18s var(--ease), box-shadow 0.18s var(--ease);
 }
 
 .lq-panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
+  box-sizing: border-box;
+  height: 56px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--border);
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 600;
+  transition: padding 0.22s var(--ease);
+}
+
+.lq-sidebar-title {
+  min-width: 0;
+  overflow: hidden;
+  opacity: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: opacity 0.16s var(--ease), max-width 0.22s var(--ease);
+}
+
+.lq-sidebar-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.lq-sidebar-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.16s var(--ease), color 0.16s var(--ease), transform 0.22s var(--ease);
+}
+
+.lq-sidebar-toggle svg {
+  width: 15px;
+  height: 15px;
+}
+
+.lq-sidebar-toggle:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.is-sidebar-collapsed .lq-panel-header {
+  justify-content: center;
+  padding: 12px 6px;
+}
+
+.is-sidebar-collapsed .lq-sidebar-title {
+  max-width: 0;
+  opacity: 0;
+}
+
+.is-sidebar-collapsed .lq-driver {
+  width: 0;
+  margin: 0;
+  opacity: 0;
+  overflow: hidden;
+}
+
+.lq-sidebar-rail {
+  display: flex;
+  max-height: 0;
+  min-height: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  overflow: hidden;
+  padding: 0 6px;
+  opacity: 0;
+  transform: translateX(-6px);
+  transition: max-height 0.22s var(--ease), opacity 0.18s var(--ease), padding 0.22s var(--ease), transform 0.22s var(--ease);
+}
+
+.is-sidebar-collapsed .lq-sidebar-rail {
+  flex: 1;
+  max-height: 360px;
+  padding: 12px 6px;
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.lq-sidebar-rail-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.lq-sidebar-rail-btn:hover {
+  background: var(--bg-hover);
+}
+
+.lq-controls,
+.lq-queue-list {
+  transition: max-height 0.24s var(--ease), opacity 0.18s var(--ease), padding 0.22s var(--ease), transform 0.22s var(--ease), border-color 0.18s var(--ease);
+}
+
+.is-sidebar-collapsed .lq-controls,
+.is-sidebar-collapsed .lq-queue-list {
+  max-height: 0;
+  overflow: hidden;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-color: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-8px);
 }
 
 .lq-driver {
@@ -1875,6 +2139,7 @@ function errorMessage(err: unknown, fallback: string) {
 .lq-controls {
   display: grid;
   gap: 10px;
+  max-height: 360px;
   padding: 12px;
   border-bottom: 1px solid var(--border);
 }
@@ -1890,6 +2155,7 @@ function errorMessage(err: unknown, fallback: string) {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  max-height: 100%;
   flex: 1;
   overflow: auto;
   padding: 4px 0;
@@ -1940,7 +2206,8 @@ function errorMessage(err: unknown, fallback: string) {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  min-height: 48px;
+  box-sizing: border-box;
+  height: 56px;
   padding: 12px 18px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-surface);
@@ -2021,14 +2288,35 @@ function errorMessage(err: unknown, fallback: string) {
   background: var(--bg-body);
 }
 
+.lq-insights.is-collapsed {
+  gap: 0;
+  padding-block: 6px;
+}
+
 .lq-insight-tabs {
   display: flex;
-  gap: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 32px;
   border-bottom: 1px solid var(--border);
 }
 
+.lq-insights.is-collapsed .lq-insight-tabs {
+  border-bottom: 0;
+}
+
+.lq-insight-tab-list {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 32px;
+  overflow-x: auto;
+}
+
 .lq-insight-tab {
-  height: 28px;
+  height: 32px;
+  flex-shrink: 0;
   padding: 0 10px;
   border: 0;
   border-bottom: 2px solid transparent;
@@ -2041,6 +2329,53 @@ function errorMessage(err: unknown, fallback: string) {
 .lq-insight-tab.active {
   border-bottom-color: var(--brand);
   color: var(--text-primary);
+}
+
+.lq-insights-toggle {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  gap: 6px;
+  height: 26px;
+  flex-shrink: 0;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.lq-insights-toggle:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.lq-insights-toggle svg {
+  width: 13px;
+  height: 13px;
+}
+
+.lq-insight-body {
+  overflow: hidden;
+}
+
+.lq-insights-slide-enter-active,
+.lq-insights-slide-leave-active {
+  max-height: 520px;
+  overflow: hidden;
+  opacity: 1;
+  transform: translateY(0);
+  transition: max-height 0.24s var(--ease), opacity 0.18s var(--ease), transform 0.22s var(--ease);
+}
+
+.lq-insights-slide-enter-from,
+.lq-insights-slide-leave-to {
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-6px);
 }
 
 .lq-insight-grid {
@@ -2226,31 +2561,115 @@ function errorMessage(err: unknown, fallback: string) {
 .lq-audit-list {
   display: grid;
   gap: 0;
+  max-height: min(46vh, 420px);
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
   background: var(--bg-surface);
 }
 
-.lq-audit-row {
-  display: grid;
-  grid-template-columns: 120px 80px 1fr 110px 120px 150px;
-  gap: 10px;
-  align-items: center;
-  padding: 7px 10px;
+.lq-audit-item {
   border-bottom: 1px solid var(--border);
-  color: var(--text-muted);
-  font-size: 11.5px;
 }
 
-.lq-audit-row:last-child {
+.lq-audit-item:last-child {
   border-bottom: 0;
+}
+
+.lq-audit-row {
+  display: grid;
+  grid-template-columns: 24px 120px 80px minmax(120px, 1fr) 110px 120px 150px;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lq-audit-row:hover,
+.lq-audit-item.is-open .lq-audit-row {
+  background: var(--bg-hover);
+}
+
+.lq-audit-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .lq-audit-action {
   color: var(--text-primary);
   font-family: var(--mono);
   font-weight: 700;
+}
+
+.lq-audit-status {
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.lq-audit-status[data-status="failed"],
+.lq-audit-status[data-status="blocked"] {
+  color: var(--danger);
+}
+
+.lq-audit-status[data-status="success"] {
+  color: var(--success);
+}
+
+.lq-audit-detail {
+  padding: 0 10px 10px 44px;
+}
+
+.lq-audit-slide-enter-active,
+.lq-audit-slide-leave-active {
+  max-height: 280px;
+  overflow: hidden;
+  opacity: 1;
+  transition: max-height 0.22s var(--ease), opacity 0.16s var(--ease), padding 0.22s var(--ease);
+}
+
+.lq-audit-slide-enter-from,
+.lq-audit-slide-leave-to {
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.lq-audit-detail pre {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-body);
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.lq-audit-error {
+  margin-bottom: 8px;
+  color: var(--danger);
+  font-size: 12px;
 }
 
 .lq-filterbar {
@@ -2495,6 +2914,30 @@ function errorMessage(err: unknown, fallback: string) {
   color: var(--text-primary);
 }
 
+.lq-detail-fullscreen {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  margin-left: auto;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.lq-detail-fullscreen:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.lq-detail-fullscreen svg {
+  width: 15px;
+  height: 15px;
+}
+
 .lq-detail__title {
   color: var(--text-primary);
   font-size: 13px;
@@ -2577,9 +3020,124 @@ function errorMessage(err: unknown, fallback: string) {
   gap: 8px;
 }
 
+.lq-editor-actions--fullscreen {
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.lq-editor-actions--fullscreen .base-btn {
+  width: auto;
+  min-width: 0;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.lq-fullscreen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(2px);
+}
+
+.lq-fullscreen-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(1180px, 96vw);
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.5);
+}
+
+.lq-fullscreen-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.lq-fullscreen-title {
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.lq-fullscreen-sub {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.lq-fullscreen-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.lq-fullscreen-tabs {
+  display: flex;
+  flex-shrink: 0;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+}
+
+.lq-fullscreen-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+
+.lq-props--fullscreen {
+  max-width: 900px;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 14px;
+}
+
+.lq-payload--fullscreen,
+.lq-exception--fullscreen {
+  min-height: 100%;
+  max-height: none;
+  margin: 0;
+}
+
+.lq-editor-block--fullscreen {
+  min-height: 100%;
+  height: auto;
+  margin: 0;
+  align-content: start;
+}
+
+.lq-payload-editor--fullscreen {
+  min-height: min(62vh, 620px);
+  flex: 0 0 auto;
+  resize: none;
+}
+
 @media (max-width: 1000px) {
-  .lq-view,
+  .lq-view {
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
+  }
+
   .lq-content {
+    grid-template-columns: 1fr;
+  }
+
+  .lq-view.is-sidebar-collapsed {
     grid-template-columns: 1fr;
   }
 
@@ -2592,15 +3150,235 @@ function errorMessage(err: unknown, fallback: string) {
   }
 
   .lq-sidebar {
-    min-height: 320px;
+    flex: 0 0 auto;
+    min-height: 0;
+    max-height: min(48vh, 420px);
     border-right: 0;
     border-bottom: 1px solid var(--border);
+  }
+
+  .lq-view.is-sidebar-collapsed .lq-sidebar {
+    min-height: 48px;
+  }
+
+  .lq-view.is-sidebar-collapsed .lq-sidebar-rail {
+    display: none;
+  }
+
+  .lq-panel-header,
+  .lq-toolbar {
+    height: auto;
+    min-height: 56px;
+  }
+
+  .lq-main {
+    overflow: visible;
+  }
+
+  .lq-toolbar__info,
+  .lq-toolbar__actions,
+  .lq-healthbar,
+  .lq-bulkbar {
+    flex-wrap: wrap;
   }
 
   .lq-toolbar,
   .lq-filterbar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .lq-search,
+  .lq-failed-select {
+    max-width: none;
+    width: 100%;
+  }
+
+  .lq-tabs,
+  .lq-detail-tabs,
+  .lq-fullscreen-tabs {
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  .lq-tab,
+  .lq-detail-tab {
+    flex-shrink: 0;
+  }
+
+  .lq-content {
+    gap: 10px;
+    padding: 10px;
+    overflow: visible;
+  }
+
+  .lq-jobs,
+  .lq-detail {
+    max-height: none;
+    overflow: auto;
+  }
+
+  .lq-table {
+    min-width: 720px;
+  }
+
+  .lq-insight-tabs {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .lq-insight-tab-list {
+    width: 100%;
+    scrollbar-width: thin;
+  }
+
+  .lq-insights-toggle {
+    justify-content: center;
+  }
+
+  .lq-audit-list {
+    max-height: 360px;
+  }
+
+  .lq-audit-row {
+    grid-template-columns: 24px minmax(120px, 1fr);
+    align-items: start;
+  }
+
+  .lq-audit-row span:nth-child(n + 4) {
+    grid-column: 2;
+  }
+
+  .lq-audit-detail {
+    padding-left: 34px;
+  }
+
+  .lq-fullscreen-overlay {
+    padding: 10px;
+  }
+
+  .lq-fullscreen-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .lq-fullscreen-tabs {
+    overflow-x: auto;
+  }
+
+  .lq-fullscreen-panel {
+    width: 100%;
+  }
+
+  .lq-fullscreen-body {
+    padding: 12px;
+  }
+
+  .lq-props--fullscreen {
+    max-width: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .lq-panel-header,
+  .lq-toolbar,
+  .lq-healthbar,
+  .lq-insights,
+  .lq-filterbar,
+  .lq-bulkbar,
+  .lq-exportbar {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .lq-sidebar {
+    max-height: 42vh;
+  }
+
+  .lq-profile-row,
+  .lq-settings-card label,
+  .lq-settings-card label:has(.base-input),
+  .lq-retry-after {
+    grid-template-columns: 1fr;
+  }
+
+  .lq-retry-after {
+    display: grid;
+    align-items: stretch;
+  }
+
+  .lq-retry-after input {
+    width: 100%;
+  }
+
+  .lq-content {
+    padding: 8px;
+  }
+
+  .lq-detail {
+    padding: 10px;
+  }
+
+  .lq-detail__head,
+  .lq-detail__actions,
+  .lq-editor-actions,
+  .lq-editor-actions--fullscreen {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .lq-detail__actions .base-btn,
+  .lq-editor-actions .base-btn,
+  .lq-fullscreen-actions .base-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .lq-props {
+    grid-template-columns: 1fr;
+  }
+
+  .lq-props span {
+    margin-top: 6px;
+  }
+
+  .lq-props span:first-child {
+    margin-top: 0;
+  }
+
+  .lq-props code {
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  .lq-payload,
+  .lq-exception,
+  .lq-payload-editor {
+    min-height: 180px;
+    font-size: 11.5px;
+  }
+
+  .lq-fullscreen-overlay {
+    padding: 0;
+  }
+
+  .lq-fullscreen-panel {
+    width: 100vw;
+    height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .lq-fullscreen-head {
+    padding: 12px;
+  }
+
+  .lq-fullscreen-title {
+    font-size: 14px;
+  }
+
+  .lq-payload-editor--fullscreen {
+    min-height: 52vh;
   }
 }
 </style>

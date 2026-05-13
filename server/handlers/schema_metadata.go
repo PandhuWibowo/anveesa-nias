@@ -164,6 +164,8 @@ func normalizeSchemaDriver(driver string) string {
 
 func fetchSchemaMetadataCatalog(db *sql.DB, driver, dbName string) (SchemaMetadataCatalog, error) {
 	switch driver {
+	case "sqlite3":
+		return listSQLiteMetadataCatalog(db, dbName)
 	case "postgres":
 		return listPostgresMetadataCatalog(db, dbName)
 	case "mysql", "mariadb":
@@ -177,6 +179,8 @@ func fetchSchemaMetadataCatalog(db *sql.DB, driver, dbName string) (SchemaMetada
 
 func fetchSchemaObjectDetail(db *sql.DB, driver, dbName, objectType, objectName string) (SchemaObjectDetail, error) {
 	switch driver {
+	case "sqlite3":
+		return sqliteObjectDetail(db, dbName, objectType, objectName)
 	case "postgres":
 		return postgresObjectDetail(db, dbName, objectType, objectName)
 	case "mysql", "mariadb":
@@ -227,6 +231,41 @@ func addCatalogItem(catalog *SchemaMetadataCatalog, key string, item SchemaObjec
 			return
 		}
 	}
+}
+
+func listSQLiteMetadataCatalog(db *sql.DB, dbName string) (SchemaMetadataCatalog, error) {
+	catalog := newCatalog(dbName)
+	rows, err := db.Query(`
+		SELECT name, type, tbl_name, sql
+		FROM sqlite_master
+		WHERE type IN ('table', 'view', 'index', 'trigger')
+		  AND name NOT LIKE 'sqlite_%'
+		ORDER BY type, name
+	`)
+	if err != nil {
+		return catalog, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, objectType, tableName string
+		var definition sql.NullString
+		if err := rows.Scan(&name, &objectType, &tableName, &definition); err != nil {
+			return catalog, err
+		}
+		switch objectType {
+		case "table":
+			addCatalogItem(&catalog, "tables", SchemaObjectItem{Name: name, Type: "table"})
+		case "view":
+			addCatalogItem(&catalog, "views", SchemaObjectItem{Name: name, Type: "view"})
+		case "index":
+			if definition.Valid && strings.TrimSpace(definition.String) != "" {
+				addCatalogItem(&catalog, "indexes", SchemaObjectItem{Name: name, Type: "index", ParentName: tableName, Summary: sqliteIndexSummary(definition.String)})
+			}
+		case "trigger":
+			addCatalogItem(&catalog, "triggers", SchemaObjectItem{Name: name, Type: "trigger", ParentName: tableName})
+		}
+	}
+	return catalog, rows.Err()
 }
 
 func listPostgresMetadataCatalog(db *sql.DB, schemaName string) (SchemaMetadataCatalog, error) {
@@ -463,6 +502,54 @@ func listSQLServerMetadataCatalog(db *sql.DB, dbName string) (SchemaMetadataCata
 	return catalog, nil
 }
 
+func sqliteObjectDetail(db *sql.DB, dbName, objectType, objectName string) (SchemaObjectDetail, error) {
+	detail := emptyObjectDetail(dbName, objectType, objectName)
+	switch objectType {
+	case "table", "view":
+		columns, err := fetchTableColumnsForMetadata(db, "sqlite3", dbName, objectName)
+		if err != nil {
+			return detail, err
+		}
+		indexes, _ := fetchSQLiteIndexes(db, objectName)
+		triggers, _ := fetchSQLiteTriggers(db, objectName)
+		detail.Columns = columns
+		detail.Indexes = indexes
+		detail.Triggers = triggers
+		detail.DDL = fetchSQLiteDefinition(db, objectType, objectName)
+		detail.Properties = []SchemaProperty{
+			{Label: "Object Type", Value: objectType},
+			{Label: "Database", Value: defaultString(dbName, "main")},
+		}
+	case "index":
+		index, err := fetchSQLiteIndexDetail(db, objectName)
+		if err != nil {
+			return detail, err
+		}
+		detail.Indexes = []SchemaIndexDetail{index}
+		detail.DDL = index.Definition
+		detail.Properties = []SchemaProperty{
+			{Label: "Object Type", Value: "index"},
+			{Label: "Table", Value: index.TableName},
+			{Label: "Unique", Value: boolLabel(index.IsUnique)},
+			{Label: "Primary", Value: boolLabel(index.IsPrimary)},
+		}
+	case "trigger":
+		trigger, err := fetchSQLiteTriggerDetail(db, objectName)
+		if err != nil {
+			return detail, err
+		}
+		detail.Triggers = []SchemaTriggerDetail{trigger}
+		detail.DDL = trigger.Definition
+		detail.Properties = []SchemaProperty{
+			{Label: "Object Type", Value: "trigger"},
+			{Label: "Table", Value: trigger.TableName},
+			{Label: "Timing", Value: trigger.Timing},
+			{Label: "Events", Value: trigger.Events},
+		}
+	}
+	return detail, nil
+}
+
 func postgresObjectDetail(db *sql.DB, schemaName, objectType, objectName string) (SchemaObjectDetail, error) {
 	detail := emptyObjectDetail(schemaName, objectType, objectName)
 	switch objectType {
@@ -630,6 +717,27 @@ func sqlServerObjectDetail(db *sql.DB, dbName, objectType, objectName string) (S
 
 func fetchTableColumnsForMetadata(db *sql.DB, driver, dbName, tableName string) ([]SchemaColumn, error) {
 	switch driver {
+	case "sqlite3":
+		rows, err := db.Query(`PRAGMA table_info(` + quoteIdent(driver, tableName) + `)`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var cols []SchemaColumn
+		for rows.Next() {
+			var cid int
+			var col SchemaColumn
+			var notNull, pk int
+			var defVal *string
+			if err := rows.Scan(&cid, &col.Name, &col.DataType, &notNull, &defVal, &pk); err != nil {
+				return nil, err
+			}
+			col.IsNullable = notNull == 0
+			col.IsPrimaryKey = pk > 0
+			col.DefaultValue = defVal
+			cols = append(cols, col)
+		}
+		return cols, rows.Err()
 	case "postgres":
 		rows, err := db.Query(`
 			SELECT
@@ -733,6 +841,121 @@ func fetchTableColumnsForMetadata(db *sql.DB, driver, dbName, tableName string) 
 	default:
 		return []SchemaColumn{}, nil
 	}
+}
+
+func fetchSQLiteDefinition(db *sql.DB, objectType, objectName string) string {
+	var definition sql.NullString
+	_ = db.QueryRow(`
+		SELECT sql
+		FROM sqlite_master
+		WHERE type = ? AND name = ?
+	`, objectType, objectName).Scan(&definition)
+	return definition.String
+}
+
+func fetchSQLiteIndexes(db *sql.DB, tableName string) ([]SchemaIndexDetail, error) {
+	rows, err := db.Query(`
+		SELECT name, tbl_name, sql
+		FROM sqlite_master
+		WHERE type = 'index'
+		  AND tbl_name = ?
+		  AND name NOT LIKE 'sqlite_%'
+		ORDER BY name
+	`, tableName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var indexes []SchemaIndexDetail
+	for rows.Next() {
+		var idx SchemaIndexDetail
+		var definition sql.NullString
+		if err := rows.Scan(&idx.Name, &idx.TableName, &definition); err != nil {
+			return nil, err
+		}
+		idx.Method = "btree"
+		idx.Definition = definition.String
+		idx.IsUnique = strings.Contains(strings.ToUpper(definition.String), "CREATE UNIQUE INDEX")
+		idx.Columns = fetchSQLiteIndexColumns(db, idx.Name)
+		indexes = append(indexes, idx)
+	}
+	return indexes, rows.Err()
+}
+
+func fetchSQLiteIndexDetail(db *sql.DB, indexName string) (SchemaIndexDetail, error) {
+	var idx SchemaIndexDetail
+	var definition sql.NullString
+	err := db.QueryRow(`
+		SELECT name, tbl_name, sql
+		FROM sqlite_master
+		WHERE type = 'index' AND name = ?
+	`, indexName).Scan(&idx.Name, &idx.TableName, &definition)
+	if err != nil {
+		return idx, err
+	}
+	idx.Method = "btree"
+	idx.Definition = definition.String
+	idx.IsUnique = strings.Contains(strings.ToUpper(definition.String), "CREATE UNIQUE INDEX")
+	idx.Columns = fetchSQLiteIndexColumns(db, idx.Name)
+	return idx, nil
+}
+
+func fetchSQLiteIndexColumns(db *sql.DB, indexName string) []string {
+	rows, err := db.Query(`PRAGMA index_info(` + quoteIdent("sqlite3", indexName) + `)`)
+	if err != nil {
+		return []string{}
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var seqno, cid int
+		var name string
+		if err := rows.Scan(&seqno, &cid, &name); err == nil {
+			columns = append(columns, name)
+		}
+	}
+	return columns
+}
+
+func fetchSQLiteTriggers(db *sql.DB, tableName string) ([]SchemaTriggerDetail, error) {
+	rows, err := db.Query(`
+		SELECT name, tbl_name, sql
+		FROM sqlite_master
+		WHERE type = 'trigger' AND tbl_name = ?
+		ORDER BY name
+	`, tableName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var triggers []SchemaTriggerDetail
+	for rows.Next() {
+		var trigger SchemaTriggerDetail
+		if err := rows.Scan(&trigger.Name, &trigger.TableName, &trigger.Definition); err != nil {
+			return nil, err
+		}
+		trigger.Timing, trigger.Events = parseTriggerDefinition(trigger.Definition)
+		triggers = append(triggers, trigger)
+	}
+	return triggers, rows.Err()
+}
+
+func fetchSQLiteTriggerDetail(db *sql.DB, triggerName string) (SchemaTriggerDetail, error) {
+	var trigger SchemaTriggerDetail
+	err := db.QueryRow(`
+		SELECT name, tbl_name, sql
+		FROM sqlite_master
+		WHERE type = 'trigger' AND name = ?
+	`, triggerName).Scan(&trigger.Name, &trigger.TableName, &trigger.Definition)
+	trigger.Timing, trigger.Events = parseTriggerDefinition(trigger.Definition)
+	return trigger, err
+}
+
+func sqliteIndexSummary(definition string) string {
+	if strings.Contains(strings.ToUpper(definition), "CREATE UNIQUE INDEX") {
+		return "unique"
+	}
+	return ""
 }
 
 func fetchPostgresIndexes(db *sql.DB, schemaName, tableName string) ([]SchemaIndexDetail, error) {

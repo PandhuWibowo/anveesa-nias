@@ -295,9 +295,15 @@ onMounted(load)
   border-radius: 6px; color: var(--text-primary); font-size: 12px;
   cursor: pointer; outline: none;
 }
-.al-table-wrap { overflow: hidden; }
-.al-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.al-table-wrap {
+  max-height: min(68vh, 720px);
+  overflow: auto;
+}
+.al-table { width: 100%; min-width: 980px; border-collapse: collapse; font-size: 12.5px; }
 .al-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   padding: 10px 14px; background: rgba(255, 255, 255, 0.02);
   border-bottom: 1px solid var(--border);
   font-size: 10.5px; font-weight: 600; text-transform: uppercase;

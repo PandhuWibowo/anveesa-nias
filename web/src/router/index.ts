@@ -2,6 +2,16 @@ import { createRouter, createWebHistory } from 'vue-router'
 import axios from 'axios'
 import { useAuth } from '@/composables/useAuth'
 
+const LAST_ROUTE_KEY = 'nias:lastRoute'
+
+function restoredStartRoute() {
+  const saved = localStorage.getItem(LAST_ROUTE_KEY)
+  if (!saved || saved === '/' || saved.startsWith('/login') || saved.startsWith('/shared-dashboards') || saved.startsWith('/embed/')) {
+    return { name: 'analytics' }
+  }
+  return saved
+}
+
 const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -36,7 +46,7 @@ const router = createRouter({
       children: [
         {
           path: '',
-          redirect: { name: 'analytics' },
+          redirect: restoredStartRoute,
         },
         {
           path: 'analytics',
@@ -141,10 +151,46 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['sqlstudio.access'] },
         },
         {
+          path: 'database-objects',
+          name: 'database-objects',
+          component: () => import('@/views/DatabaseObjectsView.vue'),
+          meta: { requiredPermissionsAny: ['sqlstudio.access'] },
+        },
+        {
           path: 'redis',
           name: 'redis',
           component: () => import('@/views/RedisView.vue'),
           meta: { requiredPermissionsAny: ['redis.view'] },
+        },
+        {
+          path: 'memcache',
+          name: 'memcache',
+          component: () => import('@/views/MemcacheView.vue'),
+          meta: { requiredPermissionsAny: ['redis.view'] },
+        },
+        {
+          path: 'search',
+          name: 'search',
+          component: () => import('@/views/SearchView.vue'),
+          meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
+        },
+        {
+          path: 'search-policies',
+          name: 'search-policies',
+          component: () => import('@/views/SearchPoliciesView.vue'),
+          meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
+        },
+        {
+          path: 'discover',
+          name: 'discover',
+          component: () => import('@/views/DiscoverView.vue'),
+          meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
+        },
+        {
+          path: 'uptime',
+          name: 'uptime',
+          component: () => import('@/views/UptimeView.vue'),
+          meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
         },
         {
           path: 'laravel-queue',
@@ -250,7 +296,7 @@ const router = createRouter({
 })
 
 router.beforeEach((to) => {
-  const { isAuthenticated, authEnabled, hasAnyPermission } = useAuth()
+  const { isAuthenticated, authEnabled, hasAnyPermission, mustSetupMfa } = useAuth()
 
   // Skip auth check if auth is not enabled
   if (!authEnabled.value) {
@@ -268,6 +314,14 @@ router.beforeEach((to) => {
   // If not authenticated and trying to access protected route, redirect to login
   if (!isAuthenticated.value && !to.meta.guest) {
     return { name: 'login' }
+  }
+
+  if (isAuthenticated.value && mustSetupMfa.value && to.name !== 'security' && !to.meta.guest) {
+    return { name: 'security', query: { setup: 'mfa' } }
+  }
+
+  if (isAuthenticated.value && mustSetupMfa.value && to.name === 'security') {
+    return
   }
 
   const requiredPermissions = to.meta.requiredPermissionsAny as string[] | undefined
@@ -289,6 +343,9 @@ router.afterEach((to, from) => {
   }
   if (to.name === 'login') {
     return
+  }
+  if (!to.meta.guest && to.fullPath !== '/') {
+    localStorage.setItem(LAST_ROUTE_KEY, to.fullPath)
   }
   const { authEnabled, isAuthenticated } = useAuth()
   if (authEnabled.value && !isAuthenticated.value) {

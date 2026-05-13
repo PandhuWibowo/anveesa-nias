@@ -22,7 +22,11 @@ const detailLoading = ref(false)
 const activeConn = computed(() =>
   localConnId.value ? connections.value.find(c => c.id === localConnId.value) ?? null : null
 )
-const supportsRelationalSchema = computed(() => !!activeConn.value && activeConn.value.driver !== 'redis' && activeConn.value.driver !== 'kafka')
+function isNonSqlDriver(driver: string) {
+  return driver === 'redis' || driver === 'memcache' || driver === 'kafka' || driver === 'elasticsearch' || driver === 'opensearch' || driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs'
+}
+
+const supportsRelationalSchema = computed(() => !!activeConn.value && !isNonSqlDriver(activeConn.value.driver))
 
 watch(() => props.activeConnId, (id) => {
   if (id != null) localConnId.value = id

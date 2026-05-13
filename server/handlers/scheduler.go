@@ -222,13 +222,14 @@ func ListNotifications() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		userID, _, _ := currentUserFromHeaders(r)
-		rows, err := appdb.DB.Query(appdb.ConvertQuery(`
-			SELECT id, event_id, event_type, type, severity, title, message, entity_type, entity_id, read, created_at
+		readCol := notificationReadColumn()
+		rows, err := appdb.DB.Query(appdb.ConvertQuery(fmt.Sprintf(`
+			SELECT id, event_id, event_type, type, severity, title, message, entity_type, entity_id, %s, created_at
 			FROM notifications
 			WHERE target_user_id = 0 OR target_user_id = ?
 			ORDER BY id DESC
 			LIMIT 100
-		`), userID)
+		`, readCol)), userID)
 		if err != nil {
 			json.NewEncoder(w).Encode([]Notification{})
 			return
@@ -252,7 +253,8 @@ func ListNotifications() http.HandlerFunc {
 func MarkNotificationsRead() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, _, _ := currentUserFromHeaders(r)
-		appdb.DB.Exec(appdb.ConvertQuery(`UPDATE notifications SET read=1 WHERE target_user_id = 0 OR target_user_id = ?`), userID)
+		readCol := notificationReadColumn()
+		appdb.DB.Exec(appdb.ConvertQuery(fmt.Sprintf(`UPDATE notifications SET %s=1 WHERE target_user_id = 0 OR target_user_id = ?`, readCol)), userID)
 		invalidateNotificationCountCache(0, userID)
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -263,13 +265,21 @@ func UnreadCount() http.HandlerFunc {
 		userID, _, _ := currentUserFromHeaders(r)
 		cachedJSONResponse(w, r, "notifications:unread:"+strconv.FormatInt(userID, 10), 20*time.Second, func() (any, error) {
 			var cnt int64
-			err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COUNT(*) FROM notifications WHERE read=0 AND (target_user_id = 0 OR target_user_id = ?)`), userID).Scan(&cnt)
+			readCol := notificationReadColumn()
+			err := appdb.DB.QueryRow(appdb.ConvertQuery(fmt.Sprintf(`SELECT COUNT(*) FROM notifications WHERE %s=0 AND (target_user_id = 0 OR target_user_id = ?)`, readCol)), userID).Scan(&cnt)
 			if err != nil {
 				return nil, err
 			}
 			return map[string]any{"count": cnt}, nil
 		})
 	}
+}
+
+func notificationReadColumn() string {
+	if appdb.IsMySQL() {
+		return "`read`"
+	}
+	return `"read"`
 }
 
 // executeSchedule runs a schedule's SQL and records the result.

@@ -1,14 +1,19 @@
 package handlers
 
 import (
+	"bufio"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -18,16 +23,25 @@ import (
 	appdb "github.com/anveesa/nias/db"
 	"github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 // allowedDrivers defines valid database drivers
 var allowedDrivers = map[string]bool{
-	"postgres": true,
-	"mysql":    true,
-	"mariadb":  true, // alias → uses MySQL driver
-	"mssql":    true,
-	"redis":    true,
-	"kafka":    true,
+	"sqlite":        true,
+	"postgres":      true,
+	"mysql":         true,
+	"mariadb":       true, // alias → uses MySQL driver
+	"mssql":         true,
+	"redis":         true,
+	"memcache":      true,
+	"kafka":         true,
+	"elasticsearch": true,
+	"opensearch":    true,
+	"s3_aws":        true,
+	"s3_gcp":        true,
+	"s3_oss":        true,
+	"s3_obs":        true,
 }
 
 // encryptionKey for credential encryption (should be set from environment)
@@ -154,11 +168,32 @@ type ConnectionInput struct {
 func validateConnectionInput(in *ConnectionInput) error {
 	// Validate driver
 	if !allowedDrivers[in.Driver] {
-		return fmt.Errorf("invalid driver: must be postgres, mysql, mariadb, mssql, redis, or kafka")
+		return fmt.Errorf("invalid driver: must be sqlite, postgres, mysql, mariadb, mssql, redis, memcache, kafka, elasticsearch, opensearch, s3_aws, s3_gcp, s3_oss, or s3_obs")
 	}
 
 	// Validate port
-	if in.Port < 1 || in.Port > 65535 {
+	if in.Driver == "sqlite" {
+		if strings.TrimSpace(in.Database) == "" {
+			return fmt.Errorf("database file path is required")
+		}
+	} else if isObjectStorageDriver(in.Driver) {
+		if strings.TrimSpace(in.Host) == "" {
+			return fmt.Errorf("endpoint host is required")
+		}
+		if strings.TrimSpace(in.Database) == "" {
+			return fmt.Errorf("bucket name is required")
+		}
+		if strings.TrimSpace(in.Username) == "" {
+			return fmt.Errorf("access key is required")
+		}
+		if strings.TrimSpace(in.Password) == "" {
+			return fmt.Errorf("secret key is required")
+		}
+	} else if isSearchDriver(in.Driver) {
+		if strings.TrimSpace(in.Host) == "" {
+			return fmt.Errorf("search endpoint host is required")
+		}
+	} else if in.Port < 1 || in.Port > 65535 {
 		return fmt.Errorf("invalid port: must be 1-65535")
 	}
 
@@ -195,8 +230,14 @@ func isValidHostname(host string) bool {
 
 func buildDSN(in ConnectionInput) (string, error) {
 	switch in.Driver {
-	case "redis", "kafka":
+	case "redis", "memcache", "kafka", "elasticsearch", "opensearch", "s3_aws", "s3_gcp", "s3_oss", "s3_obs":
 		return "", fmt.Errorf("%s does not use SQL DSN", in.Driver)
+	case "sqlite":
+		dbPath := strings.TrimSpace(in.Database)
+		if dbPath == "" {
+			return "", fmt.Errorf("sqlite database file path is required")
+		}
+		return dbPath, nil
 	case "postgres":
 		sslMode := "disable"
 		if in.SSL {
@@ -271,6 +312,8 @@ func driverName(d string) string {
 		return "mysql"
 	case "mssql":
 		return "sqlserver"
+	case "sqlite":
+		return "sqlite3"
 	}
 	return d
 }
@@ -829,10 +872,36 @@ func TestConnection() http.HandlerFunc {
 			json.NewEncoder(w).Encode(map[string]string{"message": "Connection successful"})
 			return
 		}
+		if in.Driver == "memcache" {
+			if err := testMemcacheInput(r.Context(), in); err != nil {
+				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"message": "Connection successful"})
+			return
+		}
 		if in.Driver == "kafka" {
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 			defer cancel()
 			if _, err := readKafkaTopics(ctx, in); err != nil {
+				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"message": "Connection successful"})
+			return
+		}
+		if isSearchDriver(in.Driver) {
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			if err := testSearchInput(ctx, in); err != nil {
+				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"message": "Connection successful"})
+			return
+		}
+		if isObjectStorageDriver(in.Driver) {
+			if err := testObjectStorageInput(r.Context(), in); err != nil {
 				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
 				return
 			}
@@ -958,4 +1027,225 @@ func openRemoteDB(connID int64) (*sql.DB, string, error) {
 	}
 	db.SetMaxOpenConns(5)
 	return db, goDriver, nil
+}
+
+func testMemcacheInput(ctx context.Context, in ConnectionInput) error {
+	host := strings.TrimSpace(in.Host)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := in.Port
+	if port == 0 {
+		port = 11211
+	}
+
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", host, port))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+
+	if _, err := conn.Write([]byte("version\r\n")); err != nil {
+		return err
+	}
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(strings.ToUpper(strings.TrimSpace(line)), "VERSION") {
+		return fmt.Errorf("unexpected memcache response: %s", strings.TrimSpace(line))
+	}
+	return nil
+}
+
+func isObjectStorageDriver(driver string) bool {
+	switch driver {
+	case "s3_aws", "s3_gcp", "s3_oss", "s3_obs":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSearchDriver(driver string) bool {
+	switch driver {
+	case "elasticsearch", "opensearch":
+		return true
+	default:
+		return false
+	}
+}
+
+func testSearchInput(ctx context.Context, in ConnectionInput) error {
+	baseURL, err := searchBaseURL(in)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/", nil)
+	if err != nil {
+		return err
+	}
+	authMode := strings.ToLower(strings.TrimSpace(in.Username))
+	if in.Password != "" && (authMode == "" || authMode == "apikey" || authMode == "api_key") {
+		req.Header.Set("Authorization", "ApiKey "+in.Password)
+	} else if in.Username != "" || in.Password != "" {
+		req.SetBasicAuth(in.Username, in.Password)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("%s returned %s", in.Driver, resp.Status)
+}
+
+func testObjectStorageInput(ctx context.Context, in ConnectionInput) error {
+	endpointHost := strings.TrimSpace(in.Host)
+	endpointHost = strings.TrimPrefix(strings.TrimPrefix(endpointHost, "https://"), "http://")
+	endpointHost = strings.TrimRight(endpointHost, "/")
+	bucket := strings.Trim(strings.TrimSpace(in.Database), "/")
+	if endpointHost == "" || bucket == "" {
+		return fmt.Errorf("endpoint host and bucket are required")
+	}
+	scheme := "https"
+	if !in.SSL {
+		scheme = "http"
+	}
+	if in.Port > 0 && in.Port != 80 && in.Port != 443 && !strings.Contains(endpointHost, ":") {
+		endpointHost = fmt.Sprintf("%s:%d", endpointHost, in.Port)
+	}
+
+	region := objectStorageRegion(in.Driver, endpointHost)
+	path := "/" + url.PathEscape(bucket) + "/"
+	requestURL := fmt.Sprintf("%s://%s%s?list-type=2&max-keys=0", scheme, endpointHost, path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return err
+	}
+	signObjectStorageRequest(req, in.Username, in.Password, region, objectStorageService(in.Driver), "")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("object storage returned %s", resp.Status)
+}
+
+func objectStorageService(driver string) string {
+	switch driver {
+	case "s3_oss":
+		return "oss"
+	case "s3_obs":
+		return "s3"
+	default:
+		return "s3"
+	}
+}
+
+func objectStorageRegion(driver, host string) string {
+	host = strings.ToLower(host)
+	switch driver {
+	case "s3_gcp":
+		return "auto"
+	case "s3_oss":
+		if idx := strings.Index(host, "oss-"); idx >= 0 {
+			rest := host[idx+4:]
+			if dot := strings.Index(rest, "."); dot > 0 {
+				return rest[:dot]
+			}
+		}
+		return "cn-hangzhou"
+	case "s3_obs":
+		parts := strings.Split(host, ".")
+		for i, part := range parts {
+			if part == "obs" && i+1 < len(parts) {
+				return parts[i+1]
+			}
+		}
+		return "ap-southeast-1"
+	case "s3_aws":
+		parts := strings.Split(host, ".")
+		for i, part := range parts {
+			if part == "s3" && i+1 < len(parts) && parts[i+1] != "amazonaws" {
+				return parts[i+1]
+			}
+		}
+		return "us-east-1"
+	default:
+		return "us-east-1"
+	}
+}
+
+func signObjectStorageRequest(req *http.Request, accessKey, secretKey, region, service, payload string) {
+	now := time.Now().UTC()
+	amzDate := now.Format("20060102T150405Z")
+	dateStamp := now.Format("20060102")
+	payloadHashBytes := sha256.Sum256([]byte(payload))
+	payloadHash := hex.EncodeToString(payloadHashBytes[:])
+
+	req.Header.Set("X-Amz-Date", amzDate)
+	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
+
+	canonicalURI := req.URL.EscapedPath()
+	if canonicalURI == "" {
+		canonicalURI = "/"
+	}
+	canonicalQuery := req.URL.RawQuery
+	canonicalHeaders := "host:" + req.URL.Host + "\n" +
+		"x-amz-content-sha256:" + payloadHash + "\n" +
+		"x-amz-date:" + amzDate + "\n"
+	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
+	canonicalRequest := strings.Join([]string{
+		req.Method,
+		canonicalURI,
+		canonicalQuery,
+		canonicalHeaders,
+		signedHeaders,
+		payloadHash,
+	}, "\n")
+
+	scope := dateStamp + "/" + region + "/" + service + "/aws4_request"
+	canonicalRequestHash := sha256.Sum256([]byte(canonicalRequest))
+	stringToSign := "AWS4-HMAC-SHA256\n" + amzDate + "\n" + scope + "\n" + hex.EncodeToString(canonicalRequestHash[:])
+
+	signingKey := objectStorageSigningKey(secretKey, dateStamp, region, service)
+	signature := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
+	req.Header.Set("Authorization", fmt.Sprintf(
+		"AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
+		accessKey,
+		scope,
+		signedHeaders,
+		signature,
+	))
+}
+
+func objectStorageSigningKey(secret, dateStamp, region, service string) []byte {
+	kDate := hmacSHA256([]byte("AWS4"+secret), dateStamp)
+	kRegion := hmacSHA256(kDate, region)
+	kService := hmacSHA256(kRegion, service)
+	return hmacSHA256(kService, "aws4_request")
+}
+
+func hmacSHA256(key []byte, data string) []byte {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(data))
+	return mac.Sum(nil)
 }

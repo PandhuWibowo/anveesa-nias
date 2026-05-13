@@ -61,6 +61,8 @@ func main() {
 		return
 	}
 	switch cfg.DBDriver {
+	case "sqlite":
+		log.Printf("Database initialized: SQLite")
 	case "postgres":
 		log.Printf("Database initialized: PostgreSQL")
 	case "mysql":
@@ -90,6 +92,7 @@ func main() {
 
 	// Apply middleware stack
 	var handler http.Handler = mux
+	handler = mw.EnforceMFASetup(handler)
 	handler = mw.InjectUserContext(cfg.JWTSecret)(handler) // Extract JWT claims and set headers
 	handler = mw.CORS(cfg.CORSOrigin)(handler)
 	handler = mw.SecurityHeaders(handler)
@@ -221,11 +224,12 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	})
 
 	// ── 2FA ────────────────────────────────────────────────────────
-	mux.HandleFunc("/api/auth/2fa/status", requireAny(handlers.PermSecuritySelf)(handlers.Get2FAStatus()))
-	mux.HandleFunc("/api/auth/2fa/setup", requireAny(handlers.PermSecuritySelf)(handlers.Setup2FA()))
-	mux.HandleFunc("/api/auth/2fa/enable", requireAny(handlers.PermSecuritySelf)(handlers.Enable2FA()))
-	mux.HandleFunc("/api/auth/2fa/disable", requireAny(handlers.PermSecuritySelf)(handlers.Disable2FA()))
+	mux.HandleFunc("/api/auth/2fa/status", handlers.Get2FAStatus())
+	mux.HandleFunc("/api/auth/2fa/setup", handlers.Setup2FA())
+	mux.HandleFunc("/api/auth/2fa/enable", handlers.Enable2FA())
+	mux.HandleFunc("/api/auth/2fa/disable", handlers.Disable2FA())
 	mux.HandleFunc("/api/auth/2fa/verify", handlers.Verify2FA())
+	mux.HandleFunc("/api/auth/mfa-policy", requireAny(handlers.PermUsersManage)(handlers.UpdateMFAPolicy()))
 
 	// ── Connections (list + create) ───────────────────────────────
 	mux.HandleFunc("/api/connections", func(w http.ResponseWriter, r *http.Request) {
@@ -323,6 +327,14 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.RedisGenerateScript())(w, r)
 			case sub == "redis" && len(parts) >= 3 && parts[2] == "script" && r.Method == http.MethodPost:
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.RedisExecuteScript())(w, r)
+			case sub == "memcache" && len(parts) >= 3 && parts[2] == "ping" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.MemcachePing())(w, r)
+			case sub == "memcache" && len(parts) >= 3 && parts[2] == "stats" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.MemcacheStats())(w, r)
+			case sub == "memcache" && len(parts) >= 3 && parts[2] == "key" && (r.Method == http.MethodGet || r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete):
+				requireAny(handlers.PermConnectionsView, handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.MemcacheKey())(w, r)
+			case sub == "memcache" && len(parts) >= 3 && parts[2] == "flush" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.MemcacheFlush())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "queues" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueQueues())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "jobs" && r.Method == http.MethodGet:
@@ -365,6 +377,66 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermKafkaView)(handlers.KafkaGroups())(w, r)
 			case sub == "kafka" && len(parts) >= 3 && parts[2] == "groups-detail" && r.Method == http.MethodGet:
 				requireAny(handlers.PermKafkaView)(handlers.KafkaGroupDetailHandler())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "info" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchInfo())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "indices" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchIndices())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "query" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchQuery())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "document" && (r.Method == http.MethodGet || r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete):
+				requireAny(handlers.PermConnectionsView, handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchDocument())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "index" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchDeleteIndex())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "ilm-policies" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchListILMPolicies())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "ilm-policy" && r.Method == http.MethodPut:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchSaveILMPolicy())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "ilm-policy" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchDeleteILMPolicy())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "templates" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchListTemplates())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "template" && r.Method == http.MethodPut:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchSaveTemplate())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "template" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchDeleteTemplate())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "index-settings" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchGetIndexSettings())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "index-settings" && r.Method == http.MethodPut:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchUpdateIndexSettings())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "cluster-health" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchClusterHealth())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "nodes" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchNodes())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "shards" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchShards())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "mapping" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchIndexMapping())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "index-stats" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchIndexStats())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "list-indices" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchListIndices())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "aggregate" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchAggregate())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "fields" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchIndexFields())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watcher-stats" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchWatcherStats())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watches" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchListWatches())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watch" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchGetWatch())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watch" && r.Method == http.MethodPut:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchSaveWatch())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watch" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchDeleteWatch())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watch-execute" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchExecuteWatch())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watch-activate" && r.Method == http.MethodPut:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchActivateWatch())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watch-deactivate" && r.Method == http.MethodPut:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchDeactivateWatch())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "watch-history" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchWatchHistory())(w, r)
 			case sub == "backup" && r.Method == http.MethodGet:
 				requireAny(handlers.PermBackupsManage)(handlers.GetBackup())(w, r)
 			case sub == "restore" && r.Method == http.MethodPost:
@@ -654,6 +726,20 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		default:
 			http.NotFound(w, r)
 		}
+	})
+	mux.HandleFunc("/api/backup/to-bucket", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		requireAny(handlers.PermBackupsManage)(handlers.BackupToBucket())(w, r)
+	})
+	mux.HandleFunc("/api/backup/bucket-list", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		requireAny(handlers.PermBackupsManage)(handlers.ListBucketBackups())(w, r)
 	})
 	mux.HandleFunc("/api/backup-download-requests", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -1012,6 +1098,30 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		if r.Method == http.MethodDelete {
 			requireAny(handlers.PermAIUse)(handlers.DeleteAIReport())(w, r)
 		} else {
+			http.NotFound(w, r)
+		}
+	})
+
+	// ── Search App Policies ───────────────────────────────────────
+	mux.HandleFunc("/api/search-app-policies", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.ListSearchAppPolicies())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.CreateSearchAppPolicy())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/search-app-policies/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/run") && r.Method == http.MethodPost:
+			requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.RunSearchAppPolicy())(w, r)
+		case r.Method == http.MethodPut:
+			requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.UpdateSearchAppPolicy())(w, r)
+		case r.Method == http.MethodDelete:
+			requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.DeleteSearchAppPolicy())(w, r)
+		default:
 			http.NotFound(w, r)
 		}
 	})

@@ -38,8 +38,10 @@ const editFolderVisibility = ref<'private' | 'shared'>('private')
 const contextMenu = ref<{ x: number; y: number; type: 'folder' | 'conn'; item: ConnectionFolder | Connection } | null>(null)
 
 const FOLDER_COLORS = ['#4f9cf9','#56c490','#f97f4f','#c45ef9','#f9d44f','#f9584f','#4fc8f9','#9cf94f','#f94f9c']
-const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', kafka: 'KF' }
-const driverColor: Record<string, string> = { postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927', redis: '#c6302b', kafka: '#231f20' }
+const driverLabel: Record<string, string> = { sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF', elasticsearch: 'ES', opensearch: 'OS', s3_aws: 'S3', s3_gcp: 'GCS', s3_oss: 'OSS', s3_obs: 'OBS' }
+const driverColor: Record<string, string> = { sqlite: '#4b5563', postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927', redis: '#c6302b', memcache: '#16a34a', kafka: '#231f20', elasticsearch: '#00bfb3', opensearch: '#005eb8', s3_aws: '#f59e0b', s3_gcp: '#4285f4', s3_oss: '#ff6a00', s3_obs: '#c00000' }
+function isObjectStorageDriver(driver: string) { return driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs' }
+function isSearchDriver(driver: string) { return driver === 'elasticsearch' || driver === 'opensearch' }
 
 onMounted(async () => {
   await fetchFolders()
@@ -80,11 +82,14 @@ function toggleFolder(id: number) {
 function selectConn(conn: Connection) {
   emit('select-conn', conn.id)
   emit('close')
-  const stayViews = ['data', 'er', 'dashboard', 'redis', 'laravel-queue', 'kafka']
+  const stayViews = ['data', 'er', 'dashboard', 'redis', 'memcache', 'search', 'laravel-queue', 'kafka']
   const current = router.currentRoute.value.name as string
   if (conn.driver === 'redis' && current !== 'redis') router.push({ name: 'redis' })
+  else if (conn.driver === 'memcache' && current !== 'memcache') router.push({ name: 'memcache' })
   else if (conn.driver === 'kafka' && current !== 'kafka') router.push({ name: 'kafka' })
-  else if (conn.driver !== 'redis' && conn.driver !== 'kafka' && ((current === 'redis' || current === 'kafka') || !stayViews.includes(current))) router.push({ name: 'data' })
+  else if (isSearchDriver(conn.driver) && current !== 'search') router.push({ name: 'search' })
+  else if (isObjectStorageDriver(conn.driver)) router.push({ name: 'connections' })
+  else if (conn.driver !== 'redis' && conn.driver !== 'memcache' && conn.driver !== 'kafka' && !isSearchDriver(conn.driver) && ((current === 'redis' || current === 'memcache' || current === 'kafka' || current === 'search') || !stayViews.includes(current))) router.push({ name: 'data' })
 }
 
 // ── Folder ops ──
@@ -431,6 +436,7 @@ function isDropTarget(folderId: number | null) {
   display: flex;
   flex-direction: column;
   width: 300px;
+  max-width: calc(100vw - 16px);
   max-height: 520px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
@@ -544,6 +550,7 @@ function isDropTarget(folderId: number | null) {
   flex: 1;
   overflow-y: auto;
   padding: 4px 0 8px;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Folder rows */
@@ -706,4 +713,45 @@ function isDropTarget(folderId: number | null) {
 }
 .cdrop-modal__body { padding: 14px; display: flex; flex-direction: column; gap: 6px; }
 .cdrop-modal__label { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+
+@media (max-width: 520px) {
+  .cdrop {
+    width: calc(100vw - 16px);
+    max-height: min(68vh, 520px);
+    border-radius: 10px;
+  }
+
+  .cdrop__form-row,
+  .cdrop__form-actions {
+    flex-direction: column;
+  }
+
+  .cdrop__btn {
+    width: 100%;
+  }
+
+  .cdrop__folder,
+  .cdrop__conn {
+    min-height: 34px;
+  }
+
+  .cdrop__conn--nested {
+    padding-left: 22px;
+  }
+
+  .cdrop__conn--deep {
+    padding-left: 32px;
+  }
+
+  .cdrop-modal-overlay {
+    align-items: flex-start;
+    padding: 12px 8px;
+  }
+
+  .cdrop-modal {
+    width: 100%;
+    max-height: calc(100dvh - 24px);
+    overflow: auto;
+  }
+}
 </style>

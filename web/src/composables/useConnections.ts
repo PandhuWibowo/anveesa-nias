@@ -1,7 +1,21 @@
 import { ref } from 'vue'
 import axios from 'axios'
 
-export type DbDriver = 'postgres' | 'mysql' | 'mariadb' | 'mssql' | 'redis' | 'kafka'
+export type DbDriver =
+  | 'sqlite'
+  | 'postgres'
+  | 'mysql'
+  | 'mariadb'
+  | 'mssql'
+  | 'redis'
+  | 'memcache'
+  | 'kafka'
+  | 'elasticsearch'
+  | 'opensearch'
+  | 's3_aws'
+  | 's3_gcp'
+  | 's3_oss'
+  | 's3_obs'
 
 export interface Connection {
   id: number

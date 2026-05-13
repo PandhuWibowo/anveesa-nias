@@ -6,6 +6,7 @@ import { useFolders, type ConnectionFolder } from '@/composables/useFolders'
 import { useAuth } from '@/composables/useAuth'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
+import DriverIcon from '@/components/ui/DriverIcon.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'select-conn', id: number): void }>()
@@ -64,15 +65,20 @@ function toggleFolder(id: number) {
   else collapsedFolders.value.add(id)
 }
 
-const driverLabel: Record<string, string> = { postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', kafka: 'KF' }
+const driverLabel: Record<string, string> = { sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF', elasticsearch: 'ES', opensearch: 'OS', s3_aws: 'S3', s3_gcp: 'GCS', s3_oss: 'OSS', s3_obs: 'OBS' }
+function isObjectStorageDriver(driver: string) { return driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs' }
+function isSearchDriver(driver: string) { return driver === 'elasticsearch' || driver === 'opensearch' }
 
 function selectConn(conn: Connection) {
   emit('select-conn', conn.id)
-  const stayViews = ['schema', 'data', 'er', 'dashboard', 'query', 'redis', 'laravel-queue', 'kafka']
+  const stayViews = ['schema', 'data', 'er', 'dashboard', 'query', 'redis', 'memcache', 'search', 'search-policies', 'laravel-queue', 'kafka']
   const current = router.currentRoute.value.name as string
   if (conn.driver === 'redis' && current !== 'redis') router.push({ name: 'redis' })
+  else if (conn.driver === 'memcache' && current !== 'memcache') router.push({ name: 'memcache' })
   else if (conn.driver === 'kafka' && current !== 'kafka') router.push({ name: 'kafka' })
-  else if (conn.driver !== 'redis' && conn.driver !== 'kafka' && ((current === 'redis' || current === 'kafka') || !stayViews.includes(current))) router.push({ name: 'query' })
+  else if (isSearchDriver(conn.driver) && current !== 'search' && current !== 'search-policies') router.push({ name: 'search' })
+  else if (isObjectStorageDriver(conn.driver)) router.push({ name: 'connections' })
+  else if (conn.driver !== 'redis' && conn.driver !== 'memcache' && conn.driver !== 'kafka' && !isSearchDriver(conn.driver) && ((current === 'redis' || current === 'memcache' || current === 'kafka' || current === 'search') || !stayViews.includes(current))) router.push({ name: 'query' })
 }
 
 async function deleteConn(conn: Connection) {
@@ -250,7 +256,7 @@ function reorderPosition(folderId: number): 'before' | 'after' | null {
         :title="conn.name"
         @click="selectConn(conn)"
       >
-        <div class="conn-badge conn-badge--sm" :class="`conn-badge--${conn.driver}`">{{ driverLabel[conn.driver] ?? '??' }}</div>
+        <div class="conn-badge conn-badge--sm" :class="`conn-badge--${conn.driver}`"><DriverIcon :driver="conn.driver" :size="12" /></div>
       </button>
     </div>
 
@@ -329,7 +335,7 @@ function reorderPosition(folderId: number): 'before' | 'after' | null {
                   draggable="true" @dragstart="onConnDragStart($event, conn)" @dragend="onConnDragEnd"
                   @click="selectConn(conn)" @contextmenu="openContextMenu($event, 'conn', conn)">
                   <span class="drag-handle">⠿</span>
-                  <div class="conn-badge conn-badge--sm" :class="`conn-badge--${conn.driver}`">{{ driverLabel[conn.driver] ?? '??' }}</div>
+                  <div class="conn-badge conn-badge--sm" :class="`conn-badge--${conn.driver}`"><DriverIcon :driver="conn.driver" :size="12" /></div>
                   <div class="conn-item__body"><div class="conn-item__name">{{ conn.name }}</div></div>
                   <span v-if="conn.visibility === 'private'" class="conn-vis-icon" title="Private">🔒</span>
                 </div>
@@ -342,7 +348,7 @@ function reorderPosition(folderId: number): 'before' | 'after' | null {
               draggable="true" @dragstart="onConnDragStart($event, conn)" @dragend="onConnDragEnd"
               @click="selectConn(conn)" @contextmenu="openContextMenu($event, 'conn', conn)">
               <span class="drag-handle">⠿</span>
-              <div class="conn-badge conn-badge--sm" :class="`conn-badge--${conn.driver}`">{{ driverLabel[conn.driver] ?? '??' }}</div>
+              <div class="conn-badge conn-badge--sm" :class="`conn-badge--${conn.driver}`"><DriverIcon :driver="conn.driver" :size="12" /></div>
               <div class="conn-item__body">
                 <div class="conn-item__name">{{ conn.name }}</div>
                 <div class="conn-item__host">{{ conn.host }}{{ conn.port ? ':' + conn.port : '' }}</div>
@@ -369,7 +375,7 @@ function reorderPosition(folderId: number): 'before' | 'after' | null {
           draggable="true" @dragstart="onConnDragStart($event, conn)" @dragend="onConnDragEnd"
           @click="selectConn(conn)" @contextmenu="openContextMenu($event, 'conn', conn)">
           <span class="drag-handle">⠿</span>
-          <div class="conn-badge conn-badge--sm" :class="`conn-badge--${conn.driver}`">{{ driverLabel[conn.driver] ?? '??' }}</div>
+          <div class="conn-badge conn-badge--sm" :class="`conn-badge--${conn.driver}`"><DriverIcon :driver="conn.driver" :size="12" /></div>
           <div class="conn-item__body">
             <div class="conn-item__name">{{ conn.name }}</div>
             <div class="conn-item__host">{{ conn.host }}{{ conn.port ? ':' + conn.port : '' }}</div>
