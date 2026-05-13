@@ -163,6 +163,7 @@ const selectedJob = ref<KafkaJob | null>(null)
 const jobsFilter = ref<'all' | 'failed' | 'retry' | 'pending'>('all')
 const jobsRetryTopics = ref('')
 const jobsLimit = ref(100)
+const jobsDiag = ref({ primaryFetched: -1, dlqFetched: 0, error: '' })
 
 const canProduce = computed(() => hasAnyPermission(['kafka.produce']))
 const canManage = computed(() => hasAnyPermission(['kafka.manage']))
@@ -459,89 +460,96 @@ async function loadJobs() {
     jobsList.value = []
     return
   }
-  
+
   loadingJobs.value = true
   selectedJob.value = null
-  
+  jobsDiag.value = { primaryFetched: -1, dlqFetched: 0, error: '' }
+
+  const primaryTopic = selectedTopic.value.name
+
+  // Auto-suggest DLQ/retry topics if fields are empty or belong to a different topic
+  const currentDlq = parseTopicLines(traceDlqTopics.value)
+  const dlqMatchesTopic = currentDlq.some(t => t.startsWith(primaryTopic))
+  if (!currentDlq.length || !dlqMatchesTopic) {
+    traceDlqTopics.value = `${primaryTopic}.dlq\n${primaryTopic}.failed\n${primaryTopic}.error`
+  }
+  if (!jobsRetryTopics.value.trim()) {
+    jobsRetryTopics.value = `${primaryTopic}.retry`
+  }
+
+  const dlqTopics   = parseTopicLines(traceDlqTopics.value)
+  const retryTopics = parseTopicLines(jobsRetryTopics.value)
+
   try {
-    const primaryTopic = selectedTopic.value.name
-    const dlqTopics = parseTopicLines(traceDlqTopics.value)
-    const retryTopics = parseTopicLines(jobsRetryTopics.value)
-    
-    // Fetch from all topics in parallel
-    const [primaryData, ...otherData] = await Promise.all([
-      axios.get<KafkaMessage[]>(`/api/connections/${activeConn.value!.id}/kafka/messages`, {
-        params: { topic: primaryTopic, partition: -1, limit: jobsLimit.value },
-      }).then(r => r.data || []),
+    // Fetch primary — catch separately so DLQ-only jobs still work
+    let primaryMessages: KafkaMessage[] = []
+    try {
+      const r = await axios.get<KafkaMessage[]>(
+        `/api/connections/${activeConn.value!.id}/kafka/messages`,
+        { params: { topic: primaryTopic, partition: -1, limit: jobsLimit.value } },
+      )
+      primaryMessages = r.data || []
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || err?.message || 'failed to read primary topic'
+      jobsDiag.value.error = `Primary topic error: ${msg}`
+    }
+    jobsDiag.value.primaryFetched = primaryMessages.length
+
+    // Fetch DLQ + retry in parallel, swallowing errors per-topic
+    type SideResult = { topic: string; kind: 'dlq' | 'retry'; messages: KafkaMessage[] }
+    const sideResults = await Promise.all<SideResult>([
       ...dlqTopics.map(topic =>
         axios.get<KafkaMessage[]>(`/api/connections/${activeConn.value!.id}/kafka/messages`, {
           params: { topic, partition: -1, limit: jobsLimit.value },
-        }).then(r => ({ topic, kind: 'dlq' as const, messages: r.data || [] })).catch(() => ({ topic, kind: 'dlq' as const, messages: [] }))
+        }).then(r => ({ topic, kind: 'dlq' as const, messages: r.data || [] }))
+          .catch(() => ({ topic, kind: 'dlq' as const, messages: [] as KafkaMessage[] }))
       ),
       ...retryTopics.map(topic =>
         axios.get<KafkaMessage[]>(`/api/connections/${activeConn.value!.id}/kafka/messages`, {
           params: { topic, partition: -1, limit: jobsLimit.value },
-        }).then(r => ({ topic, kind: 'retry' as const, messages: r.data || [] })).catch(() => ({ topic, kind: 'retry' as const, messages: [] }))
+        }).then(r => ({ topic, kind: 'retry' as const, messages: r.data || [] }))
+          .catch(() => ({ topic, kind: 'retry' as const, messages: [] as KafkaMessage[] }))
       ),
     ])
-    
-    // Build lookup maps for DLQ and retry messages by job ID
-    const dlqByJobId = new Map<string, KafkaMessage>()
+
+    const dlqByJobId   = new Map<string, KafkaMessage>()
     const retryByJobId = new Map<string, KafkaMessage>()
-    
-    for (const result of otherData) {
-      if (typeof result === 'object' && 'kind' in result) {
-        for (const msg of result.messages) {
-          const jobId = extractJobId(msg)
-          if (result.kind === 'dlq') {
-            dlqByJobId.set(jobId, msg)
-          } else {
-            retryByJobId.set(jobId, msg)
-          }
-        }
+    let dlqTotal = 0
+    for (const r of sideResults) {
+      for (const msg of r.messages) {
+        const jid = extractJobId(msg)
+        if (r.kind === 'dlq') { dlqByJobId.set(jid, msg); dlqTotal++ }
+        else                   retryByJobId.set(jid, msg)
       }
     }
-    
-    // Convert primary messages to jobs, enriched with DLQ info
+    jobsDiag.value.dlqFetched = dlqTotal
+
     const jobs: KafkaJob[] = []
-    const seenJobIds = new Set<string>()
-    
-    for (const msg of primaryData) {
-      const jobId = extractJobId(msg)
-      const dlqMsg = dlqByJobId.get(jobId)
-      const retryMsg = retryByJobId.get(jobId)
-      
-      // Determine source and create job
-      let source: 'primary' | 'dlq' | 'retry' = 'primary'
-      if (dlqMsg) source = 'dlq' // Override if found in DLQ
-      
-      const job = messageToJob(msg, source, dlqMsg || null)
-      
-      // If in retry topic, mark as retry
-      if (retryMsg && !dlqMsg) {
-        job.status = 'retry'
+    const seen = new Set<string>()
+
+    for (const msg of primaryMessages) {
+      const jid    = extractJobId(msg)
+      const dlqMsg = dlqByJobId.get(jid)
+      const source: 'primary' | 'dlq' = dlqMsg ? 'dlq' : 'primary'
+      const job    = messageToJob(msg, source, dlqMsg || null)
+      if (retryByJobId.has(jid) && !dlqMsg) {
+        job.status      = 'retry'
         job.statusReason = 'Found in retry topic'
-        job.retryCount = Math.max(job.retryCount, 1)
+        job.retryCount  = Math.max(job.retryCount, 1)
       }
-      
       jobs.push(job)
-      seenJobIds.add(jobId)
+      seen.add(jid)
     }
-    
-    // Add DLQ-only jobs (failed jobs not in primary topic anymore)
-    for (const [jobId, msg] of dlqByJobId) {
-      if (!seenJobIds.has(jobId)) {
-        jobs.push(messageToJob(msg, 'dlq', msg))
-        seenJobIds.add(jobId)
-      }
+
+    // DLQ-only (already failed, no longer in primary)
+    for (const [jid, msg] of dlqByJobId) {
+      if (!seen.has(jid)) { jobs.push(messageToJob(msg, 'dlq', msg)); seen.add(jid) }
     }
-    
-    // Sort by timestamp descending (newest first)
+
     jobs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-    
     jobsList.value = jobs
-  } catch (error) {
-    console.error('Failed to load jobs:', error)
+  } catch (err: any) {
+    jobsDiag.value.error = err?.message || 'unknown error'
     jobsList.value = []
   } finally {
     loadingJobs.value = false
@@ -1119,11 +1127,17 @@ watch(selectedTopic, (topic) => {
   updatePartitionCount.value = topic?.partitions ?? 0
   messages.value = []
   messagePartition.value = -1
+  // Reset jobs when topic changes
+  jobsList.value = []
+  selectedJob.value = null
+  jobsDiag.value = { primaryFetched: -1, dlqFetched: 0, error: '' }
   if (topic && !testConsumerTopic.value) {
     testConsumerTopic.value = topic.name
   }
-  if (topic && !traceDlqTopics.value && !isKafkaInternalTopic(topic.name)) {
+  // Always reset DLQ suggestions to match the new topic
+  if (topic && !isKafkaInternalTopic(topic.name)) {
     traceDlqTopics.value = `${topic.name}.dlq\n${topic.name}.failed`
+    jobsRetryTopics.value = `${topic.name}.retry`
   }
 })
 </script>
@@ -1836,16 +1850,29 @@ watch(selectedTopic, (topic) => {
               <div><strong>Internal topic</strong><p>Select a regular application topic to view jobs.</p></div>
             </div>
 
-            <!-- Empty state -->
-            <div v-else-if="!loadingJobs && !jobsList.length && selectedTopic" class="jobs-empty">
-              <p>No jobs found. Click <strong>Refresh</strong> to load jobs from this topic.</p>
-              <p class="kafka-muted">Configure DLQ and Retry topics above to see failed/retrying jobs.</p>
-            </div>
-
             <!-- Loading -->
             <div v-else-if="loadingJobs" class="kafka-muted" style="padding:24px;display:flex;align-items:center;gap:8px">
               <svg class="spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
               Loading jobs from topic and DLQ…
+            </div>
+
+            <!-- Empty state -->
+            <div v-else-if="!loadingJobs && !jobsList.length && selectedTopic" class="jobs-empty">
+              <template v-if="jobsDiag.error">
+                <p style="color:var(--red)">{{ jobsDiag.error }}</p>
+              </template>
+              <template v-else-if="jobsDiag.primaryFetched === 0">
+                <p><strong>Topic has no recent messages.</strong></p>
+                <p class="kafka-muted">The topic exists but returned 0 messages (may be empty or fully consumed). Try increasing the Limit.</p>
+              </template>
+              <template v-else-if="jobsDiag.primaryFetched === -1">
+                <p>Click <strong>Refresh</strong> to load jobs from this topic.</p>
+                <p class="kafka-muted">Configure DLQ and Retry topics above to see failed/retrying jobs.</p>
+              </template>
+              <template v-else>
+                <p>No jobs found — fetched {{ jobsDiag.primaryFetched }} messages, {{ jobsDiag.dlqFetched }} DLQ records.</p>
+                <p class="kafka-muted">Messages may not contain recognisable job fields (job_id, status, etc.).</p>
+              </template>
             </div>
 
             <!-- Jobs workspace (list + detail) -->
@@ -2093,24 +2120,62 @@ watch(selectedTopic, (topic) => {
                   </div>
                 </div>
                 <div class="kafka-stat-grid">
-                  <div><span>State</span><strong>{{ groupDetail.state || 'unknown' }}</strong></div>
-                  <div><span>Members</span><strong>{{ groupDetail.members?.length || 0 }}</strong></div>
-                  <div><span>Tracked Partitions</span><strong>{{ groupDetail.offsets?.length || 0 }}</strong></div>
-                  <div><span>Total Lag</span><strong>{{ groupDetail.total_lag }}</strong></div>
+                  <div>
+                    <span title="Current lifecycle state reported by Kafka (Stable = partitions assigned, Empty = no active consumers, Dead = group is being removed)">State ⓘ</span>
+                    <strong>{{ groupDetail.state || 'unknown' }}</strong>
+                  </div>
+                  <div>
+                    <span title="Number of active application instances (pods/processes) currently connected to this group. Each member holds one or more partition assignments.">Members ⓘ</span>
+                    <strong>{{ groupDetail.members?.length || 0 }}</strong>
+                    <small v-if="groupDetail.members?.length" style="font-size:10px;color:var(--text-muted);font-weight:400">active instances</small>
+                  </div>
+                  <div>
+                    <span title="Number of topic-partitions this group has committed offsets for. 0 means consumers haven't committed a checkpoint yet (may use auto-commit or just started).">Tracked Partitions ⓘ</span>
+                    <strong>{{ groupDetail.offsets?.length || 0 }}</strong>
+                  </div>
+                  <div>
+                    <span title="Total number of messages this group is behind across all tracked partitions. 0 = fully caught up.">Total Lag ⓘ</span>
+                    <strong>{{ groupDetail.total_lag }}</strong>
+                  </div>
                 </div>
+
+                <!-- Members breakdown -->
+                <details v-if="groupDetail.members?.length" class="kafka-table-card kafka-collapsible">
+                  <summary>
+                    <span class="kafka-card-title">Active Members ({{ groupDetail.members.length }} instances)</span>
+                  </summary>
+                  <table class="kafka-table">
+                    <thead><tr><th>Client ID</th><th>Host</th><th>Assigned Partitions</th></tr></thead>
+                    <tbody>
+                      <tr v-for="member in groupDetail.members" :key="member.member_id">
+                        <td style="font-family:var(--mono);font-size:11px">{{ member.client_id }}</td>
+                        <td style="font-family:var(--mono);font-size:11px;color:var(--text-muted)">{{ member.client_host }}</td>
+                        <td style="font-size:11px">
+                          <span v-if="!member.assignments?.length" style="color:var(--text-muted)">none assigned</span>
+                          <span v-else>
+                            <span v-for="a in member.assignments" :key="a.topic">
+                              {{ a.topic }}: [{{ a.partitions.join(', ') }}]
+                            </span>
+                          </span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </details>
+
                 <details class="kafka-table-card kafka-collapsible" open>
                   <summary>
                     <span class="kafka-card-title">Offsets</span>
                   </summary>
                   <table class="kafka-table">
-                    <thead><tr><th>Topic</th><th>Partition</th><th>Committed</th><th>Latest</th><th>Lag</th></tr></thead>
+                    <thead><tr><th>Topic</th><th>Partition</th><th title="Last offset this consumer committed (checkpoint position)">Committed ⓘ</th><th title="Latest offset written to this partition">Latest ⓘ</th><th title="How many messages behind (Latest - Committed). 0 = fully caught up.">Lag ⓘ</th></tr></thead>
                     <tbody>
                       <tr v-for="offset in groupDetail.offsets" :key="`${offset.topic}:${offset.partition}`">
                         <td>{{ offset.topic }}</td>
                         <td>{{ offset.partition }}</td>
                         <td>{{ offset.committed_offset }}</td>
                         <td>{{ offset.latest_offset }}</td>
-                        <td>{{ offset.lag }}</td>
+                        <td :style="offset.lag > 0 ? 'color:var(--danger,#ef4444);font-weight:600' : 'color:#22c55e'">{{ offset.lag }}</td>
                       </tr>
                     </tbody>
                   </table>
@@ -3939,6 +4004,8 @@ watch(selectedTopic, (topic) => {
   font-size: 20px;
   overflow-wrap: anywhere;
 }
+.kafka-stat-grid div { display: flex; flex-direction: column; }
+.kafka-stat-grid span[title] { cursor: help; }
 
 .kafka-table-card {
   border: 1px solid var(--border);

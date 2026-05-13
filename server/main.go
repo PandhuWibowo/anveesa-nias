@@ -379,6 +379,10 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermKafkaView)(handlers.KafkaGroupDetailHandler())(w, r)
 			case sub == "kafka" && len(parts) >= 3 && parts[2] == "groups-health" && r.Method == http.MethodGet:
 				requireAny(handlers.PermKafkaView)(handlers.KafkaGroupsHealth())(w, r)
+			case sub == "db-logs" && len(parts) >= 4 && parts[3] == "slow-queries" && r.Method == http.MethodGet:
+				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.DBSlowQueries())(w, r)
+			case sub == "db-logs" && len(parts) >= 4 && parts[3] == "error-logs" && r.Method == http.MethodGet:
+				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.DBErrorLogs())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "info" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchInfo())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "indices" && r.Method == http.MethodGet:

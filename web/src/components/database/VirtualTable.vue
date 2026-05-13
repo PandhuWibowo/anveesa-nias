@@ -11,6 +11,8 @@ interface Props {
   selectable?: boolean
   connId?: number | null
   tableName?: string
+  editable?: boolean
+  pkColumn?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -18,6 +20,8 @@ const props = withDefaults(defineProps<Props>(), {
   loading: false,
   showRowNumbers: true,
   selectable: false,
+  editable: false,
+  pkColumn: '',
 })
 
 const emit = defineEmits<{
@@ -25,7 +29,87 @@ const emit = defineEmits<{
   (e: 'bulk-delete', rows: unknown[][]): void
   (e: 'bulk-export', rows: unknown[][], format: 'csv' | 'json'): void
   (e: 'profile-column', column: string): void
+  (e: 'save-row', payload: { rowIdx: number; pkValue: unknown; changes: Record<string, unknown> }): void
+  (e: 'dirty-change', hasDirty: boolean): void
 }>()
+
+// ── Inline editing ────────────────────────────────────────────────────────────
+
+interface EditingCell { rowIdx: number; colIdx: number; value: string }
+const editingCell = ref<EditingCell | null>(null)
+// keyed by the original row index (not display index after sort)
+const dirtyRows = ref<Map<number, Record<string, unknown>>>(new Map())
+
+function realRowIdx(displayIdx: number): number {
+  // If sorted, displayRows is a sorted copy; map back to original props.rows index
+  if (!sortCol.value) return displayIdx
+  const row = displayRows.value[displayIdx]
+  return props.rows.indexOf(row)
+}
+
+function startEdit(displayIdx: number, colIdx: number, currentVal: unknown) {
+  if (!props.editable) return
+  editingCell.value = { rowIdx: displayIdx, colIdx, value: String(currentVal ?? '') }
+}
+
+function commitEdit() {
+  if (!editingCell.value) return
+  const { rowIdx, colIdx, value } = editingCell.value
+  const col = props.columns[colIdx]
+  const origIdx = realRowIdx(rowIdx)
+  if (!dirtyRows.value.has(origIdx)) dirtyRows.value.set(origIdx, {})
+  dirtyRows.value.get(origIdx)![col] = value
+  dirtyRows.value = new Map(dirtyRows.value) // trigger reactivity
+  editingCell.value = null
+  emit('dirty-change', dirtyRows.value.size > 0)
+}
+
+function discardRow(displayIdx: number) {
+  const origIdx = realRowIdx(displayIdx)
+  dirtyRows.value.delete(origIdx)
+  dirtyRows.value = new Map(dirtyRows.value)
+  emit('dirty-change', dirtyRows.value.size > 0)
+}
+
+function saveRow(displayIdx: number) {
+  const origIdx = realRowIdx(displayIdx)
+  const row = props.rows[origIdx]
+  const pkIdx = props.pkColumn ? props.columns.indexOf(props.pkColumn) : 0
+  const pkValue = pkIdx >= 0 ? row[pkIdx] : row[0]
+  const changes = dirtyRows.value.get(origIdx) ?? {}
+  emit('save-row', { rowIdx: origIdx, pkValue, changes })
+  dirtyRows.value.delete(origIdx)
+  dirtyRows.value = new Map(dirtyRows.value)
+  emit('dirty-change', dirtyRows.value.size > 0)
+}
+
+function saveAllRows() {
+  for (const [origIdx] of dirtyRows.value) {
+    const displayIdx = sortCol.value
+      ? displayRows.value.findIndex(r => props.rows.indexOf(r) === origIdx)
+      : origIdx
+    saveRow(displayIdx >= 0 ? displayIdx : origIdx)
+  }
+}
+
+function discardAllRows() {
+  dirtyRows.value = new Map()
+  emit('dirty-change', false)
+}
+
+// Display value: prefer dirty edit over original
+function displayVal(displayIdx: number, colIdx: number, origVal: unknown): unknown {
+  const origIdx = realRowIdx(displayIdx)
+  const dirty = dirtyRows.value.get(origIdx)
+  if (dirty && props.columns[colIdx] in dirty) return dirty[props.columns[colIdx]]
+  return origVal
+}
+
+// Clear dirty state when rows prop changes (new query result)
+watch(() => props.rows, () => {
+  dirtyRows.value = new Map()
+  editingCell.value = null
+})
 
 // Multi-row selection
 const selectedIndices = ref(new Set<number>())
@@ -247,6 +331,17 @@ function autoFitCol(col: string) {
 
     <!-- Table -->
     <template v-else>
+      <!-- Edit-mode banner -->
+      <div v-if="editable" class="vt-edit-banner">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        Edit mode — double-click any cell to edit
+        <template v-if="dirtyRows.size > 0">
+          · <strong>{{ dirtyRows.size }} unsaved row{{ dirtyRows.size > 1 ? 's' : '' }}</strong>
+          <button class="vt-edit-save-all" @click="saveAllRows">Save all</button>
+          <button class="vt-edit-discard-all" @click="discardAllRows">Discard all</button>
+        </template>
+      </div>
+
       <!-- Bulk action toolbar -->
       <div v-if="selectable && selectedIndices.size > 0" class="vt-bulk-bar">
         <span class="vt-bulk-count">{{ selectedIndices.size }} selected</span>
@@ -309,8 +404,11 @@ function autoFitCol(col: string) {
               v-for="(row, i) in displayVisible"
               :key="displayStart + i"
               class="vt-row"
-              :class="{ 'vt-row--selected': selectable && selectedIndices.has(displayStart + i) }"
-              :style="{ height: rowHeight + 'px' }"
+              :class="{
+                'vt-row--selected': selectable && selectedIndices.has(displayStart + i),
+                'vt-row--dirty': editable && dirtyRows.has(realRowIdx(displayStart + i)),
+              }"
+              :style="{ height: editable && dirtyRows.has(realRowIdx(displayStart + i)) ? 'auto' : rowHeight + 'px', minHeight: rowHeight + 'px' }"
             >
               <div v-if="selectable" class="vt-cell vt-cell--check" @click.stop>
                 <input type="checkbox" :checked="selectedIndices.has(displayStart + i)" @change="toggleRow(i)" />
@@ -322,12 +420,37 @@ function autoFitCol(col: string) {
                 v-for="(val, cIdx) in row"
                 :key="cIdx"
                 class="vt-cell"
-                :class="cellCls(val)"
+                :class="[
+                  cellCls(displayVal(displayStart + i, cIdx, val)),
+                  editable && dirtyRows.has(realRowIdx(displayStart + i)) && columns[cIdx] in (dirtyRows.get(realRowIdx(displayStart + i)) ?? {}) ? 'vt-cell--edited' : '',
+                ]"
                 :style="colStyle(columns[cIdx])"
-                :title="formatCell(val)"
-                @click="openInspector(displayStart + i, cIdx)"
+                :title="editable ? 'Double-click to edit' : formatCell(val)"
+                @click="editable ? undefined : openInspector(displayStart + i, cIdx)"
+                @dblclick="editable ? startEdit(displayStart + i, cIdx, displayVal(displayStart + i, cIdx, val)) : undefined"
               >
-                {{ formatCell(val) }}
+                <!-- Editing input -->
+                <input
+                  v-if="editable && editingCell?.rowIdx === displayStart + i && editingCell?.colIdx === cIdx"
+                  class="vt-edit-input"
+                  :value="editingCell.value"
+                  @input="editingCell!.value = ($event.target as HTMLInputElement).value"
+                  @blur="commitEdit"
+                  @keydown.enter.prevent="commitEdit"
+                  @keydown.escape.prevent="editingCell = null"
+                  @click.stop
+                  autofocus
+                />
+                <template v-else>{{ formatCell(displayVal(displayStart + i, cIdx, val)) }}</template>
+              </div>
+              <!-- Row save/discard actions (shown when row is dirty) -->
+              <div
+                v-if="editable && dirtyRows.has(realRowIdx(displayStart + i))"
+                class="vt-cell vt-row-actions"
+                @click.stop
+              >
+                <button class="vt-row-save" @click="saveRow(displayStart + i)">Save</button>
+                <button class="vt-row-discard" @click="discardRow(displayStart + i)">✕</button>
               </div>
             </div>
           </div>
@@ -339,8 +462,12 @@ function autoFitCol(col: string) {
         <span>{{ rows.length.toLocaleString() }} rows</span>
         <span v-if="selectable && selectedIndices.size > 0"> · <strong>{{ selectedIndices.size }}</strong> selected</span>
         <span v-if="sortCol"> · sorted by <strong>{{ sortCol }}</strong> {{ sortDir }}</span>
+        <span v-if="editable && dirtyRows.size > 0" style="color:var(--warning)"> · {{ dirtyRows.size }} unsaved</span>
         <span style="flex:1"/>
-        <span style="font-size:10.5px;color:var(--text-muted)">Click cell to inspect · Click column to sort<template v-if="selectable"> · Check rows to select</template></span>
+        <span style="font-size:10.5px;color:var(--text-muted)">
+          <template v-if="editable">Double-click cell to edit · Enter/blur to confirm · Esc to cancel</template>
+          <template v-else>Click cell to inspect · Click column to sort<template v-if="selectable"> · Check rows to select</template></template>
+        </span>
       </div>
     </template>
 
@@ -487,4 +614,54 @@ function autoFitCol(col: string) {
 .vt-num { color: #60a5fa; justify-content: flex-end; }
 .vt-bool { color: #c084fc; }
 .vt-sort-icon { font-size: 10px; margin-left: 4px; opacity: 0.6; }
+
+/* Edit mode */
+.vt-edit-banner {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+  padding: 5px 12px; font-size: 12px; font-weight: 500;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  color: var(--accent);
+}
+.vt-edit-save-all {
+  padding: 2px 10px; font-size: 11.5px; font-weight: 600;
+  background: var(--accent); color: #fff; border: none;
+  border-radius: 5px; cursor: pointer;
+}
+.vt-edit-discard-all {
+  padding: 2px 10px; font-size: 11.5px; font-weight: 600;
+  background: none; color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: 5px; cursor: pointer;
+}
+.vt-row--dirty { background: color-mix(in srgb, #f59e0b 6%, transparent) !important; }
+.vt-row--dirty:hover { background: color-mix(in srgb, #f59e0b 10%, transparent) !important; }
+.vt-cell--edited {
+  background: color-mix(in srgb, #f59e0b 12%, transparent);
+  color: #d97706 !important;
+  font-weight: 600;
+}
+.vt-edit-input {
+  width: 100%; height: 100%; border: none; outline: none;
+  background: var(--bg);
+  color: var(--text);
+  font-size: inherit; font-family: inherit;
+  padding: 0 4px;
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.vt-row-actions {
+  display: flex; align-items: center; gap: 4px;
+  flex: none; width: auto; min-width: auto; max-width: none;
+  padding: 0 8px;
+}
+.vt-row-save {
+  padding: 2px 8px; font-size: 11px; font-weight: 700;
+  background: var(--accent); color: #fff; border: none;
+  border-radius: 4px; cursor: pointer; white-space: nowrap;
+}
+.vt-row-discard {
+  padding: 2px 6px; font-size: 11px;
+  background: none; color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+}
 </style>

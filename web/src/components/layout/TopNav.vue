@@ -130,6 +130,7 @@ const allMenuGroups: MenuGroup[] = [
     items: [
       { name: 'dashboard',        label: 'Overview',        desc: 'Connection footprint, size, and slow-query pressure across environments', icon: 'dashboard',   section: 'Monitoring', permissionsAny: ['operations.view'] },
       { name: 'query-performance',label: 'Query Performance',desc: 'Slow queries, errors, and execution trends', icon: 'performance',  section: 'Monitoring', permissionsAny: ['performance.view'] },
+      { name: 'database-logs',    label: 'DB Logs',         desc: 'Slow query log, error log, and SQL audit',   icon: 'audit',        section: 'Monitoring', permissionsAny: ['schema.browse', 'connections.view'] },
       { name: 'database-audit',   label: 'DB Audit',        desc: 'Live sessions and external access signals', icon: 'shieldlog',    section: 'Monitoring', permissionsAny: ['databaseaudit.view'] },
       { name: 'audit',            label: 'Audit Log',       desc: 'Track access, actions, and query events', icon: 'audit',         section: 'Monitoring', permissionsAny: ['audit.view'] },
       { name: 'health',           label: 'Health',          desc: 'Connection and service health status', icon: 'health',           section: 'Monitoring', permissionsAny: ['health.view'] },
