@@ -379,10 +379,24 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermKafkaView)(handlers.KafkaGroupDetailHandler())(w, r)
 			case sub == "kafka" && len(parts) >= 3 && parts[2] == "groups-health" && r.Method == http.MethodGet:
 				requireAny(handlers.PermKafkaView)(handlers.KafkaGroupsHealth())(w, r)
-			case sub == "db-logs" && len(parts) >= 4 && parts[3] == "slow-queries" && r.Method == http.MethodGet:
+			case sub == "db-logs" && len(parts) >= 3 && parts[2] == "slow-queries" && r.Method == http.MethodGet:
 				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.DBSlowQueries())(w, r)
-			case sub == "db-logs" && len(parts) >= 4 && parts[3] == "error-logs" && r.Method == http.MethodGet:
+			case sub == "db-logs" && len(parts) >= 3 && parts[2] == "error-logs" && r.Method == http.MethodGet:
 				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.DBErrorLogs())(w, r)
+			case sub == "cloud-config" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView)(handlers.GetCloudConfig())(w, r)
+			case sub == "cloud-config" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit)(handlers.SaveCloudConfig())(w, r)
+			case sub == "cloud-config" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermConnectionsEdit)(handlers.DeleteCloudConfig())(w, r)
+			case sub == "cloud-logs" && len(parts) >= 3 && parts[2] == "error-logs" && r.Method == http.MethodGet:
+				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.CloudErrorLogs())(w, r)
+			case sub == "cloud-logs" && len(parts) >= 3 && parts[2] == "slow-logs" && r.Method == http.MethodGet:
+				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.CloudSlowLogs())(w, r)
+			case sub == "cloud-logs" && len(parts) >= 3 && parts[2] == "audit-logs" && r.Method == http.MethodGet:
+				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.CloudAuditLogs())(w, r)
+			case sub == "cloud-logs" && len(parts) >= 3 && parts[2] == "audit-log-links" && r.Method == http.MethodPost:
+				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.CloudAuditLogLinks())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "info" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchInfo())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "indices" && r.Method == http.MethodGet:

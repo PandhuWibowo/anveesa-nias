@@ -47,16 +47,31 @@ axios.interceptors.request.use((config) => {
   return config
 })
 
-// Handle 401 responses (expired/invalid token)
+// Handle 401/423 responses — only clear auth for real session failures,
+// not for permission-denied 401s from resource endpoints (which would cascade-logout the user).
 axios.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401 || error.response?.status === 423) {
-      // Clear invalid token
+    const status = error.response?.status
+    const url: string = error.config?.url ?? ''
+
+    if (status === 423) {
+      // Account locked — always clear
       token.value = ''
       user.value = null
       localStorage.removeItem(STORAGE_KEY)
       sessionStorage.removeItem(LEGACY_STORAGE_KEY)
+    } else if (status === 401) {
+      // Only clear auth when the 401 comes from core auth endpoints.
+      // Resource-level 401s (e.g. /api/connections/*/cloud-config) must NOT log the user out
+      // because they may fire before user.value is hydrated on first page load.
+      const isAuthEndpoint = url.startsWith('/api/auth/')
+      if (isAuthEndpoint) {
+        token.value = ''
+        user.value = null
+        localStorage.removeItem(STORAGE_KEY)
+        sessionStorage.removeItem(LEGACY_STORAGE_KEY)
+      }
     }
     return Promise.reject(error)
   }
