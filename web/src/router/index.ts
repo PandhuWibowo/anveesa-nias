@@ -181,27 +181,9 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
         },
         {
-          path: 'observability',
-          name: 'observability',
-          component: () => import('@/views/ObservabilityView.vue'),
-          meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
-        },
-        {
           path: 'discover',
           name: 'discover',
           component: () => import('@/views/DiscoverView.vue'),
-          meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
-        },
-        {
-          path: 'search-watcher',
-          name: 'search-watcher',
-          component: () => import('@/views/SearchWatcherView.vue'),
-          meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
-        },
-        {
-          path: 'service-health',
-          name: 'service-health',
-          component: () => import('@/views/ServiceHealthView.vue'),
           meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
         },
         {
