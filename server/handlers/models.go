@@ -143,6 +143,9 @@ const (
 	PermFoldersManage       = "folders.manage"
 	PermRolesManage         = "roles.manage"
 	PermWorkflowsManage     = "workflows.manage"
+	PermPipelinesView       = "pipelines.view"
+	PermPipelinesManage     = "pipelines.manage"
+	PermPipelinesRun        = "pipelines.run"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -188,6 +191,9 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermFoldersManage, Label: "Manage Folders", Group: "Administration"},
 	{Key: PermRolesManage, Label: "Manage Roles", Group: "Administration"},
 	{Key: PermWorkflowsManage, Label: "Manage Workflows", Group: "Administration"},
+	{Key: PermPipelinesView, Label: "View Data Pipelines", Group: "Data Engineering"},
+	{Key: PermPipelinesManage, Label: "Manage Data Pipelines", Group: "Data Engineering"},
+	{Key: PermPipelinesRun, Label: "Run Data Pipelines", Group: "Data Engineering"},
 }
 
 // PermissionDef describes a single permission for the UI.
