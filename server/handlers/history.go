@@ -25,11 +25,11 @@ func GetHistory() http.HandlerFunc {
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/connections/"), "/")
 		connID, _ := strconv.ParseInt(parts[0], 10, 64)
 
-		rows, err := appdb.DB.Query(`
+		rows, err := appdb.DB.Query(appdb.ConvertQuery(`
 			SELECT id, conn_id, sql, duration_ms, row_count, error, executed_at
 			FROM query_history WHERE conn_id = ?
 			ORDER BY executed_at DESC LIMIT 200
-		`, connID)
+		`), connID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
@@ -67,7 +67,7 @@ func SaveHistory() http.HandlerFunc {
 		}
 
 		res, err := appdb.DB.Exec(
-			`INSERT INTO query_history (conn_id, sql, duration_ms, row_count, error) VALUES (?, ?, ?, ?, ?)`,
+			appdb.ConvertQuery(`INSERT INTO query_history (conn_id, sql, duration_ms, row_count, error) VALUES (?, ?, ?, ?, ?)`),
 			connID, body.SQL, body.DurationMs, body.RowCount, body.Error,
 		)
 		if err != nil {

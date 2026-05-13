@@ -361,13 +361,14 @@ async function exportExcel() { if (!rows.value.length) return; const { downloadE
 // ── Sub-tab + SQL tabs ────────────────────────────────────────────
 type ResultKind = 'query' | 'explain' | 'stream' | 'script' | 'history' | 'saved' | 'error' | 'chart'
 interface PinnedResult { id: string; label: string; columns: string[]; rows: unknown[][] }
-interface SQLViewTab { id: string; label: string; result: SQLPanelPayload | null; activeResultTab: ResultKind; sqlHeight: number; pinnedResults: PinnedResult[]; diffLeft: string; diffRight: string; initialSQL?: string; sqlEditMode?: boolean; sqlEditPkColumn?: string; sqlEditTarget?: SQLEditTarget }
+interface SQLViewTab { id: string; label: string; result: SQLPanelPayload | null; activeResultTab: ResultKind; sqlHeight: number; pinnedResults: PinnedResult[]; diffLeft: string; diffRight: string; initialSQL?: string; sqlEditMode?: boolean; sqlEditPkColumn?: string; sqlEditTarget?: SQLEditTarget; sqlDirtyCount?: number }
 interface SQLEditTarget { db: string; table: string }
 interface PersistedSQLTab { label: string; result: SQLPanelPayload | null; activeResultTab: ResultKind; sqlHeight: number; pinnedResults: PinnedResult[]; diffLeft: string; diffRight: string; sql: string }
 interface PersistedSQLState { tabs: PersistedSQLTab[]; activeIndex: number }
 
 const sqlViewTabs = ref<SQLViewTab[]>([])
 const sqlPanelRefs = ref<Record<string, InstanceType<typeof SQLPanel>>>({})
+const sqlVTableRefs = ref<Record<string, InstanceType<typeof VirtualTable>>>({})
 let sqlTabCounter = 0
 let restoringSQLState = false
 
@@ -562,7 +563,12 @@ function editableTargetForSQLResult(tab: SQLViewTab): SQLEditTarget | null {
   if (!parts.length) return null
   const table = parts[parts.length - 1]
   const explicitDb = parts.length >= 2 ? parts[parts.length - 2] : ''
-  const db = explicitDb || (tab.result as any).database || selected.value?.db || activeConn.value?.database || 'public'
+  // For PostgreSQL the namespace is the *schema* (e.g. "public"), NOT the connection's
+  // database name. Only fall back to the database name for MySQL/MariaDB/MSSQL where
+  // the namespace IS the database name.
+  const isPostgres = activeConn.value?.driver === 'postgres'
+  const dbFallback = isPostgres ? 'public' : (activeConn.value?.database ?? 'public')
+  const db = explicitDb || (tab.result as any).schema || selected.value?.db || dbFallback
   return { db, table }
 }
 
@@ -597,14 +603,29 @@ async function handleSQLResultSaveRow(
 ) {
   const target = tab.sqlEditTarget
   if (!target || !props.connId) return
+  if (!tab.sqlEditPkColumn) {
+    toast.error('Cannot save: no primary key column detected for this table')
+    return
+  }
   try {
+    const body = { pk_column: tab.sqlEditPkColumn, pk_value: payload.pkValue, updates: payload.changes }
+    console.log('[EditRow] PUT', target, body)
     await axios.put(
       `/api/connections/${props.connId}/schema/${target.db}/tables/${target.table}/rows`,
-      { pk_column: tab.sqlEditPkColumn, pk_value: payload.pkValue, updates: payload.changes },
+      body,
     )
     toast.success('Row updated')
   } catch (e: any) {
-    toast.error(e.response?.data?.error ?? 'Update failed')
+    // Backend returns text/plain with a JSON body — parse accordingly
+    const raw = e.response?.data
+    let msg = e.message ?? 'Update failed'
+    if (typeof raw === 'string') {
+      try { msg = JSON.parse(raw)?.error ?? raw } catch { msg = raw }
+    } else if (raw?.error) {
+      msg = raw.error
+    }
+    console.error('[EditRow] save failed:', msg, e.response)
+    toast.error(`Save failed: ${msg}`)
   }
 }
 
@@ -1080,7 +1101,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
                 :class="tab.sqlEditMode ? 'base-btn--primary' : 'base-btn--ghost'"
                 :disabled="!editableTargetForSQLResult(tab)"
                 @click="editSQLResultRows(tab)"
-                :title="tab.sqlEditMode ? 'Exit edit mode' : 'Edit rows inline (double-click a cell to edit)'"
+                :title="tab.sqlEditMode ? 'Exit edit mode' : 'Edit rows inline — double-click a cell to edit'"
               >
                 {{ tab.sqlEditMode ? 'Editing…' : 'Edit Rows' }}
               </button>
@@ -1098,12 +1119,14 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
             </div>
             <template v-else-if="(tab.result.kind==='query'||tab.result.kind==='stream')&&tab.activeResultTab!=='chart'">
               <VirtualTable
+                :ref="(el: any) => { if (el) sqlVTableRefs[tab.id] = el; else delete sqlVTableRefs[tab.id] }"
                 :columns="(tab.result as any).columns"
                 :rows="(tab.result as any).rows"
                 :selectable="true"
                 :editable="tab.sqlEditMode ?? false"
                 :pk-column="tab.sqlEditPkColumn ?? ''"
                 @save-row="handleSQLResultSaveRow(tab, $event)"
+                @dirty-change="(n: number) => tab.sqlDirtyCount = n"
               />
             </template>
             <template v-else-if="tab.result.kind==='query'&&tab.activeResultTab==='chart'">

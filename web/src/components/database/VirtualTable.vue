@@ -30,7 +30,7 @@ const emit = defineEmits<{
   (e: 'bulk-export', rows: unknown[][], format: 'csv' | 'json'): void
   (e: 'profile-column', column: string): void
   (e: 'save-row', payload: { rowIdx: number; pkValue: unknown; changes: Record<string, unknown> }): void
-  (e: 'dirty-change', hasDirty: boolean): void
+  (e: 'dirty-change', dirtyCount: number): void
 }>()
 
 // ── Inline editing ────────────────────────────────────────────────────────────
@@ -61,14 +61,14 @@ function commitEdit() {
   dirtyRows.value.get(origIdx)![col] = value
   dirtyRows.value = new Map(dirtyRows.value) // trigger reactivity
   editingCell.value = null
-  emit('dirty-change', dirtyRows.value.size > 0)
+  emit('dirty-change', dirtyRows.value.size)
 }
 
 function discardRow(displayIdx: number) {
   const origIdx = realRowIdx(displayIdx)
   dirtyRows.value.delete(origIdx)
   dirtyRows.value = new Map(dirtyRows.value)
-  emit('dirty-change', dirtyRows.value.size > 0)
+  emit('dirty-change', dirtyRows.value.size)
 }
 
 function saveRow(displayIdx: number) {
@@ -80,11 +80,13 @@ function saveRow(displayIdx: number) {
   emit('save-row', { rowIdx: origIdx, pkValue, changes })
   dirtyRows.value.delete(origIdx)
   dirtyRows.value = new Map(dirtyRows.value)
-  emit('dirty-change', dirtyRows.value.size > 0)
+  emit('dirty-change', dirtyRows.value.size)
 }
 
 function saveAllRows() {
-  for (const [origIdx] of dirtyRows.value) {
+  // snapshot keys before iterating since saveRow mutates the map
+  const keys = [...dirtyRows.value.keys()]
+  for (const origIdx of keys) {
     const displayIdx = sortCol.value
       ? displayRows.value.findIndex(r => props.rows.indexOf(r) === origIdx)
       : origIdx
@@ -94,8 +96,10 @@ function saveAllRows() {
 
 function discardAllRows() {
   dirtyRows.value = new Map()
-  emit('dirty-change', false)
+  emit('dirty-change', 0)
 }
+
+defineExpose({ saveAllRows, discardAllRows })
 
 // Display value: prefer dirty edit over original
 function displayVal(displayIdx: number, colIdx: number, origVal: unknown): unknown {
@@ -332,14 +336,24 @@ function autoFitCol(col: string) {
     <!-- Table -->
     <template v-else>
       <!-- Edit-mode banner -->
-      <div v-if="editable" class="vt-edit-banner">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-        Edit mode — double-click any cell to edit
-        <template v-if="dirtyRows.size > 0">
-          · <strong>{{ dirtyRows.size }} unsaved row{{ dirtyRows.size > 1 ? 's' : '' }}</strong>
-          <button class="vt-edit-save-all" @click="saveAllRows">Save all</button>
-          <button class="vt-edit-discard-all" @click="discardAllRows">Discard all</button>
-        </template>
+      <div v-if="editable" class="vt-edit-banner" :class="{ 'vt-edit-banner--dirty': dirtyRows.size > 0 }">
+        <!-- Left: hint -->
+        <div class="vt-edit-banner__info">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          <span><strong>Edit mode</strong> — double-click a cell to edit, Enter to confirm, Esc to cancel</span>
+        </div>
+        <!-- Right: save actions -->
+        <div class="vt-edit-banner__actions">
+          <template v-if="dirtyRows.size > 0">
+            <span class="vt-edit-unsaved">{{ dirtyRows.size }} unsaved</span>
+            <button class="vt-btn-discard" @click="discardAllRows">Discard</button>
+            <button class="vt-btn-save" @click="saveAllRows">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+              Save {{ dirtyRows.size }} row{{ dirtyRows.size > 1 ? 's' : '' }}
+            </button>
+          </template>
+          <span v-else style="font-size:11.5px;color:var(--text-secondary);opacity:.7">No changes yet</span>
+        </div>
       </div>
 
       <!-- Bulk action toolbar -->
@@ -443,14 +457,13 @@ function autoFitCol(col: string) {
                 />
                 <template v-else>{{ formatCell(displayVal(displayStart + i, cIdx, val)) }}</template>
               </div>
-              <!-- Row save/discard actions (shown when row is dirty) -->
+              <!-- Per-row discard (small, inline) -->
               <div
                 v-if="editable && dirtyRows.has(realRowIdx(displayStart + i))"
                 class="vt-cell vt-row-actions"
                 @click.stop
               >
-                <button class="vt-row-save" @click="saveRow(displayStart + i)">Save</button>
-                <button class="vt-row-discard" @click="discardRow(displayStart + i)">✕</button>
+                <button class="vt-row-discard" title="Discard this row's changes" @click="discardRow(displayStart + i)">✕</button>
               </div>
             </div>
           </div>
@@ -615,24 +628,51 @@ function autoFitCol(col: string) {
 .vt-bool { color: #c084fc; }
 .vt-sort-icon { font-size: 10px; margin-left: 4px; opacity: 0.6; }
 
-/* Edit mode */
+/* Edit mode banner */
 .vt-edit-banner {
-  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
-  padding: 5px 12px; font-size: 12px; font-weight: 500;
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-shrink: 0;
+  padding: 7px 14px;
+  font-size: 12px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
   color: var(--accent);
 }
-.vt-edit-save-all {
-  padding: 2px 10px; font-size: 11.5px; font-weight: 600;
-  background: var(--accent); color: #fff; border: none;
-  border-radius: 5px; cursor: pointer;
+.vt-edit-banner--dirty {
+  background: color-mix(in srgb, #f59e0b 8%, transparent);
+  border-bottom-color: color-mix(in srgb, #f59e0b 30%, transparent);
+  color: #b45309;
 }
-.vt-edit-discard-all {
-  padding: 2px 10px; font-size: 11.5px; font-weight: 600;
+.vt-edit-banner__info {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; flex: 1; min-width: 0;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.vt-edit-banner__actions {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
+.vt-edit-unsaved {
+  font-size: 11.5px; font-weight: 600; color: #d97706;
+  background: rgba(245,158,11,.12); padding: 2px 8px;
+  border-radius: 4px; white-space: nowrap;
+}
+.vt-btn-save {
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 14px; font-size: 12.5px; font-weight: 700;
+  background: #22c55e; color: #fff; border: none;
+  border-radius: 6px; cursor: pointer; white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(34,197,94,.35);
+  transition: opacity .15s;
+}
+.vt-btn-save:hover { opacity: .88; }
+.vt-btn-discard {
+  padding: 5px 12px; font-size: 12px; font-weight: 500;
   background: none; color: var(--text-secondary);
-  border: 1px solid var(--border); border-radius: 5px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 6px;
+  cursor: pointer; white-space: nowrap;
+  transition: background .1s;
 }
+.vt-btn-discard:hover { background: var(--border); }
 .vt-row--dirty { background: color-mix(in srgb, #f59e0b 6%, transparent) !important; }
 .vt-row--dirty:hover { background: color-mix(in srgb, #f59e0b 10%, transparent) !important; }
 .vt-cell--edited {
