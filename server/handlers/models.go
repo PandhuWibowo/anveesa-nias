@@ -143,6 +143,13 @@ const (
 	PermFoldersManage       = "folders.manage"
 	PermRolesManage         = "roles.manage"
 	PermWorkflowsManage     = "workflows.manage"
+	// Observability
+	PermObservabilityView   = "observability.view"
+	PermDiscoverView        = "discover.view"
+	PermUptimeView          = "uptime.view"
+	// Data
+	PermDataExport          = "data.export"
+	PermDataImport          = "data.import"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -188,6 +195,13 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermFoldersManage, Label: "Manage Folders", Group: "Administration"},
 	{Key: PermRolesManage, Label: "Manage Roles", Group: "Administration"},
 	{Key: PermWorkflowsManage, Label: "Manage Workflows", Group: "Administration"},
+	// Observability
+	{Key: PermObservabilityView, Label: "View Observability", Group: "Observability"},
+	{Key: PermDiscoverView, Label: "Access Discover (Log Explorer)", Group: "Observability"},
+	{Key: PermUptimeView, Label: "View Uptime Monitoring", Group: "Observability"},
+	// Data
+	{Key: PermDataExport, Label: "Export Data (CSV / JSON / Excel)", Group: "Data"},
+	{Key: PermDataImport, Label: "Import Data", Group: "Data"},
 }
 
 // PermissionDef describes a single permission for the UI.

@@ -763,7 +763,11 @@ html[data-theme='light'] .statusbar {
   position: relative;
 }
 .data-table {
-  width: 100%;
+  /* table-layout:fixed respects explicit th widths (set by resize handles).
+     min-width:100% ensures it fills the container even with few narrow columns. */
+  table-layout: fixed;
+  min-width: 100%;
+  width: max-content;
   border-collapse: collapse;
   font-size: 12.5px;
   font-family: var(--mono);
@@ -780,12 +784,16 @@ html[data-theme='light'] .statusbar {
   color: var(--text-muted);
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
   white-space: nowrap;
   text-align: left;
   font-family: 'Inter', sans-serif;
   cursor: pointer;
   user-select: none;
+  /* overflow:visible so the resize handle (right:-3px) is not clipped */
+  overflow: visible;
 }
+.data-table thead th:last-child { border-right: none; }
 .data-table thead th:hover { color: var(--text-primary); }
 .data-table thead th.sorted { color: var(--brand); }
 .data-table thead th .sort-icon { margin-left: 4px; opacity: 0.5; }
@@ -803,14 +811,16 @@ html[data-theme='light'] .data-table tbody tr:nth-child(even) td {
 .data-table tbody td {
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
+  border-right: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
   color: var(--text-primary);
   white-space: nowrap;
-  max-width: 320px;
+  max-width: 360px;
   overflow: hidden;
   text-overflow: ellipsis;
   vertical-align: middle;
   font-size: 12.5px;
 }
+.data-table tbody td:last-child { border-right: none; }
 .data-table tbody tr:last-child td { border-bottom: none; }
 
 .td-null { color: var(--text-muted); font-style: italic; }
@@ -1586,7 +1596,7 @@ html[data-theme='light'] .page-tab.is-active {
   }
 
   .data-table {
-    min-width: 640px;
+    min-width: max-content;
   }
 
   input,

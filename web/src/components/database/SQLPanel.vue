@@ -14,7 +14,7 @@ import { useDatabases } from '@/composables/useDatabases'
 import { useSchemaCompletion } from '@/composables/useSchemaCompletion'
 import { useConnections } from '@/composables/useConnections'
 import { formatSQL } from '@/utils/sqlFormat'
-import { downloadCSV, downloadJSON } from '@/utils/export'
+import { downloadCSV, downloadJSON, downloadExcel } from '@/utils/export'
 
 // ── Result payload type (emitted up to DataView) ──────────────────
 export interface ScriptResult {
@@ -417,9 +417,10 @@ async function showSaved() {
 watch(() => props.connId, id => { if (id) fetchSaved() }, { immediate: true })
 
 // ── Export ────────────────────────────────────────────────────────
-function exportCurrentResult(format: 'csv' | 'json', columns: string[], rows: unknown[][]) {
+function exportCurrentResult(format: 'csv' | 'json' | 'excel', columns: string[], rows: unknown[][]) {
   if (format === 'csv') downloadCSV(columns, rows, 'query-results')
-  else downloadJSON(columns, rows, 'query-results')
+  else if (format === 'json') downloadJSON(columns, rows, 'query-results')
+  else downloadExcel(columns, rows, 'query-results')
 }
 
 // ── UI toggles ────────────────────────────────────────────────────
