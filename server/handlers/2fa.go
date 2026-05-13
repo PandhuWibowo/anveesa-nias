@@ -62,7 +62,7 @@ func Setup2FA() http.HandlerFunc {
 
 		// Get username
 		var username string
-		err := appdb.DB.QueryRow(`SELECT username FROM users WHERE id = ?`, userID).Scan(&username)
+		err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT username FROM users WHERE id = ?`), userID).Scan(&username)
 		if err != nil {
 			http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
 			return
@@ -91,7 +91,7 @@ func Setup2FA() http.HandlerFunc {
 		backupCodesJSON, _ := json.Marshal(backupCodes)
 
 		// Save secret (not enabled yet)
-		_, err = appdb.DB.Exec(`UPDATE users SET totp_secret = ?, backup_codes = ? WHERE id = ?`,
+		_, err = appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET totp_secret = ?, backup_codes = ? WHERE id = ?`),
 			key.Secret(), string(backupCodesJSON), userID)
 		if err != nil {
 			http.Error(w, `{"error":"failed to save secret"}`, http.StatusInternalServerError)
@@ -130,7 +130,7 @@ func Enable2FA() http.HandlerFunc {
 
 		// Get secret
 		var secret string
-		err := appdb.DB.QueryRow(`SELECT totp_secret FROM users WHERE id = ?`, userID).Scan(&secret)
+		err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT totp_secret FROM users WHERE id = ?`), userID).Scan(&secret)
 		if err != nil || secret == "" {
 			http.Error(w, `{"error":"2FA not set up"}`, http.StatusBadRequest)
 			return
@@ -144,7 +144,7 @@ func Enable2FA() http.HandlerFunc {
 		}
 
 		// Enable 2FA
-		_, err = appdb.DB.Exec(`UPDATE users SET totp_enabled = 1 WHERE id = ?`, userID)
+		_, err = appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET totp_enabled = 1 WHERE id = ?`), userID)
 		if err != nil {
 			http.Error(w, `{"error":"failed to enable 2FA"}`, http.StatusInternalServerError)
 			return
@@ -182,7 +182,7 @@ func Disable2FA() http.HandlerFunc {
 
 		// Verify password or backup code
 		var storedPassword, backupCodesJSON string
-		err := appdb.DB.QueryRow(`SELECT password, COALESCE(backup_codes, '[]') FROM users WHERE id = ?`, userID).
+		err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT password, COALESCE(backup_codes, '[]') FROM users WHERE id = ?`), userID).
 			Scan(&storedPassword, &backupCodesJSON)
 		if err != nil {
 			http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
@@ -205,20 +205,20 @@ func Disable2FA() http.HandlerFunc {
 					// Remove used backup code
 					backupCodes = append(backupCodes[:i], backupCodes[i+1:]...)
 					newJSON, _ := json.Marshal(backupCodes)
-					appdb.DB.Exec(`UPDATE users SET backup_codes = ? WHERE id = ?`, string(newJSON), userID)
-					verified = true
-					break
-				}
+				appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET backup_codes = ? WHERE id = ?`), string(newJSON), userID)
+				verified = true
+				break
 			}
 		}
+	}
 
-		if !verified {
-			http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
+	if !verified {
+		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 			return
 		}
 
 		// Disable 2FA
-		_, err = appdb.DB.Exec(`UPDATE users SET totp_enabled = 0, totp_secret = NULL, backup_codes = NULL WHERE id = ?`, userID)
+		_, err = appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET totp_enabled = 0, totp_secret = NULL, backup_codes = NULL WHERE id = ?`), userID)
 		if err != nil {
 			http.Error(w, `{"error":"failed to disable 2FA"}`, http.StatusInternalServerError)
 			return
@@ -280,15 +280,15 @@ func Verify2FA() http.HandlerFunc {
 					// Remove used backup code
 					backupCodes = append(backupCodes[:i], backupCodes[i+1:]...)
 					newJSON, _ := json.Marshal(backupCodes)
-					appdb.DB.Exec(`UPDATE users SET backup_codes = ? WHERE id = ?`, string(newJSON), userID)
-					verified = true
-					break
-				}
+				appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET backup_codes = ? WHERE id = ?`), string(newJSON), userID)
+				verified = true
+				break
 			}
 		}
+	}
 
-		if !verified {
-			http.Error(w, `{"error":"invalid code"}`, http.StatusUnauthorized)
+	if !verified {
+		http.Error(w, `{"error":"invalid code"}`, http.StatusUnauthorized)
 			return
 		}
 
@@ -311,7 +311,7 @@ func Get2FAStatus() http.HandlerFunc {
 
 		var totpEnabled int
 		var backupCodesJSON string
-		err := appdb.DB.QueryRow(`SELECT COALESCE(totp_enabled, 0), COALESCE(backup_codes, '[]') FROM users WHERE id = ?`, userID).
+		err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COALESCE(totp_enabled, 0), COALESCE(backup_codes, '[]') FROM users WHERE id = ?`), userID).
 			Scan(&totpEnabled, &backupCodesJSON)
 		if err != nil {
 			http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)

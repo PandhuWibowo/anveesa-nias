@@ -108,7 +108,7 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 			if !totp.Validate(body.TotpCode, totpSecret) {
 				// Check backup codes
 				var backupCodesJSON string
-				appdb.DB.QueryRow(`SELECT COALESCE(backup_codes, '[]') FROM users WHERE id = ?`, id).Scan(&backupCodesJSON)
+				appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COALESCE(backup_codes, '[]') FROM users WHERE id = ?`), id).Scan(&backupCodesJSON)
 
 				var backupCodes []string
 				json.Unmarshal([]byte(backupCodesJSON), &backupCodes)
@@ -119,7 +119,7 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 						// Remove used backup code
 						backupCodes = append(backupCodes[:i], backupCodes[i+1:]...)
 						newJSON, _ := json.Marshal(backupCodes)
-						appdb.DB.Exec(`UPDATE users SET backup_codes = ? WHERE id = ?`, string(newJSON), id)
+						appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET backup_codes = ? WHERE id = ?`), string(newJSON), id)
 						valid = true
 						break
 					}

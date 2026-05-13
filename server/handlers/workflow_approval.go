@@ -540,7 +540,7 @@ func UpdateApprovalRequest() http.HandlerFunc {
 
 		resolveRole := role
 		var creatorRole string
-		if err := appdb.DB.QueryRow(`SELECT role FROM users WHERE id = ?`, req.CreatorID).Scan(&creatorRole); err == nil && creatorRole != "" {
+		if err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT role FROM users WHERE id = ?`), req.CreatorID).Scan(&creatorRole); err == nil && creatorRole != "" {
 			resolveRole = creatorRole
 		}
 		workflowID, err := resolveWorkflowID(req.CreatorID, resolveRole, body.ConnID, body.WorkflowID)
