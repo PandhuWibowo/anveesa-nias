@@ -950,6 +950,21 @@ func migrate() error {
 			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_search_app_policies_conn ON search_app_policies(conn_id)`,
+
+		// ── Cloud Provider Configs (Huawei RDS, AWS RDS log integration) ──
+		`CREATE TABLE IF NOT EXISTS cloud_provider_configs (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			conn_id      INTEGER NOT NULL UNIQUE REFERENCES connections(id) ON DELETE CASCADE,
+			provider     TEXT NOT NULL DEFAULT 'huawei',
+			region       TEXT NOT NULL DEFAULT '',
+			project_id   TEXT NOT NULL DEFAULT '',
+			instance_id  TEXT NOT NULL DEFAULT '',
+			access_key   TEXT NOT NULL DEFAULT '',
+			secret_key   TEXT NOT NULL DEFAULT '',
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cloud_provider_configs_conn ON cloud_provider_configs(conn_id)`,
 	}
 	for _, s := range stmts {
 		convertedSQL := convertSQL(s)

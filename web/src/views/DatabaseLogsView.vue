@@ -2,6 +2,11 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
+import { useAuth } from '@/composables/useAuth'
+
+defineOptions({ inheritAttrs: false })
+
+const { authReady } = useAuth()
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -17,6 +22,13 @@ interface SlowQueryRow {
   max_ms: number
   total_ms: number
   rows: number
+  // Huawei-specific fields
+  exec_time?: string       // raw string e.g. "1.04899 s"
+  lock_time?: string
+  rows_sent?: string
+  rows_examined?: string
+  client_ip?: string
+  start_time?: string
 }
 
 interface SlowQueryResponse {
@@ -39,6 +51,13 @@ interface ErrorLogRow {
   app_name: string
   remote_host: string
   sql_state: string
+  // parsed from Huawei content field
+  parsed_host?: string
+  parsed_user?: string
+  parsed_db?: string
+  parsed_app?: string
+  parsed_pid?: string
+  parsed_msg?: string
 }
 
 interface ErrorLogResponse {
@@ -59,6 +78,78 @@ const selectedConnId = ref<number | null>(null)
 type Tab = 'slow' | 'error' | 'audit'
 const activeTab = ref<Tab>('slow')
 
+// ── Cloud Provider Config ─────────────────────────────────────────────
+
+interface CloudConfig {
+  provider: string
+  region: string
+  project_id: string
+  instance_id: string
+  access_key: string
+  secret_key: string
+}
+
+const cloudConfigured = ref(false)
+const showCloudModal = ref(false)
+const cloudSaving = ref(false)
+const cloudForm = ref<CloudConfig>({
+  provider: 'huawei',
+  region: '',
+  project_id: '',
+  instance_id: '',
+  access_key: '',
+  secret_key: '',
+})
+
+async function loadCloudConfig() {
+  if (!selectedConnId.value) return
+  // Wait until the auth state is hydrated so we don't fire before the token is ready
+  if (!authReady.value) {
+    await new Promise<void>((resolve) => {
+      const stop = watch(authReady, (ready) => { if (ready) { stop(); resolve() } })
+    })
+  }
+  try {
+    const { data } = await axios.get(`/api/connections/${selectedConnId.value}/cloud-config`)
+    cloudConfigured.value = data.configured ?? false
+    if (data.config) {
+      cloudForm.value = {
+        provider: data.config.provider ?? 'huawei',
+        region: data.config.region ?? '',
+        project_id: data.config.project_id ?? '',
+        instance_id: data.config.instance_id ?? '',
+        access_key: data.config.access_key ?? '',
+        secret_key: '',
+      }
+    }
+  } catch {
+    cloudConfigured.value = false
+  }
+}
+
+async function saveCloudConfig() {
+  if (!selectedConnId.value) return
+  cloudSaving.value = true
+  try {
+    await axios.post(`/api/connections/${selectedConnId.value}/cloud-config`, cloudForm.value)
+    cloudConfigured.value = true
+    showCloudModal.value = false
+    loadErrorLogs()
+  } catch (e: any) {
+    alert('Failed to save: ' + (e?.response?.data?.error ?? e.message))
+  } finally {
+    cloudSaving.value = false
+  }
+}
+
+async function deleteCloudConfig() {
+  if (!selectedConnId.value || !confirm('Remove cloud provider config?')) return
+  await axios.delete(`/api/connections/${selectedConnId.value}/cloud-config`)
+  cloudConfigured.value = false
+  cloudForm.value = { provider: 'huawei', region: '', project_id: '', instance_id: '', access_key: '', secret_key: '' }
+  loadErrorLogs()
+}
+
 // ── Slow Query state ─────────────────────────────────────────────────
 
 const slowRows = ref<SlowQueryRow[]>([])
@@ -72,6 +163,8 @@ const slowLimit = ref(25)
 const slowDbFilter = ref('')
 const slowUserFilter = ref('')
 const slowStmtFilter = ref('')
+const slowFrom = ref('')
+const slowTo = ref('')
 const selectedSlow = ref<SlowQueryRow | null>(null)
 
 const slowFiltered = computed(() => {
@@ -86,22 +179,60 @@ async function loadSlowQueries() {
   slowLoading.value = true
   slowNotice.value = ''
   try {
-    const { data } = await axios.get<SlowQueryResponse>(
-      `/api/connections/${selectedConnId.value}/db-logs/slow-queries`,
-      {
-        params: {
-          threshold_ms: slowThreshold.value,
-          limit: slowLimit.value,
-          page: slowPage.value,
-          db: slowDbFilter.value || undefined,
-          user: slowUserFilter.value || undefined,
+    if (cloudConfigured.value) {
+      const { data } = await axios.get(
+        `/api/connections/${selectedConnId.value}/cloud-logs/slow-logs`,
+        {
+          params: {
+            limit: slowLimit.value,
+            page: slowPage.value,
+            type: slowStmtFilter.value || undefined,
+            from: slowFrom.value ? slowFrom.value + 'T00:00:00+0000' : undefined,
+            to: slowTo.value ? slowTo.value + 'T23:59:59+0000' : undefined,
+          },
         },
-      },
-    )
-    slowRows.value = data.rows ?? []
-    slowTotal.value = data.total ?? 0
-    slowSource.value = data.source ?? ''
-    slowNotice.value = data.notice ?? ''
+      )
+      // Huawei returns { slow_log_list: [...], total_record: N }
+      const list = data.slow_log_list ?? []
+      slowRows.value = list.map((r: any): SlowQueryRow => ({
+        query_id: '',
+        query: r.query_sample ?? '',
+        statement_type: r.type ?? '',
+        database: r.database ?? '',
+        username: r.users ?? '',
+        calls: parseInt(r.count ?? '1', 10) || 1,
+        avg_ms: parseHuaweiDuration(r.time),
+        min_ms: 0,
+        max_ms: parseHuaweiDuration(r.time),
+        total_ms: parseHuaweiDuration(r.time) * (parseInt(r.count ?? '1', 10) || 1),
+        rows: parseInt(r.rows_sent ?? '0', 10) || 0,
+        exec_time: r.time,
+        lock_time: r.lock_time,
+        rows_sent: r.rows_sent,
+        rows_examined: r.rows_examined,
+        client_ip: r.client_ip,
+        start_time: r.start_time,
+      }))
+      slowTotal.value = data.total_record ?? list.length
+      slowSource.value = 'Huawei RDS API'
+    } else {
+      const { data } = await axios.get<SlowQueryResponse>(
+        `/api/connections/${selectedConnId.value}/db-logs/slow-queries`,
+        {
+          params: {
+            threshold_ms: slowThreshold.value,
+            limit: slowLimit.value,
+            page: slowPage.value,
+            db: slowDbFilter.value || undefined,
+            user: slowUserFilter.value || undefined,
+          },
+        },
+      )
+      slowRows.value = data.rows ?? []
+      slowTotal.value = data.total ?? 0
+      slowSource.value = data.source ?? ''
+      slowNotice.value = data.notice ?? ''
+    }
   } catch (e: any) {
     slowNotice.value = e?.response?.data?.error || e?.message || 'Failed to load slow queries'
     slowRows.value = []
@@ -150,24 +281,69 @@ async function loadErrorLogs() {
   errorLoading.value = true
   errorNotice.value = ''
   try {
-    const { data } = await axios.get<ErrorLogResponse>(
-      `/api/connections/${selectedConnId.value}/db-logs/error-logs`,
-      {
-        params: {
-          limit: errorLimit.value,
-          page: errorPage.value,
-          level: errorLevels.value.length ? errorLevels.value.join(',') : undefined,
-          from: errorFrom.value || undefined,
-          to: errorTo.value || undefined,
+    if (cloudConfigured.value) {
+      // Fetch from Huawei Cloud API proxy
+      const { data } = await axios.get(
+        `/api/connections/${selectedConnId.value}/cloud-logs/error-logs`,
+        {
+          params: {
+            limit: errorLimit.value,
+            page: errorPage.value,
+            level: errorLevels.value.length ? errorLevels.value[0] : undefined,
+            from: errorFrom.value ? errorFrom.value + 'T00:00:00+0000' : undefined,
+            to: errorTo.value ? errorTo.value + 'T23:59:59+0000' : undefined,
+          },
         },
-      },
-    )
-    errorRows.value = data.rows ?? []
-    errorTotal.value = data.total ?? 0
-    errorSource.value = data.source ?? ''
-    errorNotice.value = data.notice ?? ''
+      )
+      // Huawei returns { error_log_list: [...], total_record: N }
+      const list = data.error_log_list ?? []
+      errorRows.value = list.map((r: any): ErrorLogRow => {
+        const parsed = parseHuaweiLogContent(r.content ?? '')
+        return {
+          log_time: r.time ?? '',
+          severity: r.level ?? 'ERROR',
+          message: r.content ?? '',
+          detail: '', hint: '', query: '',
+          username: parsed.user,
+          database_name: parsed.db,
+          app_name: parsed.app,
+          remote_host: parsed.host,
+          sql_state: '',
+          parsed_host: parsed.host,
+          parsed_user: parsed.user,
+          parsed_db: parsed.db,
+          parsed_app: parsed.app,
+          parsed_pid: parsed.pid,
+          parsed_msg: parsed.msg,
+        }
+      })
+      errorTotal.value = data.total_record ?? list.length
+      errorSource.value = 'Huawei RDS API'
+    } else {
+      // Fetch from pg_catalog.pg_log / pg_read_file
+      const { data } = await axios.get<ErrorLogResponse>(
+        `/api/connections/${selectedConnId.value}/db-logs/error-logs`,
+        {
+          params: {
+            limit: errorLimit.value,
+            page: errorPage.value,
+            level: errorLevels.value.length ? errorLevels.value.join(',') : undefined,
+            from: errorFrom.value || undefined,
+            to: errorTo.value || undefined,
+          },
+        },
+      )
+      errorRows.value = data.rows ?? []
+      errorTotal.value = data.total ?? 0
+      errorSource.value = data.source ?? ''
+      errorNotice.value = data.notice ?? ''
+    }
   } catch (e: any) {
-    errorNotice.value = e?.response?.data?.error || e?.message || 'Failed to load error logs'
+    const raw = e?.response?.data
+    let msg = e?.message ?? 'Failed to load error logs'
+    if (typeof raw === 'string') { try { msg = JSON.parse(raw)?.error ?? raw } catch { msg = raw } }
+    else if (raw?.error) msg = raw.error
+    errorNotice.value = msg
     errorRows.value = []
   } finally {
     errorLoading.value = false
@@ -197,6 +373,16 @@ interface AuditRow {
   error?: string
 }
 
+interface CloudAuditFile {
+  id: string
+  name: string
+  size: number      // KB
+  begin_time: string
+  end_time: string
+  downloading?: boolean
+  downloadUrl?: string
+}
+
 const auditRows = ref<AuditRow[]>([])
 const auditLoading = ref(false)
 const auditNotice = ref('')
@@ -206,6 +392,17 @@ const auditTotal = ref(0)
 const auditSearch = ref('')
 const selectedAudit = ref<AuditRow | null>(null)
 const auditTotalPages = computed(() => Math.max(1, Math.ceil(auditTotal.value / auditLimit.value)))
+
+// Cloud audit state
+const cloudAuditFiles = ref<CloudAuditFile[]>([])
+const cloudAuditTotal = ref(0)
+const cloudAuditPage = ref(0)  // offset-based, 0-indexed
+const cloudAuditLimit = ref(50)
+const cloudAuditFrom = ref('')
+const cloudAuditTo = ref('')
+const cloudAuditSource = ref('')
+const cloudAuditLoading = ref(false)
+const cloudAuditNotice = ref('')
 
 async function loadAuditLogs() {
   if (!selectedConnId.value) return
@@ -230,9 +427,72 @@ async function loadAuditLogs() {
   }
 }
 
+async function loadCloudAuditLogs() {
+  if (!selectedConnId.value) return
+  cloudAuditLoading.value = true
+  cloudAuditNotice.value = ''
+  try {
+    const { data } = await axios.get(
+      `/api/connections/${selectedConnId.value}/cloud-logs/audit-logs`,
+      {
+        params: {
+          limit: cloudAuditLimit.value,
+          page: cloudAuditPage.value,
+          from: cloudAuditFrom.value ? cloudAuditFrom.value + 'T00:00:00+0000' : undefined,
+          to: cloudAuditTo.value ? cloudAuditTo.value + 'T23:59:59+0000' : undefined,
+        },
+      },
+    )
+    cloudAuditFiles.value = (data.auditlogs ?? []).map((f: any) => ({ ...f, downloading: false, downloadUrl: '' }))
+    cloudAuditTotal.value = data.total_record ?? cloudAuditFiles.value.length
+    cloudAuditSource.value = 'Huawei RDS API'
+  } catch (e: any) {
+    cloudAuditNotice.value = e?.response?.data?.error || e?.message || 'Failed to load audit logs'
+    cloudAuditFiles.value = []
+  } finally {
+    cloudAuditLoading.value = false
+  }
+}
+
+async function downloadAuditFile(file: CloudAuditFile) {
+  file.downloading = true
+  file.downloadUrl = ''
+  try {
+    const { data } = await axios.post(
+      `/api/connections/${selectedConnId.value}/cloud-logs/audit-log-links`,
+      { ids: [file.id] },
+    )
+    const link = data.links?.[0]
+    if (link) {
+      file.downloadUrl = link
+      window.open(link, '_blank')
+    }
+  } catch (e: any) {
+    cloudAuditNotice.value = e?.response?.data?.error || e?.message || 'Failed to get download link'
+  } finally {
+    file.downloading = false
+  }
+}
+
+function cloudAuditGoPage(offset: number) {
+  cloudAuditPage.value = offset
+  loadCloudAuditLogs()
+}
+
+function cloudAuditApply() {
+  cloudAuditPage.value = 0
+  loadCloudAuditLogs()
+}
+
 function auditGoPage(p: number) {
   auditPage.value = p
   loadAuditLogs()
+}
+
+function fmtKB(kb: number): string {
+  if (kb >= 1024 * 1024) return (kb / 1024 / 1024).toFixed(1) + ' GB'
+  if (kb >= 1024) return (kb / 1024).toFixed(1) + ' MB'
+  return kb.toFixed(0) + ' KB'
 }
 
 // ── Tab switch ───────────────────────────────────────────────────────
@@ -242,14 +502,18 @@ function switchTab(t: Tab) {
   if (!selectedConnId.value) return
   if (t === 'slow') loadSlowQueries()
   else if (t === 'error') loadErrorLogs()
-  else loadAuditLogs()
+  else {
+    if (cloudConfigured.value) loadCloudAuditLogs()
+    else loadAuditLogs()
+  }
 }
 
-watch(selectedConnId, (id) => {
+watch(selectedConnId, async (id) => {
   if (!id) return
   selectedSlow.value = null
   selectedError.value = null
   selectedAudit.value = null
+  await loadCloudConfig()
   if (activeTab.value === 'slow') loadSlowQueries()
   else if (activeTab.value === 'error') loadErrorLogs()
   else loadAuditLogs()
@@ -308,6 +572,44 @@ function yesterday(): string {
   d.setDate(d.getDate() - 1)
   return d.toISOString().slice(0, 10)
 }
+
+// Parse Huawei RDS log content:
+// Format: "2026-05-13 22:51:14.216 +07:103.66.196.66(52630):user@db:[pid]:[n]:LEVEL: message"
+interface ParsedLog {
+  host: string; user: string; db: string; app: string; pid: string; msg: string
+}
+function parseHuaweiLogContent(content: string): ParsedLog {
+  const empty: ParsedLog = { host: '', user: '', db: '', app: '', pid: '', msg: content }
+  if (!content) return empty
+  // Strip leading timestamp prefix: "2026-05-13 22:51:14.216 +07:"
+  const afterTs = content.replace(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ [+-]\d+:/, '')
+  // Now: "103.66.196.66(52630):user@db:[pid]:[n]:LEVEL: message"
+  const m = afterTs.match(/^([^(]+)\((\d+)\):([^@]*)@([^:]*):(?:\[\d+\])?\[?\d+\]?:(?:[A-Z]+: )?(.*)/)
+  if (!m) return { ...empty, msg: afterTs }
+  const [, host, pid, user, db, rest] = m
+  // Extract actual message after "LEVEL: " prefix
+  const msgMatch = rest.match(/^[A-Z]+: (.+)/)
+  const msg = msgMatch ? msgMatch[1] : rest
+  return { host: host.trim(), user: user.trim(), db: db.trim(), app: '', pid, msg: msg.trim() }
+}
+
+// Parse Huawei duration strings like "1.04899 s", "320.5 ms", "0.00003 s"
+function parseHuaweiDuration(s: string): number {
+  if (!s) return 0
+  const m = s.match(/([\d.]+)\s*(s|ms)/)
+  if (!m) return 0
+  return m[2] === 's' ? parseFloat(m[1]) * 1000 : parseFloat(m[1])
+}
+
+function fmtLogTime(t: string): string {
+  if (!t) return ''
+  // "2026-05-13T15:51:14.000Z" → "May 13, 15:51:14"
+  try {
+    const d = new Date(t)
+    return d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric' })
+      + ' ' + d.toTimeString().slice(0, 8)
+  } catch { return t }
+}
 </script>
 
 <template>
@@ -353,373 +655,656 @@ function yesterday(): string {
 
       <!-- ── ERROR LOGS ───────────────────────────────────────── -->
       <div v-if="activeTab === 'error'" class="dblogs-panel">
-        <!-- Filters -->
-        <div class="dblogs-toolbar">
-          <div class="dblogs-toolbar__group">
-            <span class="dblogs-label">Level</span>
-            <div class="dblogs-pills">
+
+        <!-- Toolbar -->
+        <div class="err-toolbar">
+          <div class="err-toolbar__left">
+            <!-- Level pills -->
+            <div class="err-levels">
               <button
                 v-for="lv in ERROR_LEVELS" :key="lv"
-                class="dblogs-pill" :class="[severityClass(lv), { active: errorLevels.includes(lv) }]"
-                @click="toggleLevel(lv)"
+                class="err-lvl-btn" :class="[`lvl--${lv.toLowerCase()}`, { active: errorLevels.includes(lv) }]"
+                @click="toggleLevel(lv); errorApply()"
               >{{ lv }}</button>
             </div>
-          </div>
-          <div class="dblogs-toolbar__group">
-            <span class="dblogs-label">From</span>
-            <input v-model="errorFrom" type="date" class="dblogs-input" />
-          </div>
-          <div class="dblogs-toolbar__group">
-            <span class="dblogs-label">To</span>
-            <input v-model="errorTo" type="date" class="dblogs-input" />
-          </div>
-          <div class="dblogs-toolbar__group">
-            <span class="dblogs-label">Per page</span>
-            <select v-model="errorLimit" class="dblogs-select-sm">
-              <option :value="25">25</option>
-              <option :value="50">50</option>
-              <option :value="100">100</option>
-            </select>
-          </div>
-          <div class="dblogs-toolbar__spacer" />
-          <button class="dblogs-btn" @click="errorApply">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            Apply
-          </button>
-          <div v-if="errorSource" class="dblogs-source">source: {{ errorSource }}</div>
-        </div>
-
-        <!-- Today / Yesterday shortcuts -->
-        <div class="dblogs-shortcuts">
-          <button class="dblogs-shortcut" @click="errorFrom = today(); errorTo = today(); errorApply()">Today</button>
-          <button class="dblogs-shortcut" @click="errorFrom = yesterday(); errorTo = yesterday(); errorApply()">Yesterday</button>
-          <button class="dblogs-shortcut" @click="errorFrom = ''; errorTo = ''; errorApply()">All time</button>
-        </div>
-
-        <!-- Notice -->
-        <div v-if="errorNotice" class="dblogs-notice">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-          {{ errorNotice }}
-        </div>
-
-        <!-- Loading -->
-        <div v-else-if="errorLoading" class="dblogs-loading">
-          <svg class="spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-          Loading error logs…
-        </div>
-
-        <!-- Empty -->
-        <div v-else-if="!errorLoading && !errorRows.length" class="dblogs-empty-sm">
-          No error log entries found for the selected filters.
-          <span v-if="!errorSource" class="dblogs-muted">Click Apply to load.</span>
-        </div>
-
-        <!-- Table -->
-        <template v-else>
-          <div class="dblogs-table-wrap">
-            <table class="dblogs-table">
-              <thead>
-                <tr>
-                  <th style="width:160px">Time</th>
-                  <th style="width:100px">Level</th>
-                  <th style="width:100px">Database</th>
-                  <th style="width:100px">Username</th>
-                  <th>Description</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="(row, i) in errorRows" :key="i"
-                  :class="{ selected: selectedError === row }"
-                  @click="selectedError = selectedError === row ? null : row"
-                >
-                  <td class="dblogs-mono">{{ row.log_time }}</td>
-                  <td><span class="dblogs-badge" :class="severityClass(row.severity)">{{ row.severity }}</span></td>
-                  <td class="dblogs-muted-cell">{{ row.database_name }}</td>
-                  <td class="dblogs-muted-cell">{{ row.username }}</td>
-                  <td class="dblogs-msg">{{ truncate(row.message, 200) }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <!-- Row detail -->
-          <div v-if="selectedError" class="dblogs-detail">
-            <div class="dblogs-detail__header">
-              <span class="dblogs-badge" :class="severityClass(selectedError.severity)">{{ selectedError.severity }}</span>
-              <span class="dblogs-detail__time">{{ selectedError.log_time }}</span>
-              <button class="dblogs-detail__close" @click="selectedError = null">✕</button>
+            <!-- Date shortcuts -->
+            <div class="err-datepicker">
+              <div class="err-shortcuts">
+                <button class="err-shortcut" :class="{ active: errorFrom === today() && errorTo === today() }" @click="errorFrom = today(); errorTo = today(); errorApply()">Today</button>
+                <button class="err-shortcut" :class="{ active: errorFrom === yesterday() && errorTo === yesterday() }" @click="errorFrom = yesterday(); errorTo = yesterday(); errorApply()">Yesterday</button>
+                <button class="err-shortcut" :class="{ active: !errorFrom && !errorTo }" @click="errorFrom = ''; errorTo = ''; errorApply()">7 days</button>
+              </div>
+              <div class="err-daterange">
+                <input v-model="errorFrom" type="date" class="err-date-input" @change="errorApply()" />
+                <span class="err-date-sep">→</span>
+                <input v-model="errorTo" type="date" class="err-date-input" @change="errorApply()" />
+              </div>
             </div>
-            <div class="dblogs-detail__body">
-              <div v-if="selectedError.message" class="dblogs-detail__section">
-                <div class="dblogs-detail__section-label">Message</div>
-                <pre class="dblogs-detail__pre">{{ selectedError.message }}</pre>
+          </div>
+          <div class="err-toolbar__right">
+            <select v-model="errorLimit" class="err-select" @change="errorApply()">
+              <option :value="25">25 / page</option>
+              <option :value="50">50 / page</option>
+              <option :value="100">100 / page</option>
+            </select>
+            <button
+              class="err-cloud-btn" :class="{ 'err-cloud-btn--on': cloudConfigured }"
+              @click="showCloudModal = true"
+              :title="cloudConfigured ? 'Cloud source active — click to reconfigure' : 'Connect cloud provider'"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+              {{ cloudConfigured ? 'Cloud: ON' : 'Cloud' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Error notice -->
+        <div v-if="errorNotice && !cloudConfigured" class="err-notice err-notice--warn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <span>{{ errorNotice }}</span>
+          <button class="err-inline-btn" @click="showCloudModal = true">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+            Connect Huawei RDS
+          </button>
+        </div>
+        <div v-if="errorNotice && cloudConfigured" class="err-notice err-notice--error">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <span>{{ errorNotice }}</span>
+        </div>
+
+        <!-- Loading skeleton -->
+        <div v-if="errorLoading" class="err-skeleton-wrap">
+          <div v-for="i in 8" :key="i" class="err-skeleton-row">
+            <div class="err-skel err-skel--time" />
+            <div class="err-skel err-skel--badge" />
+            <div class="err-skel err-skel--db" />
+            <div class="err-skel err-skel--msg" :style="{ width: (40 + (i * 7) % 40) + '%' }" />
+          </div>
+        </div>
+
+        <!-- Empty state -->
+        <div v-else-if="!errorRows.length" class="err-empty">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".3"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="12" y2="17"/></svg>
+          <p>No error log entries found</p>
+          <span>Try adjusting the date range or level filters</span>
+        </div>
+
+        <!-- Log list -->
+        <template v-else>
+          <div class="err-list">
+            <div
+              v-for="(row, i) in errorRows" :key="i"
+              class="err-row" :class="[`err-row--${(row.severity || 'info').toLowerCase()}`, { 'err-row--open': selectedError === row }]"
+              @click="selectedError = selectedError === row ? null : row"
+            >
+              <!-- Row summary -->
+              <div class="err-row__summary">
+                <div class="err-row__left">
+                  <span class="err-row__badge" :class="`badge--${(row.severity || 'info').toLowerCase()}`">{{ row.severity }}</span>
+                  <span class="err-row__time">{{ fmtLogTime(row.log_time) }}</span>
+                  <span v-if="row.parsed_db || row.database_name" class="err-row__db">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.657 4.03 3 9 3s9-1.343 9-3V5"/><path d="M3 12c0 1.657 4.03 3 9 3s9-1.343 9-3"/></svg>
+                    {{ row.parsed_db || row.database_name }}
+                  </span>
+                  <span v-if="row.parsed_user || row.username" class="err-row__user">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                    {{ row.parsed_user || row.username }}
+                  </span>
+                </div>
+                <div class="err-row__msg">{{ truncate(row.parsed_msg || row.message, 180) }}</div>
+                <svg class="err-row__chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
               </div>
-              <div v-if="selectedError.detail" class="dblogs-detail__section">
-                <div class="dblogs-detail__section-label">Detail</div>
-                <pre class="dblogs-detail__pre">{{ selectedError.detail }}</pre>
-              </div>
-              <div v-if="selectedError.hint" class="dblogs-detail__section">
-                <div class="dblogs-detail__section-label">Hint</div>
-                <pre class="dblogs-detail__pre dblogs-hint">{{ selectedError.hint }}</pre>
-              </div>
-              <div v-if="selectedError.query" class="dblogs-detail__section">
-                <div class="dblogs-detail__section-label">Query</div>
-                <pre class="dblogs-detail__pre dblogs-query">{{ selectedError.query }}</pre>
-              </div>
-              <div class="dblogs-detail__meta">
-                <span v-if="selectedError.database_name"><strong>Database:</strong> {{ selectedError.database_name }}</span>
-                <span v-if="selectedError.username"><strong>User:</strong> {{ selectedError.username }}</span>
-                <span v-if="selectedError.app_name"><strong>App:</strong> {{ selectedError.app_name }}</span>
-                <span v-if="selectedError.remote_host"><strong>Host:</strong> {{ selectedError.remote_host }}</span>
-                <span v-if="selectedError.sql_state"><strong>SQL State:</strong> {{ selectedError.sql_state }}</span>
-              </div>
+
+              <!-- Expanded detail -->
+              <Transition name="err-expand">
+                <div v-if="selectedError === row" class="err-row__detail" @click.stop>
+                  <div class="err-detail-grid">
+                    <div class="err-detail-section">
+                      <div class="err-detail-label">Full Message</div>
+                      <pre class="err-detail-pre">{{ row.parsed_msg || row.message }}</pre>
+                    </div>
+                    <div v-if="row.message !== (row.parsed_msg || row.message)" class="err-detail-section">
+                      <div class="err-detail-label">Raw Log</div>
+                      <pre class="err-detail-pre err-detail-pre--raw">{{ row.message }}</pre>
+                    </div>
+                  </div>
+                  <div class="err-detail-meta">
+                    <div v-if="row.log_time" class="err-meta-chip">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                      {{ row.log_time }}
+                    </div>
+                    <div v-if="row.parsed_host || row.remote_host" class="err-meta-chip">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+                      {{ row.parsed_host || row.remote_host }}
+                    </div>
+                    <div v-if="row.parsed_pid" class="err-meta-chip">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+                      PID {{ row.parsed_pid }}
+                    </div>
+                    <div v-if="row.parsed_db || row.database_name" class="err-meta-chip">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.657 4.03 3 9 3s9-1.343 9-3V5"/></svg>
+                      {{ row.parsed_db || row.database_name }}
+                    </div>
+                    <div v-if="row.parsed_user || row.username" class="err-meta-chip">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                      {{ row.parsed_user || row.username }}
+                    </div>
+                    <div v-if="row.app_name" class="err-meta-chip">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="5"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 6v2m0 8v2"/></svg>
+                      {{ row.app_name }}
+                    </div>
+                  </div>
+                </div>
+              </Transition>
             </div>
           </div>
 
           <!-- Pagination -->
-          <div class="dblogs-pager">
-            <span class="dblogs-pager__info">Page {{ errorPage }} / {{ errorTotalPages }}</span>
-            <button class="dblogs-pager__btn" :disabled="errorPage <= 1" @click="errorGoPage(errorPage - 1)">‹ Prev</button>
-            <button class="dblogs-pager__btn" :disabled="errorPage >= errorTotalPages" @click="errorGoPage(errorPage + 1)">Next ›</button>
+          <div class="err-pager">
+            <span class="err-pager__info">
+              {{ errorTotal.toLocaleString() }} total · page {{ errorPage }} of {{ errorTotalPages }}
+              <span v-if="errorSource" class="err-pager__source">via {{ errorSource }}</span>
+            </span>
+            <div class="err-pager__btns">
+              <button class="err-pager__btn" :disabled="errorPage <= 1" @click="errorGoPage(1)">«</button>
+              <button class="err-pager__btn" :disabled="errorPage <= 1" @click="errorGoPage(errorPage - 1)">‹ Prev</button>
+              <span class="err-pager__cur">{{ errorPage }}</span>
+              <button class="err-pager__btn" :disabled="errorPage >= errorTotalPages" @click="errorGoPage(errorPage + 1)">Next ›</button>
+              <button class="err-pager__btn" :disabled="errorPage >= errorTotalPages" @click="errorGoPage(errorTotalPages)">»</button>
+            </div>
           </div>
         </template>
       </div>
 
       <!-- ── SLOW QUERY LOGS ─────────────────────────────────── -->
       <div v-else-if="activeTab === 'slow'" class="dblogs-panel">
-        <!-- Filters -->
-        <div class="dblogs-toolbar">
-          <div class="dblogs-toolbar__group">
-            <span class="dblogs-label">Threshold</span>
-            <div class="dblogs-threshold">
-              <input v-model.number="slowThreshold" type="range" min="0" max="60000" step="100" class="dblogs-slider" />
-              <span class="dblogs-threshold__val">{{ fmtMs(slowThreshold) }}</span>
-            </div>
+
+        <!-- Toolbar -->
+        <div class="err-toolbar">
+          <div class="err-toolbar__left">
+            <!-- Statement type pills (cloud) / threshold slider (local) -->
+            <template v-if="cloudConfigured">
+              <div class="err-levels">
+                <button
+                  v-for="t in ['SELECT','INSERT','UPDATE','DELETE','CREATE']" :key="t"
+                  class="err-lvl-btn" :class="[`stmt--${t.toLowerCase()}`, { active: slowStmtFilter === t }]"
+                  @click="slowStmtFilter = slowStmtFilter === t ? '' : t; slowApply()"
+                >{{ t }}</button>
+              </div>
+              <div class="err-datepicker">
+                <div class="err-shortcuts">
+                  <button class="err-shortcut" :class="{ active: slowFrom === today() && slowTo === today() }" @click="slowFrom = today(); slowTo = today(); slowApply()">Today</button>
+                  <button class="err-shortcut" :class="{ active: slowFrom === yesterday() && slowTo === yesterday() }" @click="slowFrom = yesterday(); slowTo = yesterday(); slowApply()">Yesterday</button>
+                  <button class="err-shortcut" :class="{ active: !slowFrom && !slowTo }" @click="slowFrom = ''; slowTo = ''; slowApply()">7 days</button>
+                </div>
+                <div class="err-daterange">
+                  <input v-model="slowFrom" type="date" class="err-date-input" @change="slowApply()" />
+                  <span class="err-date-sep">→</span>
+                  <input v-model="slowTo" type="date" class="err-date-input" @change="slowApply()" />
+                </div>
+              </div>
+            </template>
+            <template v-else>
+              <div class="dblogs-toolbar__group">
+                <span class="dblogs-label">Threshold</span>
+                <div class="dblogs-threshold">
+                  <input v-model.number="slowThreshold" type="range" min="0" max="60000" step="100" class="dblogs-slider" />
+                  <span class="dblogs-threshold__val">{{ fmtMs(slowThreshold) }}</span>
+                </div>
+              </div>
+              <div class="dblogs-toolbar__group">
+                <span class="dblogs-label">Database</span>
+                <input v-model="slowDbFilter" type="text" placeholder="all" class="dblogs-input dblogs-input--sm" />
+              </div>
+              <div class="dblogs-toolbar__group">
+                <span class="dblogs-label">Type</span>
+                <select v-model="slowStmtFilter" class="dblogs-select-sm">
+                  <option value="">All</option>
+                  <option>SELECT</option><option>INSERT</option><option>UPDATE</option>
+                  <option>DELETE</option><option>CREATE</option>
+                </select>
+              </div>
+              <button class="dblogs-btn" @click="slowApply">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                Apply
+              </button>
+            </template>
           </div>
-          <div class="dblogs-toolbar__group">
-            <span class="dblogs-label">Database</span>
-            <input v-model="slowDbFilter" type="text" placeholder="all" class="dblogs-input dblogs-input--sm" />
-          </div>
-          <div class="dblogs-toolbar__group">
-            <span class="dblogs-label">Username</span>
-            <input v-model="slowUserFilter" type="text" placeholder="all" class="dblogs-input dblogs-input--sm" />
-          </div>
-          <div class="dblogs-toolbar__group">
-            <span class="dblogs-label">Type</span>
-            <select v-model="slowStmtFilter" class="dblogs-select-sm">
-              <option value="">All types</option>
-              <option>SELECT</option><option>INSERT</option><option>UPDATE</option>
-              <option>DELETE</option><option>CREATE</option><option>ALTER</option><option>DROP</option>
+          <div class="err-toolbar__right">
+            <select v-model="slowLimit" class="err-select" @change="slowApply()">
+              <option :value="25">25 / page</option>
+              <option :value="50">50 / page</option>
+              <option :value="100">100 / page</option>
             </select>
+            <button
+              class="err-cloud-btn" :class="{ 'err-cloud-btn--on': cloudConfigured }"
+              @click="showCloudModal = true"
+              :title="cloudConfigured ? 'Cloud source active — click to reconfigure' : 'Connect cloud provider'"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+              {{ cloudConfigured ? 'Cloud: ON' : 'Cloud' }}
+            </button>
           </div>
-          <div class="dblogs-toolbar__group">
-            <span class="dblogs-label">Per page</span>
-            <select v-model="slowLimit" class="dblogs-select-sm">
-              <option :value="25">25</option>
-              <option :value="50">50</option>
-              <option :value="100">100</option>
-            </select>
-          </div>
-          <div class="dblogs-toolbar__spacer" />
-          <button class="dblogs-btn" @click="slowApply">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            Apply
-          </button>
-          <div v-if="slowSource" class="dblogs-source">source: {{ slowSource }}</div>
         </div>
 
         <!-- Notice -->
-        <div v-if="slowNotice" class="dblogs-notice">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-          {{ slowNotice }}
+        <div v-if="slowNotice" class="err-notice err-notice--warn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <span>{{ slowNotice }}</span>
         </div>
 
-        <!-- Loading -->
-        <div v-else-if="slowLoading" class="dblogs-loading">
-          <svg class="spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-          Loading slow queries…
+        <!-- Loading skeleton -->
+        <div v-if="slowLoading" class="err-skeleton-wrap">
+          <div v-for="i in 8" :key="i" class="err-skeleton-row">
+            <div class="err-skel err-skel--badge" />
+            <div class="err-skel err-skel--time" />
+            <div class="err-skel err-skel--db" />
+            <div class="err-skel err-skel--msg" :style="{ width: (40 + (i * 7) % 40) + '%' }" />
+            <div class="err-skel" style="width:60px;flex-shrink:0" />
+          </div>
         </div>
 
         <!-- Empty -->
-        <div v-else-if="!slowLoading && !slowFiltered.length" class="dblogs-empty-sm">
-          <template v-if="!slowSource">Click <strong>Apply</strong> to load slow queries.</template>
-          <template v-else>No queries exceeded the {{ fmtMs(slowThreshold) }} threshold. Try lowering it.</template>
+        <div v-else-if="!slowRows.length" class="err-empty">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".3"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <p>No slow query logs found</p>
+          <span v-if="!cloudConfigured">Try lowering the threshold or click Apply</span>
+          <span v-else>Try adjusting the date range or statement type</span>
         </div>
 
-        <!-- Table -->
+        <!-- List -->
         <template v-else>
-          <div class="dblogs-table-wrap">
-            <table class="dblogs-table">
-              <thead>
-                <tr>
-                  <th style="width:90px">Type</th>
-                  <th>Execute Statement</th>
-                  <th style="width:80px">Calls</th>
-                  <th style="width:90px">Avg Time</th>
-                  <th style="width:90px">Max Time</th>
-                  <th style="width:80px">Rows</th>
-                  <th style="width:110px">Database</th>
-                  <th style="width:110px">Username</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="(row, i) in slowFiltered" :key="i"
-                  :class="{ selected: selectedSlow === row }"
-                  @click="selectedSlow = selectedSlow === row ? null : row"
-                >
-                  <td><span class="dblogs-badge" :class="stmtClass(row.statement_type)">{{ row.statement_type }}</span></td>
-                  <td class="dblogs-query-cell">{{ truncate(row.query) }}</td>
-                  <td class="dblogs-num">{{ fmtNum(row.calls) }}</td>
-                  <td class="dblogs-num" :class="{ 'dblogs-warn': row.avg_ms > 5000, 'dblogs-critical': row.avg_ms > 30000 }">{{ fmtMs(row.avg_ms) }}</td>
-                  <td class="dblogs-num" :class="{ 'dblogs-warn': row.max_ms > 5000, 'dblogs-critical': row.max_ms > 30000 }">{{ fmtMs(row.max_ms) }}</td>
-                  <td class="dblogs-num">{{ fmtNum(row.rows) }}</td>
-                  <td class="dblogs-muted-cell">{{ row.database }}</td>
-                  <td class="dblogs-muted-cell">{{ row.username }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <div class="err-list slow-list">
+            <div
+              v-for="(row, i) in slowFiltered" :key="i"
+              class="err-row slow-row" :class="[`slow-row--${(row.statement_type||'other').toLowerCase()}`, { 'err-row--open': selectedSlow === row }]"
+              @click="selectedSlow = selectedSlow === row ? null : row"
+            >
+              <div class="err-row__summary">
+                <div class="err-row__left">
+                  <span class="err-row__badge" :class="stmtClass(row.statement_type)">{{ row.statement_type || '—' }}</span>
+                  <span class="slow-time" :class="{ 'slow-time--warn': row.avg_ms > 5000, 'slow-time--crit': row.avg_ms > 30000 }">
+                    {{ row.exec_time || fmtMs(row.avg_ms) }}
+                  </span>
+                  <span v-if="row.calls > 1" class="slow-calls">×{{ row.calls }}</span>
+                  <span v-if="row.database" class="err-row__db">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.657 4.03 3 9 3s9-1.343 9-3V5"/></svg>
+                    {{ row.database }}
+                  </span>
+                  <span v-if="row.username" class="err-row__user">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                    {{ row.username }}
+                  </span>
+                </div>
+                <div class="err-row__msg">{{ truncate(row.query, 180) }}</div>
+                <svg class="err-row__chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+              </div>
 
-          <!-- Row detail -->
-          <div v-if="selectedSlow" class="dblogs-detail">
-            <div class="dblogs-detail__header">
-              <span class="dblogs-badge" :class="stmtClass(selectedSlow.statement_type)">{{ selectedSlow.statement_type }}</span>
-              <span class="dblogs-detail__time">Avg {{ fmtMs(selectedSlow.avg_ms) }} · Max {{ fmtMs(selectedSlow.max_ms) }} · {{ fmtNum(selectedSlow.calls) }} calls</span>
-              <button class="dblogs-detail__close" @click="selectedSlow = null">✕</button>
-            </div>
-            <div class="dblogs-detail__body">
-              <div class="dblogs-detail__section">
-                <div class="dblogs-detail__section-label">Query</div>
-                <pre class="dblogs-detail__pre dblogs-query">{{ selectedSlow.query }}</pre>
-              </div>
-              <div class="dblogs-detail__meta">
-                <span><strong>Database:</strong> {{ selectedSlow.database }}</span>
-                <span><strong>User:</strong> {{ selectedSlow.username }}</span>
-                <span><strong>Calls:</strong> {{ fmtNum(selectedSlow.calls) }}</span>
-                <span><strong>Avg:</strong> {{ fmtMs(selectedSlow.avg_ms) }}</span>
-                <span><strong>Min:</strong> {{ fmtMs(selectedSlow.min_ms) }}</span>
-                <span><strong>Max:</strong> {{ fmtMs(selectedSlow.max_ms) }}</span>
-                <span><strong>Total:</strong> {{ fmtMs(selectedSlow.total_ms) }}</span>
-                <span><strong>Rows/call:</strong> {{ selectedSlow.calls > 0 ? (selectedSlow.rows / selectedSlow.calls).toFixed(1) : 0 }}</span>
-              </div>
+              <Transition name="err-expand">
+                <div v-if="selectedSlow === row" class="err-row__detail" @click.stop>
+                  <div class="err-detail-grid">
+                    <div class="err-detail-section">
+                      <div class="err-detail-label">Query</div>
+                      <pre class="err-detail-pre err-detail-pre--query">{{ row.query }}</pre>
+                    </div>
+                  </div>
+                  <div class="err-detail-meta">
+                    <div v-if="row.exec_time || row.avg_ms" class="err-meta-chip slow-chip--time">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                      {{ row.exec_time || fmtMs(row.avg_ms) }}
+                    </div>
+                    <div v-if="row.lock_time" class="err-meta-chip">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                      Lock: {{ row.lock_time }}
+                    </div>
+                    <div v-if="row.calls > 1" class="err-meta-chip">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+                      {{ row.calls }} executions
+                    </div>
+                    <div v-if="row.rows_sent" class="err-meta-chip">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                      {{ row.rows_sent }} rows sent
+                    </div>
+                    <div v-if="row.rows_examined" class="err-meta-chip">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                      {{ row.rows_examined }} rows scanned
+                    </div>
+                    <div v-if="row.database" class="err-meta-chip">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.657 4.03 3 9 3s9-1.343 9-3V5"/></svg>
+                      {{ row.database }}
+                    </div>
+                    <div v-if="row.username" class="err-meta-chip">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                      {{ row.username }}
+                    </div>
+                    <div v-if="row.client_ip" class="err-meta-chip">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+                      {{ row.client_ip }}
+                    </div>
+                    <div v-if="row.start_time" class="err-meta-chip">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                      {{ row.start_time }}
+                    </div>
+                  </div>
+                </div>
+              </Transition>
             </div>
           </div>
 
           <!-- Pagination -->
-          <div class="dblogs-pager">
-            <span class="dblogs-pager__info">{{ fmtNum(slowTotal) }} results · Page {{ slowPage }} / {{ slowTotalPages }}</span>
-            <button class="dblogs-pager__btn" :disabled="slowPage <= 1" @click="slowGoPage(slowPage - 1)">‹ Prev</button>
-            <button class="dblogs-pager__btn" :disabled="slowPage >= slowTotalPages" @click="slowGoPage(slowPage + 1)">Next ›</button>
+          <div class="err-pager">
+            <span class="err-pager__info">
+              {{ slowTotal.toLocaleString() }} total · page {{ slowPage }} of {{ slowTotalPages }}
+              <span v-if="slowSource" class="err-pager__source">via {{ slowSource }}</span>
+            </span>
+            <div class="err-pager__btns">
+              <button class="err-pager__btn" :disabled="slowPage <= 1" @click="slowGoPage(1)">«</button>
+              <button class="err-pager__btn" :disabled="slowPage <= 1" @click="slowGoPage(slowPage - 1)">‹ Prev</button>
+              <span class="err-pager__cur">{{ slowPage }}</span>
+              <button class="err-pager__btn" :disabled="slowPage >= slowTotalPages" @click="slowGoPage(slowPage + 1)">Next ›</button>
+              <button class="err-pager__btn" :disabled="slowPage >= slowTotalPages" @click="slowGoPage(slowTotalPages)">»</button>
+            </div>
           </div>
         </template>
       </div>
 
       <!-- ── SQL AUDIT LOGS ──────────────────────────────────── -->
       <div v-else-if="activeTab === 'audit'" class="dblogs-panel">
-        <!-- Filters -->
-        <div class="dblogs-toolbar">
-          <div class="dblogs-toolbar__group">
-            <span class="dblogs-label">Search</span>
-            <input v-model="auditSearch" type="text" placeholder="Filter by SQL…" class="dblogs-input" @keydown.enter="auditGoPage(1); loadAuditLogs()" />
+
+        <!-- ── Cloud mode: audit log files ── -->
+        <template v-if="cloudConfigured">
+          <div class="err-toolbar">
+            <div class="err-toolbar__left">
+              <div class="err-datepicker">
+                <div class="err-shortcuts">
+                  <button class="err-shortcut" :class="{ active: cloudAuditFrom === today() && cloudAuditTo === today() }" @click="cloudAuditFrom = today(); cloudAuditTo = today(); cloudAuditApply()">Today</button>
+                  <button class="err-shortcut" :class="{ active: cloudAuditFrom === yesterday() && cloudAuditTo === yesterday() }" @click="cloudAuditFrom = yesterday(); cloudAuditTo = yesterday(); cloudAuditApply()">Yesterday</button>
+                  <button class="err-shortcut" :class="{ active: !cloudAuditFrom && !cloudAuditTo }" @click="cloudAuditFrom = ''; cloudAuditTo = ''; cloudAuditApply()">7 days</button>
+                </div>
+                <div class="err-daterange">
+                  <input v-model="cloudAuditFrom" type="date" class="err-date-input" @change="cloudAuditApply()" />
+                  <span class="err-date-sep">→</span>
+                  <input v-model="cloudAuditTo" type="date" class="err-date-input" @change="cloudAuditApply()" />
+                </div>
+              </div>
+            </div>
+            <div class="err-toolbar__right">
+              <select v-model="cloudAuditLimit" class="err-select" @change="cloudAuditApply()">
+                <option :value="10">10 / page</option>
+                <option :value="25">25 / page</option>
+                <option :value="50">50 / page</option>
+              </select>
+              <button class="err-cloud-btn err-cloud-btn--on" @click="showCloudModal = true">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+                Cloud: ON
+              </button>
+            </div>
           </div>
-          <div class="dblogs-toolbar__group">
-            <span class="dblogs-label">Per page</span>
-            <select v-model="auditLimit" class="dblogs-select-sm">
-              <option :value="25">25</option>
-              <option :value="50">50</option>
-              <option :value="100">100</option>
-            </select>
+
+          <div v-if="cloudAuditNotice" class="err-notice err-notice--error">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <span>{{ cloudAuditNotice }}</span>
           </div>
-          <div class="dblogs-toolbar__spacer" />
-          <button class="dblogs-btn" @click="auditGoPage(1); loadAuditLogs()">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            Refresh
-          </button>
-        </div>
 
-        <div v-if="auditNotice" class="dblogs-notice">{{ auditNotice }}</div>
+          <!-- Skeleton -->
+          <div v-if="cloudAuditLoading" class="err-skeleton-wrap">
+            <div v-for="i in 6" :key="i" class="err-skeleton-row">
+              <div class="err-skel" style="width:180px" />
+              <div class="err-skel err-skel--msg" :style="{ width: (30 + i * 8) + '%' }" />
+              <div class="err-skel" style="width:60px;flex-shrink:0" />
+              <div class="err-skel" style="width:80px;flex-shrink:0" />
+            </div>
+          </div>
 
-        <div v-else-if="auditLoading" class="dblogs-loading">
-          <svg class="spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-          Loading audit log…
-        </div>
+          <!-- Empty -->
+          <div v-else-if="!cloudAuditFiles.length" class="err-empty">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".3"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <p>No audit log files found</p>
+            <span>Adjust the date range or ensure SQL audit is enabled on this instance</span>
+          </div>
 
-        <div v-else-if="!auditLoading && !auditRows.length" class="dblogs-empty-sm">
-          No audit log entries found.
-        </div>
+          <!-- File list -->
+          <template v-else>
+            <div class="audit-file-list">
+              <!-- Header -->
+              <div class="audit-file-header">
+                <span class="audit-col audit-col--time">Time Range</span>
+                <span class="audit-col audit-col--name">File</span>
+                <span class="audit-col audit-col--size">Size</span>
+                <span class="audit-col audit-col--action"></span>
+              </div>
+              <div v-for="file in cloudAuditFiles" :key="file.id" class="audit-file-row">
+                <div class="audit-col audit-col--time">
+                  <div class="audit-time-range">
+                    <span class="audit-time-from">{{ fmtLogTime(file.begin_time) }}</span>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity=".4"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+                    <span class="audit-time-to">{{ fmtLogTime(file.end_time) }}</span>
+                  </div>
+                </div>
+                <div class="audit-col audit-col--name">
+                  <span class="audit-filename" :title="file.name">{{ file.name.split('/').pop() }}</span>
+                </div>
+                <div class="audit-col audit-col--size">
+                  <span class="audit-size">{{ fmtKB(file.size) }}</span>
+                </div>
+                <div class="audit-col audit-col--action">
+                  <button
+                    class="audit-dl-btn"
+                    :disabled="file.downloading"
+                    @click="downloadAuditFile(file)"
+                    title="Get 5-minute download link"
+                  >
+                    <svg v-if="!file.downloading" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    <svg v-else class="spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                    {{ file.downloading ? 'Getting link…' : 'Download' }}
+                  </button>
+                </div>
+              </div>
+            </div>
 
+            <!-- Pagination -->
+            <div class="err-pager">
+              <span class="err-pager__info">
+                {{ cloudAuditTotal.toLocaleString() }} files
+                <span class="err-pager__source">via {{ cloudAuditSource }}</span>
+              </span>
+              <div class="err-pager__btns">
+                <button class="err-pager__btn" :disabled="cloudAuditPage === 0" @click="cloudAuditGoPage(0)">«</button>
+                <button class="err-pager__btn" :disabled="cloudAuditPage === 0" @click="cloudAuditGoPage(Math.max(0, cloudAuditPage - cloudAuditLimit))">‹ Prev</button>
+                <span class="err-pager__cur">{{ Math.floor(cloudAuditPage / cloudAuditLimit) + 1 }}</span>
+                <button class="err-pager__btn" :disabled="cloudAuditPage + cloudAuditLimit >= cloudAuditTotal" @click="cloudAuditGoPage(cloudAuditPage + cloudAuditLimit)">Next ›</button>
+              </div>
+            </div>
+          </template>
+        </template>
+
+        <!-- ── Local mode: query history ── -->
         <template v-else>
-          <div class="dblogs-table-wrap">
-            <table class="dblogs-table">
-              <thead>
-                <tr>
-                  <th style="width:160px">Executed At</th>
-                  <th>SQL Statement</th>
-                  <th style="width:90px">Duration</th>
-                  <th style="width:80px">Rows</th>
-                  <th style="width:80px">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="(row, i) in auditRows" :key="i"
-                  :class="{ selected: selectedAudit === row }"
-                  @click="selectedAudit = selectedAudit === row ? null : row"
-                >
-                  <td class="dblogs-mono">{{ row.executed_at }}</td>
-                  <td class="dblogs-query-cell">{{ truncate(row.sql) }}</td>
-                  <td class="dblogs-num">{{ row.duration_ms != null ? fmtMs(row.duration_ms) : '—' }}</td>
-                  <td class="dblogs-num">{{ row.rows_affected != null ? fmtNum(row.rows_affected) : '—' }}</td>
-                  <td>
-                    <span class="dblogs-badge" :class="row.status === 'error' ? 'sev-error' : 'sev-info'">
-                      {{ row.status || 'ok' }}
+          <div class="err-toolbar">
+            <div class="err-toolbar__left">
+              <input v-model="auditSearch" type="text" placeholder="Filter by SQL…" class="err-date-input" style="width:200px" @keydown.enter="auditGoPage(1); loadAuditLogs()" />
+              <button class="dblogs-btn" @click="auditGoPage(1); loadAuditLogs()">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                Refresh
+              </button>
+            </div>
+            <div class="err-toolbar__right">
+              <select v-model="auditLimit" class="err-select" @change="auditGoPage(1); loadAuditLogs()">
+                <option :value="25">25 / page</option>
+                <option :value="50">50 / page</option>
+                <option :value="100">100 / page</option>
+              </select>
+              <button class="err-cloud-btn" @click="showCloudModal = true">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+                Cloud
+              </button>
+            </div>
+          </div>
+
+          <div v-if="auditNotice" class="err-notice err-notice--warn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <span>{{ auditNotice }}</span>
+          </div>
+
+          <div v-if="auditLoading" class="err-skeleton-wrap">
+            <div v-for="i in 8" :key="i" class="err-skeleton-row">
+              <div class="err-skel err-skel--time" />
+              <div class="err-skel err-skel--msg" :style="{ width: (40 + (i * 7) % 40) + '%' }" />
+              <div class="err-skel" style="width:60px;flex-shrink:0" />
+              <div class="err-skel err-skel--badge" />
+            </div>
+          </div>
+
+          <div v-else-if="!auditRows.length" class="err-empty">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".3"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="12" y2="17"/></svg>
+            <p>No audit log entries found</p>
+          </div>
+
+          <template v-else>
+            <div class="err-list audit-list">
+              <div
+                v-for="(row, i) in auditRows" :key="i"
+                class="err-row" :class="[row.status === 'error' ? 'err-row--error' : 'err-row--log', { 'err-row--open': selectedAudit === row }]"
+                @click="selectedAudit = selectedAudit === row ? null : row"
+              >
+                <div class="err-row__summary">
+                  <div class="err-row__left">
+                    <span class="err-row__badge" :class="row.status === 'error' ? 'badge--error' : 'badge--log'">{{ row.status || 'ok' }}</span>
+                    <span class="err-row__time">{{ fmtLogTime(row.executed_at) }}</span>
+                    <span v-if="row.duration_ms != null" class="slow-time" :class="{ 'slow-time--warn': row.duration_ms > 5000, 'slow-time--crit': row.duration_ms > 30000 }">
+                      {{ fmtMs(row.duration_ms) }}
                     </span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <!-- Row detail -->
-          <div v-if="selectedAudit" class="dblogs-detail">
-            <div class="dblogs-detail__header">
-              <span class="dblogs-badge" :class="selectedAudit.status === 'error' ? 'sev-error' : 'sev-info'">{{ selectedAudit.status || 'ok' }}</span>
-              <span class="dblogs-detail__time">{{ selectedAudit.executed_at }}</span>
-              <button class="dblogs-detail__close" @click="selectedAudit = null">✕</button>
+                    <span v-if="row.rows_affected != null" class="slow-calls">{{ row.rows_affected }} rows</span>
+                  </div>
+                  <div class="err-row__msg">{{ truncate(row.sql, 180) }}</div>
+                  <svg class="err-row__chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+                </div>
+                <Transition name="err-expand">
+                  <div v-if="selectedAudit === row" class="err-row__detail" @click.stop>
+                    <div class="err-detail-grid">
+                      <div class="err-detail-section">
+                        <div class="err-detail-label">SQL</div>
+                        <pre class="err-detail-pre err-detail-pre--query">{{ row.sql }}</pre>
+                      </div>
+                      <div v-if="row.error" class="err-detail-section">
+                        <div class="err-detail-label">Error</div>
+                        <pre class="err-detail-pre" style="color:#ef4444">{{ row.error }}</pre>
+                      </div>
+                    </div>
+                    <div class="err-detail-meta">
+                      <div v-if="row.executed_at" class="err-meta-chip">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        {{ row.executed_at }}
+                      </div>
+                      <div v-if="row.duration_ms != null" class="err-meta-chip slow-chip--time">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        {{ fmtMs(row.duration_ms) }}
+                      </div>
+                      <div v-if="row.rows_affected != null" class="err-meta-chip">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/></svg>
+                        {{ row.rows_affected }} rows affected
+                      </div>
+                    </div>
+                  </div>
+                </Transition>
+              </div>
             </div>
-            <div class="dblogs-detail__body">
-              <div class="dblogs-detail__section">
-                <div class="dblogs-detail__section-label">SQL</div>
-                <pre class="dblogs-detail__pre dblogs-query">{{ selectedAudit.sql }}</pre>
-              </div>
-              <div v-if="selectedAudit.error" class="dblogs-detail__section">
-                <div class="dblogs-detail__section-label">Error</div>
-                <pre class="dblogs-detail__pre" style="color:var(--red)">{{ selectedAudit.error }}</pre>
-              </div>
-              <div class="dblogs-detail__meta">
-                <span v-if="selectedAudit.duration_ms != null"><strong>Duration:</strong> {{ fmtMs(selectedAudit.duration_ms) }}</span>
-                <span v-if="selectedAudit.rows_affected != null"><strong>Rows affected:</strong> {{ fmtNum(selectedAudit.rows_affected) }}</span>
+
+            <div class="err-pager">
+              <span class="err-pager__info">{{ auditTotal.toLocaleString() }} total · page {{ auditPage }} of {{ auditTotalPages }}</span>
+              <div class="err-pager__btns">
+                <button class="err-pager__btn" :disabled="auditPage <= 1" @click="auditGoPage(1)">«</button>
+                <button class="err-pager__btn" :disabled="auditPage <= 1" @click="auditGoPage(auditPage - 1)">‹ Prev</button>
+                <span class="err-pager__cur">{{ auditPage }}</span>
+                <button class="err-pager__btn" :disabled="auditPage >= auditTotalPages" @click="auditGoPage(auditPage + 1)">Next ›</button>
+                <button class="err-pager__btn" :disabled="auditPage >= auditTotalPages" @click="auditGoPage(auditTotalPages)">»</button>
               </div>
             </div>
-          </div>
-
-          <!-- Pagination -->
-          <div class="dblogs-pager">
-            <span class="dblogs-pager__info">{{ fmtNum(auditTotal) }} results · Page {{ auditPage }} / {{ auditTotalPages }}</span>
-            <button class="dblogs-pager__btn" :disabled="auditPage <= 1" @click="auditGoPage(auditPage - 1)">‹ Prev</button>
-            <button class="dblogs-pager__btn" :disabled="auditPage >= auditTotalPages" @click="auditGoPage(auditPage + 1)">Next ›</button>
-          </div>
+          </template>
         </template>
       </div>
     </template>
   </div>
+
+  <!-- ── Cloud Provider Config Modal ─────────────────────────────────── -->
+  <Teleport to="body">
+    <Transition name="modal-fade">
+      <div v-if="showCloudModal" class="cloud-modal-backdrop" @click.self="showCloudModal = false">
+        <div class="cloud-modal">
+          <div class="cloud-modal__header">
+            <div class="cloud-modal__title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+              Cloud Provider — Error Log Access
+            </div>
+            <button class="cloud-modal__close" @click="showCloudModal = false">✕</button>
+          </div>
+
+          <div class="cloud-modal__body">
+            <p class="cloud-modal__desc">
+              Connect to Huawei Cloud RDS API to access error logs and slow query logs directly from your cloud provider.
+              Your credentials are stored securely on the server and never exposed to the browser.
+            </p>
+
+            <div class="cloud-form">
+              <div class="cloud-form__row">
+                <label>Provider</label>
+                <select v-model="cloudForm.provider" class="dblogs-select">
+                  <option value="huawei">Huawei Cloud RDS</option>
+                </select>
+              </div>
+              <div class="cloud-form__row">
+                <label>Region <span class="cloud-hint">e.g. ap-southeast-3</span></label>
+                <input v-model="cloudForm.region" class="dblogs-input" placeholder="ap-southeast-3" />
+              </div>
+              <div class="cloud-form__row">
+                <label>Project ID <span class="cloud-hint">IAM → My Credentials</span></label>
+                <input v-model="cloudForm.project_id" class="dblogs-input" placeholder="0b0e9c5b4f00d5a90f4c..." />
+              </div>
+              <div class="cloud-form__row">
+                <label>Instance ID <span class="cloud-hint">RDS → Instance → Overview</span></label>
+                <input v-model="cloudForm.instance_id" class="dblogs-input" placeholder="db-rds-xxx..." />
+              </div>
+              <div class="cloud-form__row">
+                <label>Access Key (AK) <span class="cloud-hint">IAM → Access Keys</span></label>
+                <input v-model="cloudForm.access_key" class="dblogs-input" placeholder="XXXXXXXXXXXXXXXXXXXX" />
+              </div>
+              <div class="cloud-form__row">
+                <label>Secret Key (SK) <span class="cloud-hint">Shown once when created</span></label>
+                <input v-model="cloudForm.secret_key" type="password" class="dblogs-input" placeholder="Enter secret key" />
+              </div>
+            </div>
+
+            <div class="cloud-form__help">
+              <strong>Where to find these:</strong>
+              <ol>
+                <li>Huawei Console → top-right → <strong>My Credentials</strong> → Project List → copy <strong>Project ID</strong></li>
+                <li>Same page → <strong>Access Keys</strong> → Add Access Key → download AK/SK</li>
+                <li>RDS → your instance → <strong>Basic Information</strong> → copy <strong>Instance ID</strong></li>
+                <li>Region code is in the browser URL: <code>console.huaweicloud.com/<strong>ap-southeast-3</strong>/rds</code></li>
+              </ol>
+            </div>
+          </div>
+
+          <div class="cloud-modal__footer">
+            <button v-if="cloudConfigured" class="dblogs-btn dblogs-btn--danger" @click="deleteCloudConfig">
+              Remove Config
+            </button>
+            <div style="flex:1" />
+            <button class="dblogs-btn dblogs-btn--ghost" @click="showCloudModal = false">Cancel</button>
+            <button class="dblogs-btn dblogs-btn--primary" :disabled="cloudSaving" @click="saveCloudConfig">
+              <svg v-if="cloudSaving" class="spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+              {{ cloudSaving ? 'Saving…' : cloudConfigured ? 'Update & Reconnect' : 'Save & Connect' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
 </template>
 
 <style scoped>
 .dblogs {
-  padding: 24px 28px;
+  padding: 24px 28px 48px;
   max-width: 1400px;
   font-family: var(--font);
   color: var(--text);
@@ -891,7 +1476,7 @@ function yesterday(): string {
   font-weight: 600;
   background: var(--accent);
   color: #fff;
-  border: none;
+  border: 1px solid transparent;
   border-radius: 6px;
   cursor: pointer;
   transition: opacity .15s;
@@ -1107,4 +1692,453 @@ function yesterday(): string {
 /* Spin */
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin .8s linear infinite; }
+
+/* Cloud button variant */
+.dblogs-btn--outline { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
+.dblogs-btn--outline:hover { background: var(--bg); color: var(--text-primary); border-color: var(--text-secondary); }
+.dblogs-btn--cloud { background: #16a34a; color: #fff; border-color: #16a34a; }
+.dblogs-btn--cloud:hover { background: #15803d; }
+.dblogs-btn--primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.dblogs-btn--primary:hover { opacity: .9; }
+.dblogs-btn--ghost { background: var(--bg-surface); color: var(--text-secondary); border-color: var(--border); }
+.dblogs-btn--ghost:hover { background: var(--bg-body); color: var(--text-primary); }
+.dblogs-btn--danger { background: transparent; color: #ef4444; border-color: #ef4444; }
+.dblogs-btn--danger:hover { background: rgba(239,68,68,.08); }
+
+/* Cloud Modal */
+.cloud-modal-backdrop {
+  position: fixed; inset: 0; z-index: 9000;
+  background: rgba(0,0,0,.45);
+  display: flex; align-items: center; justify-content: center;
+}
+.cloud-modal {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 520px; max-width: 95vw;
+  max-height: 90vh;
+  display: flex; flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0,0,0,.2);
+}
+.cloud-modal__header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.cloud-modal__title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 15px; font-weight: 700; color: var(--text-primary);
+}
+.cloud-modal__close {
+  background: none; border: none; cursor: pointer;
+  color: var(--text-secondary); font-size: 16px; padding: 4px 8px;
+  border-radius: 4px;
+}
+.cloud-modal__close:hover { background: var(--bg-body); color: var(--text-primary); }
+.cloud-modal__body {
+  padding: 20px; overflow-y: auto; flex: 1;
+  display: flex; flex-direction: column; gap: 16px;
+}
+.cloud-modal__desc {
+  font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin: 0;
+}
+.cloud-modal__footer {
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+}
+.cloud-form { display: flex; flex-direction: column; gap: 12px; }
+.cloud-form__row {
+  display: grid; grid-template-columns: 180px 1fr; align-items: start; gap: 10px;
+}
+.cloud-form__row label {
+  font-size: 13px; font-weight: 600; color: var(--text-primary);
+  display: flex; flex-direction: column; padding-top: 7px;
+}
+.cloud-hint { font-size: 11px; font-weight: 400; color: var(--text-secondary); margin-top: 2px; }
+.cloud-form__row input,
+.cloud-form__row select {
+  width: 100%;
+  background: var(--bg-body);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+}
+.cloud-form__row input:focus,
+.cloud-form__row select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(99,102,241,.15);
+}
+.cloud-form__row input::placeholder { color: var(--text-secondary); opacity: .6; }
+.cloud-form__help {
+  background: var(--bg-body); border: 1px solid var(--border);
+  border-radius: 8px; padding: 14px 16px;
+  font-size: 12.5px; color: var(--text-secondary); line-height: 1.7;
+}
+.cloud-form__help strong { color: var(--text-primary); }
+.cloud-form__help ol { margin: 8px 0 0 16px; padding: 0; }
+.cloud-form__help code {
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  color: var(--accent); padding: 1px 5px; border-radius: 3px;
+  font-family: var(--mono); font-size: 11.5px;
+}
+
+/* Modal transition */
+.modal-fade-enter-active, .modal-fade-leave-active { transition: opacity .18s ease; }
+.modal-fade-enter-from, .modal-fade-leave-to { opacity: 0; }
+
+/* Slow query extras */
+.slow-list { max-height: calc(100vh - 360px); overflow-y: auto; overflow-x: hidden; }
+.slow-row--select  { border-left: 3px solid rgba(16,185,129,.5); }
+.slow-row--insert  { border-left: 3px solid rgba(99,102,241,.5); }
+.slow-row--update  { border-left: 3px solid rgba(245,158,11,.5); }
+.slow-row--delete  { border-left: 3px solid rgba(239,68,68,.5); }
+.slow-row--create  { border-left: 3px solid rgba(139,92,246,.5); }
+.slow-row--other   { border-left: 3px solid rgba(148,163,184,.3); }
+
+.slow-time {
+  font-size: 12px; font-weight: 700; font-family: var(--mono);
+  color: #10b981; white-space: nowrap;
+}
+.slow-time--warn { color: #d97706; }
+.slow-time--crit { color: #ef4444; }
+
+.slow-calls {
+  font-size: 11px; font-weight: 600; padding: 1px 6px;
+  border-radius: 10px; background: var(--surface);
+  border: 1px solid var(--border); color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.slow-chip--time { color: var(--accent); border-color: rgba(99,102,241,.3); background: rgba(99,102,241,.06); }
+.err-detail-pre--query { color: var(--accent); }
+
+/* Audit list (local) */
+.audit-list { max-height: calc(100vh - 360px); overflow-y: auto; overflow-x: hidden; }
+
+/* Audit file list (cloud) */
+.audit-file-list {
+  border: 1px solid var(--border);
+  border-radius: 10px 10px 0 0;
+  overflow: hidden;
+  max-height: calc(100vh - 360px);
+  overflow-y: auto;
+}
+.audit-file-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 1;
+}
+.audit-file-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  transition: background .1s;
+}
+.audit-file-row:last-child { border-bottom: none; }
+.audit-file-row:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+
+.audit-col { display: flex; align-items: center; }
+.audit-col--time  { width: 260px; flex-shrink: 0; }
+.audit-col--name  { flex: 1; min-width: 0; }
+.audit-col--size  { width: 80px; flex-shrink: 0; justify-content: flex-end; }
+.audit-col--action { width: 110px; flex-shrink: 0; justify-content: flex-end; }
+
+.audit-file-header .audit-col {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--text-secondary);
+}
+
+.audit-time-range { display: flex; align-items: center; gap: 6px; }
+.audit-time-from, .audit-time-to {
+  font-size: 12px; font-family: var(--mono); color: var(--text);
+}
+.audit-filename {
+  font-size: 11.5px; font-family: var(--mono); color: var(--text-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.audit-size {
+  font-size: 12px; font-family: var(--mono);
+  color: var(--text-secondary); white-space: nowrap;
+}
+.audit-dl-btn {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 600; padding: 5px 12px;
+  border-radius: 6px; border: 1px solid var(--accent);
+  background: transparent; color: var(--accent);
+  cursor: pointer; transition: all .15s; white-space: nowrap;
+}
+.audit-dl-btn:hover:not(:disabled) { background: var(--accent); color: #fff; }
+.audit-dl-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ── Error Log Redesign ──────────────────────────────────────────── */
+
+.err-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 12px;
+}
+.err-toolbar__left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; flex: 1; }
+.err-toolbar__right { display: flex; align-items: center; gap: 8px; }
+
+.err-levels { display: flex; gap: 4px; }
+.err-lvl-btn {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .04em;
+  padding: 3px 9px; border-radius: 20px;
+  border: 1px solid transparent; cursor: pointer;
+  opacity: .4; transition: opacity .15s, transform .1s;
+  background: var(--surface); color: var(--text-secondary);
+}
+.err-lvl-btn:hover { opacity: .75; }
+.err-lvl-btn.active { opacity: 1; transform: none; }
+.lvl--error.active   { background: rgba(239,68,68,.12);  color: #ef4444; border-color: rgba(239,68,68,.3); }
+.lvl--fatal.active   { background: rgba(220,38,38,.12);  color: #dc2626; border-color: rgba(220,38,38,.3); }
+.lvl--warning.active { background: rgba(245,158,11,.12); color: #d97706; border-color: rgba(245,158,11,.3); }
+.lvl--context.active { background: var(--bg); color: var(--text-secondary); border-color: var(--border); }
+.lvl--statement.active { background: rgba(99,102,241,.1); color: var(--accent); border-color: rgba(99,102,241,.3); }
+.lvl--log.active     { background: rgba(16,185,129,.1); color: #10b981; border-color: rgba(16,185,129,.3); }
+.stmt--select.active { background: rgba(16,185,129,.12); color: #10b981; border-color: rgba(16,185,129,.3); }
+.stmt--insert.active { background: rgba(99,102,241,.12); color: var(--accent); border-color: rgba(99,102,241,.3); }
+.stmt--update.active { background: rgba(245,158,11,.12); color: #d97706; border-color: rgba(245,158,11,.3); }
+.stmt--delete.active { background: rgba(239,68,68,.12);  color: #ef4444; border-color: rgba(239,68,68,.3); }
+.stmt--create.active { background: rgba(139,92,246,.12); color: #8b5cf6; border-color: rgba(139,92,246,.3); }
+
+.err-datepicker { display: flex; align-items: center; gap: 8px; }
+.err-shortcuts { display: flex; gap: 3px; }
+.err-shortcut {
+  font-size: 11px; font-weight: 500; padding: 3px 10px;
+  border-radius: 5px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text-secondary);
+  cursor: pointer; transition: all .15s;
+}
+.err-shortcut:hover, .err-shortcut.active {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+.err-daterange { display: flex; align-items: center; gap: 5px; }
+.err-date-input {
+  font-size: 12px; padding: 4px 8px;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text); width: 120px;
+}
+.err-date-sep { font-size: 12px; color: var(--text-secondary); }
+
+.err-select {
+  font-size: 12px; padding: 5px 8px;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text); cursor: pointer;
+}
+.err-cloud-btn {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 600; padding: 5px 12px;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text-secondary);
+  cursor: pointer; transition: all .15s; white-space: nowrap;
+}
+.err-cloud-btn:hover { border-color: var(--accent); color: var(--accent); }
+.err-cloud-btn--on {
+  background: rgba(22,163,74,.1); color: #16a34a;
+  border-color: rgba(22,163,74,.35);
+}
+.err-cloud-btn--on:hover { background: rgba(22,163,74,.18); }
+
+/* Notices */
+.err-notice {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; padding: 10px 14px;
+  border-radius: 8px; margin-bottom: 10px;
+  border: 1px solid;
+}
+.err-notice--warn {
+  background: rgba(245,158,11,.07);
+  border-color: rgba(245,158,11,.25);
+  color: #d97706;
+}
+.err-notice--error {
+  background: rgba(239,68,68,.07);
+  border-color: rgba(239,68,68,.25);
+  color: #ef4444;
+}
+.err-notice span { flex: 1; }
+.err-inline-btn {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11.5px; font-weight: 600; padding: 4px 10px;
+  border-radius: 5px; border: 1px solid currentColor;
+  background: transparent; color: inherit; cursor: pointer;
+  white-space: nowrap; transition: background .15s;
+}
+.err-inline-btn:hover { background: rgba(255,255,255,.08); }
+
+/* Skeleton */
+.err-skeleton-wrap { display: flex; flex-direction: column; gap: 1px; }
+.err-skeleton-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.err-skel {
+  height: 10px; border-radius: 5px;
+  background: linear-gradient(90deg, var(--border) 25%, color-mix(in srgb, var(--border) 50%, transparent) 50%, var(--border) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
+}
+.err-skel--time  { width: 80px; flex-shrink: 0; }
+.err-skel--badge { width: 52px; height: 18px; border-radius: 10px; flex-shrink: 0; }
+.err-skel--db    { width: 90px; flex-shrink: 0; }
+.err-skel--msg   { flex: 1; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+
+/* Empty */
+.err-empty {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 6px; padding: 60px 20px; color: var(--text-secondary); text-align: center;
+}
+.err-empty p { font-size: 14px; font-weight: 600; margin: 0; color: var(--text); }
+.err-empty span { font-size: 12.5px; }
+
+/* Log list */
+.err-list {
+  border: 1px solid var(--border);
+  border-radius: 10px 10px 0 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  max-height: calc(100vh - 360px);
+  margin-bottom: 0;
+}
+.err-row {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  cursor: pointer;
+  transition: background .1s;
+}
+.err-row:last-child { border-bottom: none; }
+.err-row:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.err-row--open { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+
+/* Left accent bar by severity */
+.err-row--error   { border-left: 3px solid rgba(239,68,68,.5); }
+.err-row--fatal   { border-left: 3px solid rgba(220,38,38,.7); }
+.err-row--warning { border-left: 3px solid rgba(245,158,11,.5); }
+.err-row--statement { border-left: 3px solid rgba(99,102,241,.4); }
+.err-row--context { border-left: 3px solid rgba(148,163,184,.3); }
+.err-row--log     { border-left: 3px solid rgba(16,185,129,.4); }
+.err-row--info    { border-left: 3px solid rgba(16,185,129,.4); }
+
+.err-row__summary {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px 10px 12px;
+}
+.err-row__left { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
+.err-row__msg {
+  flex: 1; font-size: 12.5px; font-family: var(--mono);
+  color: var(--text); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.err-row__chevron {
+  flex-shrink: 0; color: var(--text-secondary);
+  transition: transform .2s; opacity: .5;
+}
+.err-row--open .err-row__chevron { transform: rotate(180deg); opacity: 1; }
+
+.err-row__badge {
+  display: inline-flex; align-items: center;
+  font-size: 10px; font-weight: 800; letter-spacing: .06em;
+  padding: 2px 7px; border-radius: 20px; white-space: nowrap;
+  text-transform: uppercase;
+}
+.badge--error     { background: rgba(239,68,68,.12);  color: #ef4444; }
+.badge--fatal     { background: rgba(220,38,38,.15);  color: #dc2626; }
+.badge--warning   { background: rgba(245,158,11,.12); color: #d97706; }
+.badge--statement { background: rgba(99,102,241,.1);  color: var(--accent); }
+.badge--context   { background: var(--surface); color: var(--text-secondary); border: 1px solid var(--border); }
+.badge--log       { background: rgba(16,185,129,.1);  color: #10b981; }
+.badge--info      { background: rgba(16,185,129,.1);  color: #10b981; }
+.badge--panic     { background: rgba(220,38,38,.2);   color: #dc2626; }
+.badge--note      { background: var(--surface); color: var(--text-secondary); border: 1px solid var(--border); }
+
+.err-row__time {
+  font-size: 11.5px; font-family: var(--mono);
+  color: var(--text-secondary); white-space: nowrap;
+}
+.err-row__db, .err-row__user {
+  display: flex; align-items: center; gap: 3px;
+  font-size: 11px; color: var(--text-secondary);
+  white-space: nowrap;
+}
+.err-row__db svg, .err-row__user svg { opacity: .6; }
+
+/* Expanded detail */
+.err-row__detail {
+  padding: 0 14px 14px 14px;
+  border-top: 1px dashed color-mix(in srgb, var(--border) 70%, transparent);
+}
+.err-expand-enter-active { transition: all .2s ease; }
+.err-expand-leave-active { transition: all .15s ease; }
+.err-expand-enter-from, .err-expand-leave-to { opacity: 0; transform: translateY(-4px); }
+
+.err-detail-grid { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; }
+.err-detail-section { display: flex; flex-direction: column; gap: 4px; }
+.err-detail-label {
+  font-size: 10px; font-weight: 700; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text-secondary);
+}
+.err-detail-pre {
+  margin: 0; font-family: var(--mono); font-size: 12px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-all;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 10px 12px;
+  max-height: 200px; overflow-y: auto; color: var(--text);
+}
+.err-detail-pre--raw { color: var(--text-secondary); font-size: 11px; }
+
+.err-detail-meta {
+  display: flex; flex-wrap: wrap; gap: 6px; padding-top: 10px;
+}
+.err-meta-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; padding: 3px 9px; border-radius: 20px;
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+.err-meta-chip svg { opacity: .6; }
+
+/* Pagination */
+.err-pager {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px;
+  border: 1px solid var(--border); border-top: none;
+  border-radius: 0 0 10px 10px;
+  background: var(--surface);
+}
+.err-pager__info {
+  font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 8px;
+}
+.err-pager__source {
+  font-size: 11px; opacity: .7; font-style: italic;
+}
+.err-pager__btns { display: flex; align-items: center; gap: 4px; }
+.err-pager__btn {
+  font-size: 12.5px; padding: 4px 10px;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text);
+  cursor: pointer; transition: all .12s;
+}
+.err-pager__btn:hover:not(:disabled) { background: var(--accent); color: #fff; border-color: var(--accent); }
+.err-pager__btn:disabled { opacity: .35; cursor: not-allowed; }
+.err-pager__cur {
+  font-size: 12.5px; font-weight: 700; padding: 4px 10px;
+  border-radius: 6px; background: var(--accent);
+  color: #fff; min-width: 32px; text-align: center;
+}
 </style>
