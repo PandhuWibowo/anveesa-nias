@@ -8,6 +8,16 @@ const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
 
 type TimeRange = '5m' | '15m' | '1h' | '6h' | '24h' | '7d' | '30d' | 'custom'
+
+const QUICK_RANGES: { key: Exclude<TimeRange, 'custom'>; label: string }[] = [
+  { key: '5m',  label: '5m'  },
+  { key: '15m', label: '15m' },
+  { key: '1h',  label: '1h'  },
+  { key: '6h',  label: '6h'  },
+  { key: '24h', label: '24h' },
+  { key: '7d',  label: '7d'  },
+  { key: '30d', label: '30d' },
+]
 type AutoRefreshInterval = 0 | 5 | 10 | 30 | 60
 
 interface HistogramBucket { key: number; key_as_string: string; doc_count: number }
@@ -26,8 +36,9 @@ const isSearch = computed(() => activeConn.value?.driver === 'elasticsearch' || 
 const indexPattern = ref('')
 const searchText = ref('')
 const timeRange = ref<TimeRange>('24h')
-const customFrom = ref('')
-const customTo = ref('')
+const customFrom = ref('')   // datetime-local string  e.g. "2026-05-14T08:00"
+const customTo   = ref('')
+const showTimePicker = ref(false)
 const autoRefresh = ref<AutoRefreshInterval>(0)
 const pageSize = ref(50)
 const timestampField = ref('@timestamp')
@@ -173,19 +184,25 @@ const streamEl = ref<HTMLElement | null>(null)
 // ── Filter & Sort ──────────────────────────────────────────
 type LevelFilter = 'all' | 'error' | 'warn' | 'info' | 'debug'
 type SortOrder   = 'desc' | 'asc'
-const levelFilter = ref<LevelFilter>('all')
-const envFilter   = ref('')          // '' | 'production' | 'sandbox'
-const appFilter   = ref('')          // specific app_name
-const sortOrder   = ref<SortOrder>('desc')
+const levelFilter  = ref<LevelFilter>('all')
+const envFilter    = ref('')
+const appFilter    = ref<Set<string>>(new Set())  // multi-select
+const sortOrder    = ref<SortOrder>('desc')
 const appNames     = ref<string[]>([])
 const appSearch    = ref('')
-const showControls = ref(true)   // collapse top controls to reclaim space
+const showAppMenu  = ref(false)
+const showControls = ref(true)
 
 // ── Pagination ──────────────────────────────────────────────
+// Elasticsearch's default max_result_window is 10 000.
+// We cap navigation at that boundary to avoid a result_window_too_large error.
+const ES_MAX_WINDOW = 10_000
 const currentPage = ref(1)
-const totalPages  = computed(() => Math.max(1, Math.ceil(totalHits.value / pageSize.value)))
-const pageFrom    = computed(() => (currentPage.value - 1) * pageSize.value)
+const reachableHits = computed(() => Math.min(totalHits.value, ES_MAX_WINDOW))
+const totalPages  = computed(() => Math.max(1, Math.ceil(reachableHits.value / pageSize.value)))
+const pageFrom    = computed(() => Math.min((currentPage.value - 1) * pageSize.value, ES_MAX_WINDOW - pageSize.value))
 const pageTo      = computed(() => Math.min(currentPage.value * pageSize.value, totalHits.value))
+const hitsCapped  = computed(() => totalHits.value > ES_MAX_WINDOW)
 
 // Visible page window (up to 7 buttons)
 const pageWindow = computed(() => {
@@ -207,13 +224,13 @@ const activeFilters = computed(() => {
   const chips: { label: string; clear: () => void }[] = []
   if (levelFilter.value !== 'all') chips.push({ label: `level: ${levelFilter.value}`, clear: () => { levelFilter.value = 'all'; run() } })
   if (envFilter.value)             chips.push({ label: `env: ${envFilter.value}`,     clear: () => { envFilter.value = '';    run() } })
-  if (appFilter.value)             chips.push({ label: `app: ${appFilter.value}`,     clear: () => { appFilter.value = '';   run() } })
+  for (const a of appFilter.value) chips.push({ label: `app: ${a}`, clear: () => { appFilter.value.delete(a); appFilter.value = new Set(appFilter.value); run() } })
   if (searchText.value.trim())     chips.push({ label: `"${searchText.value.trim()}"`,clear: () => { searchText.value = '';  run() } })
   return chips
 })
 
 function clearAllFilters() {
-  levelFilter.value = 'all'; envFilter.value = ''; appFilter.value = ''; searchText.value = ''
+  levelFilter.value = 'all'; envFilter.value = ''; appFilter.value = new Set(); searchText.value = ''
   currentPage.value = 1; run()
 }
 
@@ -230,11 +247,6 @@ const filteredFields = computed(() => {
 
 const histogramMax = computed(() => Math.max(...histogram.value.map(b => b.doc_count), 1))
 
-const timeRangeLabel: Record<TimeRange, string> = {
-  '5m': 'Last 5 min', '15m': 'Last 15 min', '1h': 'Last 1 hour',
-  '6h': 'Last 6 hours', '24h': 'Last 24 hours', '7d': 'Last 7 days',
-  '30d': 'Last 30 days', 'custom': 'Custom',
-}
 
 onMounted(async () => {
   if (!connections.value.length) await fetchConnections()
@@ -263,7 +275,30 @@ watch(autoRefresh, (interval) => {
   }
 })
 
-onBeforeUnmount(clearTimer)
+const timeWrapEl = ref<HTMLElement | null>(null)
+const appMenuEl  = ref<HTMLElement | null>(null)
+
+function toggleApp(name: string) {
+  const s = new Set(appFilter.value)
+  s.has(name) ? s.delete(name) : s.add(name)
+  appFilter.value = s
+  run()
+}
+
+function onDocClick(e: MouseEvent) {
+  if (showTimePicker.value && timeWrapEl.value && !timeWrapEl.value.contains(e.target as Node)) {
+    showTimePicker.value = false
+  }
+  if (showAppMenu.value && appMenuEl.value && !appMenuEl.value.contains(e.target as Node)) {
+    showAppMenu.value = false
+  }
+}
+
+onMounted(() => document.addEventListener('click', onDocClick, true))
+onBeforeUnmount(() => {
+  clearTimer()
+  document.removeEventListener('click', onDocClick, true)
+})
 
 function clearTimer() {
   if (refreshTimer.value) { clearInterval(refreshTimer.value); refreshTimer.value = null }
@@ -277,7 +312,7 @@ function resetAll() {
   fieldValues.value = {}
   expandedHits.value = new Set()
   appNames.value = []
-  appFilter.value = ''
+  appFilter.value = new Set()
 }
 
 function buildQuery(): any {
@@ -293,18 +328,50 @@ function buildQuery(): any {
       { term:         { environment: envFilter.value } },
       { match_phrase: { environment: envFilter.value } },
     ], minimum_should_match: 1 } })
-  if (appFilter.value)
-    clauses.push({ bool: { should: [
-      { term:         { 'app_name.keyword': appFilter.value } },
-      { term:         { app_name: appFilter.value } },
-      { match_phrase: { app_name: appFilter.value } },
-    ], minimum_should_match: 1 } })
+  if (appFilter.value.size) {
+    const apps = [...appFilter.value]
+    clauses.push({ bool: { should: apps.flatMap(a => [
+      { term:         { 'app_name.keyword': a } },
+      { term:         { app_name: a } },
+      { match_phrase: { app_name: a } },
+    ]), minimum_should_match: 1 } })
+  }
   if (levelFilter.value !== 'all') {
-    // Try both top-level log.level keyword and query_string for JSON-embedded level
+    const lv      = levelFilter.value                        // "error"
+    const lvUp    = lv.toUpperCase()                         // "ERROR"
+    const lvTitle = lv.charAt(0).toUpperCase() + lv.slice(1) // "Error"
+    const lvUpAlt = lv === 'warn' ? 'WARNING' : lvUp         // Laravel uses "WARNING"
+
+    // Check if a keyword sub-field is available for exact substring matching
+    const hasMsgKeyword = fields.value.some(f => f.name === 'message.keyword')
+    const kwField = hasMsgKeyword ? 'message.keyword' : null
+
     clauses.push({ bool: { should: [
-      { term: { 'log.level.keyword': levelFilter.value } },
-      { term: { 'log.level': levelFilter.value } },
-      { match_phrase: { message: `"log.level":"${levelFilter.value}"` } },
+      // ── ECS / Filebeat structured field ──────────────────────────────────
+      { term: { 'log.level.keyword': lv } },
+      { term: { 'log.level.keyword': lvUp } },
+      { term: { 'log.level': lv } },
+      { term: { 'log.level': lvUp } },
+
+      // ── Laravel "[ts] env.ERROR: ..." in message text ─────────────────────
+      // The standard analyzer splits "production.ERROR:" into tokens:
+      // "production", "error" — so we can match the level token directly.
+      // We use match on message for the level word itself.
+      { match: { message: lvUp } },
+      ...(lvUpAlt !== lvUp ? [{ match: { message: lvUpAlt } }] : []),
+
+      // If message.keyword exists, also add a precise wildcard to avoid
+      // false positives from body text containing the level word.
+      ...(kwField ? [
+        { wildcard: { [kwField]: `*] *.${lvUp}:*` } },
+        ...(lvUpAlt !== lvUp ? [{ wildcard: { [kwField]: `*] *.${lvUpAlt}:*` } }] : []),
+      ] : []),
+
+      // ── JSON-embedded level ───────────────────────────────────────────────
+      { match_phrase: { message: `"log.level":"${lv}"` } },
+      { match_phrase: { message: `"level":"${lv}"` } },
+      { match_phrase: { message: `"level":"${lvUp}"` } },
+      { match_phrase: { message: `"level":"${lvTitle}"` } },
     ], minimum_should_match: 1 } })
   }
   if (!clauses.length) return { match_all: {} }
@@ -315,26 +382,94 @@ function buildQuery(): any {
 // aggregation so the dropdown always shows all available apps.
 function buildQueryWithoutApp(): any {
   const saved = appFilter.value
-  appFilter.value = ''
+  appFilter.value = new Set()
   const q = buildQuery()
   appFilter.value = saved
   return q
 }
 
+// Convert a datetime-local string ("YYYY-MM-DDTHH:mm") — which the browser
+// always represents in local time — to a UTC ISO 8601 string for ES.
+function localDtToUtcIso(localDt: string): string {
+  // new Date("YYYY-MM-DDTHH:mm") is parsed as LOCAL time by the spec.
+  const d = new Date(localDt)
+  return isNaN(d.getTime()) ? localDt : d.toISOString()
+}
+
 function buildTimeClause(): Record<string, string> | null {
   if (timeRange.value === 'custom') {
     const r: Record<string, string> = {}
-    if (customFrom.value) r.gte = customFrom.value
-    if (customTo.value) r.lte = customTo.value
+    if (customFrom.value) r.gte = localDtToUtcIso(customFrom.value)
+    if (customTo.value)   r.lte = localDtToUtcIso(customTo.value)
     return Object.keys(r).length ? r : null
   }
   return { gte: `now-${timeRange.value}`, lte: 'now' }
 }
 
+// Human-readable label for the active time range button
+const activeTimeLabel = computed(() => {
+  if (timeRange.value !== 'custom') {
+    const found = QUICK_RANGES.find(r => r.key === timeRange.value)
+    return found ? `Last ${found.label}` : timeRange.value
+  }
+  const from = customFrom.value ? customFrom.value.replace('T', ' ') : '…'
+  const to   = customTo.value   ? customTo.value.replace('T', ' ')   : 'now'
+  return `${from} → ${to}`
+})
+
+function setQuickRange(key: Exclude<TimeRange, 'custom'>) {
+  timeRange.value = key
+  showTimePicker.value = false
+  run()
+}
+
+function applyCustomRange() {
+  timeRange.value = 'custom'
+  showTimePicker.value = false
+  run()
+}
+
+function setShortcut(type: 'today' | 'yesterday' | 'thisWeek' | 'last1h' | 'last6h') {
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  if (type === 'today') {
+    const start = new Date(now); start.setHours(0, 0, 0, 0)
+    customFrom.value = fmt(start); customTo.value = fmt(now)
+  } else if (type === 'yesterday') {
+    const start = new Date(now); start.setDate(start.getDate() - 1); start.setHours(0, 0, 0, 0)
+    const end   = new Date(now); end.setDate(end.getDate() - 1);     end.setHours(23, 59, 0, 0)
+    customFrom.value = fmt(start); customTo.value = fmt(end)
+  } else if (type === 'thisWeek') {
+    const start = new Date(now)
+    start.setDate(start.getDate() - start.getDay()); start.setHours(0, 0, 0, 0)
+    customFrom.value = fmt(start); customTo.value = fmt(now)
+  } else if (type === 'last1h') {
+    const start = new Date(now.getTime() - 3600_000)
+    customFrom.value = fmt(start); customTo.value = fmt(now)
+  } else if (type === 'last6h') {
+    const start = new Date(now.getTime() - 6 * 3600_000)
+    customFrom.value = fmt(start); customTo.value = fmt(now)
+  }
+}
+
 function histogramInterval(): string {
-  const map: Record<TimeRange, string> = {
+  if (timeRange.value === 'custom') {
+    if (customFrom.value && customTo.value) {
+      const ms = new Date(customTo.value).getTime() - new Date(customFrom.value).getTime()
+      if (ms <= 10 * 60_000)       return '30s'
+      if (ms <= 60 * 60_000)       return '1m'
+      if (ms <= 6 * 3600_000)      return '5m'
+      if (ms <= 24 * 3600_000)     return '30m'
+      if (ms <= 7 * 86400_000)     return '3h'
+      return '12h'
+    }
+    return '1h'
+  }
+  const map: Record<Exclude<TimeRange, 'custom'>, string> = {
     '5m': '30s', '15m': '1m', '1h': '5m', '6h': '30m',
-    '24h': '1h', '7d': '12h', '30d': '1d', 'custom': '1h',
+    '24h': '1h', '7d': '12h', '30d': '1d',
   }
   return map[timeRange.value] ?? '1h'
 }
@@ -342,6 +477,8 @@ function histogramInterval(): string {
 async function run(keepPage = false) {
   if (!activeConn.value || !indexPattern.value.trim()) return
   if (!keepPage) currentPage.value = 1
+  // Ensure fields are loaded before building queries so hasMsgKeyword is accurate
+  if (!fields.value.length) await loadFields()
   loading.value = true
   try {
     const query    = buildQuery()
@@ -360,7 +497,9 @@ async function run(keepPage = false) {
               field: timestampField.value,
               fixed_interval: interval,
               min_doc_count: 0,
-              extended_bounds: { min: `now-${timeRange.value === 'custom' ? '24h' : timeRange.value}`, max: 'now' },
+              extended_bounds: timeRange.value === 'custom'
+                ? { min: localDtToUtcIso(customFrom.value || new Date(Date.now() - 86400_000).toISOString()), max: localDtToUtcIso(customTo.value || new Date().toISOString()) }
+                : { min: `now-${timeRange.value}`, max: 'now' },
             },
           },
         },
@@ -399,9 +538,6 @@ async function run(keepPage = false) {
     // Scroll stream back to top after every page load
     await nextTick()
     streamEl.value?.scrollTo({ top: 0, behavior: 'smooth' })
-
-    // Load field list from mapping if empty
-    if (!fields.value.length) await loadFields()
   } catch (e: any) {
     toast.error(e?.response?.data?.error ?? 'Discover query failed')
   } finally {
@@ -482,7 +618,7 @@ function pinField(name: string) {
 
 function addFilter(field: string, value: string) {
   if (field === 'environment') { envFilter.value = value; run(); return }
-  if (field === 'app_name')    { appFilter.value = value; run(); return }
+  if (field === 'app_name')    { toggleApp(value); return }
   const clause = `${field}:"${value}"`
   searchText.value = searchText.value ? `${searchText.value} AND ${clause}` : clause
   run()
@@ -545,17 +681,36 @@ function hitMessage(source: Record<string, any>): string {
   return raw.length > 300 ? raw.slice(0, 300) + '…' : raw
 }
 
+// Canonical level map — normalises Laravel "WARNING" → "warn", "EMERGENCY" → "error", etc.
+const LEVEL_MAP: Record<string, string> = {
+  emergency: 'error', alert: 'error', critical: 'error', fatal: 'error',
+  error: 'error',
+  warning: 'warn', warn: 'warn',
+  notice: 'info', info: 'info', informational: 'info',
+  debug: 'debug',
+  trace: 'trace',
+}
+
 function parsedLevel(source: Record<string, any>): string {
+  // 1. ECS structured field
   const direct = getPath(source, 'log.level') || getPath(source, 'level')
-  if (direct) return direct.toLowerCase()
-  // Try parsing the message JSON for filebeat-style logs
+  if (direct) return LEVEL_MAP[direct.toLowerCase()] ?? direct.toLowerCase()
+
+  // 2. JSON-in-message
   const raw = getPath(source, 'message') || ''
-  if (raw.startsWith('{')) {
+  if (raw.trimStart().startsWith('{')) {
     try {
       const p = JSON.parse(raw)
-      return (p['log.level'] || p.level || '').toLowerCase()
+      const l = (p['log.level'] || p.level || '').toLowerCase()
+      if (l) return LEVEL_MAP[l] ?? l
     } catch { /* not JSON */ }
   }
+
+  // 3. Laravel format: "[YYYY-MM-DD HH:mm:ss] env.LEVEL: ..."
+  const laravelRe = /\]\s+\w+\.(EMERGENCY|ALERT|CRITICAL|ERROR|WARNING|NOTICE|INFO|DEBUG|TRACE):/i
+  const m = raw.match(laravelRe)
+  if (m) return LEVEL_MAP[m[1].toLowerCase()] ?? m[1].toLowerCase()
+
   return ''
 }
 
@@ -617,13 +772,50 @@ function hitKey(hit: Hit, idx: number): string {
           placeholder='Filter logs — e.g. app_name:"boss" AND environment:"production"'
           @keydown.enter="run" />
       </div>
-      <select v-model="timeRange" class="base-input disc-time-sel">
-        <option v-for="(label, val) in timeRangeLabel" :key="val" :value="val">{{ label }}</option>
-      </select>
-      <template v-if="timeRange === 'custom'">
-        <input v-model="customFrom" class="base-input disc-custom-dt" placeholder="from" />
-        <input v-model="customTo"   class="base-input disc-custom-dt" placeholder="to" />
-      </template>
+      <!-- ── Time range picker ──────────────────────────────── -->
+      <div class="disc-time-wrap" ref="timeWrapEl">
+        <!-- Quick pill buttons -->
+        <div class="disc-time-pills">
+          <button v-for="r in QUICK_RANGES" :key="r.key"
+            class="disc-time-pill"
+            :class="{ active: timeRange === r.key }"
+            @click="setQuickRange(r.key)">{{ r.label }}</button>
+          <button class="disc-time-pill disc-time-custom-btn"
+            :class="{ active: timeRange === 'custom' }"
+            @click="showTimePicker = !showTimePicker">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="margin-right:4px"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            {{ timeRange === 'custom' ? activeTimeLabel : 'Custom' }}
+          </button>
+        </div>
+        <!-- Custom date popover -->
+        <div v-if="showTimePicker" class="disc-time-popover">
+          <div class="disc-tp-title">Custom time range</div>
+          <!-- Shortcuts -->
+          <div class="disc-tp-shortcuts">
+            <button class="disc-tp-shortcut" @click="setShortcut('last1h')">Last 1 hour</button>
+            <button class="disc-tp-shortcut" @click="setShortcut('last6h')">Last 6 hours</button>
+            <button class="disc-tp-shortcut" @click="setShortcut('today')">Today</button>
+            <button class="disc-tp-shortcut" @click="setShortcut('yesterday')">Yesterday</button>
+            <button class="disc-tp-shortcut" @click="setShortcut('thisWeek')">This week</button>
+          </div>
+          <div class="disc-tp-fields">
+            <label class="disc-tp-label">
+              <span>From</span>
+              <input type="datetime-local" v-model="customFrom" class="base-input disc-tp-input" />
+            </label>
+            <span class="disc-tp-arrow">→</span>
+            <label class="disc-tp-label">
+              <span>To</span>
+              <input type="datetime-local" v-model="customTo" class="base-input disc-tp-input" />
+            </label>
+          </div>
+          <div class="disc-tp-actions">
+            <button class="disc-tp-cancel" @click="showTimePicker = false">Cancel</button>
+            <button class="base-btn base-btn--primary disc-tp-apply" @click="applyCustomRange">Apply</button>
+          </div>
+        </div>
+      </div>
+
       <button class="base-btn base-btn--primary disc-run-btn"
         :disabled="!indexPattern.trim() || loading" @click="run">
         {{ loading ? '…' : 'Search' }}
@@ -642,6 +834,7 @@ function hitKey(hit: Hit, idx: number): string {
         <div class="disc-ctrlbar-left">
           <span class="disc-hits-count">
             <strong>{{ totalHits.toLocaleString() }}</strong>
+            <span v-if="hitsCapped" class="disc-cap-badge" title="Elasticsearch's default result window is 10,000. Refine your query or time range to see more.">top 10k</span>
           </span>
           <span v-if="totalHits > 0" class="disc-strip-muted disc-range">
             {{ (pageFrom + 1).toLocaleString() }}–{{ pageTo.toLocaleString() }}
@@ -701,15 +894,32 @@ function hitKey(hit: Hit, idx: number): string {
             </div>
 
             <div v-if="appNames.length" class="disc-filter-group">
-              <span class="disc-filter-label">App</span>
-              <div class="disc-app-picker" :class="{ 'has-value': appFilter }">
-                <select class="disc-app-select" :value="appFilter"
-                  @change="appFilter = ($event.target as HTMLSelectElement).value; run()">
-                  <option value="">All apps</option>
-                  <option v-for="app in appNames" :key="app" :value="app">{{ app }}</option>
-                </select>
-                <button v-if="appFilter" class="disc-app-clear" title="Clear"
-                  @click.stop="appFilter = ''; run()">×</button>
+              <span class="disc-filter-label">APP</span>
+              <div class="disc-app-picker" ref="appMenuEl">
+                <button class="disc-app-trigger"
+                  :class="{ 'has-value': appFilter.size }"
+                  @click="showAppMenu = !showAppMenu">
+                  <span v-if="!appFilter.size">All apps</span>
+                  <span v-else-if="appFilter.size === 1">{{ [...appFilter][0] }}</span>
+                  <span v-else>{{ appFilter.size }} apps</span>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="margin-left:5px;flex-shrink:0"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div v-if="showAppMenu" class="disc-app-menu">
+                  <div class="disc-app-search-wrap">
+                    <input v-model="appSearch" class="disc-app-search" placeholder="Search apps…" @click.stop />
+                  </div>
+                  <div class="disc-app-list">
+                    <label v-for="app in appNames.filter(a => !appSearch || a.toLowerCase().includes(appSearch.toLowerCase()))"
+                      :key="app" class="disc-app-item"
+                      :class="{ selected: appFilter.has(app) }">
+                      <input type="checkbox" :checked="appFilter.has(app)" @change="toggleApp(app)" />
+                      <span class="disc-app-name">{{ app }}</span>
+                    </label>
+                    <div v-if="appFilter.size" class="disc-app-footer">
+                      <button class="disc-app-clear-all" @click="appFilter = new Set(); run(); showAppMenu = false">Clear selection</button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -795,7 +1005,10 @@ function hitKey(hit: Hit, idx: number): string {
           :disabled="currentPage === totalPages"
           @click="goToPage(currentPage + 1)">Next ›</button>
 
-        <span class="disc-pg-info">Page {{ currentPage }} of {{ totalPages.toLocaleString() }}</span>
+        <span class="disc-pg-info">
+          Page {{ currentPage }} of {{ totalPages.toLocaleString() }}
+          <template v-if="hitsCapped"> · showing first 10,000</template>
+        </span>
       </div>
 
     </template>
@@ -982,8 +1195,28 @@ export { flatSource }
 .disc-idx-input  { width:240px; font-family:var(--mono); font-size:12px; }
 .disc-search-wrap { flex:1; min-width:220px; }
 .disc-search-input { width:100%; }
-.disc-time-sel  { width:140px; }
-.disc-custom-dt { width:160px; font-size:12px; }
+/* ── Time range picker ───────────────────────────────────────── */
+.disc-time-wrap { position:relative; display:flex; align-items:center; }
+.disc-time-pills { display:flex; align-items:center; gap:3px; background:var(--bg-elevated); border:1px solid var(--border); border-radius:8px; padding:3px; }
+.disc-time-pill { border:none; background:transparent; color:var(--text-muted); font-size:12px; font-weight:600; padding:4px 9px; border-radius:5px; cursor:pointer; transition:background 0.13s,color 0.13s; white-space:nowrap; display:inline-flex; align-items:center; }
+.disc-time-pill:hover { background:var(--bg-hover,rgba(0,0,0,.06)); color:var(--text-primary); }
+.disc-time-pill.active { background:var(--accent,#3b82f6); color:#fff; }
+.disc-time-custom-btn { padding:4px 10px; }
+/* Popover */
+.disc-time-popover { position:absolute; top:calc(100% + 8px); right:0; z-index:300; background:var(--bg-surface,#fff); border:1px solid var(--border); border-radius:12px; padding:16px; box-shadow:0 8px 32px rgba(0,0,0,.18); min-width:380px; }
+.disc-tp-title { font-size:12px; font-weight:700; color:var(--text-primary); text-transform:uppercase; letter-spacing:.05em; margin-bottom:10px; }
+.disc-tp-shortcuts { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; }
+.disc-tp-shortcut { border:1px solid var(--border); background:var(--bg-elevated); color:var(--text-primary); font-size:12px; padding:5px 11px; border-radius:6px; cursor:pointer; transition:background .12s; }
+.disc-tp-shortcut:hover { background:var(--bg-hover,rgba(0,0,0,.06)); }
+.disc-tp-fields { display:flex; align-items:flex-end; gap:10px; margin-bottom:14px; }
+.disc-tp-label { display:flex; flex-direction:column; gap:4px; flex:1; }
+.disc-tp-label span { font-size:11px; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em; }
+.disc-tp-input { width:100%; font-size:12px; }
+.disc-tp-arrow { color:var(--text-muted); font-size:16px; padding-bottom:6px; flex-shrink:0; }
+.disc-tp-actions { display:flex; justify-content:flex-end; gap:8px; }
+.disc-tp-cancel { border:1px solid var(--border); background:transparent; color:var(--text-muted); font-size:12px; padding:6px 14px; border-radius:6px; cursor:pointer; }
+.disc-tp-cancel:hover { background:var(--bg-elevated); color:var(--text-primary); }
+.disc-tp-apply { font-size:12px; padding:6px 16px; }
 .disc-run-btn   { white-space:nowrap; flex-shrink:0; }
 
 /* ── Compact control bar ──────────────────────────────────── */
@@ -993,8 +1226,9 @@ export { flatSource }
 }
 .disc-ctrlbar-left  { display:flex; align-items:center; gap:6px; flex-wrap:wrap; flex:1; min-width:0; }
 .disc-ctrlbar-right { display:flex; align-items:center; gap:6px; flex-shrink:0; }
-.disc-hits-count { color:var(--text-primary); font-size:13px; font-weight:700; white-space:nowrap; }
+.disc-hits-count { color:var(--text-primary); font-size:13px; font-weight:700; white-space:nowrap; display:inline-flex; align-items:center; gap:6px; }
 .disc-hits-count strong { font-weight:800; }
+.disc-cap-badge { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; background:var(--bg-elevated); color:var(--text-muted); border:1px solid var(--border); border-radius:4px; padding:1px 5px; cursor:help; }
 .disc-strip-muted { color:var(--text-muted); font-size:11.5px; }
 .disc-range  { font-family:var(--mono); }
 .disc-updated::before { content:'↻ '; }
@@ -1026,7 +1260,7 @@ export { flatSource }
 .ctrl-collapse-leave-active { transition: max-height .18s ease, opacity .12s ease; }
 .ctrl-collapse-enter-from, .ctrl-collapse-leave-to { max-height: 0; opacity: 0; overflow:hidden; }
 .ctrl-collapse-enter-to, .ctrl-collapse-leave-from { max-height: 200px; opacity: 1; }
-.disc-controls-panel { display:flex; flex-direction:column; gap:6px; overflow:hidden; }
+.disc-controls-panel { display:flex; flex-direction:column; gap:6px; overflow:visible; }
 
 /* ── Filter & Sort bar ────────────────────────────────────── */
 .disc-filterbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:2px 0; }
@@ -1064,7 +1298,45 @@ export { flatSource }
 }
 .disc-clear-all:hover { color:var(--text-primary); border-color:var(--text-muted); }
 /* App picker */
-.disc-app-picker { position:relative; display:flex; align-items:center; }
+.disc-app-picker { position:relative; display:inline-flex; align-items:center; }
+.disc-app-trigger {
+  display:inline-flex; align-items:center; gap:4px;
+  border:1px solid var(--border); background:var(--bg-elevated);
+  color:var(--text-muted); font-size:12px; font-weight:600;
+  padding:5px 10px; border-radius:6px; cursor:pointer;
+  transition:border-color .13s, color .13s; white-space:nowrap; max-width:180px;
+}
+.disc-app-trigger span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.disc-app-trigger:hover { border-color:var(--accent,#3b82f6); color:var(--text-primary); }
+.disc-app-trigger.has-value { border-color:var(--accent,#3b82f6); color:var(--accent,#3b82f6); }
+.disc-app-menu {
+  position:absolute; top:calc(100% + 6px); left:0; z-index:300;
+  background:var(--bg-surface,#fff); border:1px solid var(--border);
+  border-radius:10px; box-shadow:0 8px 32px rgba(0,0,0,.16);
+  min-width:220px; max-width:280px; overflow:hidden;
+}
+.disc-app-search-wrap { padding:8px 8px 4px; }
+.disc-app-search {
+  width:100%; box-sizing:border-box;
+  border:1px solid var(--border); border-radius:6px;
+  background:var(--bg-elevated); color:var(--text-primary);
+  font-size:12px; padding:5px 9px; outline:none;
+}
+.disc-app-search:focus { border-color:var(--accent,#3b82f6); }
+.disc-app-list { max-height:220px; overflow-y:auto; padding:4px 0; }
+.disc-app-item {
+  display:flex; align-items:center; gap:8px;
+  padding:6px 12px; cursor:pointer; font-size:12px;
+  color:var(--text-primary); transition:background .1s;
+}
+.disc-app-item:hover { background:var(--bg-elevated); }
+.disc-app-item.selected { background:color-mix(in srgb,var(--accent,#3b82f6) 10%,transparent); }
+.disc-app-item input[type=checkbox] { accent-color:var(--accent,#3b82f6); width:13px; height:13px; flex-shrink:0; cursor:pointer; }
+.disc-app-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+.disc-app-footer { border-top:1px solid var(--border); padding:6px 12px; }
+.disc-app-clear-all { background:none; border:none; color:var(--text-muted); font-size:11.5px; cursor:pointer; padding:0; }
+.disc-app-clear-all:hover { color:var(--text-primary); }
+/* ── old select (replaced) ── */
 .disc-app-select {
   appearance:none; -webkit-appearance:none;
   background:var(--bg-elevated); border:1px solid var(--border); border-radius:6px;
@@ -1352,7 +1624,12 @@ export { flatSource }
 /* ── Responsive ───────────────────────────────────────────── */
 @media(max-width:860px) {
   .disc-searchbar { flex-direction:column; align-items:stretch; }
-  .disc-idx-input,.disc-time-sel { width:100%; }
+  .disc-idx-input { width:100%; }
+  .disc-time-wrap { width:100%; }
+  .disc-time-pills { width:100%; flex-wrap:wrap; }
+  .disc-time-popover { min-width:unset; width:calc(100vw - 32px); right:auto; left:0; }
+  .disc-tp-fields { flex-direction:column; }
+  .disc-tp-arrow { display:none; }
   .detail-panel { width: 100vw; }
   .detail-field-row { grid-template-columns: 160px 1fr 28px; }
 }
