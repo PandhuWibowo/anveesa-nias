@@ -184,13 +184,14 @@ const streamEl = ref<HTMLElement | null>(null)
 // ── Filter & Sort ──────────────────────────────────────────
 type LevelFilter = 'all' | 'error' | 'warn' | 'info' | 'debug'
 type SortOrder   = 'desc' | 'asc'
-const levelFilter = ref<LevelFilter>('all')
-const envFilter   = ref('')          // '' | 'production' | 'sandbox'
-const appFilter   = ref('')          // specific app_name
-const sortOrder   = ref<SortOrder>('desc')
+const levelFilter  = ref<LevelFilter>('all')
+const envFilter    = ref('')
+const appFilter    = ref<Set<string>>(new Set())  // multi-select
+const sortOrder    = ref<SortOrder>('desc')
 const appNames     = ref<string[]>([])
 const appSearch    = ref('')
-const showControls = ref(true)   // collapse top controls to reclaim space
+const showAppMenu  = ref(false)
+const showControls = ref(true)
 
 // ── Pagination ──────────────────────────────────────────────
 // Elasticsearch's default max_result_window is 10 000.
@@ -223,13 +224,13 @@ const activeFilters = computed(() => {
   const chips: { label: string; clear: () => void }[] = []
   if (levelFilter.value !== 'all') chips.push({ label: `level: ${levelFilter.value}`, clear: () => { levelFilter.value = 'all'; run() } })
   if (envFilter.value)             chips.push({ label: `env: ${envFilter.value}`,     clear: () => { envFilter.value = '';    run() } })
-  if (appFilter.value)             chips.push({ label: `app: ${appFilter.value}`,     clear: () => { appFilter.value = '';   run() } })
+  for (const a of appFilter.value) chips.push({ label: `app: ${a}`, clear: () => { appFilter.value.delete(a); appFilter.value = new Set(appFilter.value); run() } })
   if (searchText.value.trim())     chips.push({ label: `"${searchText.value.trim()}"`,clear: () => { searchText.value = '';  run() } })
   return chips
 })
 
 function clearAllFilters() {
-  levelFilter.value = 'all'; envFilter.value = ''; appFilter.value = ''; searchText.value = ''
+  levelFilter.value = 'all'; envFilter.value = ''; appFilter.value = new Set(); searchText.value = ''
   currentPage.value = 1; run()
 }
 
@@ -275,10 +276,21 @@ watch(autoRefresh, (interval) => {
 })
 
 const timeWrapEl = ref<HTMLElement | null>(null)
+const appMenuEl  = ref<HTMLElement | null>(null)
+
+function toggleApp(name: string) {
+  const s = new Set(appFilter.value)
+  s.has(name) ? s.delete(name) : s.add(name)
+  appFilter.value = s
+  run()
+}
 
 function onDocClick(e: MouseEvent) {
   if (showTimePicker.value && timeWrapEl.value && !timeWrapEl.value.contains(e.target as Node)) {
     showTimePicker.value = false
+  }
+  if (showAppMenu.value && appMenuEl.value && !appMenuEl.value.contains(e.target as Node)) {
+    showAppMenu.value = false
   }
 }
 
@@ -300,7 +312,7 @@ function resetAll() {
   fieldValues.value = {}
   expandedHits.value = new Set()
   appNames.value = []
-  appFilter.value = ''
+  appFilter.value = new Set()
 }
 
 function buildQuery(): any {
@@ -316,29 +328,46 @@ function buildQuery(): any {
       { term:         { environment: envFilter.value } },
       { match_phrase: { environment: envFilter.value } },
     ], minimum_should_match: 1 } })
-  if (appFilter.value)
-    clauses.push({ bool: { should: [
-      { term:         { 'app_name.keyword': appFilter.value } },
-      { term:         { app_name: appFilter.value } },
-      { match_phrase: { app_name: appFilter.value } },
-    ], minimum_should_match: 1 } })
+  if (appFilter.value.size) {
+    const apps = [...appFilter.value]
+    clauses.push({ bool: { should: apps.flatMap(a => [
+      { term:         { 'app_name.keyword': a } },
+      { term:         { app_name: a } },
+      { match_phrase: { app_name: a } },
+    ]), minimum_should_match: 1 } })
+  }
   if (levelFilter.value !== 'all') {
-    const lv      = levelFilter.value                     // e.g. "error"
-    const lvUp    = lv.toUpperCase()                      // "ERROR"
+    const lv      = levelFilter.value                        // "error"
+    const lvUp    = lv.toUpperCase()                         // "ERROR"
     const lvTitle = lv.charAt(0).toUpperCase() + lv.slice(1) // "Error"
-    // Laravel uses "WARNING" for what UIs label "warn"
-    const lvUpAlt = lv === 'warn' ? 'WARNING' : lvUp
+    const lvUpAlt = lv === 'warn' ? 'WARNING' : lvUp         // Laravel uses "WARNING"
+
+    // Check if a keyword sub-field is available for exact substring matching
+    const hasMsgKeyword = fields.value.some(f => f.name === 'message.keyword')
+    const kwField = hasMsgKeyword ? 'message.keyword' : null
 
     clauses.push({ bool: { should: [
-      // ECS / Filebeat structured field
-      { term:  { 'log.level.keyword': lv } },
-      { term:  { 'log.level.keyword': lvUp } },
-      { term:  { 'log.level': lv } },
-      { term:  { 'log.level': lvUp } },
-      // Laravel message format: "[ts] env.ERROR: ..."  or  "[ts] env.WARNING: ..."
-      { match_phrase: { message: `.${lvUp}:` } },
-      { match_phrase: { message: `.${lvUpAlt}:` } },
-      // JSON-embedded: {"log.level":"error"} or {"level":"error"}
+      // ── ECS / Filebeat structured field ──────────────────────────────────
+      { term: { 'log.level.keyword': lv } },
+      { term: { 'log.level.keyword': lvUp } },
+      { term: { 'log.level': lv } },
+      { term: { 'log.level': lvUp } },
+
+      // ── Laravel "[ts] env.ERROR: ..." in message text ─────────────────────
+      // The standard analyzer splits "production.ERROR:" into tokens:
+      // "production", "error" — so we can match the level token directly.
+      // We use match on message for the level word itself.
+      { match: { message: lvUp } },
+      ...(lvUpAlt !== lvUp ? [{ match: { message: lvUpAlt } }] : []),
+
+      // If message.keyword exists, also add a precise wildcard to avoid
+      // false positives from body text containing the level word.
+      ...(kwField ? [
+        { wildcard: { [kwField]: `*] *.${lvUp}:*` } },
+        ...(lvUpAlt !== lvUp ? [{ wildcard: { [kwField]: `*] *.${lvUpAlt}:*` } }] : []),
+      ] : []),
+
+      // ── JSON-embedded level ───────────────────────────────────────────────
       { match_phrase: { message: `"log.level":"${lv}"` } },
       { match_phrase: { message: `"level":"${lv}"` } },
       { match_phrase: { message: `"level":"${lvUp}"` } },
@@ -353,7 +382,7 @@ function buildQuery(): any {
 // aggregation so the dropdown always shows all available apps.
 function buildQueryWithoutApp(): any {
   const saved = appFilter.value
-  appFilter.value = ''
+  appFilter.value = new Set()
   const q = buildQuery()
   appFilter.value = saved
   return q
@@ -448,6 +477,8 @@ function histogramInterval(): string {
 async function run(keepPage = false) {
   if (!activeConn.value || !indexPattern.value.trim()) return
   if (!keepPage) currentPage.value = 1
+  // Ensure fields are loaded before building queries so hasMsgKeyword is accurate
+  if (!fields.value.length) await loadFields()
   loading.value = true
   try {
     const query    = buildQuery()
@@ -507,9 +538,6 @@ async function run(keepPage = false) {
     // Scroll stream back to top after every page load
     await nextTick()
     streamEl.value?.scrollTo({ top: 0, behavior: 'smooth' })
-
-    // Load field list from mapping if empty
-    if (!fields.value.length) await loadFields()
   } catch (e: any) {
     toast.error(e?.response?.data?.error ?? 'Discover query failed')
   } finally {
@@ -590,7 +618,7 @@ function pinField(name: string) {
 
 function addFilter(field: string, value: string) {
   if (field === 'environment') { envFilter.value = value; run(); return }
-  if (field === 'app_name')    { appFilter.value = value; run(); return }
+  if (field === 'app_name')    { toggleApp(value); return }
   const clause = `${field}:"${value}"`
   searchText.value = searchText.value ? `${searchText.value} AND ${clause}` : clause
   run()
@@ -653,17 +681,36 @@ function hitMessage(source: Record<string, any>): string {
   return raw.length > 300 ? raw.slice(0, 300) + '…' : raw
 }
 
+// Canonical level map — normalises Laravel "WARNING" → "warn", "EMERGENCY" → "error", etc.
+const LEVEL_MAP: Record<string, string> = {
+  emergency: 'error', alert: 'error', critical: 'error', fatal: 'error',
+  error: 'error',
+  warning: 'warn', warn: 'warn',
+  notice: 'info', info: 'info', informational: 'info',
+  debug: 'debug',
+  trace: 'trace',
+}
+
 function parsedLevel(source: Record<string, any>): string {
+  // 1. ECS structured field
   const direct = getPath(source, 'log.level') || getPath(source, 'level')
-  if (direct) return direct.toLowerCase()
-  // Try parsing the message JSON for filebeat-style logs
+  if (direct) return LEVEL_MAP[direct.toLowerCase()] ?? direct.toLowerCase()
+
+  // 2. JSON-in-message
   const raw = getPath(source, 'message') || ''
-  if (raw.startsWith('{')) {
+  if (raw.trimStart().startsWith('{')) {
     try {
       const p = JSON.parse(raw)
-      return (p['log.level'] || p.level || '').toLowerCase()
+      const l = (p['log.level'] || p.level || '').toLowerCase()
+      if (l) return LEVEL_MAP[l] ?? l
     } catch { /* not JSON */ }
   }
+
+  // 3. Laravel format: "[YYYY-MM-DD HH:mm:ss] env.LEVEL: ..."
+  const laravelRe = /\]\s+\w+\.(EMERGENCY|ALERT|CRITICAL|ERROR|WARNING|NOTICE|INFO|DEBUG|TRACE):/i
+  const m = raw.match(laravelRe)
+  if (m) return LEVEL_MAP[m[1].toLowerCase()] ?? m[1].toLowerCase()
+
   return ''
 }
 
@@ -847,15 +894,32 @@ function hitKey(hit: Hit, idx: number): string {
             </div>
 
             <div v-if="appNames.length" class="disc-filter-group">
-              <span class="disc-filter-label">App</span>
-              <div class="disc-app-picker" :class="{ 'has-value': appFilter }">
-                <select class="disc-app-select" :value="appFilter"
-                  @change="appFilter = ($event.target as HTMLSelectElement).value; run()">
-                  <option value="">All apps</option>
-                  <option v-for="app in appNames" :key="app" :value="app">{{ app }}</option>
-                </select>
-                <button v-if="appFilter" class="disc-app-clear" title="Clear"
-                  @click.stop="appFilter = ''; run()">×</button>
+              <span class="disc-filter-label">APP</span>
+              <div class="disc-app-picker" ref="appMenuEl">
+                <button class="disc-app-trigger"
+                  :class="{ 'has-value': appFilter.size }"
+                  @click="showAppMenu = !showAppMenu">
+                  <span v-if="!appFilter.size">All apps</span>
+                  <span v-else-if="appFilter.size === 1">{{ [...appFilter][0] }}</span>
+                  <span v-else>{{ appFilter.size }} apps</span>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="margin-left:5px;flex-shrink:0"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div v-if="showAppMenu" class="disc-app-menu">
+                  <div class="disc-app-search-wrap">
+                    <input v-model="appSearch" class="disc-app-search" placeholder="Search apps…" @click.stop />
+                  </div>
+                  <div class="disc-app-list">
+                    <label v-for="app in appNames.filter(a => !appSearch || a.toLowerCase().includes(appSearch.toLowerCase()))"
+                      :key="app" class="disc-app-item"
+                      :class="{ selected: appFilter.has(app) }">
+                      <input type="checkbox" :checked="appFilter.has(app)" @change="toggleApp(app)" />
+                      <span class="disc-app-name">{{ app }}</span>
+                    </label>
+                    <div v-if="appFilter.size" class="disc-app-footer">
+                      <button class="disc-app-clear-all" @click="appFilter = new Set(); run(); showAppMenu = false">Clear selection</button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1196,7 +1260,7 @@ export { flatSource }
 .ctrl-collapse-leave-active { transition: max-height .18s ease, opacity .12s ease; }
 .ctrl-collapse-enter-from, .ctrl-collapse-leave-to { max-height: 0; opacity: 0; overflow:hidden; }
 .ctrl-collapse-enter-to, .ctrl-collapse-leave-from { max-height: 200px; opacity: 1; }
-.disc-controls-panel { display:flex; flex-direction:column; gap:6px; overflow:hidden; }
+.disc-controls-panel { display:flex; flex-direction:column; gap:6px; overflow:visible; }
 
 /* ── Filter & Sort bar ────────────────────────────────────── */
 .disc-filterbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:2px 0; }
@@ -1234,7 +1298,45 @@ export { flatSource }
 }
 .disc-clear-all:hover { color:var(--text-primary); border-color:var(--text-muted); }
 /* App picker */
-.disc-app-picker { position:relative; display:flex; align-items:center; }
+.disc-app-picker { position:relative; display:inline-flex; align-items:center; }
+.disc-app-trigger {
+  display:inline-flex; align-items:center; gap:4px;
+  border:1px solid var(--border); background:var(--bg-elevated);
+  color:var(--text-muted); font-size:12px; font-weight:600;
+  padding:5px 10px; border-radius:6px; cursor:pointer;
+  transition:border-color .13s, color .13s; white-space:nowrap; max-width:180px;
+}
+.disc-app-trigger span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.disc-app-trigger:hover { border-color:var(--accent,#3b82f6); color:var(--text-primary); }
+.disc-app-trigger.has-value { border-color:var(--accent,#3b82f6); color:var(--accent,#3b82f6); }
+.disc-app-menu {
+  position:absolute; top:calc(100% + 6px); left:0; z-index:300;
+  background:var(--bg-surface,#fff); border:1px solid var(--border);
+  border-radius:10px; box-shadow:0 8px 32px rgba(0,0,0,.16);
+  min-width:220px; max-width:280px; overflow:hidden;
+}
+.disc-app-search-wrap { padding:8px 8px 4px; }
+.disc-app-search {
+  width:100%; box-sizing:border-box;
+  border:1px solid var(--border); border-radius:6px;
+  background:var(--bg-elevated); color:var(--text-primary);
+  font-size:12px; padding:5px 9px; outline:none;
+}
+.disc-app-search:focus { border-color:var(--accent,#3b82f6); }
+.disc-app-list { max-height:220px; overflow-y:auto; padding:4px 0; }
+.disc-app-item {
+  display:flex; align-items:center; gap:8px;
+  padding:6px 12px; cursor:pointer; font-size:12px;
+  color:var(--text-primary); transition:background .1s;
+}
+.disc-app-item:hover { background:var(--bg-elevated); }
+.disc-app-item.selected { background:color-mix(in srgb,var(--accent,#3b82f6) 10%,transparent); }
+.disc-app-item input[type=checkbox] { accent-color:var(--accent,#3b82f6); width:13px; height:13px; flex-shrink:0; cursor:pointer; }
+.disc-app-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+.disc-app-footer { border-top:1px solid var(--border); padding:6px 12px; }
+.disc-app-clear-all { background:none; border:none; color:var(--text-muted); font-size:11.5px; cursor:pointer; padding:0; }
+.disc-app-clear-all:hover { color:var(--text-primary); }
+/* ── old select (replaced) ── */
 .disc-app-select {
   appearance:none; -webkit-appearance:none;
   background:var(--bg-elevated); border:1px solid var(--border); border-radius:6px;
