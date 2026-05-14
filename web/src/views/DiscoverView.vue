@@ -8,6 +8,16 @@ const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
 
 type TimeRange = '5m' | '15m' | '1h' | '6h' | '24h' | '7d' | '30d' | 'custom'
+
+const QUICK_RANGES: { key: Exclude<TimeRange, 'custom'>; label: string }[] = [
+  { key: '5m',  label: '5m'  },
+  { key: '15m', label: '15m' },
+  { key: '1h',  label: '1h'  },
+  { key: '6h',  label: '6h'  },
+  { key: '24h', label: '24h' },
+  { key: '7d',  label: '7d'  },
+  { key: '30d', label: '30d' },
+]
 type AutoRefreshInterval = 0 | 5 | 10 | 30 | 60
 
 interface HistogramBucket { key: number; key_as_string: string; doc_count: number }
@@ -26,8 +36,9 @@ const isSearch = computed(() => activeConn.value?.driver === 'elasticsearch' || 
 const indexPattern = ref('')
 const searchText = ref('')
 const timeRange = ref<TimeRange>('24h')
-const customFrom = ref('')
-const customTo = ref('')
+const customFrom = ref('')   // datetime-local string  e.g. "2026-05-14T08:00"
+const customTo   = ref('')
+const showTimePicker = ref(false)
 const autoRefresh = ref<AutoRefreshInterval>(0)
 const pageSize = ref(50)
 const timestampField = ref('@timestamp')
@@ -182,10 +193,15 @@ const appSearch    = ref('')
 const showControls = ref(true)   // collapse top controls to reclaim space
 
 // ── Pagination ──────────────────────────────────────────────
+// Elasticsearch's default max_result_window is 10 000.
+// We cap navigation at that boundary to avoid a result_window_too_large error.
+const ES_MAX_WINDOW = 10_000
 const currentPage = ref(1)
-const totalPages  = computed(() => Math.max(1, Math.ceil(totalHits.value / pageSize.value)))
-const pageFrom    = computed(() => (currentPage.value - 1) * pageSize.value)
+const reachableHits = computed(() => Math.min(totalHits.value, ES_MAX_WINDOW))
+const totalPages  = computed(() => Math.max(1, Math.ceil(reachableHits.value / pageSize.value)))
+const pageFrom    = computed(() => Math.min((currentPage.value - 1) * pageSize.value, ES_MAX_WINDOW - pageSize.value))
 const pageTo      = computed(() => Math.min(currentPage.value * pageSize.value, totalHits.value))
+const hitsCapped  = computed(() => totalHits.value > ES_MAX_WINDOW)
 
 // Visible page window (up to 7 buttons)
 const pageWindow = computed(() => {
@@ -230,11 +246,6 @@ const filteredFields = computed(() => {
 
 const histogramMax = computed(() => Math.max(...histogram.value.map(b => b.doc_count), 1))
 
-const timeRangeLabel: Record<TimeRange, string> = {
-  '5m': 'Last 5 min', '15m': 'Last 15 min', '1h': 'Last 1 hour',
-  '6h': 'Last 6 hours', '24h': 'Last 24 hours', '7d': 'Last 7 days',
-  '30d': 'Last 30 days', 'custom': 'Custom',
-}
 
 onMounted(async () => {
   if (!connections.value.length) await fetchConnections()
@@ -263,7 +274,19 @@ watch(autoRefresh, (interval) => {
   }
 })
 
-onBeforeUnmount(clearTimer)
+const timeWrapEl = ref<HTMLElement | null>(null)
+
+function onDocClick(e: MouseEvent) {
+  if (showTimePicker.value && timeWrapEl.value && !timeWrapEl.value.contains(e.target as Node)) {
+    showTimePicker.value = false
+  }
+}
+
+onMounted(() => document.addEventListener('click', onDocClick, true))
+onBeforeUnmount(() => {
+  clearTimer()
+  document.removeEventListener('click', onDocClick, true)
+})
 
 function clearTimer() {
   if (refreshTimer.value) { clearInterval(refreshTimer.value); refreshTimer.value = null }
@@ -300,11 +323,26 @@ function buildQuery(): any {
       { match_phrase: { app_name: appFilter.value } },
     ], minimum_should_match: 1 } })
   if (levelFilter.value !== 'all') {
-    // Try both top-level log.level keyword and query_string for JSON-embedded level
+    const lv      = levelFilter.value                     // e.g. "error"
+    const lvUp    = lv.toUpperCase()                      // "ERROR"
+    const lvTitle = lv.charAt(0).toUpperCase() + lv.slice(1) // "Error"
+    // Laravel uses "WARNING" for what UIs label "warn"
+    const lvUpAlt = lv === 'warn' ? 'WARNING' : lvUp
+
     clauses.push({ bool: { should: [
-      { term: { 'log.level.keyword': levelFilter.value } },
-      { term: { 'log.level': levelFilter.value } },
-      { match_phrase: { message: `"log.level":"${levelFilter.value}"` } },
+      // ECS / Filebeat structured field
+      { term:  { 'log.level.keyword': lv } },
+      { term:  { 'log.level.keyword': lvUp } },
+      { term:  { 'log.level': lv } },
+      { term:  { 'log.level': lvUp } },
+      // Laravel message format: "[ts] env.ERROR: ..."  or  "[ts] env.WARNING: ..."
+      { match_phrase: { message: `.${lvUp}:` } },
+      { match_phrase: { message: `.${lvUpAlt}:` } },
+      // JSON-embedded: {"log.level":"error"} or {"level":"error"}
+      { match_phrase: { message: `"log.level":"${lv}"` } },
+      { match_phrase: { message: `"level":"${lv}"` } },
+      { match_phrase: { message: `"level":"${lvUp}"` } },
+      { match_phrase: { message: `"level":"${lvTitle}"` } },
     ], minimum_should_match: 1 } })
   }
   if (!clauses.length) return { match_all: {} }
@@ -321,20 +359,88 @@ function buildQueryWithoutApp(): any {
   return q
 }
 
+// Convert a datetime-local string ("YYYY-MM-DDTHH:mm") — which the browser
+// always represents in local time — to a UTC ISO 8601 string for ES.
+function localDtToUtcIso(localDt: string): string {
+  // new Date("YYYY-MM-DDTHH:mm") is parsed as LOCAL time by the spec.
+  const d = new Date(localDt)
+  return isNaN(d.getTime()) ? localDt : d.toISOString()
+}
+
 function buildTimeClause(): Record<string, string> | null {
   if (timeRange.value === 'custom') {
     const r: Record<string, string> = {}
-    if (customFrom.value) r.gte = customFrom.value
-    if (customTo.value) r.lte = customTo.value
+    if (customFrom.value) r.gte = localDtToUtcIso(customFrom.value)
+    if (customTo.value)   r.lte = localDtToUtcIso(customTo.value)
     return Object.keys(r).length ? r : null
   }
   return { gte: `now-${timeRange.value}`, lte: 'now' }
 }
 
+// Human-readable label for the active time range button
+const activeTimeLabel = computed(() => {
+  if (timeRange.value !== 'custom') {
+    const found = QUICK_RANGES.find(r => r.key === timeRange.value)
+    return found ? `Last ${found.label}` : timeRange.value
+  }
+  const from = customFrom.value ? customFrom.value.replace('T', ' ') : '…'
+  const to   = customTo.value   ? customTo.value.replace('T', ' ')   : 'now'
+  return `${from} → ${to}`
+})
+
+function setQuickRange(key: Exclude<TimeRange, 'custom'>) {
+  timeRange.value = key
+  showTimePicker.value = false
+  run()
+}
+
+function applyCustomRange() {
+  timeRange.value = 'custom'
+  showTimePicker.value = false
+  run()
+}
+
+function setShortcut(type: 'today' | 'yesterday' | 'thisWeek' | 'last1h' | 'last6h') {
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  if (type === 'today') {
+    const start = new Date(now); start.setHours(0, 0, 0, 0)
+    customFrom.value = fmt(start); customTo.value = fmt(now)
+  } else if (type === 'yesterday') {
+    const start = new Date(now); start.setDate(start.getDate() - 1); start.setHours(0, 0, 0, 0)
+    const end   = new Date(now); end.setDate(end.getDate() - 1);     end.setHours(23, 59, 0, 0)
+    customFrom.value = fmt(start); customTo.value = fmt(end)
+  } else if (type === 'thisWeek') {
+    const start = new Date(now)
+    start.setDate(start.getDate() - start.getDay()); start.setHours(0, 0, 0, 0)
+    customFrom.value = fmt(start); customTo.value = fmt(now)
+  } else if (type === 'last1h') {
+    const start = new Date(now.getTime() - 3600_000)
+    customFrom.value = fmt(start); customTo.value = fmt(now)
+  } else if (type === 'last6h') {
+    const start = new Date(now.getTime() - 6 * 3600_000)
+    customFrom.value = fmt(start); customTo.value = fmt(now)
+  }
+}
+
 function histogramInterval(): string {
-  const map: Record<TimeRange, string> = {
+  if (timeRange.value === 'custom') {
+    if (customFrom.value && customTo.value) {
+      const ms = new Date(customTo.value).getTime() - new Date(customFrom.value).getTime()
+      if (ms <= 10 * 60_000)       return '30s'
+      if (ms <= 60 * 60_000)       return '1m'
+      if (ms <= 6 * 3600_000)      return '5m'
+      if (ms <= 24 * 3600_000)     return '30m'
+      if (ms <= 7 * 86400_000)     return '3h'
+      return '12h'
+    }
+    return '1h'
+  }
+  const map: Record<Exclude<TimeRange, 'custom'>, string> = {
     '5m': '30s', '15m': '1m', '1h': '5m', '6h': '30m',
-    '24h': '1h', '7d': '12h', '30d': '1d', 'custom': '1h',
+    '24h': '1h', '7d': '12h', '30d': '1d',
   }
   return map[timeRange.value] ?? '1h'
 }
@@ -360,7 +466,9 @@ async function run(keepPage = false) {
               field: timestampField.value,
               fixed_interval: interval,
               min_doc_count: 0,
-              extended_bounds: { min: `now-${timeRange.value === 'custom' ? '24h' : timeRange.value}`, max: 'now' },
+              extended_bounds: timeRange.value === 'custom'
+                ? { min: localDtToUtcIso(customFrom.value || new Date(Date.now() - 86400_000).toISOString()), max: localDtToUtcIso(customTo.value || new Date().toISOString()) }
+                : { min: `now-${timeRange.value}`, max: 'now' },
             },
           },
         },
@@ -617,13 +725,50 @@ function hitKey(hit: Hit, idx: number): string {
           placeholder='Filter logs — e.g. app_name:"boss" AND environment:"production"'
           @keydown.enter="run" />
       </div>
-      <select v-model="timeRange" class="base-input disc-time-sel">
-        <option v-for="(label, val) in timeRangeLabel" :key="val" :value="val">{{ label }}</option>
-      </select>
-      <template v-if="timeRange === 'custom'">
-        <input v-model="customFrom" class="base-input disc-custom-dt" placeholder="from" />
-        <input v-model="customTo"   class="base-input disc-custom-dt" placeholder="to" />
-      </template>
+      <!-- ── Time range picker ──────────────────────────────── -->
+      <div class="disc-time-wrap" ref="timeWrapEl">
+        <!-- Quick pill buttons -->
+        <div class="disc-time-pills">
+          <button v-for="r in QUICK_RANGES" :key="r.key"
+            class="disc-time-pill"
+            :class="{ active: timeRange === r.key }"
+            @click="setQuickRange(r.key)">{{ r.label }}</button>
+          <button class="disc-time-pill disc-time-custom-btn"
+            :class="{ active: timeRange === 'custom' }"
+            @click="showTimePicker = !showTimePicker">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="margin-right:4px"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            {{ timeRange === 'custom' ? activeTimeLabel : 'Custom' }}
+          </button>
+        </div>
+        <!-- Custom date popover -->
+        <div v-if="showTimePicker" class="disc-time-popover">
+          <div class="disc-tp-title">Custom time range</div>
+          <!-- Shortcuts -->
+          <div class="disc-tp-shortcuts">
+            <button class="disc-tp-shortcut" @click="setShortcut('last1h')">Last 1 hour</button>
+            <button class="disc-tp-shortcut" @click="setShortcut('last6h')">Last 6 hours</button>
+            <button class="disc-tp-shortcut" @click="setShortcut('today')">Today</button>
+            <button class="disc-tp-shortcut" @click="setShortcut('yesterday')">Yesterday</button>
+            <button class="disc-tp-shortcut" @click="setShortcut('thisWeek')">This week</button>
+          </div>
+          <div class="disc-tp-fields">
+            <label class="disc-tp-label">
+              <span>From</span>
+              <input type="datetime-local" v-model="customFrom" class="base-input disc-tp-input" />
+            </label>
+            <span class="disc-tp-arrow">→</span>
+            <label class="disc-tp-label">
+              <span>To</span>
+              <input type="datetime-local" v-model="customTo" class="base-input disc-tp-input" />
+            </label>
+          </div>
+          <div class="disc-tp-actions">
+            <button class="disc-tp-cancel" @click="showTimePicker = false">Cancel</button>
+            <button class="base-btn base-btn--primary disc-tp-apply" @click="applyCustomRange">Apply</button>
+          </div>
+        </div>
+      </div>
+
       <button class="base-btn base-btn--primary disc-run-btn"
         :disabled="!indexPattern.trim() || loading" @click="run">
         {{ loading ? '…' : 'Search' }}
@@ -642,6 +787,7 @@ function hitKey(hit: Hit, idx: number): string {
         <div class="disc-ctrlbar-left">
           <span class="disc-hits-count">
             <strong>{{ totalHits.toLocaleString() }}</strong>
+            <span v-if="hitsCapped" class="disc-cap-badge" title="Elasticsearch's default result window is 10,000. Refine your query or time range to see more.">top 10k</span>
           </span>
           <span v-if="totalHits > 0" class="disc-strip-muted disc-range">
             {{ (pageFrom + 1).toLocaleString() }}–{{ pageTo.toLocaleString() }}
@@ -795,7 +941,10 @@ function hitKey(hit: Hit, idx: number): string {
           :disabled="currentPage === totalPages"
           @click="goToPage(currentPage + 1)">Next ›</button>
 
-        <span class="disc-pg-info">Page {{ currentPage }} of {{ totalPages.toLocaleString() }}</span>
+        <span class="disc-pg-info">
+          Page {{ currentPage }} of {{ totalPages.toLocaleString() }}
+          <template v-if="hitsCapped"> · showing first 10,000</template>
+        </span>
       </div>
 
     </template>
@@ -982,8 +1131,28 @@ export { flatSource }
 .disc-idx-input  { width:240px; font-family:var(--mono); font-size:12px; }
 .disc-search-wrap { flex:1; min-width:220px; }
 .disc-search-input { width:100%; }
-.disc-time-sel  { width:140px; }
-.disc-custom-dt { width:160px; font-size:12px; }
+/* ── Time range picker ───────────────────────────────────────── */
+.disc-time-wrap { position:relative; display:flex; align-items:center; }
+.disc-time-pills { display:flex; align-items:center; gap:3px; background:var(--bg-elevated); border:1px solid var(--border); border-radius:8px; padding:3px; }
+.disc-time-pill { border:none; background:transparent; color:var(--text-muted); font-size:12px; font-weight:600; padding:4px 9px; border-radius:5px; cursor:pointer; transition:background 0.13s,color 0.13s; white-space:nowrap; display:inline-flex; align-items:center; }
+.disc-time-pill:hover { background:var(--bg-hover,rgba(0,0,0,.06)); color:var(--text-primary); }
+.disc-time-pill.active { background:var(--accent,#3b82f6); color:#fff; }
+.disc-time-custom-btn { padding:4px 10px; }
+/* Popover */
+.disc-time-popover { position:absolute; top:calc(100% + 8px); right:0; z-index:300; background:var(--bg-surface,#fff); border:1px solid var(--border); border-radius:12px; padding:16px; box-shadow:0 8px 32px rgba(0,0,0,.18); min-width:380px; }
+.disc-tp-title { font-size:12px; font-weight:700; color:var(--text-primary); text-transform:uppercase; letter-spacing:.05em; margin-bottom:10px; }
+.disc-tp-shortcuts { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; }
+.disc-tp-shortcut { border:1px solid var(--border); background:var(--bg-elevated); color:var(--text-primary); font-size:12px; padding:5px 11px; border-radius:6px; cursor:pointer; transition:background .12s; }
+.disc-tp-shortcut:hover { background:var(--bg-hover,rgba(0,0,0,.06)); }
+.disc-tp-fields { display:flex; align-items:flex-end; gap:10px; margin-bottom:14px; }
+.disc-tp-label { display:flex; flex-direction:column; gap:4px; flex:1; }
+.disc-tp-label span { font-size:11px; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em; }
+.disc-tp-input { width:100%; font-size:12px; }
+.disc-tp-arrow { color:var(--text-muted); font-size:16px; padding-bottom:6px; flex-shrink:0; }
+.disc-tp-actions { display:flex; justify-content:flex-end; gap:8px; }
+.disc-tp-cancel { border:1px solid var(--border); background:transparent; color:var(--text-muted); font-size:12px; padding:6px 14px; border-radius:6px; cursor:pointer; }
+.disc-tp-cancel:hover { background:var(--bg-elevated); color:var(--text-primary); }
+.disc-tp-apply { font-size:12px; padding:6px 16px; }
 .disc-run-btn   { white-space:nowrap; flex-shrink:0; }
 
 /* ── Compact control bar ──────────────────────────────────── */
@@ -993,8 +1162,9 @@ export { flatSource }
 }
 .disc-ctrlbar-left  { display:flex; align-items:center; gap:6px; flex-wrap:wrap; flex:1; min-width:0; }
 .disc-ctrlbar-right { display:flex; align-items:center; gap:6px; flex-shrink:0; }
-.disc-hits-count { color:var(--text-primary); font-size:13px; font-weight:700; white-space:nowrap; }
+.disc-hits-count { color:var(--text-primary); font-size:13px; font-weight:700; white-space:nowrap; display:inline-flex; align-items:center; gap:6px; }
 .disc-hits-count strong { font-weight:800; }
+.disc-cap-badge { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; background:var(--bg-elevated); color:var(--text-muted); border:1px solid var(--border); border-radius:4px; padding:1px 5px; cursor:help; }
 .disc-strip-muted { color:var(--text-muted); font-size:11.5px; }
 .disc-range  { font-family:var(--mono); }
 .disc-updated::before { content:'↻ '; }
@@ -1352,7 +1522,12 @@ export { flatSource }
 /* ── Responsive ───────────────────────────────────────────── */
 @media(max-width:860px) {
   .disc-searchbar { flex-direction:column; align-items:stretch; }
-  .disc-idx-input,.disc-time-sel { width:100%; }
+  .disc-idx-input { width:100%; }
+  .disc-time-wrap { width:100%; }
+  .disc-time-pills { width:100%; flex-wrap:wrap; }
+  .disc-time-popover { min-width:unset; width:calc(100vw - 32px); right:auto; left:0; }
+  .disc-tp-fields { flex-direction:column; }
+  .disc-tp-arrow { display:none; }
   .detail-panel { width: 100vw; }
   .detail-field-row { grid-template-columns: 160px 1fr 28px; }
 }
