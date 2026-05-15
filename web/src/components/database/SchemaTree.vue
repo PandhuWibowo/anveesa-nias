@@ -12,7 +12,7 @@ const emit = defineEmits<{
   (e: 'select-table', payload: { db: string; table: string; type: string }): void
 }>()
 
-const { databases, loadingSchema, fetchSchema } = useSchema()
+const { databases, loadingSchema, error: schemaError, fetchSchema } = useSchema()
 
 const expandedDbs = ref<Set<string>>(new Set())
 const activeTable = ref<string>('')
@@ -57,6 +57,10 @@ function tablesFor(db: { tables?: SchemaTable[] | null }) {
 
     <div v-else-if="!connId" class="empty-state" style="padding:20px 8px;font-size:12px">
       Select a connection to browse the schema.
+    </div>
+
+    <div v-else-if="schemaError" class="notice notice--error" style="margin:8px;font-size:12px">
+      {{ schemaError }}
     </div>
 
     <div v-else-if="databases.length === 0" class="empty-state" style="padding:20px 8px;font-size:12px">

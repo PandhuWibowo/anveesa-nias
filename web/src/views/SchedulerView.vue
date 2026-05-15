@@ -2,6 +2,8 @@
 import { ref, onMounted } from 'vue'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
+import { useToast } from '@/composables/useToast'
+import { readableError } from '@/utils/httpError'
 
 interface Schedule {
   id: number; name: string; conn_id: number; sql: string
@@ -19,6 +21,7 @@ interface ScheduleRun {
 }
 
 const { connections } = useConnections()
+const toast = useToast()
 const schedules = ref<Schedule[]>([])
 const dashboards = ref<AnalyticsDashboard[]>([])
 const loading = ref(false)
@@ -72,14 +75,19 @@ async function save() {
   } else if (!form.value.sql || !form.value.conn_id) {
     return
   }
-  if (form.value.id) {
-    await axios.put(`/api/schedules/${form.value.id}`, form.value)
-  } else {
-    await axios.post('/api/schedules', form.value)
+  try {
+    if (form.value.id) {
+      await axios.put(`/api/schedules/${form.value.id}`, form.value)
+    } else {
+      await axios.post('/api/schedules', form.value)
+    }
+    showForm.value = false
+    resetForm()
+    load()
+    toast.success('Schedule saved')
+  } catch (e) {
+    toast.error(readableError(e, { action: 'Save schedule', fallback: 'Failed to save schedule' }))
   }
-  showForm.value = false
-  resetForm()
-  load()
 }
 
 async function toggle(s: Schedule) {

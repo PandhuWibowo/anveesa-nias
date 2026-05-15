@@ -5,6 +5,7 @@ import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConnections } from '@/composables/useConnections'
 import { useAuth } from '@/composables/useAuth'
+import { readableError } from '@/utils/httpError'
 
 const toast = useToast()
 const route = useRoute()
@@ -156,8 +157,8 @@ async function saveRole() {
     }
     showRoleForm.value = false
     await fetchRoles()
-  } catch (error: any) {
-    toast.error(error.response?.data || 'Failed to save role')
+  } catch (error) {
+    toast.error(readableError(error, { action: 'Save role', fallback: 'Failed to save role' }))
   } finally {
     roleSaving.value = false
   }
@@ -265,8 +266,8 @@ async function saveGroup() {
     }
     showGroupForm.value = false
     await fetchGroups()
-  } catch (error: any) {
-    toast.error(error.response?.data || 'Failed to save group')
+  } catch (error) {
+    toast.error(readableError(error, { action: 'Save access group', fallback: 'Failed to save group' }))
   } finally {
     groupSaving.value = false
   }
@@ -406,23 +407,21 @@ async function openUserForm(user: User | null = null) {
     // Load user's direct connection assignments
     try {
       const { data } = await axios.get(`/api/users/${user.id}/connections`)
-      console.log('Loaded user connections:', data)
       userForm.connection_assignments = (data || [])
         .filter((a: any) => a.source === 'direct')
         .map((a: any) => ({
           conn_id: a.conn_id,
           permissions: Array.isArray(a.permissions) ? a.permissions : []
         }))
-      console.log('Processed assignments:', userForm.connection_assignments)
     } catch (error: any) {
-      console.error('Failed to load user connections:', error)
       // If endpoint doesn't exist yet, just start with empty
       if (error.response?.status === 404 || error.response?.status === 501) {
-        console.log('Endpoint not implemented, starting with empty assignments')
+        userForm.connection_assignments = []
       } else {
-        toast.error('Failed to load user connections')
+        toast.error(readableError(error, { action: 'Load user connection assignments', fallback: 'Failed to load user connections' }))
+        editingUser.value = null
+        return
       }
-      userForm.connection_assignments = []
     }
   } else {
     userForm.username = ''
@@ -465,8 +464,7 @@ async function saveUser() {
           connection_permissions: userForm.connection_assignments
         })
       } catch (connError) {
-        console.error('Failed to update connections:', connError)
-        // Continue even if connection assignment fails
+        throw new Error(readableError(connError, { action: 'Update user connection assignments', fallback: 'Failed to update user connections' }))
       }
       
       toast.success('User updated successfully')
@@ -487,8 +485,7 @@ async function saveUser() {
             connection_permissions: userForm.connection_assignments
           })
         } catch (connError) {
-          console.error('Failed to assign connections:', connError)
-          // Continue even if connection assignment fails
+          throw new Error(readableError(connError, { action: 'Assign user connections', fallback: 'Failed to assign user connections' }))
         }
       }
 
@@ -496,9 +493,8 @@ async function saveUser() {
     }
     showUserForm.value = false
     await fetchUsers()
-  } catch (error: any) {
-    console.error('Save user error:', error)
-    toast.error(error.response?.data || error.message || 'Failed to save user')
+  } catch (error) {
+    toast.error(readableError(error, { action: 'Save user', fallback: 'Failed to save user' }))
   } finally {
     userSaving.value = false
   }

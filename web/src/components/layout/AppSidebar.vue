@@ -13,7 +13,7 @@ const emit = defineEmits<{ (e: 'select-conn', id: number): void }>()
 
 const router = useRouter()
 const { connections, removeConnection, fetchConnections } = useConnections()
-const { folders, fetchFolders, createFolder, updateFolder, deleteFolder, moveConnection, setConnectionVisibility } = useFolders()
+const { folders, error: folderError, fetchFolders, createFolder, updateFolder, deleteFolder, moveConnection, setConnectionVisibility } = useFolders()
 const { user } = useAuth()
 const { confirm } = useConfirm()
 const toast = useToast()
@@ -91,12 +91,17 @@ async function deleteConn(conn: Connection) {
 
 async function submitNewFolder() {
   if (!newFolderName.value.trim()) return
-  await createFolder({ name: newFolderName.value.trim(), parent_id: newFolderParent.value, visibility: newFolderVisibility.value, color: newFolderColor.value })
-  newFolderName.value = ''
-  newFolderColor.value = '#4f9cf9'
-  newFolderVisibility.value = 'private'
-  newFolderParent.value = null
-  showNewFolder.value = false
+  const result = await createFolder({ name: newFolderName.value.trim(), parent_id: newFolderParent.value, visibility: newFolderVisibility.value, color: newFolderColor.value })
+  if (result) {
+    newFolderName.value = ''
+    newFolderColor.value = '#4f9cf9'
+    newFolderVisibility.value = 'private'
+    newFolderParent.value = null
+    showNewFolder.value = false
+    toast.success(`Folder "${result.name}" created`)
+  } else {
+    toast.error(folderError.value || 'Failed to create folder')
+  }
 }
 
 function startEditFolder(f: ConnectionFolder) {
@@ -109,8 +114,13 @@ function startEditFolder(f: ConnectionFolder) {
 
 async function submitEditFolder() {
   if (!editingFolder.value || !editFolderName.value.trim()) return
-  await updateFolder(editingFolder.value.id, { name: editFolderName.value.trim(), color: editFolderColor.value, visibility: editFolderVisibility.value, parent_id: editingFolder.value.parent_id })
-  editingFolder.value = null
+  const ok = await updateFolder(editingFolder.value.id, { name: editFolderName.value.trim(), color: editFolderColor.value, visibility: editFolderVisibility.value, parent_id: editingFolder.value.parent_id })
+  if (ok) {
+    editingFolder.value = null
+    toast.success('Folder updated')
+  } else {
+    toast.error(folderError.value || 'Failed to update folder')
+  }
 }
 
 async function doDeleteFolder(f: ConnectionFolder) {

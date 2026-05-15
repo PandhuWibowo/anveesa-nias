@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import axios from 'axios'
+import { useToast } from '@/composables/useToast'
+import { readableError } from '@/utils/httpError'
+
+const toast = useToast()
 
 interface User {
   id: number
@@ -75,6 +79,8 @@ async function saveEdit() {
     })
     editTarget.value = null
     await loadUsers()
+  } catch (e) {
+    toast.error(readableError(e, { action: 'Save user', fallback: 'Failed to save user' }))
   } finally {
     editSaving.value = false
   }

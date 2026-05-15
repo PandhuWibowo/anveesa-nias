@@ -8,6 +8,7 @@ import { useToast } from '@/composables/useToast'
 import { pendingSQL } from '@/composables/usePendingSQL'
 import { pendingAIAnalytics } from '@/composables/usePendingAIAnalytics'
 import { pendingDashboardBlock } from '@/composables/usePendingDashboardBlock'
+import { readableError } from '@/utils/httpError'
 
 const router = useRouter()
 const { queries, loading, fetchAll, save, remove } = useSavedQueries()
@@ -80,10 +81,10 @@ async function saveEdit(q: SavedQuery) {
     })
     await fetchAll()
     toast.success('Query updated')
-  } catch {
-    toast.error('Failed to update')
+    editingId.value = null
+  } catch (e) {
+    toast.error(readableError(e, { action: 'Update saved query', fallback: 'Failed to update' }))
   }
-  editingId.value = null
 }
 
 function cancelEdit() { editingId.value = null }
@@ -135,8 +136,8 @@ async function createNew() {
     toast.success('Query saved')
     showNew.value = false
     newName.value = ''; newDesc.value = ''; newSQL.value = ''; newConnId.value = null
-  } catch {
-    toast.error('Failed to save')
+  } catch (e) {
+    toast.error(readableError(e, { action: 'Save query', fallback: 'Failed to save' }))
   } finally {
     newSaving.value = false
   }

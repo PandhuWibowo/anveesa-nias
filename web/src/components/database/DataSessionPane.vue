@@ -14,6 +14,7 @@ import { useSchema } from '@/composables/useSchema'
 import { useForeignKeys } from '@/composables/useForeignKeys'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
+import { readableError } from '@/utils/httpError'
 import type { SQLPanelPayload } from '@/components/database/SQLPanel.vue'
 
 type ImportRow = (string | number | null)[]
@@ -27,7 +28,7 @@ const emit = defineEmits<{
 }>()
 
 const { connections } = useConnections()
-const { fetchTableData, fetchTableColumns, columns: schemaColumns, fetchColumns } = useSchema()
+const { fetchTableData, fetchTableColumns, columns: schemaColumns, error: schemaError, fetchColumns } = useSchema()
 const { fetchFKs, isFKColumn } = useForeignKeys()
 const toast = useToast()
 const router = useRouter()
@@ -52,7 +53,9 @@ const sortBy = ref<string | undefined>()
 const sortDir = ref<'asc' | 'desc'>('asc')
 const loading = ref(false)
 const editMode = ref(false)
+const dataTableRef = ref<InstanceType<typeof DataTable> | null>(null)
 const pkColumn = ref('')
+const dataTableColumns = ref<Array<{ name: string; data_type: string }>>([])
 const hasUnsavedTableEdits = ref(false)
 const activeSubTab = ref<string>('data')
 let suppressSubTabGuard = false
@@ -69,6 +72,7 @@ async function loadData() {
   loading.value = true
   const data = await fetchTableData(props.connId, selected.value.db, selected.value.table, page.value, pageSize.value, sortBy.value, sortDir.value)
   if (data) { columns.value = data.columns ?? []; rows.value = data.rows ?? []; totalRows.value = data.total_rows ?? 0 }
+  else if (schemaError.value) toast.error(schemaError.value)
   loading.value = false
 }
 
@@ -83,10 +87,13 @@ async function handleSelectTable(payload: { db: string; table: string }, openInE
   }
   hasUnsavedTableEdits.value = false
   selected.value = payload
+  dataTableColumns.value = []
   editMode.value = false; pkColumn.value = ''; page.value = 1
   loadData()
   if (props.connId) {
     const cols = await fetchTableColumns(props.connId, payload.db, payload.table)
+    dataTableColumns.value = cols.map((column) => ({ name: column.name, data_type: column.data_type }))
+    if (schemaError.value) toast.error(schemaError.value)
     fetchFKs(props.connId, payload.db)
     const pk = cols?.find((c: any) => c.is_primary_key)
     pkColumn.value = pk?.name ?? (cols?.[0]?.name ?? '')
@@ -115,6 +122,10 @@ function handleRefreshData() {
   hasUnsavedTableEdits.value = false
   loadData()
 }
+
+function handleAddDataRow() {
+  dataTableRef.value?.startAddRow()
+}
 function handleToggleEditMode() {
   if (editMode.value && !confirmDiscardPendingEdits('exit edit mode')) return
   if (editMode.value) {
@@ -123,13 +134,46 @@ function handleToggleEditMode() {
   editMode.value = !editMode.value
 }
 
+function inferColumnsFromTypeError(message: string, values: Record<string, unknown>) {
+  if (/Field\/column:/i.test(message)) return ''
+  const match = message.match(/invalid input syntax for type\s+([a-zA-Z0-9_ ]+):\s*"([^"]*)"/i)
+  if (!match) return ''
+  const failedType = match[1].trim().toLowerCase()
+  const failedValue = match[2]
+  const typeAliases: Record<string, string[]> = {
+    timestamp: ['timestamp', 'datetime'],
+    date: ['date'],
+    time: ['time'],
+    integer: ['int', 'serial'],
+    bigint: ['bigint', 'bigserial'],
+    numeric: ['numeric', 'decimal', 'double', 'real', 'float'],
+    boolean: ['bool'],
+  }
+  const needles = typeAliases[failedType] ?? [failedType]
+  const candidates = dataTableColumns.value
+    .filter((column) => {
+      if (!Object.prototype.hasOwnProperty.call(values, column.name)) return false
+      if (String(values[column.name] ?? '') !== failedValue) return false
+      const dataType = column.data_type.toLowerCase()
+      return needles.some((needle) => dataType.includes(needle))
+    })
+    .map((column) => column.name)
+  return candidates.join(', ')
+}
+
+function rowSaveError(error: unknown, action: string, fallback: string, values: Record<string, unknown>) {
+  const message = readableError(error, { action, fallback })
+  const columns = inferColumnsFromTypeError(message, values)
+  return columns ? `${message}\nField/column: ${columns}` : message
+}
+
 async function handleSaveRow(payload: { pkValue: unknown; updates: Record<string, unknown> }) {
   if (!selected.value || !props.connId) return
   try {
     await axios.put(`/api/connections/${props.connId}/schema/${selected.value.db}/tables/${selected.value.table}/rows`, { pk_column: pkColumn.value, pk_value: payload.pkValue, updates: payload.updates })
     hasUnsavedTableEdits.value = false
     toast.success('Row updated'); loadData()
-  } catch (e: any) { toast.error(e.response?.data?.error ?? 'Update failed') }
+  } catch (e) { toast.error(rowSaveError(e, 'Update row', 'Update failed', payload.updates)) }
 }
 
 async function handleSaveAllRows(payload: Array<{ pkValue: unknown; updates: Record<string, unknown> }>) {
@@ -146,8 +190,8 @@ async function handleSaveAllRows(payload: Array<{ pkValue: unknown; updates: Rec
     hasUnsavedTableEdits.value = false
     toast.success(`${payload.length} row${payload.length > 1 ? 's' : ''} updated`)
     loadData()
-  } catch (e: any) {
-    toast.error(e.response?.data?.error ?? 'Bulk update failed')
+  } catch (e) {
+    toast.error(readableError(e, { action: 'Bulk update rows', fallback: 'Bulk update failed' }))
   }
 }
 
@@ -157,7 +201,7 @@ async function handleDeleteRow(payload: { pkValue: unknown }) {
   try {
     await axios.delete(`/api/connections/${props.connId}/schema/${selected.value.db}/tables/${selected.value.table}/rows`, { data: { pk_column: pkColumn.value, pk_value: payload.pkValue } })
     toast.success('Row deleted'); loadData()
-  } catch (e: any) { toast.error(e.response?.data?.error ?? 'Delete failed') }
+  } catch (e) { toast.error(readableError(e, { action: 'Delete row', fallback: 'Delete failed' })) }
 }
 
 async function handleAddRow(payload: { values: Record<string, unknown> }) {
@@ -165,7 +209,7 @@ async function handleAddRow(payload: { values: Record<string, unknown> }) {
   try {
     await axios.post(`/api/connections/${props.connId}/schema/${selected.value.db}/tables/${selected.value.table}/rows`, { values: payload.values })
     toast.success('Row inserted'); loadData()
-  } catch (e: any) { toast.error(e.response?.data?.error ?? 'Insert failed') }
+  } catch (e) { toast.error(rowSaveError(e, 'Insert row', 'Insert failed', payload.values)) }
 }
 
 // ── Schema tab state ──────────────────────────────────────────────
@@ -176,6 +220,7 @@ async function handleSchemaSelectTable(payload: { db: string; table: string; typ
   schemaSelected.value = { db: payload.db, table: payload.table, type: payload.type ?? 'table' }
   schemaLoadingCols.value = true
   await fetchColumns(props.connId ?? 0, payload.db, payload.table)
+  if (schemaError.value) toast.error(schemaError.value)
   schemaLoadingCols.value = false
   emit('table-selected', payload.db, payload.table)
 }
@@ -193,6 +238,7 @@ const {
   loadingSchema, 
   metadata, 
   objectDetail, 
+  error: explorerError,
   fetchSchema: fetchSchemaList, 
   fetchMetadata, 
   fetchObjectDetail 
@@ -206,6 +252,7 @@ async function ensureExplorerReady() {
   if (!props.connId || !supportsRelationalSchema.value) return
   if (!databases.value.length) {
     await fetchSchemaList(props.connId)
+    if (explorerError.value) toast.error(explorerError.value)
   }
   if (!activeDatabase.value) {
     activeDatabase.value = databases.value[0]?.name ?? ''
@@ -228,6 +275,7 @@ watch([() => props.connId, () => props.active, supportsRelationalSchema], async 
   // Load schema list eagerly so Explorer + Schema tabs have data immediately
   if (!id || !canLoad) return
   await fetchSchemaList(id)
+  if (explorerError.value) toast.error(explorerError.value)
   activeDatabase.value = databases.value[0]?.name ?? ''
   if (isActive && activeSubTab.value === 'explorer') {
     await ensureExplorerReady()
@@ -240,6 +288,7 @@ watch(activeDatabase, async (dbName) => {
   selectedObjectKey.value = ''
   if (!props.connId || !dbName) return
   const catalog = await fetchMetadata(props.connId, dbName)
+  if (explorerError.value) toast.error(explorerError.value)
   const firstItem = catalog?.groups.find(group => group.items.length > 0)?.items[0]
   if (firstItem) {
     await selectSchemaObject({ type: firstItem.type, name: firstItem.name })
@@ -251,6 +300,7 @@ async function selectSchemaObject(payload: { type: string; name: string }) {
   selectedObjectKey.value = `${payload.type}:${payload.name}`
   detailLoading.value = true
   await fetchObjectDetail(props.connId, activeDatabase.value, payload.type, payload.name)
+  if (explorerError.value) toast.error(explorerError.value)
   detailLoading.value = false
 }
 
@@ -350,7 +400,7 @@ async function confirmImport() {
     toast.success(`Imported ${data.inserted} rows`)
     if (data.errors?.length) toast.error(`${data.errors.length} rows skipped`)
     importOpen.value = false; loadData()
-  } catch (e: any) { importError.value = e?.response?.data?.error ?? 'Import failed' }
+  } catch (e) { importError.value = readableError(e, { action: 'Import rows', fallback: 'Import failed' }) }
   finally { importLoading.value = false }
 }
 
@@ -609,23 +659,25 @@ async function handleSQLResultSaveRow(
   }
   try {
     const body = { pk_column: tab.sqlEditPkColumn, pk_value: payload.pkValue, updates: payload.changes }
-    console.log('[EditRow] PUT', target, body)
     await axios.put(
       `/api/connections/${props.connId}/schema/${target.db}/tables/${target.table}/rows`,
       body,
     )
-    toast.success('Row updated')
-  } catch (e: any) {
-    // Backend returns text/plain with a JSON body — parse accordingly
-    const raw = e.response?.data
-    let msg = e.message ?? 'Update failed'
-    if (typeof raw === 'string') {
-      try { msg = JSON.parse(raw)?.error ?? raw } catch { msg = raw }
-    } else if (raw?.error) {
-      msg = raw.error
+    if (tab.result?.kind === 'query') {
+      const result = tab.result
+      const rows = result.rows.map((row, rowIdx) => {
+        if (rowIdx !== payload.rowIdx) return row
+        return result.columns.map((column, colIdx) =>
+          Object.prototype.hasOwnProperty.call(payload.changes, column)
+            ? payload.changes[column]
+            : row[colIdx],
+        )
+      })
+      tab.result = { ...result, rows }
     }
-    console.error('[EditRow] save failed:', msg, e.response)
-    toast.error(`Save failed: ${msg}`)
+    toast.success('Row updated')
+  } catch (e) {
+    toast.error(rowSaveError(e, 'Save edited row', 'Update failed', payload.changes))
   }
 }
 
@@ -772,6 +824,10 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.43"/></svg>
                 Refresh
               </button>
+              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!columns.length || loading" @click="handleAddDataRow">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Add
+              </button>
               <button class="base-btn base-btn--sm" :class="editMode ? 'base-btn--primary' : 'base-btn--ghost'" @click="handleToggleEditMode">{{ editMode ? 'Editing' : 'Edit' }}</button>
               <button class="base-btn base-btn--ghost base-btn--sm" @click="openImport">Import</button>
               <button class="base-btn base-btn--ghost base-btn--sm" @click="exportCsv" :disabled="!rows.length">CSV</button>
@@ -788,7 +844,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           <span v-else class="browse-toolbar__empty">Select a table to browse data</span>
         </div>
         <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column">
-          <DataTable v-if="selected" :columns="columns" :rows="rows" :loading="loading" :page="page" :page-size="pageSize" :total-rows="totalRows" :editable="editMode" :pk-column="pkColumn" @page-change="handlePageChange" @page-size-change="handlePageSizeChange" @sort="handleSort" @save-row="handleSaveRow" @save-all-rows="handleSaveAllRows" @delete-row="handleDeleteRow" @add-row="handleAddRow" @dirty-change="hasUnsavedTableEdits = $event" />
+          <DataTable v-if="selected" ref="dataTableRef" :columns="columns" :rows="rows" :loading="loading" :page="page" :page-size="pageSize" :total-rows="totalRows" :editable="editMode" :addable="true" :pk-column="pkColumn" @page-change="handlePageChange" @page-size-change="handlePageSizeChange" @sort="handleSort" @save-row="handleSaveRow" @save-all-rows="handleSaveAllRows" @delete-row="handleDeleteRow" @add-row="handleAddRow" @dirty-change="hasUnsavedTableEdits = $event" />
           <div v-else class="empty-state">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="color:var(--text-muted)"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
             Select a table from the left to browse its data.

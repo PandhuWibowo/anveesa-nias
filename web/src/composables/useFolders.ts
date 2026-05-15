@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import axios from 'axios'
+import { readableError } from '@/utils/httpError'
 
 export interface ConnectionFolder {
   id: number
@@ -22,6 +23,7 @@ export interface FolderForm {
 
 const folders = ref<ConnectionFolder[]>([])
 const loading = ref(false)
+const error = ref('')
 
 export function useFolders() {
   async function fetchFolders() {
@@ -29,7 +31,9 @@ export function useFolders() {
     try {
       const { data } = await axios.get<ConnectionFolder[]>('/api/folders')
       folders.value = data
-    } catch {
+      error.value = ''
+    } catch (e) {
+      error.value = readableError(e, { action: 'Load folders', fallback: 'Failed to load folders' })
       folders.value = []
     } finally {
       loading.value = false
@@ -41,8 +45,8 @@ export function useFolders() {
       const { data } = await axios.post<ConnectionFolder>('/api/folders', form)
       await fetchFolders()
       return data
-    } catch (e: any) {
-      console.error('createFolder failed:', e?.response?.data ?? e)
+    } catch (e) {
+      error.value = readableError(e, { action: 'Create folder', fallback: 'Failed to create folder' })
       return null
     }
   }
@@ -52,7 +56,8 @@ export function useFolders() {
       await axios.put(`/api/folders/${id}`, form)
       await fetchFolders()
       return true
-    } catch {
+    } catch (e) {
+      error.value = readableError(e, { action: 'Update folder', fallback: 'Failed to update folder' })
       return false
     }
   }
@@ -78,6 +83,7 @@ export function useFolders() {
   return {
     folders,
     loading,
+    error,
     fetchFolders,
     createFolder,
     updateFolder,

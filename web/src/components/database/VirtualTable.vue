@@ -78,9 +78,6 @@ function saveRow(displayIdx: number) {
   const pkValue = pkIdx >= 0 ? row[pkIdx] : row[0]
   const changes = dirtyRows.value.get(origIdx) ?? {}
   emit('save-row', { rowIdx: origIdx, pkValue, changes })
-  dirtyRows.value.delete(origIdx)
-  dirtyRows.value = new Map(dirtyRows.value)
-  emit('dirty-change', dirtyRows.value.size)
 }
 
 function saveAllRows() {
@@ -113,6 +110,7 @@ function displayVal(displayIdx: number, colIdx: number, origVal: unknown): unkno
 watch(() => props.rows, () => {
   dirtyRows.value = new Map()
   editingCell.value = null
+  emit('dirty-change', 0)
 })
 
 // Multi-row selection

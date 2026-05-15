@@ -7,8 +7,9 @@ import { useFolders } from '@/composables/useFolders'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import DriverIcon from '@/components/ui/DriverIcon.vue'
+import { readableError } from '@/utils/httpError'
 
-const { connections, loading, testConnection, saveConnection, removeConnection, fetchConnections, disconnectConnection, reconnectConnection } = useConnections()
+const { connections, loading, error: connectionError, testConnection, saveConnection, removeConnection, fetchConnections, disconnectConnection, reconnectConnection } = useConnections()
 const { folders, fetchFolders, moveConnection, setConnectionVisibility } = useFolders()
 const toast = useToast()
 const { confirm } = useConfirm()
@@ -330,13 +331,13 @@ async function handleSave() {
       conn = data
       await fetchConnections()
       toast.success(`Connection "${conn.name}" updated`)
-    } catch {
-      toast.error('Failed to update connection')
+    } catch (e) {
+      toast.error(readableError(e, { action: 'Update connection', fallback: 'Failed to update connection' }))
     }
   } else {
     conn = await saveConnection({ ...form })
     if (conn) toast.success(`Connection "${conn.name}" saved`)
-    else toast.error('Failed to save connection')
+    else toast.error(connectionError.value || 'Failed to save connection')
   }
   saving.value = false
   if (conn) { showForm.value = false; resetForm() }

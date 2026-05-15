@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
 import axios from 'axios'
+import { useToast } from '@/composables/useToast'
+import { readableError } from '@/utils/httpError'
 
 interface Snippet { id: number; name: string; description: string; sql: string; tags: string }
 
 const props = defineProps<{ show: boolean }>()
 const emit = defineEmits<{ close: []; insert: [sql: string] }>()
+const toast = useToast()
 
 const snippets = ref<Snippet[]>([])
 const q = ref('')
@@ -41,6 +44,8 @@ async function save() {
       await axios.post('/api/snippets', editing.value)
     }
     view.value = 'list'; load()
+  } catch (e) {
+    toast.error(readableError(e, { action: 'Save snippet', fallback: 'Failed to save snippet' }))
   } finally { saving.value = false }
 }
 

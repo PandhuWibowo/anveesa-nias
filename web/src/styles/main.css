@@ -1057,33 +1057,62 @@ html[data-theme='light'] .data-table tbody tr:nth-child(even) td {
 /* ─── Toast ───────────────────────────────────────────────────── */
 .toast-container {
   position: fixed;
-  bottom: 20px;
-  right: 20px;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 9999;
   display: flex;
   flex-direction: column;
   gap: 6px;
   pointer-events: none;
+  width: min(920px, calc(100vw - 24px));
 }
 .toast {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
-  padding: 10px 14px;
-  border-radius: var(--r);
+  padding: 11px 14px;
+  border-radius: 8px;
   font-size: 12.5px;
   font-weight: 500;
   background: var(--bg-elevated);
   border: 1px solid var(--border-2);
   box-shadow: var(--shadow-md);
   pointer-events: all;
-  min-width: 200px;
-  max-width: 340px;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
   line-height: 1.4;
 }
-.toast--success { border-color: var(--success); background: var(--success-bg); color: var(--success); }
-.toast--error   { border-color: var(--danger);  background: var(--danger-bg);  color: var(--danger); }
-.toast--info    { border-color: var(--brand-ring); background: var(--brand-dim); color: var(--brand); }
+.toast__icon { flex-shrink: 0; margin-top: 2px; }
+.toast__message {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.toast__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: transparent;
+  color: currentColor;
+  opacity: .65;
+  cursor: pointer;
+  padding: 0;
+}
+.toast__close:hover { opacity: 1; background: color-mix(in srgb, currentColor 8%, transparent); }
+.toast--success { border-color: #15803d; background: #dcfce7; color: #14532d; }
+.toast--error   { border-color: #b91c1c; background: #fee2e2; color: #7f1d1d; }
+.toast--info    { border-color: #1d4ed8; background: #dbeafe; color: #1e3a8a; }
+:root[data-theme="dark"] .toast--success { border-color: #22c55e; background: #052e16; color: #bbf7d0; }
+:root[data-theme="dark"] .toast--error   { border-color: #ef4444; background: #450a0a; color: #fecaca; }
+:root[data-theme="dark"] .toast--info    { border-color: #60a5fa; background: #172554; color: #bfdbfe; }
 
 .toast-enter-active, .toast-leave-active { transition: all 200ms var(--ease); }
 .toast-enter-from { transform: translateX(24px); opacity: 0; }

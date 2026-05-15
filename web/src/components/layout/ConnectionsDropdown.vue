@@ -14,7 +14,7 @@ const emit = defineEmits<{
 
 const router = useRouter()
 const { connections, removeConnection, fetchConnections } = useConnections()
-const { folders, fetchFolders, createFolder, updateFolder, deleteFolder, moveConnection, setConnectionVisibility } = useFolders()
+const { folders, error: folderError, fetchFolders, createFolder, updateFolder, deleteFolder, moveConnection, setConnectionVisibility } = useFolders()
 const { confirm } = useConfirm()
 const toast = useToast()
 
@@ -106,7 +106,7 @@ async function submitNewFolder() {
     showNewFolder.value = false
     toast.success(`Folder "${result.name}" created`)
   } else {
-    toast.error('Failed to create folder — check server logs')
+    toast.error(folderError.value || 'Failed to create folder')
   }
 }
 
@@ -118,8 +118,13 @@ function startEditFolder(f: ConnectionFolder) {
 
 async function submitEditFolder() {
   if (!editingFolder.value || !editFolderName.value.trim()) return
-  await updateFolder(editingFolder.value.id, { name: editFolderName.value.trim(), color: editFolderColor.value, visibility: editFolderVisibility.value, parent_id: editingFolder.value.parent_id })
-  editingFolder.value = null
+  const ok = await updateFolder(editingFolder.value.id, { name: editFolderName.value.trim(), color: editFolderColor.value, visibility: editFolderVisibility.value, parent_id: editingFolder.value.parent_id })
+  if (ok) {
+    editingFolder.value = null
+    toast.success('Folder updated')
+  } else {
+    toast.error(folderError.value || 'Failed to update folder')
+  }
 }
 
 async function doDeleteFolder(f: ConnectionFolder) {
