@@ -151,6 +151,13 @@ func GetUserAppPermissions(userID int64) ([]string, error) {
 	if permsMap["kafka.view"] {
 		permsMap["connections.view"] = true
 	}
+	if permsMap["mongodb.write"] || permsMap["mongodb.admin"] || permsMap["mongodb.export"] || permsMap["mongodb.import"] {
+		permsMap["mongodb.view"] = true
+	}
+	if permsMap["mongodb.view"] {
+		permsMap["connections.view"] = true
+		permsMap["schema.browse"] = true
+	}
 	if permsMap["performance.view"] || permsMap["databaseaudit.view"] {
 		permsMap["audit.view"] = true
 	}

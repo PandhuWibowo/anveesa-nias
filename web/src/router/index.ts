@@ -175,6 +175,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['redis.view'] },
         },
         {
+          path: 'mongodb',
+          name: 'mongodb',
+          component: () => import('@/views/MongoDBView.vue'),
+          meta: { requiredPermissionsAny: ['mongodb.view'] },
+        },
+        {
           path: 'search',
           name: 'search',
           component: () => import('@/views/SearchView.vue'),

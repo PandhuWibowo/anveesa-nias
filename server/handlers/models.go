@@ -123,6 +123,11 @@ const (
 	PermKafkaView           = "kafka.view"
 	PermKafkaProduce        = "kafka.produce"
 	PermKafkaManage         = "kafka.manage"
+	PermMongoView           = "mongodb.view"
+	PermMongoWrite          = "mongodb.write"
+	PermMongoAdmin          = "mongodb.admin"
+	PermMongoExport         = "mongodb.export"
+	PermMongoImport         = "mongodb.import"
 	PermAuditView           = "audit.view"
 	PermOperationsView      = "operations.view"
 	PermPerformanceView     = "performance.view"
@@ -144,12 +149,12 @@ const (
 	PermRolesManage         = "roles.manage"
 	PermWorkflowsManage     = "workflows.manage"
 	// Observability
-	PermObservabilityView   = "observability.view"
-	PermDiscoverView        = "discover.view"
-	PermUptimeView          = "uptime.view"
+	PermObservabilityView = "observability.view"
+	PermDiscoverView      = "discover.view"
+	PermUptimeView        = "uptime.view"
 	// Data
-	PermDataExport          = "data.export"
-	PermDataImport          = "data.import"
+	PermDataExport = "data.export"
+	PermDataImport = "data.import"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -175,6 +180,11 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermKafkaView, Label: "Use Kafka Browser", Group: "Messaging"},
 	{Key: PermKafkaProduce, Label: "Produce Kafka Messages", Group: "Messaging"},
 	{Key: PermKafkaManage, Label: "Manage Kafka Topics", Group: "Messaging"},
+	{Key: PermMongoView, Label: "Use MongoDB Browser", Group: "Document Database"},
+	{Key: PermMongoWrite, Label: "Write MongoDB Documents", Group: "Document Database"},
+	{Key: PermMongoAdmin, Label: "Manage MongoDB Collections and Indexes", Group: "Document Database"},
+	{Key: PermMongoExport, Label: "Export MongoDB Data", Group: "Document Database"},
+	{Key: PermMongoImport, Label: "Import MongoDB Data", Group: "Document Database"},
 	{Key: PermAuditView, Label: "View Audit Logs", Group: "Audit"},
 	{Key: PermOperationsView, Label: "View Operations Overview", Group: "Operations"},
 	{Key: PermPerformanceView, Label: "View Query Performance", Group: "Operations"},

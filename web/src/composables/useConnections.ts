@@ -11,6 +11,7 @@ export type DbDriver =
   | 'redis'
   | 'memcache'
   | 'kafka'
+  | 'mongodb'
   | 'elasticsearch'
   | 'opensearch'
   | 's3_aws'

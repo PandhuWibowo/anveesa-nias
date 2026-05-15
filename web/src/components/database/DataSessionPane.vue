@@ -37,7 +37,7 @@ const activeConn = computed(() =>
   props.connId ? connections.value.find(c => c.id === props.connId) ?? null : null
 )
 function isNonSqlDriver(driver: string) {
-  return driver === 'redis' || driver === 'memcache' || driver === 'kafka' || driver === 'elasticsearch' || driver === 'opensearch' || driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs'
+  return driver === 'redis' || driver === 'memcache' || driver === 'kafka' || driver === 'mongodb' || driver === 'elasticsearch' || driver === 'opensearch' || driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs'
 }
 
 const supportsRelationalSchema = computed(() => !!activeConn.value && !isNonSqlDriver(activeConn.value.driver))
