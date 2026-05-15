@@ -54,7 +54,7 @@ cd ../web
 npm install
 
 cd ..
-make dev-server
+make dev
 # In another shell:
 cd web && npm run dev
 ```
