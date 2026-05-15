@@ -13,6 +13,7 @@ interface Props {
   totalRows?: number
   showRowNumbers?: boolean
   editable?: boolean
+  addable?: boolean
   pkColumn?: string
 }
 
@@ -24,6 +25,7 @@ const props = withDefaults(defineProps<Props>(), {
   totalRows: 0,
   showRowNumbers: true,
   editable: false,
+  addable: false,
   pkColumn: '',
 })
 
@@ -259,7 +261,7 @@ function getCellValue(rIdx: number, col: string, row: unknown[]): unknown {
 
 function onCellEdit(rIdx: number, col: string, event: Event) {
   const target = event.target as HTMLInputElement
-  const currentVal = getCellValue(rIdx, col, props.rows[rIdx]?.[props.columns.indexOf(col)])
+  const currentVal = getCellValue(rIdx, col, props.rows[rIdx] ?? [])
   if (currentVal === target.value) return
   if (!editedRows.value.has(rIdx)) {
     editedRows.value.set(rIdx, {})
@@ -290,8 +292,6 @@ function saveRow(rIdx: number, row: unknown[]) {
   const pkIdx = props.columns.indexOf(props.pkColumn)
   const pkValue = pkIdx >= 0 ? row[pkIdx] : null
   emit('save-row', { pkValue, updates: edits })
-  editedRows.value.delete(rIdx)
-  editHistory.value = editHistory.value.filter((entry) => entry.rowIndex !== rIdx)
 }
 
 function saveAllRows() {
@@ -303,8 +303,6 @@ function saveAllRows() {
   }).filter((item) => item.pkValue !== null && Object.keys(item.updates).length > 0)
   if (!payload.length) return
   emit('save-all-rows', payload)
-  editedRows.value.clear()
-  editHistory.value = []
 }
 
 function cancelEdit(rIdx: number) {
@@ -338,6 +336,11 @@ function clearAllEdits() {
   newRowValues.value = {}
 }
 
+function startAddRow() {
+  if (!props.columns.length) return
+  showNewRow.value = true
+}
+
 function deleteRow(rIdx: number, row: unknown[]) {
   const pkIdx = props.columns.indexOf(props.pkColumn)
   const pkValue = pkIdx >= 0 ? row[pkIdx] : null
@@ -350,9 +353,15 @@ function addRow() {
     values[col] = newRowValues.value[col] ?? ''
   }
   emit('add-row', { values })
+}
+
+watch(() => props.rows, () => {
+  editedRows.value.clear()
+  editHistory.value = []
   newRowValues.value = {}
   showNewRow.value = false
-}
+  emit('dirty-change', false)
+})
 
 function exportToExcel() {
   const cols = orderedColumns.value
@@ -374,6 +383,8 @@ function handleKeydown(event: KeyboardEvent) {
     undoLastEdit()
   }
 }
+
+defineExpose({ startAddRow })
 </script>
 
 <template>
@@ -387,7 +398,7 @@ function handleKeydown(event: KeyboardEvent) {
     <!-- Empty -->
     <div v-else-if="rows.length === 0 && !showNewRow" class="empty-state">
       No rows returned.
-      <button v-if="editable" class="base-btn base-btn--ghost base-btn--xs" style="margin-top:8px" @click="showNewRow=true">
+      <button v-if="addable" class="base-btn base-btn--ghost base-btn--xs" style="margin-top:8px" @click="showNewRow=true">
         + Add row
       </button>
     </div>
@@ -406,11 +417,21 @@ function handleKeydown(event: KeyboardEvent) {
           <button class="base-btn base-btn--primary base-btn--xs" :disabled="!hasPendingEdits" @click="saveAllRows">Save All</button>
         </div>
       </div>
+      <div v-if="showNewRow" class="insert-toolbar">
+        <div class="insert-toolbar__status">
+          <span class="insert-toolbar__badge">New</span>
+          <span>Fill the row values, then save to insert it.</span>
+        </div>
+        <div class="insert-toolbar__actions">
+          <button class="base-btn base-btn--ghost base-btn--xs" @click="showNewRow=false">Cancel</button>
+          <button class="base-btn base-btn--primary base-btn--xs" @click="addRow">Save Row</button>
+        </div>
+      </div>
       <table class="data-table" :class="{ 'dt-resizing': isResizing }">
         <thead>
           <tr>
             <th class="col-rownum" v-if="showRowNumbers">#</th>
-            <th v-if="editable" class="col-actions" style="width:80px;min-width:80px"></th>
+            <th v-if="editable || showNewRow" class="col-actions" style="width:80px;min-width:80px"></th>
             <th
               v-for="col in orderedColumns"
               :key="col"
@@ -459,8 +480,8 @@ function handleKeydown(event: KeyboardEvent) {
         <tbody>
           <tr v-for="(row, rIdx) in rows" :key="rIdx" :class="{ 'tr-edited': editedRows.has(rIdx) }">
             <td class="col-rownum" v-if="showRowNumbers">{{ (page - 1) * pageSize + rIdx + 1 }}</td>
-            <td v-if="editable" class="col-actions">
-              <div class="row-btns">
+            <td v-if="editable || showNewRow" class="col-actions">
+              <div v-if="editable" class="row-btns">
                 <template v-if="editedRows.has(rIdx)">
                   <span class="row-state-pill">{{ rowLabel(rIdx) }}</span>
                   <button class="rbtn rbtn--save" @click="saveRow(rIdx, row)" title="Save">✓</button>
@@ -492,11 +513,8 @@ function handleKeydown(event: KeyboardEvent) {
           <!-- New row -->
           <tr v-if="showNewRow" class="tr-new">
             <td class="col-rownum" v-if="showRowNumbers">*</td>
-            <td v-if="editable" class="col-actions">
-              <div class="row-btns">
-                <button class="rbtn rbtn--save" @click="addRow" title="Insert">✓</button>
-                <button class="rbtn rbtn--cancel" @click="showNewRow=false" title="Cancel">✕</button>
-              </div>
+            <td v-if="editable || addable" class="col-actions">
+              <span class="row-state-pill row-state-pill--new">New</span>
             </td>
             <td v-for="col in orderedColumns" :key="col">
               <input
@@ -509,11 +527,6 @@ function handleKeydown(event: KeyboardEvent) {
           </tr>
         </tbody>
       </table>
-    </div>
-
-    <!-- Add row toolbar -->
-    <div v-if="editable && rows.length > 0 && !showNewRow" class="add-row-bar">
-      <button class="base-btn base-btn--ghost base-btn--xs" @click="showNewRow=true">+ Add row</button>
     </div>
 
     <!-- Pagination & Controls -->
@@ -659,9 +672,11 @@ th:hover .th-grip { opacity: 0.7; }
   background: rgba(var(--brand-rgb, 99 102 241), 0.1) !important;
 }
 
-.col-actions { width: 70px; text-align: center; padding: 0 4px !important; }
+.col-actions { width: 80px; min-width: 80px; text-align: center; padding: 0 6px !important; }
 .row-btns { display: flex; gap: 4px; justify-content: center; align-items: center; flex-wrap: wrap; }
-.edit-toolbar {
+.row-btns--insert { gap: 6px; flex-wrap: nowrap; }
+.edit-toolbar,
+.insert-toolbar {
   position: sticky;
   top: 0;
   z-index: 3;
@@ -673,10 +688,15 @@ th:hover .th-grip { opacity: 0.7; }
   border-bottom: 1px solid var(--border);
   background: var(--bg-elevated);
 }
+.insert-toolbar {
+  background: color-mix(in srgb, var(--success) 7%, var(--bg-elevated));
+  border-bottom-color: color-mix(in srgb, var(--success) 24%, var(--border));
+}
 .edit-toolbar--active {
   background: rgba(var(--brand-rgb, 99 102 241), 0.08);
 }
-.edit-toolbar__status {
+.edit-toolbar__status,
+.insert-toolbar__status {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -684,6 +704,7 @@ th:hover .th-grip { opacity: 0.7; }
   color: var(--text-secondary);
 }
 .edit-toolbar__badge,
+.insert-toolbar__badge,
 .row-state-pill {
   display: inline-flex;
   align-items: center;
@@ -697,7 +718,12 @@ th:hover .th-grip { opacity: 0.7; }
   font-size: 10px;
   font-weight: 700;
 }
-.edit-toolbar__actions {
+.insert-toolbar__badge,
+.row-state-pill--new {
+  background: var(--success);
+}
+.edit-toolbar__actions,
+.insert-toolbar__actions {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -707,19 +733,22 @@ th:hover .th-grip { opacity: 0.7; }
   color: var(--text-muted);
 }
 .rbtn {
-  width: 22px; height: 22px;
-  border-radius: 4px;
+  width: 26px; height: 26px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   background: transparent;
   cursor: pointer;
-  font-size: 11px;
+  color: var(--text-secondary);
   display: flex; align-items: center; justify-content: center;
-  transition: all 0.12s;
+  padding: 0;
+  transition: background .12s, border-color .12s, color .12s, box-shadow .12s;
 }
-.rbtn--save { color: #4ade80; }
-.rbtn--save:hover { background: rgba(74, 222, 128, 0.15); }
+.rbtn--save { color: var(--success); border-color: color-mix(in srgb, var(--success) 35%, var(--border)); }
+.rbtn--save:hover { background: var(--success-bg); border-color: var(--success); }
+.rbtn--primary { background: var(--success); border-color: var(--success); color: white; box-shadow: 0 1px 4px rgba(34, 197, 94, .25); }
+.rbtn--primary:hover { background: color-mix(in srgb, var(--success) 88%, black); color: white; }
 .rbtn--cancel { color: var(--text-muted); }
-.rbtn--cancel:hover { background: var(--bg-hover); }
+.rbtn--cancel:hover { background: var(--bg-hover); color: var(--text-primary); }
 .rbtn--delete { color: #f87171; }
 .rbtn--delete:hover { background: rgba(248, 113, 113, 0.15); }
 .cell-input {

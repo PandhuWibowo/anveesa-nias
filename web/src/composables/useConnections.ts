@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import axios from 'axios'
+import { readableError } from '@/utils/httpError'
 
 export type DbDriver =
   | 'sqlite'
@@ -66,8 +67,8 @@ export function useConnections() {
     try {
       const { data } = await axios.get<Connection[]>('/api/connections')
       connections.value = data
-    } catch {
-      error.value = 'Failed to load connections'
+    } catch (e) {
+      error.value = readableError(e, { action: 'Load connections', fallback: 'Failed to load connections' })
     } finally {
       loading.value = false
     }
@@ -78,7 +79,7 @@ export function useConnections() {
       const { data } = await axios.post('/api/connections/test', form)
       return { ok: true, message: data.message ?? 'Connection successful' }
     } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Connection failed'
+      const msg = readableError(e, { action: 'Test connection', fallback: 'Connection failed' })
       return { ok: false, message: msg }
     }
   }
@@ -88,7 +89,8 @@ export function useConnections() {
       const { data } = await axios.post<Connection>('/api/connections', form)
       connections.value.push(data)
       return data
-    } catch {
+    } catch (e) {
+      error.value = readableError(e, { action: 'Save connection', fallback: 'Failed to save connection' })
       return null
     }
   }
@@ -99,7 +101,8 @@ export function useConnections() {
       const idx = connections.value.findIndex((c) => c.id === id)
       if (idx !== -1) connections.value[idx] = data
       return true
-    } catch {
+    } catch (e) {
+      error.value = readableError(e, { action: 'Update connection', fallback: 'Failed to update connection' })
       return false
     }
   }

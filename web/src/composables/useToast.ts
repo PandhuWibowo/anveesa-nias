@@ -4,6 +4,7 @@ export interface Toast {
   id: number
   type: 'success' | 'error' | 'info'
   message: string
+  persistent: boolean
 }
 
 const toasts = ref<Toast[]>([])
@@ -12,8 +13,9 @@ let nextId = 1
 export function useToast() {
   function add(type: Toast['type'], message: string, duration = 3500) {
     const id = nextId++
-    toasts.value.push({ id, type, message })
-    setTimeout(() => remove(id), duration)
+    const persistent = duration <= 0
+    toasts.value.push({ id, type, message, persistent })
+    if (!persistent) setTimeout(() => remove(id), duration)
   }
 
   function remove(id: number) {
@@ -24,8 +26,9 @@ export function useToast() {
   return {
     toasts,
     success: (msg: string) => add('success', msg),
-    error: (msg: string) => add('error', msg),
+    error: (msg: string) => add('error', msg, 0),
     info: (msg: string) => add('info', msg),
+    add,
     remove,
   }
 }

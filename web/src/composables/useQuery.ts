@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import axios from 'axios'
 import { parseServerTimestamp } from '@/utils/datetime'
+import { readableError } from '@/utils/httpError'
 
 export interface QueryResult {
   columns: string[]
@@ -56,7 +57,7 @@ export function useQuery() {
         row_count: data.row_count,
       }).catch(() => {})
     } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Query failed'
+      const msg = readableError(e, { action: 'Run query', fallback: 'Query failed' })
       error.value = msg
 
       const item: HistoryItem = {
@@ -89,7 +90,7 @@ export function useQuery() {
       })
       result.value = data
     } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Explain failed'
+      const msg = readableError(e, { action: 'Explain query', fallback: 'Explain failed' })
       error.value = msg
     } finally {
       running.value = false
@@ -110,13 +111,13 @@ export function useQuery() {
         row_count: h.row_count,
         error: h.error,
       }))
-    } catch {
-      return []
+    } catch (e) {
+      throw new Error(readableError(e, { action: 'Load query history', fallback: 'Failed to load query history' }))
     }
   }
 
   async function clearHistory(connId: number) {
-    await axios.delete(`/api/connections/${connId}/history`).catch(() => {})
+    await axios.delete(`/api/connections/${connId}/history`)
     localHistory.value = localHistory.value.filter((h) => h.connId !== connId)
   }
 

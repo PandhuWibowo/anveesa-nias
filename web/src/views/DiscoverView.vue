@@ -45,6 +45,7 @@ const timestampField = ref('@timestamp')
 
 const QUICK_PATTERNS = [
   { label: 'Filebeat', pattern: 'filebeat-*', fields: ['@timestamp','app_name','environment','message'] },
+  { label: 'SGPay Infra', pattern: '.ds-sgpay-infra-*', fields: ['@timestamp','app_name','environment','message'] },
 ]
 
 function applyQuickPattern(p: typeof QUICK_PATTERNS[number]) {
@@ -342,10 +343,9 @@ function buildQuery(): any {
     const lvTitle = lv.charAt(0).toUpperCase() + lv.slice(1) // "Error"
     const lvUpAlt = lv === 'warn' ? 'WARNING' : lvUp         // Laravel uses "WARNING"
 
-    // Check if a keyword sub-field is available for exact substring matching
-    const hasMsgKeyword = fields.value.some(f => f.name === 'message.keyword')
-    const kwField = hasMsgKeyword ? 'message.keyword' : null
-
+    // Use precise wildcard on message.keyword (Filebeat always creates this sub-field).
+    // The pattern "*] *.LEVEL:*" matches the Laravel "[timestamp] env.LEVEL: ..." prefix
+    // exactly, avoiding false positives from the word appearing in the message body.
     clauses.push({ bool: { should: [
       // ── ECS / Filebeat structured field ──────────────────────────────────
       { term: { 'log.level.keyword': lv } },
@@ -353,19 +353,11 @@ function buildQuery(): any {
       { term: { 'log.level': lv } },
       { term: { 'log.level': lvUp } },
 
-      // ── Laravel "[ts] env.ERROR: ..." in message text ─────────────────────
-      // The standard analyzer splits "production.ERROR:" into tokens:
-      // "production", "error" — so we can match the level token directly.
-      // We use match on message for the level word itself.
-      { match: { message: lvUp } },
-      ...(lvUpAlt !== lvUp ? [{ match: { message: lvUpAlt } }] : []),
-
-      // If message.keyword exists, also add a precise wildcard to avoid
-      // false positives from body text containing the level word.
-      ...(kwField ? [
-        { wildcard: { [kwField]: `*] *.${lvUp}:*` } },
-        ...(lvUpAlt !== lvUp ? [{ wildcard: { [kwField]: `*] *.${lvUpAlt}:*` } }] : []),
-      ] : []),
+      // ── Laravel "[ts] env.LEVEL: ..." — precise prefix wildcard ──────────
+      // Never use a plain `match` here; it causes false positives when the
+      // level word appears anywhere in the message body (e.g. JSON context).
+      { wildcard: { 'message.keyword': `*] *.${lvUp}:*` } },
+      ...(lvUpAlt !== lvUp ? [{ wildcard: { 'message.keyword': `*] *.${lvUpAlt}:*` } }] : []),
 
       // ── JSON-embedded level ───────────────────────────────────────────────
       { match_phrase: { message: `"log.level":"${lv}"` } },
@@ -766,11 +758,11 @@ function hitKey(hit: Hit, idx: number): string {
     <div class="disc-searchbar">
       <input v-model="indexPattern" class="base-input disc-idx-input"
         placeholder="Index pattern — e.g. filebeat-*, logs-*"
-        @keydown.enter="run" />
+        @keydown.enter="run()" />
       <div class="disc-search-wrap">
         <input v-model="searchText" class="base-input disc-search-input"
           placeholder='Filter logs — e.g. app_name:"boss" AND environment:"production"'
-          @keydown.enter="run" />
+          @keydown.enter="run()" />
       </div>
       <!-- ── Time range picker ──────────────────────────────── -->
       <div class="disc-time-wrap" ref="timeWrapEl">
@@ -817,7 +809,7 @@ function hitKey(hit: Hit, idx: number): string {
       </div>
 
       <button class="base-btn base-btn--primary disc-run-btn"
-        :disabled="!indexPattern.trim() || loading" @click="run">
+        :disabled="!indexPattern.trim() || loading" @click="run()">
         {{ loading ? '…' : 'Search' }}
       </button>
     </div>

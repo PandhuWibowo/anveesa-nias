@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import axios from 'axios'
+import { readableError } from '@/utils/httpError'
 
 const cache = new Map<number, string[]>()
 
@@ -21,9 +22,9 @@ export function useDatabases() {
       const { data } = await axios.get<string[]>(`/api/connections/${connId}/databases`)
       databases.value = data ?? []
       cache.set(connId, databases.value)
-    } catch (e: any) {
+    } catch (e) {
       databases.value = []
-      error.value = e?.response?.data?.error ?? e?.message ?? 'Failed to connect to database'
+      error.value = readableError(e, { action: 'Load databases', fallback: 'Failed to connect to database' })
     } finally {
       loading.value = false
     }
