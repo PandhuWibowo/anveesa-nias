@@ -349,6 +349,7 @@ body {
 .conn-badge--mariadb { background: #c0392b22;          color: #c0392b; }
 .conn-badge--mssql   { background: var(--mssql-bg);   color: var(--mssql); }
 .conn-badge--redis   { background: rgba(198, 48, 43, 0.14); color: #c6302b; }
+.conn-badge--mongodb { background: rgba(0, 163, 92, 0.14); color: #00a35c; }
 .conn-badge--elasticsearch { background: rgba(0, 191, 179, 0.14); color: #00a69c; }
 .conn-badge--opensearch { background: rgba(0, 94, 184, 0.14); color: #005eb8; }
 

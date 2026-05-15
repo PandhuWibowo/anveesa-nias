@@ -124,7 +124,7 @@ interface MainDataResult {
 const redisDbIndexes = Array.from({ length: 16 }, (_, index) => index)
 const redisConnections = computed(() => connections.value.filter((c) => c.driver === 'redis'))
 function isNonSqlDriver(driver: string) {
-  return driver === 'redis' || driver === 'memcache' || driver === 'kafka' || driver === 'elasticsearch' || driver === 'opensearch' || driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs'
+  return driver === 'redis' || driver === 'memcache' || driver === 'kafka' || driver === 'mongodb' || driver === 'elasticsearch' || driver === 'opensearch' || driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs'
 }
 
 const sqlConnections = computed(() => connections.value.filter((c) => !isNonSqlDriver(c.driver)))
