@@ -556,7 +556,8 @@ interface MappingFieldDef {
   children?: MappingFieldDef[]
 }
 
-const MappingNode = defineComponent({
+// Explicit annotation avoids TS self-referential inference issues for recursive component.
+const MappingNode: any = defineComponent({
   name: 'MappingNode',
   props: {
     field: { type: Object as PropType<MappingFieldDef>, required: true },
@@ -565,7 +566,7 @@ const MappingNode = defineComponent({
   },
   emits: ['toggle'],
   setup(props, { emit }) {
-    return () => {
+    return (): any => {
       const f = props.field
       const hasChildren = f.children && f.children.length > 0
       const isExpanded = props.expanded.has(f.name)
@@ -583,16 +584,16 @@ const MappingNode = defineComponent({
         h('span', { class: ['obs-field-type', `ftype-${f.type}`] }, f.type),
       ])
 
-      const children = hasChildren && isExpanded
+      const children: any[] = hasChildren && isExpanded
         ? f.children!.map(child =>
-            h(MappingNode, {
-              key: child.name,
-              field: child,
-              depth: props.depth + 1,
-              expanded: props.expanded,
-              onToggle: (name: string) => emit('toggle', name),
-            })
-          )
+          h(MappingNode as any, {
+            key: child.name,
+            field: child,
+            depth: props.depth + 1,
+            expanded: props.expanded,
+            onToggle: (name: string) => emit('toggle', name),
+          }),
+        )
         : []
 
       return h('div', [row, ...children])

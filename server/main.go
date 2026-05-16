@@ -419,6 +419,8 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.DBSlowQueries())(w, r)
 			case sub == "db-logs" && len(parts) >= 3 && parts[2] == "error-logs" && r.Method == http.MethodGet:
 				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.DBErrorLogs())(w, r)
+			case sub == "cloud-config" && len(parts) >= 3 && parts[2] == "active" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit)(handlers.ActivateCloudConfig())(w, r)
 			case sub == "cloud-config" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView)(handlers.GetCloudConfig())(w, r)
 			case sub == "cloud-config" && r.Method == http.MethodPost:

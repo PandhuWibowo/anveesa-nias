@@ -1039,6 +1039,24 @@ function decodedMessageValue(message: KafkaMessage) {
   }
 }
 
+async function copyDecodedMessage(message: KafkaMessage) {
+  const text = decodedMessageValue(message)
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    // Fallback for older browsers / non-secure contexts
+    const el = document.createElement('textarea')
+    el.value = text
+    el.style.position = 'fixed'
+    el.style.left = '-9999px'
+    document.body.appendChild(el)
+    el.focus()
+    el.select()
+    try { document.execCommand('copy') } catch {}
+    document.body.removeChild(el)
+  }
+}
+
 function messageValidation(message: KafkaMessage) {
   if (!schemaFields.value.length) return { ok: true, missing: [] as string[], reason: 'No required fields configured' }
   try {
@@ -1665,7 +1683,7 @@ watch(selectedTopic, (topic) => {
                       <option value="base64">Base64</option>
                       <option value="raw">Hex bytes</option>
                     </select>
-                    <button class="base-btn base-btn--ghost base-btn--xs" @click="navigator.clipboard.writeText(decodedMessageValue(selectedMessage))">Copy</button>
+                    <button class="base-btn base-btn--ghost base-btn--xs" @click="copyDecodedMessage(selectedMessage)">Copy</button>
                   </div>
                   <pre class="msg-detail__pre">{{ decodedMessageValue(selectedMessage) }}</pre>
                 </div>
