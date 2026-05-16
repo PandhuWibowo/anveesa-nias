@@ -965,6 +965,21 @@ func migrate() error {
 			updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_cloud_provider_configs_conn ON cloud_provider_configs(conn_id)`,
+		`CREATE TABLE IF NOT EXISTS cloud_provider_instances (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			conn_id      INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+			name         TEXT NOT NULL DEFAULT '',
+			provider     TEXT NOT NULL DEFAULT 'huawei',
+			region       TEXT NOT NULL DEFAULT '',
+			project_id   TEXT NOT NULL DEFAULT '',
+			instance_id  TEXT NOT NULL DEFAULT '',
+			access_key   TEXT NOT NULL DEFAULT '',
+			secret_key   TEXT NOT NULL DEFAULT '',
+			is_active    INTEGER NOT NULL DEFAULT 0,
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cloud_provider_instances_conn ON cloud_provider_instances(conn_id, is_active)`,
 	}
 	for _, s := range stmts {
 		convertedSQL := convertSQL(s)

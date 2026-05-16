@@ -6,6 +6,8 @@ import { useAuth } from '@/composables/useAuth'
 
 defineOptions({ inheritAttrs: false })
 
+const props = defineProps<{ activeConnId?: number | null }>()
+
 const { authReady } = useAuth()
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -22,7 +24,7 @@ interface SlowQueryRow {
   max_ms: number
   total_ms: number
   rows: number
-  // Huawei-specific fields
+  // Cloud-provider fields
   exec_time?: string       // raw string e.g. "1.04899 s"
   lock_time?: string
   rows_sent?: string
@@ -81,25 +83,93 @@ const activeTab = ref<Tab>('slow')
 // ── Cloud Provider Config ─────────────────────────────────────────────
 
 interface CloudConfig {
+  id?: number
+  conn_id?: number
+  name: string
   provider: string
   region: string
   project_id: string
   instance_id: string
   access_key: string
   secret_key: string
+  is_active?: boolean
 }
 
 const cloudConfigured = ref(false)
 const showCloudModal = ref(false)
 const cloudSaving = ref(false)
-const cloudForm = ref<CloudConfig>({
-  provider: 'huawei',
-  region: '',
-  project_id: '',
-  instance_id: '',
-  access_key: '',
-  secret_key: '',
-})
+const cloudConfigs = ref<CloudConfig[]>([])
+const selectedCloudConfigId = ref<number | null>(null)
+function defaultCloudForm(): CloudConfig {
+  return {
+    id: undefined,
+    name: '',
+    provider: 'huawei',
+    region: '',
+    project_id: '',
+    instance_id: '',
+    access_key: '',
+    secret_key: '',
+  }
+}
+
+const cloudForm = ref<CloudConfig>(defaultCloudForm())
+const cloudProvider = computed(() => (cloudForm.value.provider || 'huawei').toLowerCase())
+const cloudSupportsAudit = computed(() => cloudConfigured.value && cloudProvider.value === 'huawei')
+const cloudProviderLabel = computed(() => cloudProvider.value === 'alibaba' ? 'Alibaba Cloud RDS' : 'Huawei Cloud RDS')
+const cloudProviderShort = computed(() => cloudProvider.value === 'alibaba' ? 'Alibaba' : 'Huawei')
+const cloudSourceLabel = computed(() => `${cloudProviderLabel.value} API`)
+const cloudButtonText = computed(() => cloudConfigured.value ? `${cloudProviderShort.value}: ON` : 'Cloud')
+const cloudRegionPlaceholder = computed(() => cloudProvider.value === 'alibaba' ? 'cn-hangzhou' : 'ap-southeast-3')
+const cloudInstancePlaceholder = computed(() => cloudProvider.value === 'alibaba' ? 'rm-xxxx' : 'db-rds-xxx...')
+const showErrorLevelFilter = computed(() => !cloudConfigured.value || cloudProvider.value !== 'alibaba')
+const showSlowTypeFilter = computed(() => !cloudConfigured.value || cloudProvider.value !== 'alibaba')
+const slowDefaultRangeLabel = computed(() => '7 days')
+const activeCloudConfig = computed(() => cloudConfigs.value.find(c => c.id === selectedCloudConfigId.value) ?? cloudConfigs.value.find(c => c.is_active) ?? null)
+
+function cloudConfigLabel(cfg: CloudConfig): string {
+  const provider = (cfg.provider || 'huawei').toLowerCase() === 'alibaba' ? 'Alibaba' : 'Huawei'
+  const name = cfg.name?.trim()
+  if (name) return name
+  const parts = [provider, cfg.instance_id, cfg.region].filter(Boolean)
+  return parts.join(' · ') || provider
+}
+
+function applyCloudConfigState(data: any) {
+  const configs = Array.isArray(data?.configs) ? data.configs : []
+  cloudConfigs.value = configs.map((cfg: any): CloudConfig => ({
+    id: cfg.id,
+    conn_id: cfg.conn_id,
+    name: cfg.name ?? '',
+    provider: cfg.provider ?? 'huawei',
+    region: cfg.region ?? '',
+    project_id: cfg.project_id ?? '',
+    instance_id: cfg.instance_id ?? '',
+    access_key: cfg.access_key ?? '',
+    secret_key: '',
+    is_active: !!cfg.is_active,
+  }))
+  cloudConfigured.value = data?.configured ?? cloudConfigs.value.length > 0
+  const active = data?.config ?? cloudConfigs.value.find(c => c.is_active) ?? cloudConfigs.value[0]
+  if (active) {
+    selectedCloudConfigId.value = active.id ?? null
+    cloudForm.value = {
+      id: active.id,
+      conn_id: active.conn_id,
+      name: active.name ?? '',
+      provider: active.provider ?? 'huawei',
+      region: active.region ?? '',
+      project_id: active.project_id ?? '',
+      instance_id: active.instance_id ?? '',
+      access_key: active.access_key ?? '',
+      secret_key: '',
+      is_active: true,
+    }
+  } else {
+    selectedCloudConfigId.value = null
+    cloudForm.value = defaultCloudForm()
+  }
+}
 
 async function loadCloudConfig() {
   if (!selectedConnId.value) return
@@ -111,19 +181,12 @@ async function loadCloudConfig() {
   }
   try {
     const { data } = await axios.get(`/api/connections/${selectedConnId.value}/cloud-config`)
-    cloudConfigured.value = data.configured ?? false
-    if (data.config) {
-      cloudForm.value = {
-        provider: data.config.provider ?? 'huawei',
-        region: data.config.region ?? '',
-        project_id: data.config.project_id ?? '',
-        instance_id: data.config.instance_id ?? '',
-        access_key: data.config.access_key ?? '',
-        secret_key: '',
-      }
-    }
+    applyCloudConfigState(data)
   } catch {
     cloudConfigured.value = false
+    cloudConfigs.value = []
+    selectedCloudConfigId.value = null
+    cloudForm.value = defaultCloudForm()
   }
 }
 
@@ -131,10 +194,10 @@ async function saveCloudConfig() {
   if (!selectedConnId.value) return
   cloudSaving.value = true
   try {
-    await axios.post(`/api/connections/${selectedConnId.value}/cloud-config`, cloudForm.value)
-    cloudConfigured.value = true
+    const { data } = await axios.post(`/api/connections/${selectedConnId.value}/cloud-config`, cloudForm.value)
+    applyCloudConfigState(data)
     showCloudModal.value = false
-    loadErrorLogs()
+    reloadActiveTab()
   } catch (e: any) {
     alert('Failed to save: ' + (e?.response?.data?.error ?? e.message))
   } finally {
@@ -143,11 +206,42 @@ async function saveCloudConfig() {
 }
 
 async function deleteCloudConfig() {
-  if (!selectedConnId.value || !confirm('Remove cloud provider config?')) return
-  await axios.delete(`/api/connections/${selectedConnId.value}/cloud-config`)
-  cloudConfigured.value = false
-  cloudForm.value = { provider: 'huawei', region: '', project_id: '', instance_id: '', access_key: '', secret_key: '' }
-  loadErrorLogs()
+  if (!selectedConnId.value || !confirm('Remove this cloud instance config?')) return
+  try {
+    const { data } = await axios.delete(`/api/connections/${selectedConnId.value}/cloud-config`, {
+      params: cloudForm.value.id ? { id: cloudForm.value.id } : undefined,
+    })
+    applyCloudConfigState(data)
+    reloadActiveTab()
+  } catch (e: any) {
+    alert('Failed to remove: ' + (e?.response?.data?.error ?? e.message))
+  }
+}
+
+async function activateCloudConfig() {
+  if (!selectedConnId.value || !selectedCloudConfigId.value) return
+  try {
+    const { data } = await axios.post(`/api/connections/${selectedConnId.value}/cloud-config/active`, {
+      id: selectedCloudConfigId.value,
+    })
+    applyCloudConfigState(data)
+    reloadActiveTab()
+  } catch (e: any) {
+    alert('Failed to switch cloud instance: ' + (e?.response?.data?.error ?? e.message))
+  }
+}
+
+function openCloudConfigModal() {
+  const active = activeCloudConfig.value
+  if (active) {
+    cloudForm.value = { ...active, secret_key: '' }
+  }
+  showCloudModal.value = true
+}
+
+function newCloudConfig() {
+  cloudForm.value = defaultCloudForm()
+  showCloudModal.value = true
 }
 
 // ── Slow Query state ─────────────────────────────────────────────────
@@ -168,6 +262,7 @@ const slowTo = ref('')
 const selectedSlow = ref<SlowQueryRow | null>(null)
 
 const slowFiltered = computed(() => {
+  if (cloudConfigured.value && cloudProvider.value === 'alibaba') return slowRows.value
   if (!slowStmtFilter.value) return slowRows.value
   return slowRows.value.filter(r => r.statement_type === slowStmtFilter.value)
 })
@@ -186,13 +281,14 @@ async function loadSlowQueries() {
           params: {
             limit: slowLimit.value,
             page: slowPage.value,
-            type: slowStmtFilter.value || undefined,
+            db: slowDbFilter.value || undefined,
+            type: cloudProvider.value === 'alibaba' ? undefined : slowStmtFilter.value || undefined,
             from: slowFrom.value ? slowFrom.value + 'T00:00:00+0000' : undefined,
             to: slowTo.value ? slowTo.value + 'T23:59:59+0000' : undefined,
           },
         },
       )
-      // Huawei returns { slow_log_list: [...], total_record: N }
+      // Cloud proxy returns { slow_log_list: [...], total_record: N }
       const list = data.slow_log_list ?? []
       slowRows.value = list.map((r: any): SlowQueryRow => ({
         query_id: '',
@@ -214,7 +310,8 @@ async function loadSlowQueries() {
         start_time: r.start_time,
       }))
       slowTotal.value = data.total_record ?? list.length
-      slowSource.value = 'Huawei RDS API'
+      slowSource.value = data.source ?? cloudSourceLabel.value
+      slowNotice.value = data.notice ?? ''
     } else {
       const { data } = await axios.get<SlowQueryResponse>(
         `/api/connections/${selectedConnId.value}/db-logs/slow-queries`,
@@ -268,6 +365,13 @@ const selectedError = ref<ErrorLogRow | null>(null)
 const ERROR_LEVELS = ['ERROR', 'FATAL', 'WARNING', 'CONTEXT', 'STATEMENT', 'LOG']
 const errorTotalPages = computed(() => Math.max(1, Math.ceil(errorTotal.value / errorLimit.value)))
 
+watch(cloudProvider, (provider) => {
+  if (provider !== 'alibaba') return
+  errorLevels.value = []
+  slowStmtFilter.value = ''
+  if (errorLimit.value < 30) errorLimit.value = 30
+})
+
 function toggleLevel(l: string) {
   if (errorLevels.value.includes(l)) {
     errorLevels.value = errorLevels.value.filter(x => x !== l)
@@ -282,20 +386,20 @@ async function loadErrorLogs() {
   errorNotice.value = ''
   try {
     if (cloudConfigured.value) {
-      // Fetch from Huawei Cloud API proxy
+      if (cloudProvider.value === 'alibaba' && errorLimit.value < 30) errorLimit.value = 30
       const { data } = await axios.get(
         `/api/connections/${selectedConnId.value}/cloud-logs/error-logs`,
         {
           params: {
             limit: errorLimit.value,
             page: errorPage.value,
-            level: errorLevels.value.length ? errorLevels.value[0] : undefined,
+            level: cloudProvider.value === 'alibaba' ? undefined : errorLevels.value.length ? errorLevels.value[0] : undefined,
             from: errorFrom.value ? errorFrom.value + 'T00:00:00+0000' : undefined,
             to: errorTo.value ? errorTo.value + 'T23:59:59+0000' : undefined,
           },
         },
       )
-      // Huawei returns { error_log_list: [...], total_record: N }
+      // Cloud proxy returns { error_log_list: [...], total_record: N }
       const list = data.error_log_list ?? []
       errorRows.value = list.map((r: any): ErrorLogRow => {
         const parsed = parseHuaweiLogContent(r.content ?? '')
@@ -318,7 +422,7 @@ async function loadErrorLogs() {
         }
       })
       errorTotal.value = data.total_record ?? list.length
-      errorSource.value = 'Huawei RDS API'
+      errorSource.value = data.source ?? cloudSourceLabel.value
     } else {
       // Fetch from pg_catalog.pg_log / pg_read_file
       const { data } = await axios.get<ErrorLogResponse>(
@@ -497,15 +601,19 @@ function fmtKB(kb: number): string {
 
 // ── Tab switch ───────────────────────────────────────────────────────
 
-function switchTab(t: Tab) {
-  activeTab.value = t
+function reloadActiveTab() {
   if (!selectedConnId.value) return
-  if (t === 'slow') loadSlowQueries()
-  else if (t === 'error') loadErrorLogs()
+  if (activeTab.value === 'slow') loadSlowQueries()
+  else if (activeTab.value === 'error') loadErrorLogs()
   else {
-    if (cloudConfigured.value) loadCloudAuditLogs()
+    if (cloudSupportsAudit.value) loadCloudAuditLogs()
     else loadAuditLogs()
   }
+}
+
+function switchTab(t: Tab) {
+  activeTab.value = t
+  reloadActiveTab()
 }
 
 watch(selectedConnId, async (id) => {
@@ -514,16 +622,33 @@ watch(selectedConnId, async (id) => {
   selectedError.value = null
   selectedAudit.value = null
   await loadCloudConfig()
-  if (activeTab.value === 'slow') loadSlowQueries()
-  else if (activeTab.value === 'error') loadErrorLogs()
-  else loadAuditLogs()
+  reloadActiveTab()
+})
+
+function resolveLogsConnectionId(): number | null {
+  const active = props.activeConnId != null
+    ? pgConnections.value.find(c => c.id === props.activeConnId)
+    : null
+  return active?.id ?? pgConnections.value[0]?.id ?? null
+}
+
+function syncLogsConnection() {
+  const nextId = resolveLogsConnectionId()
+  if (selectedConnId.value !== nextId) selectedConnId.value = nextId
+}
+
+watch(() => props.activeConnId, () => {
+  syncLogsConnection()
+})
+
+watch(pgConnections, () => {
+  const stillAvailable = selectedConnId.value != null && pgConnections.value.some(c => c.id === selectedConnId.value)
+  if (!stillAvailable || props.activeConnId != null) syncLogsConnection()
 })
 
 onMounted(async () => {
   await fetchConnections()
-  if (pgConnections.value.length) {
-    selectedConnId.value = pgConnections.value[0].id
-  }
+  syncLogsConnection()
 })
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -621,12 +746,6 @@ function fmtLogTime(t: string): string {
         <h1 class="dblogs-header__title">DB Logs</h1>
         <p class="dblogs-header__sub">Slow queries, error events, and SQL audit trail for your PostgreSQL connections.</p>
       </div>
-      <div class="dblogs-header__right">
-        <select v-model="selectedConnId" class="dblogs-conn-select" @change="() => {}">
-          <option :value="null" disabled>Select connection…</option>
-          <option v-for="c in pgConnections" :key="c.id" :value="c.id">{{ c.name }}</option>
-        </select>
-      </div>
     </div>
 
     <!-- No PG connections -->
@@ -660,7 +779,7 @@ function fmtLogTime(t: string): string {
         <div class="err-toolbar">
           <div class="err-toolbar__left">
             <!-- Level pills -->
-            <div class="err-levels">
+            <div v-if="showErrorLevelFilter" class="err-levels">
               <button
                 v-for="lv in ERROR_LEVELS" :key="lv"
                 class="err-lvl-btn" :class="[`lvl--${lv.toLowerCase()}`, { active: errorLevels.includes(lv) }]"
@@ -683,17 +802,28 @@ function fmtLogTime(t: string): string {
           </div>
           <div class="err-toolbar__right">
             <select v-model="errorLimit" class="err-select" @change="errorApply()">
-              <option :value="25">25 / page</option>
+              <option v-if="!(cloudConfigured && cloudProvider === 'alibaba')" :value="25">25 / page</option>
+              <option v-if="cloudConfigured && cloudProvider === 'alibaba'" :value="30">30 / page</option>
               <option :value="50">50 / page</option>
               <option :value="100">100 / page</option>
             </select>
+            <select
+              v-if="cloudConfigured"
+              v-model.number="selectedCloudConfigId"
+              class="err-select cloud-instance-select"
+              @change="activateCloudConfig"
+            >
+              <option v-for="cfg in cloudConfigs" :key="cfg.id" :value="cfg.id">
+                {{ cloudConfigLabel(cfg) }}
+              </option>
+            </select>
             <button
               class="err-cloud-btn" :class="{ 'err-cloud-btn--on': cloudConfigured }"
-              @click="showCloudModal = true"
+              @click="openCloudConfigModal"
               :title="cloudConfigured ? 'Cloud source active — click to reconfigure' : 'Connect cloud provider'"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
-              {{ cloudConfigured ? 'Cloud: ON' : 'Cloud' }}
+              {{ cloudButtonText }}
             </button>
           </div>
         </div>
@@ -702,9 +832,9 @@ function fmtLogTime(t: string): string {
         <div v-if="errorNotice && !cloudConfigured" class="err-notice err-notice--warn">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
           <span>{{ errorNotice }}</span>
-          <button class="err-inline-btn" @click="showCloudModal = true">
+          <button class="err-inline-btn" @click="openCloudConfigModal">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
-            Connect Huawei RDS
+            Connect cloud provider
           </button>
         </div>
         <div v-if="errorNotice && cloudConfigured" class="err-notice err-notice--error">
@@ -824,18 +954,22 @@ function fmtLogTime(t: string): string {
           <div class="err-toolbar__left">
             <!-- Statement type pills (cloud) / threshold slider (local) -->
             <template v-if="cloudConfigured">
-              <div class="err-levels">
+              <div v-if="showSlowTypeFilter" class="err-levels">
                 <button
                   v-for="t in ['SELECT','INSERT','UPDATE','DELETE','CREATE']" :key="t"
                   class="err-lvl-btn" :class="[`stmt--${t.toLowerCase()}`, { active: slowStmtFilter === t }]"
                   @click="slowStmtFilter = slowStmtFilter === t ? '' : t; slowApply()"
                 >{{ t }}</button>
               </div>
+              <div class="dblogs-toolbar__group">
+                <span class="dblogs-label">Database</span>
+                <input v-model="slowDbFilter" type="text" placeholder="all" class="dblogs-input dblogs-input--sm" @keydown.enter="slowApply" />
+              </div>
               <div class="err-datepicker">
                 <div class="err-shortcuts">
                   <button class="err-shortcut" :class="{ active: slowFrom === today() && slowTo === today() }" @click="slowFrom = today(); slowTo = today(); slowApply()">Today</button>
                   <button class="err-shortcut" :class="{ active: slowFrom === yesterday() && slowTo === yesterday() }" @click="slowFrom = yesterday(); slowTo = yesterday(); slowApply()">Yesterday</button>
-                  <button class="err-shortcut" :class="{ active: !slowFrom && !slowTo }" @click="slowFrom = ''; slowTo = ''; slowApply()">7 days</button>
+                  <button class="err-shortcut" :class="{ active: !slowFrom && !slowTo }" @click="slowFrom = ''; slowTo = ''; slowApply()">{{ slowDefaultRangeLabel }}</button>
                 </div>
                 <div class="err-daterange">
                   <input v-model="slowFrom" type="date" class="err-date-input" @change="slowApply()" />
@@ -843,6 +977,10 @@ function fmtLogTime(t: string): string {
                   <input v-model="slowTo" type="date" class="err-date-input" @change="slowApply()" />
                 </div>
               </div>
+              <button class="dblogs-btn" @click="slowApply">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                Apply
+              </button>
             </template>
             <template v-else>
               <div class="dblogs-toolbar__group">
@@ -876,13 +1014,23 @@ function fmtLogTime(t: string): string {
               <option :value="50">50 / page</option>
               <option :value="100">100 / page</option>
             </select>
+            <select
+              v-if="cloudConfigured"
+              v-model.number="selectedCloudConfigId"
+              class="err-select cloud-instance-select"
+              @change="activateCloudConfig"
+            >
+              <option v-for="cfg in cloudConfigs" :key="cfg.id" :value="cfg.id">
+                {{ cloudConfigLabel(cfg) }}
+              </option>
+            </select>
             <button
               class="err-cloud-btn" :class="{ 'err-cloud-btn--on': cloudConfigured }"
-              @click="showCloudModal = true"
+              @click="openCloudConfigModal"
               :title="cloudConfigured ? 'Cloud source active — click to reconfigure' : 'Connect cloud provider'"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
-              {{ cloudConfigured ? 'Cloud: ON' : 'Cloud' }}
+              {{ cloudButtonText }}
             </button>
           </div>
         </div>
@@ -1012,7 +1160,7 @@ function fmtLogTime(t: string): string {
       <div v-else-if="activeTab === 'audit'" class="dblogs-panel">
 
         <!-- ── Cloud mode: audit log files ── -->
-        <template v-if="cloudConfigured">
+        <template v-if="cloudSupportsAudit">
           <div class="err-toolbar">
             <div class="err-toolbar__left">
               <div class="err-datepicker">
@@ -1034,9 +1182,19 @@ function fmtLogTime(t: string): string {
                 <option :value="25">25 / page</option>
                 <option :value="50">50 / page</option>
               </select>
-              <button class="err-cloud-btn err-cloud-btn--on" @click="showCloudModal = true">
+              <select
+                v-if="cloudConfigured"
+                v-model.number="selectedCloudConfigId"
+                class="err-select cloud-instance-select"
+                @change="activateCloudConfig"
+              >
+                <option v-for="cfg in cloudConfigs" :key="cfg.id" :value="cfg.id">
+                  {{ cloudConfigLabel(cfg) }}
+                </option>
+              </select>
+              <button class="err-cloud-btn err-cloud-btn--on" @click="openCloudConfigModal">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
-                Cloud: ON
+                {{ cloudButtonText }}
               </button>
             </div>
           </div>
@@ -1134,11 +1292,30 @@ function fmtLogTime(t: string): string {
                 <option :value="50">50 / page</option>
                 <option :value="100">100 / page</option>
               </select>
-              <button class="err-cloud-btn" @click="showCloudModal = true">
+              <select
+                v-if="cloudConfigured"
+                v-model.number="selectedCloudConfigId"
+                class="err-select cloud-instance-select"
+                @change="activateCloudConfig"
+              >
+                <option v-for="cfg in cloudConfigs" :key="cfg.id" :value="cfg.id">
+                  {{ cloudConfigLabel(cfg) }}
+                </option>
+              </select>
+              <button
+                class="err-cloud-btn" :class="{ 'err-cloud-btn--on': cloudConfigured }"
+                @click="openCloudConfigModal"
+                :title="cloudConfigured ? 'Cloud source active — click to reconfigure' : 'Connect cloud provider'"
+              >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
-                Cloud
+                {{ cloudButtonText }}
               </button>
             </div>
+          </div>
+
+          <div v-if="cloudConfigured && !cloudSupportsAudit" class="err-notice err-notice--warn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <span>{{ cloudProviderShort }} audit logs are not available in this view. Showing local SQL history.</span>
           </div>
 
           <div v-if="auditNotice" class="err-notice err-notice--warn">
@@ -1234,66 +1411,79 @@ function fmtLogTime(t: string): string {
           <div class="cloud-modal__header">
             <div class="cloud-modal__title">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
-              Cloud Provider — Error Log Access
+              Cloud Provider — RDS Log Access
             </div>
             <button class="cloud-modal__close" @click="showCloudModal = false">✕</button>
           </div>
 
           <div class="cloud-modal__body">
             <p class="cloud-modal__desc">
-              Connect to Huawei Cloud RDS API to access error logs and slow query logs directly from your cloud provider.
-              Your credentials are stored securely on the server and never exposed to the browser.
+              Save one or more cloud RDS instances, then switch the active instance from the DB Logs toolbar.
+              Credentials are stored on the server and never exposed to the browser.
             </p>
 
             <div class="cloud-form">
               <div class="cloud-form__row">
+                <label>Display Name <span class="cloud-hint">shown in the instance selector</span></label>
+                <input v-model="cloudForm.name" class="dblogs-input" placeholder="Production Alibaba RDS" />
+              </div>
+              <div class="cloud-form__row">
                 <label>Provider</label>
                 <select v-model="cloudForm.provider" class="dblogs-select">
                   <option value="huawei">Huawei Cloud RDS</option>
+                  <option value="alibaba">Alibaba Cloud RDS</option>
                 </select>
               </div>
               <div class="cloud-form__row">
-                <label>Region <span class="cloud-hint">e.g. ap-southeast-3</span></label>
-                <input v-model="cloudForm.region" class="dblogs-input" placeholder="ap-southeast-3" />
+                <label>Region <span class="cloud-hint">e.g. ap-southeast-3 / cn-hangzhou</span></label>
+                <input v-model="cloudForm.region" class="dblogs-input" :placeholder="cloudRegionPlaceholder" />
               </div>
-              <div class="cloud-form__row">
+              <div v-if="cloudProvider === 'huawei'" class="cloud-form__row">
                 <label>Project ID <span class="cloud-hint">IAM → My Credentials</span></label>
                 <input v-model="cloudForm.project_id" class="dblogs-input" placeholder="0b0e9c5b4f00d5a90f4c..." />
               </div>
               <div class="cloud-form__row">
                 <label>Instance ID <span class="cloud-hint">RDS → Instance → Overview</span></label>
-                <input v-model="cloudForm.instance_id" class="dblogs-input" placeholder="db-rds-xxx..." />
+                <input v-model="cloudForm.instance_id" class="dblogs-input" :placeholder="cloudInstancePlaceholder" />
               </div>
               <div class="cloud-form__row">
                 <label>Access Key (AK) <span class="cloud-hint">IAM → Access Keys</span></label>
                 <input v-model="cloudForm.access_key" class="dblogs-input" placeholder="XXXXXXXXXXXXXXXXXXXX" />
               </div>
               <div class="cloud-form__row">
-                <label>Secret Key (SK) <span class="cloud-hint">Shown once when created</span></label>
+                <label>Secret Key (SK) <span class="cloud-hint">{{ cloudConfigured ? 'Leave blank to keep existing' : 'Shown once when created' }}</span></label>
                 <input v-model="cloudForm.secret_key" type="password" class="dblogs-input" placeholder="Enter secret key" />
               </div>
             </div>
 
             <div class="cloud-form__help">
               <strong>Where to find these:</strong>
-              <ol>
+              <ol v-if="cloudProvider === 'huawei'">
                 <li>Huawei Console → top-right → <strong>My Credentials</strong> → Project List → copy <strong>Project ID</strong></li>
                 <li>Same page → <strong>Access Keys</strong> → Add Access Key → download AK/SK</li>
                 <li>RDS → your instance → <strong>Basic Information</strong> → copy <strong>Instance ID</strong></li>
                 <li>Region code is in the browser URL: <code>console.huaweicloud.com/<strong>ap-southeast-3</strong>/rds</code></li>
               </ol>
+              <ol v-else>
+                <li>Alibaba Cloud Console → RAM → <strong>AccessKey</strong> → create/copy AK/SK</li>
+                <li>ApsaraDB RDS → your instance → <strong>Instance ID</strong> (example: <code>rm-xxxx</code>)</li>
+                <li>RegionId is your region code (example: <code>cn-hangzhou</code>, <code>ap-southeast-1</code>)</li>
+              </ol>
             </div>
           </div>
 
           <div class="cloud-modal__footer">
-            <button v-if="cloudConfigured" class="dblogs-btn dblogs-btn--danger" @click="deleteCloudConfig">
-              Remove Config
+            <button v-if="cloudForm.id" class="dblogs-btn dblogs-btn--danger" @click="deleteCloudConfig">
+              Remove Instance
+            </button>
+            <button v-if="cloudConfigured" class="dblogs-btn dblogs-btn--ghost" @click="newCloudConfig">
+              New Instance
             </button>
             <div style="flex:1" />
             <button class="dblogs-btn dblogs-btn--ghost" @click="showCloudModal = false">Cancel</button>
             <button class="dblogs-btn dblogs-btn--primary" :disabled="cloudSaving" @click="saveCloudConfig">
               <svg v-if="cloudSaving" class="spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-              {{ cloudSaving ? 'Saving…' : cloudConfigured ? 'Update & Reconnect' : 'Save & Connect' }}
+              {{ cloudSaving ? 'Saving…' : cloudForm.id ? 'Update & Switch' : 'Save & Switch' }}
             </button>
           </div>
         </div>
@@ -1337,17 +1527,6 @@ function fmtLogTime(t: string): string {
   color: var(--text-secondary);
   margin: 0;
 }
-.dblogs-conn-select {
-  font-size: 13px;
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  cursor: pointer;
-  min-width: 200px;
-}
-
 /* Tabs */
 .dblogs-tabs {
   display: flex;
@@ -1743,7 +1922,7 @@ function fmtLogTime(t: string): string {
   font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin: 0;
 }
 .cloud-modal__footer {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 14px 20px;
   border-top: 1px solid var(--border);
 }
@@ -1892,7 +2071,7 @@ function fmtLogTime(t: string): string {
   margin-bottom: 12px;
 }
 .err-toolbar__left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; flex: 1; }
-.err-toolbar__right { display: flex; align-items: center; gap: 8px; }
+.err-toolbar__right { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 
 .err-levels { display: flex; gap: 4px; }
 .err-lvl-btn {
@@ -1939,6 +2118,10 @@ function fmtLogTime(t: string): string {
   font-size: 12px; padding: 5px 8px;
   border-radius: 6px; border: 1px solid var(--border);
   background: var(--bg); color: var(--text); cursor: pointer;
+}
+.cloud-instance-select {
+  max-width: 260px;
+  min-width: 180px;
 }
 .err-cloud-btn {
   display: flex; align-items: center; gap: 5px;
