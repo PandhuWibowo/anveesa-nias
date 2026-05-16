@@ -1,0 +1,28 @@
+services:
+  cassandra:
+    image: cassandra:4.1
+    container_name: nias-cassandra-dev
+    hostname: cassandra
+    restart: unless-stopped
+    ports:
+      - "${CASSANDRA_HOST_PORT:-9042}:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: ${CASSANDRA_CLUSTER_NAME:-nias-local}
+      CASSANDRA_DC: ${CASSANDRA_DC:-datacenter1}
+      CASSANDRA_RACK: ${CASSANDRA_RACK:-rack1}
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      CASSANDRA_NUM_TOKENS: 16
+      MAX_HEAP_SIZE: ${CASSANDRA_MAX_HEAP_SIZE:-512M}
+      HEAP_NEWSIZE: ${CASSANDRA_HEAP_NEWSIZE:-128M}
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh 127.0.0.1 9042 -e 'DESCRIBE KEYSPACES' >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+volumes:
+  cassandra-data:
+    driver: local

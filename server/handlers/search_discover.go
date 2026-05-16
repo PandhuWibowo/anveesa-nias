@@ -40,12 +40,13 @@ func decodeRawField(raw json.RawMessage) any {
 }
 
 type AggregateInput struct {
-	Index string          `json:"index"`
-	Query json.RawMessage `json:"query"`
-	Aggs  json.RawMessage `json:"aggs"`
-	Sort  json.RawMessage `json:"sort"`
-	Size  int             `json:"size"`
-	From  int             `json:"from"`
+	Index       string          `json:"index"`
+	Query       json.RawMessage `json:"query"`
+	Aggs        json.RawMessage `json:"aggs"`
+	Sort        json.RawMessage `json:"sort"`
+	Size        int             `json:"size"`
+	From        int             `json:"from"`
+	SearchAfter json.RawMessage `json:"search_after,omitempty"`
 }
 
 // SearchAggregate runs arbitrary aggregation queries (date_histogram, terms, stats…).
@@ -69,7 +70,13 @@ func SearchAggregate() http.HandlerFunc {
 			return
 		}
 
-		body := map[string]any{"size": payload.Size, "from": payload.From, "track_total_hits": true}
+		body := map[string]any{"size": payload.Size, "track_total_hits": true}
+		if sa := decodeRawField(payload.SearchAfter); sa != nil {
+			// search_after and from are mutually exclusive; search_after takes precedence.
+			body["search_after"] = sa
+		} else {
+			body["from"] = payload.From
+		}
 		if v := decodeRawField(payload.Query); v != nil {
 			body["query"] = v
 		}

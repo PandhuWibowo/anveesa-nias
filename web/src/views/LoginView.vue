@@ -31,7 +31,7 @@ async function handleLogin() {
   loading.value = false
   
   if (result.success) {
-    router.push(result.mustSetupMfa ? { name: 'security', query: { setup: 'mfa' } } : { name: 'data' })
+    router.push(result.mustSetupMfa ? { name: 'security', query: { setup: 'mfa' } } : { name: 'docs' })
   } else if (result.requires2fa) {
     requires2fa.value = true
     error.value = ''

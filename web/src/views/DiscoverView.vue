@@ -195,15 +195,19 @@ const showAppMenu  = ref(false)
 const showControls = ref(true)
 
 // ── Pagination ──────────────────────────────────────────────
-// Elasticsearch's default max_result_window is 10 000.
-// We cap navigation at that boundary to avoid a result_window_too_large error.
-const ES_MAX_WINDOW = 10_000
+// Uses Elasticsearch search_after for cursor-based deep pagination,
+// bypassing the default max_result_window of 10,000.
 const currentPage = ref(1)
-const reachableHits = computed(() => Math.min(totalHits.value, ES_MAX_WINDOW))
-const totalPages  = computed(() => Math.max(1, Math.ceil(reachableHits.value / pageSize.value)))
-const pageFrom    = computed(() => Math.min((currentPage.value - 1) * pageSize.value, ES_MAX_WINDOW - pageSize.value))
+// pageAfterCursors[N] = the search_after cursor (sort values of last hit) needed to load page N.
+// Page 1 has no cursor (undefined). Page 2+ are built as the user navigates forward.
+const pageAfterCursors = ref(new Map<number, any[]>())
+const totalPages  = computed(() => Math.max(1, Math.ceil(totalHits.value / pageSize.value)))
 const pageTo      = computed(() => Math.min(currentPage.value * pageSize.value, totalHits.value))
-const hitsCapped  = computed(() => totalHits.value > ES_MAX_WINDOW)
+
+function canGoToPage(p: number): boolean {
+  if (p === 1) return true
+  return pageAfterCursors.value.has(p)
+}
 
 // Visible page window (up to 7 buttons)
 const pageWindow = computed(() => {
@@ -232,11 +236,12 @@ const activeFilters = computed(() => {
 
 function clearAllFilters() {
   levelFilter.value = 'all'; envFilter.value = ''; appFilter.value = new Set(); searchText.value = ''
-  currentPage.value = 1; run()
+  currentPage.value = 1; pageAfterCursors.value = new Map(); run()
 }
 
 function goToPage(p: number | '…') {
   if (p === '…' || typeof p !== 'number') return
+  if (!canGoToPage(p)) return
   currentPage.value = p; run(true)
 }
 
@@ -314,6 +319,8 @@ function resetAll() {
   expandedHits.value = new Set()
   appNames.value = []
   appFilter.value = new Set()
+  pageAfterCursors.value = new Map()
+  currentPage.value = 1
 }
 
 function buildQuery(): any {
@@ -468,16 +475,23 @@ function histogramInterval(): string {
 
 async function run(keepPage = false) {
   if (!activeConn.value || !indexPattern.value.trim()) return
-  if (!keepPage) currentPage.value = 1
+  if (!keepPage) {
+    currentPage.value = 1
+    pageAfterCursors.value = new Map()
+  }
   // Ensure fields are loaded before building queries so hasMsgKeyword is accurate
   if (!fields.value.length) await loadFields()
   loading.value = true
   try {
-    const query    = buildQuery()
-    // Base query without appFilter — used for the app_name aggregation so the
-    // full list of apps is always visible regardless of the active app filter.
+    const query     = buildQuery()
     const baseQuery = buildQueryWithoutApp()
     const interval  = histogramInterval()
+    const page      = currentPage.value
+    // For page 1, use from:0. For subsequent pages, use search_after cursor.
+    const cursor    = page > 1 ? pageAfterCursors.value.get(page) : undefined
+    // Tiebreaker (_id) ensures stable ordering when multiple docs share the same timestamp.
+    const sortClause = [{ [timestampField.value]: { order: sortOrder.value } }, { _id: 'asc' }]
+
     const [histResult, hitsResult, appResult] = await Promise.all([
       axios.post(`/api/connections/${activeConn.value.id}/search/aggregate`, {
         index: indexPattern.value.trim(),
@@ -500,9 +514,10 @@ async function run(keepPage = false) {
         index: indexPattern.value.trim(),
         query,
         size: pageSize.value,
-        from: pageFrom.value,
+        from: cursor ? 0 : (page - 1) * pageSize.value,
+        search_after: cursor ?? null,
         aggs: {},
-        sort: [{ [timestampField.value]: { order: sortOrder.value } }],
+        sort: sortClause,
       }),
       axios.post(`/api/connections/${activeConn.value.id}/search/aggregate`, {
         index: indexPattern.value.trim(),
@@ -520,6 +535,15 @@ async function run(keepPage = false) {
     const total = hitsResult.data?.hits?.total
     totalHits.value = typeof total === 'number' ? total : (total?.value ?? rawHits.length)
     lastRefreshed.value = new Date()
+
+    // Store the cursor for the next page from the last hit's sort values.
+    if (rawHits.length > 0) {
+      const lastSort = rawHits[rawHits.length - 1]?.sort
+      if (Array.isArray(lastSort) && lastSort.length > 0) {
+        pageAfterCursors.value = new Map(pageAfterCursors.value).set(page + 1, lastSort)
+      }
+    }
+
     // Populate app list; keep existing list if the index has no app_name field
     const appBuckets: { key: string }[] =
       (appResult.data?.aggregations?.apps?.buckets?.length
@@ -826,10 +850,9 @@ function hitKey(hit: Hit, idx: number): string {
         <div class="disc-ctrlbar-left">
           <span class="disc-hits-count">
             <strong>{{ totalHits.toLocaleString() }}</strong>
-            <span v-if="hitsCapped" class="disc-cap-badge" title="Elasticsearch's default result window is 10,000. Refine your query or time range to see more.">top 10k</span>
           </span>
           <span v-if="totalHits > 0" class="disc-strip-muted disc-range">
-            {{ (pageFrom + 1).toLocaleString() }}–{{ pageTo.toLocaleString() }}
+            {{ ((currentPage - 1) * pageSize + 1).toLocaleString() }}–{{ pageTo.toLocaleString() }}
           </span>
           <span v-if="lastRefreshed" class="disc-strip-muted disc-updated">
             {{ lastRefreshed.toLocaleTimeString() }}
@@ -990,16 +1013,17 @@ function hitKey(hit: Hit, idx: number): string {
           <span v-if="p === '…'" class="disc-pg-ellipsis">…</span>
           <button v-else class="disc-pg-btn"
             :class="{ active: p === currentPage }"
+            :disabled="!canGoToPage(p)"
+            :title="!canGoToPage(p) ? 'Navigate page by page to reach this page' : undefined"
             @click="goToPage(p)">{{ p }}</button>
         </template>
 
         <button class="disc-pg-btn disc-pg-nav"
-          :disabled="currentPage === totalPages"
+          :disabled="currentPage === totalPages || !canGoToPage(currentPage + 1)"
           @click="goToPage(currentPage + 1)">Next ›</button>
 
         <span class="disc-pg-info">
           Page {{ currentPage }} of {{ totalPages.toLocaleString() }}
-          <template v-if="hitsCapped"> · showing first 10,000</template>
         </span>
       </div>
 
@@ -1220,7 +1244,6 @@ export { flatSource }
 .disc-ctrlbar-right { display:flex; align-items:center; gap:6px; flex-shrink:0; }
 .disc-hits-count { color:var(--text-primary); font-size:13px; font-weight:700; white-space:nowrap; display:inline-flex; align-items:center; gap:6px; }
 .disc-hits-count strong { font-weight:800; }
-.disc-cap-badge { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; background:var(--bg-elevated); color:var(--text-muted); border:1px solid var(--border); border-radius:4px; padding:1px 5px; cursor:help; }
 .disc-strip-muted { color:var(--text-muted); font-size:11.5px; }
 .disc-range  { font-family:var(--mono); }
 .disc-updated::before { content:'↻ '; }

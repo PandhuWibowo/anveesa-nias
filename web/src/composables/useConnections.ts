@@ -12,6 +12,7 @@ export type DbDriver =
   | 'memcache'
   | 'kafka'
   | 'mongodb'
+  | 'cassandra'
   | 'elasticsearch'
   | 'opensearch'
   | 's3_aws'

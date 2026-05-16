@@ -37,6 +37,7 @@ var allowedDrivers = map[string]bool{
 	"memcache":      true,
 	"kafka":         true,
 	"mongodb":       true,
+	"cassandra":     true,
 	"elasticsearch": true,
 	"opensearch":    true,
 	"s3_aws":        true,
@@ -169,7 +170,7 @@ type ConnectionInput struct {
 func validateConnectionInput(in *ConnectionInput) error {
 	// Validate driver
 	if !allowedDrivers[in.Driver] {
-		return fmt.Errorf("invalid driver: must be sqlite, postgres, mysql, mariadb, mssql, redis, memcache, kafka, mongodb, elasticsearch, opensearch, s3_aws, s3_gcp, s3_oss, or s3_obs")
+		return fmt.Errorf("invalid driver: must be sqlite, postgres, mysql, mariadb, mssql, redis, memcache, kafka, mongodb, cassandra, elasticsearch, opensearch, s3_aws, s3_gcp, s3_oss, or s3_obs")
 	}
 
 	// Validate port
@@ -197,6 +198,13 @@ func validateConnectionInput(in *ConnectionInput) error {
 		if !strings.HasPrefix(strings.TrimSpace(in.Host), "mongodb://") && !strings.HasPrefix(strings.TrimSpace(in.Host), "mongodb+srv://") && (in.Port < 1 || in.Port > 65535) {
 			return fmt.Errorf("invalid port: must be 1-65535")
 		}
+	} else if in.Driver == "cassandra" {
+		if strings.TrimSpace(in.Host) == "" {
+			return fmt.Errorf("Cassandra contact point or URI is required")
+		}
+		if !strings.HasPrefix(strings.TrimSpace(in.Host), "cassandra://") && !strings.HasPrefix(strings.TrimSpace(in.Host), "cql://") && (in.Port < 1 || in.Port > 65535) {
+			return fmt.Errorf("invalid port: must be 1-65535")
+		}
 	} else if isSearchDriver(in.Driver) {
 		if strings.TrimSpace(in.Host) == "" {
 			return fmt.Errorf("search endpoint host is required")
@@ -211,7 +219,7 @@ func validateConnectionInput(in *ConnectionInput) error {
 	}
 
 	// Validate host (no special characters that could be used for injection)
-	if in.Host != "" && in.Driver != "mongodb" && !isValidHostname(in.Host) {
+	if in.Host != "" && in.Driver != "mongodb" && in.Driver != "cassandra" && !isValidHostname(in.Host) {
 		return fmt.Errorf("invalid host format")
 	}
 
@@ -238,7 +246,7 @@ func isValidHostname(host string) bool {
 
 func buildDSN(in ConnectionInput) (string, error) {
 	switch in.Driver {
-	case "redis", "memcache", "kafka", "mongodb", "elasticsearch", "opensearch", "s3_aws", "s3_gcp", "s3_oss", "s3_obs":
+	case "redis", "memcache", "kafka", "mongodb", "cassandra", "elasticsearch", "opensearch", "s3_aws", "s3_gcp", "s3_oss", "s3_obs":
 		return "", fmt.Errorf("%s does not use SQL DSN", in.Driver)
 	case "sqlite":
 		dbPath := strings.TrimSpace(in.Database)
@@ -902,6 +910,16 @@ func TestConnection() http.HandlerFunc {
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 			defer cancel()
 			if err := testMongoInput(ctx, in); err != nil {
+				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"message": "Connection successful"})
+			return
+		}
+		if in.Driver == "cassandra" {
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			if err := testCassandraInput(ctx, in); err != nil {
 				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
 				return
 			}

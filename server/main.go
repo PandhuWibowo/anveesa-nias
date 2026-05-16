@@ -415,6 +415,20 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermMongoImport)(handlers.MongoImport())(w, r)
 			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "export" && r.Method == http.MethodGet:
 				requireAny(handlers.PermMongoExport)(handlers.MongoExport())(w, r)
+			case sub == "cassandra" && len(parts) >= 3 && parts[2] == "ping" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.CassandraPing())(w, r)
+			case sub == "cassandra" && len(parts) >= 3 && parts[2] == "dashboard" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.CassandraDashboard())(w, r)
+			case sub == "cassandra" && len(parts) >= 3 && parts[2] == "keyspaces" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.CassandraKeyspaces())(w, r)
+			case sub == "cassandra" && len(parts) >= 3 && parts[2] == "tables" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.CassandraTables())(w, r)
+			case sub == "cassandra" && len(parts) >= 3 && parts[2] == "columns" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.CassandraColumns())(w, r)
+			case sub == "cassandra" && len(parts) >= 3 && parts[2] == "rows" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.CassandraRows())(w, r)
+			case sub == "cassandra" && len(parts) >= 3 && parts[2] == "query" && r.Method == http.MethodPost:
+				requireAny(handlers.PermQueryExecute, handlers.PermSchemaBrowse)(handlers.CassandraQuery())(w, r)
 			case sub == "db-logs" && len(parts) >= 3 && parts[2] == "slow-queries" && r.Method == http.MethodGet:
 				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.DBSlowQueries())(w, r)
 			case sub == "db-logs" && len(parts) >= 3 && parts[2] == "error-logs" && r.Method == http.MethodGet:

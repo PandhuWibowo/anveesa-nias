@@ -23,7 +23,7 @@ const activeConn = computed(() =>
   localConnId.value ? connections.value.find(c => c.id === localConnId.value) ?? null : null
 )
 function isNonSqlDriver(driver: string) {
-  return driver === 'redis' || driver === 'memcache' || driver === 'kafka' || driver === 'mongodb' || driver === 'elasticsearch' || driver === 'opensearch' || driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs'
+  return driver === 'redis' || driver === 'memcache' || driver === 'kafka' || driver === 'mongodb' || driver === 'cassandra' || driver === 'elasticsearch' || driver === 'opensearch' || driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs'
 }
 
 const supportsRelationalSchema = computed(() => !!activeConn.value && !isNonSqlDriver(activeConn.value.driver))
