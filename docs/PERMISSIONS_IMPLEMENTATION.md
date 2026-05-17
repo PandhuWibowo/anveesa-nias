@@ -198,7 +198,9 @@ ALTER TABLE users ADD COLUMN role_id INTEGER;
 ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT '[]';
 ```
 
-Users inherit permissions from their role, but can have **additive** personal overrides.
+Users inherit permissions from their role, but can have **additive** personal overrides. These user-level grants are the ABAC layer for one-off access, such as granting `cassandra.view` or `query.execute` directly to a person without creating another role.
+
+Admin APIs expose these grants through `GET /api/admin/users` and `PUT /api/admin/users/:id` using a `permissions` JSON array.
 
 ---
 

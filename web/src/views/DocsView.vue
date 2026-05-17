@@ -323,10 +323,10 @@ const sections: DocsSection[] = [
       {
         name: 'Permissions',
         detail: 'Roles, application permissions, access groups, users, and connection-level permission policy.',
-        useCases: ['Grant feature access with screen-level permission keys.', 'Restrict connection access through access groups.', 'Separate admin, analyst, reviewer, and operator responsibilities.', 'Assign direct connection permissions for a specific user.'],
-        workflow: ['Open Roles & Permissions for role-level application permissions.', 'Use Access Groups to manage folder-based connection access.', 'Use Users to assign roles and direct connection permissions.', 'Save and test with the affected account.'],
+        useCases: ['Grant feature access with screen-level permission keys.', 'Grant direct feature access to a specific user.', 'Restrict connection access through access groups.', 'Separate admin, analyst, reviewer, and operator responsibilities.', 'Assign direct connection permissions for a specific user.'],
+        workflow: ['Open Roles & Permissions for role-level application permissions.', 'Use Access Groups to manage folder-based connection access.', 'Use Users to assign roles, direct feature grants, and direct connection permissions.', 'Save and test with the affected account.'],
         expected: 'Users see and use only the features and connections they are allowed to access.',
-        notes: ['The permission list includes current feature keys such as analytics.view, dashboards.manage, sqlstudio.access, redis.view, queues.view, kafka.view, kafka.produce, kafka.manage, cassandra.view, operations.view, performance.view, databaseaudit.view, watchers.manage, approvals.view, changesets.manage, datascripts.manage, and scriptrequests.view.', 'Older coarse permissions are expanded for compatibility so existing roles keep their expected access.'],
+        notes: ['Direct user feature permissions are additive ABAC grants on top of the assigned role.', 'The permission list includes current feature keys such as analytics.view, dashboards.manage, sqlstudio.access, redis.view, queues.view, kafka.view, kafka.produce, kafka.manage, cassandra.view, operations.view, performance.view, databaseaudit.view, watchers.manage, approvals.view, changesets.manage, datascripts.manage, and scriptrequests.view.', 'Older coarse permissions are expanded for compatibility so existing roles keep their expected access.'],
       },
       {
         name: 'Approval Workflows',

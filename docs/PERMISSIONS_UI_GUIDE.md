@@ -128,9 +128,19 @@ The groups table displays:
 
 ### **USER ASSIGNMENTS MODULE**
 
+#### **Edit User Access**
+1. Find user in table
+2. Click **"Edit"** button
+3. Select a role from dropdown
+4. Select direct feature permissions when this user needs access outside the role
+5. Select direct connection permissions when this user needs connection-specific access
+6. Click **"Update User"**
+
+Direct feature permissions are additive ABAC grants. Use them for individual exceptions instead of creating a role for one person.
+
 #### **Edit User Role**
 1. Find user in table
-2. Click **"Edit Role"** button
+2. Click **"Edit"** button
 3. Select new role from dropdown
 4. Click **"Update User"**
 
@@ -146,11 +156,12 @@ New Role: analyst
 The users table displays:
 - Username
 - Current role (with color badge)
+- Direct feature grants
 - Active status
 - Creation date
-- Action button (Edit Role)
+- Action button (Edit)
 
-**Note:** User creation and deletion are handled in the Users view (`/users`).
+**Note:** User creation, role assignment, direct feature grants, and direct connection permissions can be managed from the Users tab.
 
 ---
 

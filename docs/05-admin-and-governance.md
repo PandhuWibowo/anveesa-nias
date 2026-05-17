@@ -77,6 +77,7 @@ Use cases:
 - Create a read-only analyst role.
 - Grant or deny access to specific product screens.
 - Restrict a group to specific connection folders.
+- Grant a feature directly to one user without creating a new role.
 - Allow query execution but block write operations.
 - Review who has access to sensitive connections.
 - Apply different access levels for different teams.
@@ -85,7 +86,7 @@ Typical workflow:
 1. Open Admin, then Roles & Permissions.
 2. Define app roles and select feature permissions from the current permission list.
 3. Open Access Groups when folder-based connection access needs to be changed.
-4. Open Users to assign roles and direct connection permissions.
+4. Open Users to assign roles, direct feature grants, and direct connection permissions.
 5. Configure database permissions such as select, insert, update, delete, create, alter, and drop.
 
 Expected result:
@@ -93,6 +94,7 @@ Expected result:
 
 Notes:
 - Prefer granting the minimum access required.
+- Direct user feature permissions are additive ABAC grants on top of the assigned role.
 - Review permissions after team or responsibility changes.
 - Permission changes should be tested with a non-admin account.
 - The Admin menu separates Roles & Permissions from Access Groups, but both use the `/permissions` screen.
