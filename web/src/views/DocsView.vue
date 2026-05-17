@@ -133,16 +133,9 @@ const sections: DocsSection[] = [
     id: 'monitor',
     title: 'Monitoring And Audit',
     description: 'Operational visibility across performance, access, and history.',
-    routeHints: ['/dashboard', '/query-performance', '/database-audit', '/audit', '/notifications', '/row-history', '/watcher', '/health'],
-    screenshots: ['dashboard-page.png', 'query-performance-page.png', 'database-audit-page.png', 'audit-log-page.png', 'notifications-page.png', 'row-history-page.png', 'watchers-page.png', 'health-page.png'],
+    routeHints: ['/query-performance', '/database-audit', '/audit', '/notifications', '/row-history', '/watcher', '/health'],
+    screenshots: ['query-performance-page.png', 'database-audit-page.png', 'audit-log-page.png', 'notifications-page.png', 'row-history-page.png', 'watchers-page.png', 'health-page.png'],
     features: [
-      {
-        name: 'Dashboard',
-        detail: 'High-level operational overview for application and connection status.',
-        useCases: ['Check whether the app and configured connections look healthy.', 'Start an operational investigation.', 'Navigate into more detailed monitoring pages.'],
-        workflow: ['Open Operations Overview.', 'Review status cards and metrics.', 'Drill into performance, audit, health, or access activity.'],
-        expected: 'Users quickly identify whether deeper investigation is needed.',
-      },
       {
         name: 'Query Performance',
         detail: 'Surfaces slow queries, failed queries, and execution trends.',
@@ -326,7 +319,7 @@ const sections: DocsSection[] = [
         useCases: ['Grant feature access with screen-level permission keys.', 'Grant direct feature access to a specific user.', 'Restrict connection access through access groups.', 'Separate admin, analyst, reviewer, and operator responsibilities.', 'Assign direct connection permissions for a specific user.'],
         workflow: ['Open Roles & Permissions for role-level application permissions.', 'Use Access Groups to manage folder-based connection access.', 'Use Users to assign roles, direct feature grants, and direct connection permissions.', 'Save and test with the affected account.'],
         expected: 'Users see and use only the features and connections they are allowed to access.',
-        notes: ['Direct user feature permissions are additive ABAC grants on top of the assigned role.', 'The permission list includes current feature keys such as analytics.view, dashboards.manage, sqlstudio.access, redis.view, queues.view, kafka.view, kafka.produce, kafka.manage, cassandra.view, operations.view, performance.view, databaseaudit.view, watchers.manage, approvals.view, changesets.manage, datascripts.manage, and scriptrequests.view.', 'Older coarse permissions are expanded for compatibility so existing roles keep their expected access.'],
+        notes: ['Direct user feature permissions are additive ABAC grants on top of the assigned role.', 'The permission list includes current feature keys such as analytics.view, dashboards.manage, sqlstudio.access, redis.view, queues.view, kafka.view, kafka.produce, kafka.manage, cassandra.view, performance.view, databaseaudit.view, watchers.manage, approvals.view, changesets.manage, datascripts.manage, and scriptrequests.view.', 'Older coarse permissions are expanded for compatibility so existing roles keep their expected access.'],
       },
       {
         name: 'Approval Workflows',

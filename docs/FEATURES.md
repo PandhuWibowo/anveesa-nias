@@ -25,7 +25,6 @@ Current primary routes covered:
 - `/login`
 - `/welcome`
 - `/docs`
-- `/dashboard`
 - `/analytics`
 - `/ai-analytics`
 - `/settings`

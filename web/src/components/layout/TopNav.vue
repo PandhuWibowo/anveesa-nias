@@ -33,6 +33,7 @@ const dropdownPanelEl = ref<HTMLElement | null>(null)
 const connPanelOpen = ref(false)
 
 const PANEL_WIDTH = 280
+const DROPDOWN_GUTTER = 24
 const connPanelStyle = computed(() => {
   if (!connBtnRef.value) return {}
   const rect = connBtnRef.value.getBoundingClientRect()
@@ -130,7 +131,6 @@ const allMenuGroups: MenuGroup[] = [
     label: 'Operations',
     icon: 'activity',
     items: [
-      { name: 'dashboard',        label: 'Overview',        desc: 'Connection footprint, size, and slow-query pressure across environments', icon: 'dashboard',   section: 'Monitoring', permissionsAny: ['operations.view'] },
       { name: 'query-performance',label: 'Query Performance',desc: 'Slow queries, errors, and execution trends', icon: 'performance',  section: 'Monitoring', permissionsAny: ['performance.view'] },
       { name: 'database-logs',    label: 'DB Logs',         desc: 'Slow query log, error log, and SQL audit',   icon: 'audit',        section: 'Monitoring', permissionsAny: ['schema.browse', 'connections.view'] },
       { name: 'database-audit',   label: 'DB Audit',        desc: 'Live sessions and external access signals', icon: 'shieldlog',    section: 'Monitoring', permissionsAny: ['databaseaudit.view'] },
@@ -151,7 +151,6 @@ const allMenuGroups: MenuGroup[] = [
     icon: 'settings',
     items: [
       { name: 'connections', label: 'Connections', desc: 'Manage environments and database access points', icon: 'plug', permissionsAny: ['connections.view'] },
-      { name: 'users', label: 'Users', desc: 'Create users, assign roles, and manage account status', icon: 'users', permissionsAny: ['users.manage'] },
       { name: 'permissions', label: 'Roles & Permissions', desc: 'Define roles and application permission policy', icon: 'rbac', permissionsAny: ['roles.manage'] },
       { name: 'permissions', label: 'Access Groups', desc: 'Manage folder-based connection access groups', icon: 'rbac', permissionsAny: ['folders.manage'], query: { tab: 'groups' } },
     ],
@@ -271,18 +270,30 @@ const dropdownStyle = computed(() => {
   }
 })
 
-// After the dropdown renders, clamp it so it never overflows the right edge
+function clampDropdownLeft(left: number, width: number) {
+  const maxLeft = Math.max(DROPDOWN_GUTTER, window.innerWidth - width - DROPDOWN_GUTTER)
+  return Math.min(Math.max(DROPDOWN_GUTTER, left), maxLeft)
+}
+
+// After the dropdown renders, place wide menus inward and keep all menus inside the viewport.
 watch(openMenu, async () => {
   if (!openMenu.value) return
   await nextTick()
   const el = dropdownPanelEl.value
   if (!el || !dropdownPos.value) return
   const rect = el.getBoundingClientRect()
-  if (rect.right > window.innerWidth - 8) {
+
+  if (openMenu.value === 'database') {
     dropdownPos.value = {
       top: dropdownPos.value.top,
-      left: Math.max(8, dropdownPos.value.left - (rect.right - (window.innerWidth - 8))),
+      left: clampDropdownLeft((window.innerWidth - rect.width) / 2, rect.width),
     }
+    return
+  }
+
+  dropdownPos.value = {
+    top: dropdownPos.value.top,
+    left: clampDropdownLeft(dropdownPos.value.left, rect.width),
   }
 })
 

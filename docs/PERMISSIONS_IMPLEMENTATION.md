@@ -168,7 +168,6 @@ kafka.produce          ← Can produce Kafka test messages
 kafka.manage           ← Can create, delete, and resize Kafka topics
 cassandra.view         ← Can use Cassandra Workbench
 audit.view             ← Can access audit logs
-operations.view        ← Can view Operations Overview
 performance.view       ← Can view Query Performance
 databaseaudit.view     ← Can view Database Audit
 watchers.manage        ← Can manage watchers

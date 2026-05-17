@@ -188,7 +188,6 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermMongoImport, Label: "Import MongoDB Data", Group: "Document Database"},
 	{Key: PermCassandraView, Label: "Use Cassandra Workbench", Group: "Wide-column Database"},
 	{Key: PermAuditView, Label: "View Audit Logs", Group: "Audit"},
-	{Key: PermOperationsView, Label: "View Operations Overview", Group: "Operations"},
 	{Key: PermPerformanceView, Label: "View Query Performance", Group: "Operations"},
 	{Key: PermDatabaseAuditView, Label: "View Database Audit", Group: "Operations"},
 	{Key: PermWatchersManage, Label: "Manage Watchers", Group: "Operations"},

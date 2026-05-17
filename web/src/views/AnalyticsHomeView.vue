@@ -30,7 +30,6 @@ const canSavedQueries = computed(() => hasAnyPermission(['savedqueries.manage'])
 const canDashboards = computed(() => hasAnyPermission(['dashboards.manage']))
 const canSchedule = computed(() => hasAnyPermission(['schedules.manage']))
 const canNotifications = computed(() => hasAnyPermission(['notifications.view']))
-const canDashboard = computed(() => hasAnyPermission(['operations.view']))
 const canER = computed(() => hasAnyPermission(['er.view']))
 
 const analyticsCards = computed(() => [
@@ -69,15 +68,6 @@ const analyticsCards = computed(() => [
     tone: 'amber',
     stat: `${pinnedReports.value.length} pinned report${pinnedReports.value.length === 1 ? '' : 's'}`,
     enabled: canUseAI.value,
-  },
-  {
-    title: 'Operations Overview',
-    desc: 'Track footprint, slow-query pressure, and environment-level health in one place.',
-    route: 'dashboard',
-    badge: 'OPS',
-    tone: 'emerald',
-    stat: 'Connection overview',
-    enabled: canDashboard.value,
   },
 ])
 

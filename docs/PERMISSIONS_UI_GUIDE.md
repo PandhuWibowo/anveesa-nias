@@ -414,7 +414,7 @@ Permissions are grouped by category:
 - **Wide-column Database:** cassandra.view
 - **Messaging:** queues.view, kafka.view, kafka.produce, kafka.manage
 - **Audit:** audit.view
-- **Operations:** operations.view, performance.view, databaseaudit.view, watchers.manage, notifications.view, notifications.manage, backups.manage, schedules.manage, health.view, rowhistory.view
+- **Operations:** performance.view, databaseaudit.view, watchers.manage, notifications.view, notifications.manage, backups.manage, schedules.manage, health.view, rowhistory.view
 - **Governance:** approvals.view, changesets.manage, datascripts.manage, scriptrequests.view
 - **Administration:** users.manage, folders.manage, roles.manage, workflows.manage
 - **Security:** security.self

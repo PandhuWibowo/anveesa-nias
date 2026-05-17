@@ -21,7 +21,6 @@ Explore and query:
 - `cassandra-page.png`
 
 Monitoring and audit:
-- `dashboard-page.png`
 - `query-performance-page.png`
 - `database-audit-page.png`
 - `audit-log-page.png`
