@@ -166,6 +166,7 @@ queues.view            ← Can use Laravel Queue
 kafka.view             ← Can use Kafka Browser
 kafka.produce          ← Can produce Kafka test messages
 kafka.manage           ← Can create, delete, and resize Kafka topics
+cassandra.view         ← Can use Cassandra Workbench
 audit.view             ← Can access audit logs
 operations.view        ← Can view Operations Overview
 performance.view       ← Can view Query Performance

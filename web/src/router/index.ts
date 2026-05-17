@@ -184,7 +184,7 @@ const router = createRouter({
           path: 'cassandra',
           name: 'cassandra',
           component: () => import('@/views/CassandraView.vue'),
-          meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
+          meta: { requiredPermissionsAny: ['cassandra.view'] },
         },
         {
           path: 'search',

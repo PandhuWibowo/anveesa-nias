@@ -118,7 +118,7 @@ const allMenuGroups: MenuGroup[] = [
       { name: 'redis', label: 'Redis', desc: 'Scan keys and inspect Redis values from managed connections', icon: 'table', section: 'Cache & Search', permissionsAny: ['redis.view'] },
       { name: 'memcache', label: 'Memcache', desc: 'Read, write, delete, flush, and inspect Memcache values', icon: 'table', section: 'Cache & Search', permissionsAny: ['redis.view'] },
       { name: 'mongodb', label: 'MongoDB', desc: 'Inspect databases, collections, stats, and sample documents', icon: 'table', section: 'Document Database', permissionsAny: ['mongodb.view'] },
-      { name: 'cassandra', label: 'Cassandra', desc: 'Browse keyspaces, inspect wide-column tables, and run CQL', icon: 'layers', section: 'Wide-column Database', permissionsAny: ['schema.browse', 'connections.view'] },
+      { name: 'cassandra', label: 'Cassandra', desc: 'Browse keyspaces, inspect wide-column tables, and run CQL', icon: 'layers', section: 'Wide-column Database', permissionsAny: ['cassandra.view'] },
       { name: 'search', label: 'Search Browser', desc: 'Inspect Elasticsearch and OpenSearch indices, queries, and documents', icon: 'search', section: 'Cache & Search', permissionsAny: ['schema.browse', 'connections.view'] },
       { name: 'search-policies', label: 'Search Policies', desc: 'Manage ILM policies, index templates, app-level rules, and shard allocation', icon: 'policy', section: 'Cache & Search', permissionsAny: ['schema.browse', 'connections.view'] },
       { name: 'laravel-queue', label: 'Laravel Queue', desc: 'Inspect Redis-backed Laravel queue jobs, delayed jobs, and reserved jobs', icon: 'queue', section: 'Messaging', permissionsAny: ['queues.view'] },

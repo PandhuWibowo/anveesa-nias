@@ -400,6 +400,7 @@ Permissions are grouped by category:
 - **Database:** sqlstudio.access
 - **Schema:** schema.browse, er.view, schema.diff.view
 - **Database Cache:** redis.view
+- **Wide-column Database:** cassandra.view
 - **Messaging:** queues.view, kafka.view, kafka.produce, kafka.manage
 - **Audit:** audit.view
 - **Operations:** operations.view, performance.view, databaseaudit.view, watchers.manage, notifications.view, notifications.manage, backups.manage, schedules.manage, health.view, rowhistory.view

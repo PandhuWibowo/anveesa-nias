@@ -18,6 +18,7 @@ Explore and query:
 - `ai-settings-page.png`
 - `er-diagram-page.png`
 - `kafka-page.png`
+- `cassandra-page.png`
 
 Monitoring and audit:
 - `dashboard-page.png`

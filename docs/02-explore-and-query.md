@@ -210,3 +210,39 @@ Risk notes:
 
 Screenshot:
 - `docs/screenshots/kafka-page.png`
+
+## Cassandra Workbench
+
+Route:
+- `/cassandra`
+
+Purpose:
+- Browses Cassandra keyspaces, wide-column tables, column metadata, and bounded row previews from configured Cassandra connections.
+- Provides a CQL editor for focused Cassandra statements without requiring a separate desktop client.
+
+Use cases:
+- Verify keyspaces and tables after a service deployment.
+- Inspect partition keys, clustering columns, and column types before writing CQL.
+- Preview a limited number of rows while investigating application data.
+- Insert or update a controlled record in local, development, or approved environments.
+- Validate Cassandra connectivity from the application environment.
+
+Typical workflow:
+1. Create or select a Cassandra connection from Admin, then Connections.
+2. Open Database, then Cassandra.
+3. Choose a keyspace and table.
+4. Use Data for row preview, Structure for column metadata, or Query for CQL.
+5. Run write CQL only when the account is trusted for `query.execute`.
+
+Expected result:
+- Keyspaces, tables, columns, and row previews load for users with `cassandra.view`.
+- CQL execution requires `query.execute`.
+- The local development container can be started with `docker compose -f deploy/compose/docker-compose.cassandra.yml up -d`.
+
+Risk notes:
+- Row preview is bounded by the selected limit for performance.
+- Cassandra queries should include appropriate partition keys whenever possible.
+- Write CQL can affect application data and should be limited to trusted roles and environments.
+
+Screenshot:
+- `docs/screenshots/cassandra-page.png`
