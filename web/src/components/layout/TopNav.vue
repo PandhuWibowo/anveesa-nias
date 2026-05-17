@@ -32,7 +32,7 @@ const dropdownPanelEl = ref<HTMLElement | null>(null)
 // Connections panel — kept separate so outside-click logic doesn't conflict
 const connPanelOpen = ref(false)
 
-const PANEL_WIDTH = 300
+const PANEL_WIDTH = 280
 const connPanelStyle = computed(() => {
   if (!connBtnRef.value) return {}
   const rect = connBtnRef.value.getBoundingClientRect()
@@ -598,12 +598,12 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav {
   display: flex;
   align-items: center;
-  height: 44px;
+  height: 38px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  padding: 0 12px;
-  gap: 4px;
+  padding: 0 8px;
+  gap: 3px;
   z-index: 200;
   position: relative;
 }
@@ -612,7 +612,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__brand {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   flex-shrink: 0;
 }
 .topnav__logo {
@@ -620,7 +620,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   height: 26px;
   background: var(--brand-dim);
   border: 1px solid var(--brand-ring);
-  border-radius: 7px;
+  border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -633,7 +633,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   line-height: 1.2;
 }
 .topnav__brand-name {
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--text-secondary);
   font-weight: 400;
 }
@@ -642,7 +642,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   font-weight: 700;
 }
 .topnav__brand-version {
-  font-size: 9px;
+  font-size: 8.5px;
   color: var(--text-muted);
   letter-spacing: 0.3px;
 }
@@ -663,16 +663,16 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__conn-btn {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
+  gap: 5px;
+  padding: 3px 7px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-elevated);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--text-muted);
   white-space: nowrap;
-  max-width: 200px;
+  max-width: 180px;
   transition: border-color 0.12s, background 0.12s, color 0.12s;
 }
 .topnav__conn-btn:hover,
@@ -688,10 +688,10 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 16px;
+  width: 20px;
+  height: 15px;
   border-radius: 3px;
-  font-size: 9px;
+  font-size: 8.5px;
   font-weight: 700;
   color: #fff;
   letter-spacing: 0.3px;
@@ -700,25 +700,25 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 120px;
+  max-width: 105px;
 }
 .topnav__conn-host {
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 70px;
+  max-width: 58px;
 }
 .topnav__conn-panel {
   max-width: calc(100vw - 16px);
-  width: min(300px, calc(100vw - 16px));
+  width: min(280px, calc(100vw - 16px));
 }
 
 /* ── Nav ── */
 .topnav__nav {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
   flex: 1;
   min-width: 0;
 }
@@ -727,10 +727,10 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__link {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 8px;
+  gap: 4px;
+  padding: 3px 7px;
   border-radius: 5px;
-  font-size: 12.5px;
+  font-size: 11.5px;
   font-weight: 500;
   color: var(--text-muted);
   text-decoration: none;
@@ -747,12 +747,12 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__menu-trigger {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 8px;
+  gap: 4px;
+  padding: 3px 7px;
   border: none;
   border-radius: 5px;
   background: transparent;
-  font-size: 12.5px;
+  font-size: 11.5px;
   font-weight: 500;
   color: var(--text-muted);
   cursor: pointer;
@@ -765,8 +765,8 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__menu-trigger--open { color: var(--text-primary); background: var(--bg-hover); }
 
 .topnav__active-dot {
-  width: 5px;
-  height: 5px;
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
   background: var(--brand);
   flex-shrink: 0;
@@ -782,14 +782,14 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 /* Dropdown panel */
 .topnav__dropdown {
   position: fixed;
-  min-width: 260px;
+  min-width: 230px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   box-shadow: var(--shadow-lg);
   z-index: 9999;
   overflow: hidden;
-  padding: 6px;
+  padding: 4px;
 }
 
 /* Multi-column mega-menu variant */
@@ -806,9 +806,9 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 
 .topnav__dropdown-col {
   flex: 1;
-  min-width: 190px;
-  max-width: 240px;
-  padding: 6px;
+  min-width: 165px;
+  max-width: 205px;
+  padding: 4px;
 }
 
 .topnav__dropdown-col + .topnav__dropdown-col {
@@ -821,11 +821,11 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   text-transform: uppercase;
   letter-spacing: 0.7px;
   color: var(--text-muted);
-  padding: 6px 10px 4px;
+  padding: 5px 8px 3px;
 }
 
 .topnav__dropdown-section {
-  padding: 8px 10px 4px;
+  padding: 6px 8px 3px;
   color: var(--text-muted);
   font-size: 10px;
   font-weight: 700;
@@ -836,11 +836,11 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__dropdown-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
-  padding: 8px 10px;
+  padding: 6px 8px;
   border: none;
-  border-radius: 7px;
+  border-radius: 6px;
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -850,9 +850,9 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__dropdown-item--active { background: var(--brand-dim); }
 
 .topnav__dropdown-icon {
-  width: 30px;
-  height: 30px;
-  border-radius: 7px;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   display: flex;
@@ -877,12 +877,12 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   min-width: 0;
 }
 .topnav__dropdown-name {
-  font-size: 12.5px;
+  font-size: 11.5px;
   font-weight: 600;
   color: var(--text-primary);
 }
 .topnav__dropdown-desc {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -894,15 +894,15 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   display: flex;
   align-items: center;
   gap: 2px;
-  margin-left: 4px;
+  margin-left: 3px;
   flex-shrink: 0;
 }
 
 .topnav__action-btn {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 8px;
+  gap: 4px;
+  padding: 4px 7px;
   border: none;
   background: transparent;
   color: var(--text-muted);
@@ -914,8 +914,8 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__action-btn--icon {
   position: relative;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   padding: 0;
 }
 .topnav__action-btn--active {
@@ -925,17 +925,17 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 
 .topnav__notif-badge {
   position: absolute;
-  top: -3px;
-  right: -2px;
-  min-width: 16px;
-  height: 16px;
+  top: -4px;
+  right: -3px;
+  min-width: 15px;
+  height: 15px;
   padding: 0 4px;
   border-radius: 999px;
   background: var(--danger);
   color: #fff;
-  font-size: 9px;
+  font-size: 8.5px;
   font-weight: 700;
-  line-height: 16px;
+  line-height: 15px;
   text-align: center;
   border: 2px solid var(--bg-surface);
 }
@@ -955,33 +955,33 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__user-btn {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px 4px 4px;
+  gap: 5px;
+  padding: 3px 7px 3px 3px;
   border: 1px solid var(--border);
   background: var(--bg-elevated);
-  border-radius: 8px;
+  border-radius: 7px;
   cursor: pointer;
   transition: border-color 0.12s, background 0.12s;
 }
 .topnav__user-btn:hover { border-color: var(--brand); }
 
 .topnav__avatar {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   background: var(--brand);
   color: var(--brand-fg, #fff);
-  font-size: 10px;
+  font-size: 9.5px;
   font-weight: 700;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
-.topnav__avatar--lg { width: 32px; height: 32px; font-size: 13px; }
+.topnav__avatar--lg { width: 30px; height: 30px; font-size: 12px; }
 
 .topnav__username {
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 500;
   color: var(--text-secondary);
 }
@@ -990,10 +990,10 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  min-width: 190px;
+  min-width: 176px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   box-shadow: var(--shadow-lg);
   z-index: 9999;
   overflow: hidden;
@@ -1002,8 +1002,8 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__user-info {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
+  gap: 8px;
+  padding: 10px 12px;
 }
 
 .topnav__role-badge {
@@ -1023,12 +1023,12 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 .topnav__user-menu-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   width: 100%;
-  padding: 10px 14px;
+  padding: 8px 12px;
   background: transparent;
   border: none;
-  font-size: 12.5px;
+  font-size: 11.5px;
   color: var(--text-secondary);
   cursor: pointer;
   transition: background 0.1s, color 0.1s;
@@ -1045,8 +1045,8 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 
 @media (max-width: 960px) {
   .topnav {
-    gap: 6px;
-    padding-inline: 8px;
+    gap: 4px;
+    padding-inline: 6px;
   }
 
   .topnav__brand-text {
@@ -1058,7 +1058,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   }
 
   .topnav__conn-btn {
-    max-width: 220px;
+    max-width: 190px;
   }
 
   .topnav__nav {
@@ -1078,12 +1078,12 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
     min-height: var(--topbar-h);
     flex-wrap: wrap;
     align-items: center;
-    padding: 6px 8px;
+    padding: 5px 7px;
   }
 
   .topnav__logo {
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
   }
 
   .topnav__divider {
@@ -1099,7 +1099,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
     width: 100%;
     max-width: none;
     min-width: 0;
-    height: 32px;
+    height: 30px;
   }
 
   .topnav__conn-name {
@@ -1121,8 +1121,8 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   }
 
   .topnav__user-btn {
-    width: 34px;
-    height: 32px;
+    width: 32px;
+    height: 30px;
     justify-content: center;
     padding: 0;
   }
@@ -1131,22 +1131,22 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
     order: 10;
     flex: 1 0 100%;
     width: 100%;
-    padding-top: 4px;
-    gap: 4px;
+    padding-top: 3px;
+    gap: 3px;
   }
 
   .topnav__link,
   .topnav__menu-trigger {
-    height: 32px;
-    padding: 0 10px;
-    border-radius: 8px;
+    height: 30px;
+    padding: 0 8px;
+    border-radius: 7px;
   }
 
   .topnav__dropdown {
     max-width: calc(100vw - 16px);
-    max-height: min(68vh, 520px);
+    max-height: min(68vh, 480px);
     overflow-y: auto;
-    border-radius: 12px;
+    border-radius: 10px;
     -webkit-overflow-scrolling: touch;
   }
 
@@ -1162,7 +1162,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 
   .topnav__dropdown-item {
     align-items: flex-start;
-    padding: 10px;
+    padding: 8px;
   }
 
   .topnav__dropdown-desc {
@@ -1175,9 +1175,9 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
 
   .topnav__user-menu {
     position: fixed;
-    top: 48px;
+    top: 44px;
     right: 8px;
-    width: min(260px, calc(100vw - 16px));
+    width: min(240px, calc(100vw - 16px));
     min-width: 0;
     max-height: calc(100dvh - 60px);
     overflow-y: auto;
@@ -1194,7 +1194,7 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   }
 
   .topnav__conn-btn {
-    padding-inline: 8px;
+    padding-inline: 7px;
   }
 
   .topnav__actions {
@@ -1202,14 +1202,14 @@ watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], () 
   }
 
   .topnav__action-btn--icon {
-    width: 30px;
-    height: 30px;
+    width: 28px;
+    height: 28px;
   }
 
   .topnav__link,
   .topnav__menu-trigger {
-    font-size: 12px;
-    padding-inline: 8px;
+    font-size: 11.5px;
+    padding-inline: 7px;
   }
 
   .topnav__dropdown {
