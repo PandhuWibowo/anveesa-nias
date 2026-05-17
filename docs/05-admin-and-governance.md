@@ -98,7 +98,7 @@ Notes:
 - Review permissions after team or responsibility changes.
 - Permission changes should be tested with a non-admin account.
 - The Admin menu separates Roles & Permissions from Access Groups, but both use the `/permissions` screen.
-- The application permission catalog includes current screen-level keys such as `analytics.view`, `dashboards.manage`, `sqlstudio.access`, `er.view`, `redis.view`, `queues.view`, `kafka.view`, `kafka.produce`, `kafka.manage`, `cassandra.view`, `performance.view`, `databaseaudit.view`, `watchers.manage`, `approvals.view`, `changesets.manage`, `datascripts.manage`, and `scriptrequests.view`.
+- The application permission catalog includes current screen-level keys such as `analytics.view`, `dashboards.manage`, `sqlstudio.access`, `er.view`, `redis.view`, `queues.view`, `kafka.view`, `kafka.produce`, `kafka.manage`, `cassandra.view`, `operations.view`, `performance.view`, `databaseaudit.view`, `watchers.manage`, `approvals.view`, `changesets.manage`, `datascripts.manage`, and `scriptrequests.view`.
 - Older roles that only have coarse permissions continue to work through compatibility expansion.
 
 Screenshot:
