@@ -43,7 +43,7 @@ const showRunDrawer = ref(false)
 const pollingInterval = ref<ReturnType<typeof setInterval> | null>(null)
 
 // vue-flow instance
-const { onNodeClick, onConnect, addEdges, setNodes, setEdges } = useVueFlow()
+const { onNodeClick, onConnect, addEdges, setNodes, setEdges, nodes: vfNodes, edges: vfEdges } = useVueFlow()
 
 // ── Node type definitions ─────────────────────────────────────────────────────
 
@@ -179,7 +179,7 @@ async function save() {
   if (!currentPipeline.value) return
   savingPipeline.value = true
   try {
-    const { nodes: pNodes, edges: pEdges } = fromFlowNodes(nodes.value as Node[], edges.value as Edge[])
+    const { nodes: pNodes, edges: pEdges } = fromFlowNodes(vfNodes.value as unknown as Node[], vfEdges.value as unknown as Edge[])
     await savePipeline(currentPipeline.value.id, {
       name: currentPipeline.value.name,
       description: currentPipeline.value.description,
@@ -345,8 +345,8 @@ function updateSelectedNodeField(key: string, value: any) {
 function removeSelectedNode() {
   if (!selectedNode.value) return
   const id = selectedNode.value.id
-  nodes.value = (nodes.value as Node[]).filter((n: Node) => n.id !== id) as Node[]
-  edges.value = (edges.value as Edge[]).filter((e: Edge) => e.source !== id && e.target !== id) as Edge[]
+  setNodes((nodes.value as Node[]).filter((n: Node) => n.id !== id))
+  setEdges((edges.value as Edge[]).filter((e: Edge) => e.source !== id && e.target !== id))
   selectedNode.value = null
 }
 
@@ -604,6 +604,8 @@ function runStatusClass(status: string) {
           <div class="config-hint">
             Connect nodes by dragging from a node's right handle to another node's left handle.
           </div>
+
+          <button class="btn-remove-node" @click="removeSelectedNode">Remove Node</button>
         </div>
 
         <div v-else class="config-panel config-empty">
@@ -934,6 +936,22 @@ function runStatusClass(status: string) {
   color: #475569;
   margin-top: 16px;
   line-height: 1.5;
+}
+
+.btn-remove-node {
+  margin-top: 20px;
+  width: 100%;
+  padding: 8px 0;
+  background: transparent;
+  border: 1px solid #ef4444;
+  color: #ef4444;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn-remove-node:hover {
+  background: #ef4444;
+  color: #fff;
 }
 
 /* ── Run drawer ────────────────────────────────────────────── */
