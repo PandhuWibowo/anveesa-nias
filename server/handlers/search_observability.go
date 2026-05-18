@@ -137,7 +137,7 @@ func SearchIndexMapping() http.HandlerFunc {
 			return
 		}
 		var result map[string]any
-		path := fmt.Sprintf("/%s/_mapping", url.PathEscape(index))
+		path := fmt.Sprintf("/%s/_mapping", searchIndexExpressionPath(index))
 		if err := client.doJSON(r.Context(), http.MethodGet, path, nil, &result); err != nil {
 			http.Error(w, jsonError("get mapping failed: "+err.Error()), http.StatusBadGateway)
 			return
@@ -173,7 +173,7 @@ func SearchListIndices() http.HandlerFunc {
 		}
 		fields := "index,docs.count,store.size,health,status"
 		// expand_wildcards=all exposes hidden backing indices (.ds-*) for data streams
-		path := fmt.Sprintf("/_cat/indices/%s?format=json&h=%s&s=index&expand_wildcards=all", url.PathEscape(pattern), url.QueryEscape(fields))
+		path := fmt.Sprintf("/_cat/indices/%s?format=json&h=%s&s=index&expand_wildcards=all", searchIndexExpressionPath(pattern), url.QueryEscape(fields))
 		var indices []map[string]any
 		if err := client.doJSON(r.Context(), http.MethodGet, path, nil, &indices); err != nil {
 			http.Error(w, jsonError("list indices failed: "+err.Error()), http.StatusBadGateway)
@@ -209,7 +209,7 @@ func SearchIndexStats() http.HandlerFunc {
 			return
 		}
 		var result map[string]any
-		path := fmt.Sprintf("/%s/_stats", url.PathEscape(index))
+		path := fmt.Sprintf("/%s/_stats", searchIndexExpressionPath(index))
 		if err := client.doJSON(r.Context(), http.MethodGet, path, nil, &result); err != nil {
 			http.Error(w, jsonError("get index stats failed: "+err.Error()), http.StatusBadGateway)
 			return
