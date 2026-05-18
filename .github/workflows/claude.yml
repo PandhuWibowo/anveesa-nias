@@ -40,9 +40,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR=${{ steps.pr.outputs.number }}
-          gh pr view $PR --json title -q .title > pr_title.txt
-          gh pr diff $PR > pr_full.diff 2>/dev/null || touch pr_full.diff
-          head -c 15000 pr_full.diff > pr.diff
+          gh pr view $PR --json title,additions,deletions,changedFiles -q '"\(.title)\nFiles changed: \(.changedFiles) | +\(.additions) -\(.deletions)"' > pr_title.txt
+          gh pr diff $PR > pr.diff 2>/dev/null || touch pr.diff
 
       - name: Call OpenRouter and post review
         env:
@@ -53,7 +52,9 @@ jobs:
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           python3 - <<'EOF'
-          import os, json, urllib.request, subprocess
+          import os, json, urllib.request, subprocess, re
+
+          MAX_CHARS = 80000
 
           api_key = os.environ['OPENROUTER_API_KEY']
           event_name = os.environ['EVENT_NAME']
@@ -63,18 +64,30 @@ jobs:
           with open('pr_title.txt') as f:
               pr_title = f.read().strip()
           with open('pr.diff') as f:
-              diff = f.read().strip() or '(empty diff)'
+              full_diff = f.read().strip()
+
+          # Split diff by file, include as many files as fit within MAX_CHARS
+          file_sections = re.split(r'(?=^diff --git )', full_diff, flags=re.MULTILINE)
+          diff, truncated = '', False
+          for section in file_sections:
+              if len(diff) + len(section) > MAX_CHARS:
+                  truncated = True
+                  break
+              diff += section
+          diff = diff.strip() or '(empty diff)'
+          if truncated:
+              diff += '\n\n[...diff truncated, showing partial changes only...]'
 
           if event_name in ('issue_comment', 'pull_request_review_comment'):
               question = comment_body.replace('@claude', '').strip()
               messages = [
-                  {"role": "system", "content": "You are a code reviewer. Answer questions about the PR concisely."},
+                  {"role": "system", "content": "You are a senior code reviewer. Answer questions about the PR clearly and thoroughly."},
                   {"role": "user", "content": f"PR: {pr_title}\n\nDiff:\n{diff}\n\nQuestion: {question}"}
               ]
           else:
               messages = [
-                  {"role": "system", "content": "You are an expert code reviewer. Be concise and constructive."},
-                  {"role": "user", "content": f"Review this PR.\n\nTitle: {pr_title}\n\nDiff:\n{diff}\n\nCover: summary, issues, suggestions."}
+                  {"role": "system", "content": "You are a senior code reviewer. Review each changed file thoroughly. Be specific about issues."},
+                  {"role": "user", "content": f"Review this PR file by file.\n\nPR: {pr_title}\n\nDiff:\n{diff}\n\nFor each file: what changed, any bugs or issues, suggestions. End with an overall assessment."}
               ]
 
           payload = json.dumps({
