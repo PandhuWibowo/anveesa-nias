@@ -168,7 +168,9 @@ jobs:
           with urllib.request.urlopen(req) as resp:
               ai_data = json.loads(resp.read())
 
-          content = ai_data['choices'][0]['message']['content'].strip()
+          content = (ai_data['choices'][0]['message'].get('content') or '').strip()
+          if not content:
+              raise ValueError(f"Empty response from model: {ai_data}")
 
           if use_inline:
               try:
