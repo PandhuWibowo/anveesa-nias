@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - run: git checkout --detach
+      - run: git checkout --detach && git branch -D main
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
