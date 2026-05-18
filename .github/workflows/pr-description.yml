@@ -1,0 +1,108 @@
+name: Auto-generate PR description
+
+on:
+  pull_request:
+    types: [opened]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  generate-description:
+    runs-on: ubuntu-latest
+    # Skip if the PR body already has real content (not just the template placeholder)
+    if: |
+      !contains(github.event.pull_request.body, '## Summary') ||
+      contains(github.event.pull_request.body, '<!-- auto-skip -->')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get diff
+        id: diff
+        run: |
+          BASE=${{ github.event.pull_request.base.sha }}
+          HEAD=${{ github.event.pull_request.head.sha }}
+
+          # Stat summary (file changes)
+          STAT=$(git diff --stat "$BASE"..."$HEAD" | tail -1)
+
+          # Changed files list
+          FILES=$(git diff --name-only "$BASE"..."$HEAD" | head -60)
+
+          # Truncated diff (first 6000 chars to stay within token limits)
+          DIFF=$(git diff "$BASE"..."$HEAD" \
+            -- '*.go' '*.ts' '*.vue' '*.sql' '*.md' \
+            | head -c 6000)
+
+          # Write to temp files to avoid shell escaping issues
+          echo "$STAT"  > /tmp/stat.txt
+          echo "$FILES" > /tmp/files.txt
+          echo "$DIFF"  > /tmp/diff.txt
+
+      - name: Generate description via Claude
+        id: claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          STAT=$(cat /tmp/stat.txt)
+          FILES=$(cat /tmp/files.txt)
+          DIFF=$(cat /tmp/diff.txt)
+
+          PR_TITLE="${{ github.event.pull_request.title }}"
+
+          # Build the request payload using jq to handle escaping
+          PAYLOAD=$(jq -n \
+            --arg title  "$PR_TITLE" \
+            --arg stat   "$STAT" \
+            --arg files  "$FILES" \
+            --arg diff   "$DIFF" \
+            '{
+              model: "claude-sonnet-4-6",
+              max_tokens: 1024,
+              messages: [{
+                role: "user",
+                content: ("You are a senior engineer writing a GitHub PR description.\n\nPR title: " + $title + "\n\nChanged files:\n" + $files + "\n\nDiff stat: " + $stat + "\n\nDiff (truncated):\n" + $diff + "\n\nFill in the PR template below. Rules:\n- Write a concise 1-3 sentence Summary.\n- Check ONLY the relevant Type of Change boxes (replace [ ] with [x]).\n- List What Changed as bullet points, grouped by area (frontend / backend / db / bug fix). Be specific about file names and feature names.\n- Leave Related Issues as the HTML comment placeholder.\n- Leave all Verification and Checklist boxes unchecked.\n- Keep the Screenshots line as-is.\n- Output ONLY the filled template, no extra text.\n\n## Summary\n\n<!-- 1-3 sentences -->\n\n## Type of Change\n\n- [ ] Bug fix\n- [ ] New feature\n- [ ] Enhancement to existing feature\n- [ ] Refactor (no functional change)\n- [ ] Documentation\n- [ ] Chore / dependency update\n\n## What Changed\n\n<!-- bullet points -->\n\n## Related Issues\n\n<!-- Link any related issues: Closes #123 -->\n\n## Verification\n\n- [ ] `cd server && go test ./...`\n- [ ] `cd web && npm run build`\n- [ ] Manual UI verification, if applicable\n- [ ] Tested on PostgreSQL / MySQL (if DB changes are included)\n- [ ] Tested on SQLite (default local setup)\n\n## Checklist\n\n- [ ] The change is focused and reviewable.\n- [ ] New API endpoints are protected with appropriate permission checks.\n- [ ] Database migrations are backward-compatible (additive only — no column drops or renames).\n- [ ] Error messages are user-friendly and do not leak internal details.\n- [ ] Documentation was updated when behavior or configuration changed.\n- [ ] No secrets, local databases, logs, or generated build output are committed.\n- [ ] Security and permission impact was considered.\n\n## Screenshots\n\nAdd screenshots or video for visible UI changes.")
+              }]
+            }')
+
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d "$PAYLOAD")
+
+          # Extract the text content
+          BODY=$(echo "$RESPONSE" | jq -r '.content[0].text // empty')
+
+          if [ -z "$BODY" ]; then
+            echo "Claude returned empty response; skipping update."
+            echo "response=$RESPONSE"
+            exit 0
+          fi
+
+          # Save to file (handles newlines)
+          echo "$BODY" > /tmp/pr_body.txt
+          echo "generated=true" >> "$GITHUB_OUTPUT"
+
+      - name: Update PR body
+        if: steps.claude.outputs.generated == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          REPO=${{ github.repository }}
+
+          BODY=$(cat /tmp/pr_body.txt)
+
+          # Use GitHub API to update the PR body
+          jq -n --arg body "$BODY" '{body: $body}' | \
+          curl -s -X PATCH \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER" \
+            -d @-
