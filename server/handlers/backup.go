@@ -780,8 +780,12 @@ func generatePKsDDL(ctx context.Context, db *sql.DB, schema, table string) ([]st
 	}
 
 	stmt := fmt.Sprintf(
-		"DO $$ BEGIN ALTER TABLE %q.%q ADD PRIMARY KEY (%s); EXCEPTION WHEN duplicate_object THEN NULL; END $$",
-		schema, table, strings.Join(cols, ", "))
+		"DO $$ BEGIN"+
+			" IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = '%s.%s'::regclass AND contype = 'p') THEN"+
+			" ALTER TABLE %q.%q ADD PRIMARY KEY (%s);"+
+			" END IF;"+
+			" END $$",
+		schema, table, schema, table, strings.Join(cols, ", "))
 	return []string{stmt}, nil
 }
 
