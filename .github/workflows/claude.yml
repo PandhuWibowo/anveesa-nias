@@ -129,10 +129,11 @@ jobs:
               system_msg = (
                   "You are a senior code reviewer. Respond ONLY with valid JSON — no markdown fences, no prose outside JSON.\n"
                   "Schema:\n"
-                  '{"summary":"<overall review in markdown>","comments":[{"file":"<exact path>","line":<integer>,"body":"<comment>"}]}\n'
+                  '{"summary":"<overall review in markdown>","comments":[{"file":"<exact path>","start_line":<integer or null>,"line":<integer>,"body":"<comment>"}]}\n'
                   "Rules:\n"
                   "- 'file' must exactly match a file path from the diff\n"
                   "- 'line' must be a line number shown as [L<n>] in the diff for that file (added lines only)\n"
+                  "- 'start_line' is optional: use it when your comment spans multiple lines (e.g. a function body). Must be <= 'line' and also shown as [L<n>] in the same file. Set to null for single-line comments.\n"
                   "- Only add inline comments for bugs, security issues, logic errors, or important suggestions\n"
                   "- 'summary' should cover: what changed, overall quality, anything that needs attention\n"
                   "- If no inline comments are needed, use an empty array"
@@ -182,9 +183,17 @@ jobs:
                   # Only keep comments whose (file, line) exist in the diff
                   valid_comments = []
                   for c in raw_comments:
-                      f, l, b = c.get('file',''), c.get('line'), c.get('body','')
-                      if f and l and b and f in valid_lines and int(l) in valid_lines[f]:
-                          valid_comments.append({"path": f, "line": int(l), "side": "RIGHT", "body": b})
+                      f  = c.get('file', '')
+                      l  = c.get('line')
+                      sl = c.get('start_line')
+                      b  = c.get('body', '')
+                      if not (f and l and b and f in valid_lines and int(l) in valid_lines[f]):
+                          continue
+                      entry = {"path": f, "line": int(l), "side": "RIGHT", "body": b}
+                      if sl and sl != l and int(sl) in valid_lines[f] and int(sl) <= int(l):
+                          entry["start_line"] = int(sl)
+                          entry["start_side"] = "RIGHT"
+                      valid_comments.append(entry)
 
                   # Get head commit SHA and repo slug
                   sha = subprocess.run(
