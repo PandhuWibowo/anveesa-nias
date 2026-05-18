@@ -51,11 +51,17 @@ const NODE_TYPES = [
   { type: 'source_query', label: 'Source: Query', color: '#3b82f6', section: 'Source' },
   { type: 'source_table', label: 'Source: Table', color: '#3b82f6', section: 'Source' },
   { type: 'sink_table', label: 'Sink: Table', color: '#10b981', section: 'Sink' },
+  { type: 'sink_object_storage', label: 'Sink: Object Storage', color: '#8b5cf6', section: 'Sink' },
 ]
 
 // relational connections only
 const relationalConnections = computed(() =>
   connections.value.filter(c => ['postgres', 'mysql', 'mariadb', 'mssql', 'sqlite'].includes(c.driver))
+)
+
+// object storage connections only
+const objectStorageConnections = computed(() =>
+  connections.value.filter(c => ['s3_aws', 's3_gcp', 's3_oss', 's3_obs'].includes(c.driver))
 )
 
 // ── Canvas helpers ────────────────────────────────────────────────────────────
@@ -66,6 +72,7 @@ function nodeLabel(type: string) {
 
 function nodeColor(type: string) {
   if (type.startsWith('source')) return '#3b82f6'
+  if (type === 'sink_object_storage') return '#8b5cf6'
   if (type.startsWith('sink')) return '#10b981'
   return '#6366f1'
 }
@@ -457,8 +464,8 @@ function runStatusClass(status: string) {
             />
           </div>
 
-          <!-- Connection selector for source/sink nodes -->
-          <div v-if="selectedNode.data.nodeType !== 'transform_sql'" class="config-field">
+          <!-- Connection selector — relational for source/sink_table nodes -->
+          <div v-if="selectedNode.data.nodeType !== 'transform_sql' && selectedNode.data.nodeType !== 'sink_object_storage'" class="config-field">
             <label>Connection</label>
             <select
               :value="selectedNode.data.connectionId ?? ''"
@@ -466,6 +473,20 @@ function runStatusClass(status: string) {
             >
               <option value="">— select —</option>
               <option v-for="c in relationalConnections" :key="c.id" :value="c.id">
+                {{ c.name }} ({{ c.driver }})
+              </option>
+            </select>
+          </div>
+
+          <!-- Connection selector — object storage for sink_object_storage -->
+          <div v-if="selectedNode.data.nodeType === 'sink_object_storage'" class="config-field">
+            <label>Object Storage Connection</label>
+            <select
+              :value="selectedNode.data.connectionId ?? ''"
+              @change="updateSelectedNodeField('connectionId', parseInt(($event.target as HTMLSelectElement).value) || null)"
+            >
+              <option value="">— select —</option>
+              <option v-for="c in objectStorageConnections" :key="c.id" :value="c.id">
                 {{ c.name }} ({{ c.driver }})
               </option>
             </select>
@@ -538,6 +559,44 @@ function runStatusClass(status: string) {
                 :value="selectedNode.data.config.schema ?? ''"
                 placeholder="public"
                 @input="updateSelectedNodeConfig('schema', ($event.target as HTMLInputElement).value)"
+              />
+            </div>
+          </template>
+
+          <!-- sink_object_storage config -->
+          <template v-if="selectedNode.data.nodeType === 'sink_object_storage'">
+            <div class="config-field">
+              <label>Format</label>
+              <select
+                :value="selectedNode.data.config.format ?? 'csv'"
+                @change="updateSelectedNodeConfig('format', ($event.target as HTMLSelectElement).value)"
+              >
+                <option value="csv">CSV</option>
+                <option value="sql">SQL (INSERT statements)</option>
+              </select>
+            </div>
+            <div class="config-field">
+              <label>Filename Prefix (optional)</label>
+              <input
+                :value="selectedNode.data.config.filename_prefix ?? ''"
+                placeholder="export"
+                @input="updateSelectedNodeConfig('filename_prefix', ($event.target as HTMLInputElement).value)"
+              />
+            </div>
+            <div class="config-field">
+              <label>Subfolder in Bucket (optional)</label>
+              <input
+                :value="selectedNode.data.config.subfolder ?? ''"
+                placeholder="exports/daily"
+                @input="updateSelectedNodeConfig('subfolder', ($event.target as HTMLInputElement).value)"
+              />
+            </div>
+            <div v-if="selectedNode.data.config.format === 'sql'" class="config-field">
+              <label>Table Name (for INSERT)</label>
+              <input
+                :value="selectedNode.data.config.table_name ?? ''"
+                placeholder="exported_table"
+                @input="updateSelectedNodeConfig('table_name', ($event.target as HTMLInputElement).value)"
               />
             </div>
           </template>

@@ -4,7 +4,7 @@
 
 Fitur Data Pipeline memungkinkan user membuat dan menjalankan pipeline ETL sederhana secara visual — drag-and-drop node di canvas, lalu eksekusi manual. Pipeline direpresentasikan sebagai DAG (Directed Acyclic Graph) dari node-node yang saling terhubung.
 
-**Phase yang sudah diimplementasi:** Phase 1 — `source_query`, `source_table`, `sink_table` (async execution via goroutine + polling).
+**Phase yang sudah diimplementasi:** Phase 1 — `source_query`, `source_table`, `sink_table` (async execution via goroutine + polling). Phase 2 (partial) — `sink_object_storage` (CSV + SQL export ke S3-compatible bucket).
 
 ---
 
@@ -272,6 +272,7 @@ Setiap node yang dipilih menampilkan form sesuai `node_type`:
 | `source_query` | connection (dropdown relational), SQL editor |
 | `source_table` | connection (dropdown relational), schema (opsional), table name, limit (opsional) |
 | `sink_table` | connection (dropdown relational), schema (opsional), table name |
+| `sink_object_storage` | connection (dropdown object storage: s3_aws/s3_gcp/s3_oss/s3_obs), format (csv\|sql), filename_prefix (opsional), subfolder (opsional), table_name (opsional, hanya format sql) |
 
 ---
 
@@ -326,6 +327,6 @@ RunPipeline goroutine:
 
 | Phase | Fitur |
 |---|---|
-| Phase 2 | `sink_export` (CSV/JSON/Excel), `sink_s3` (AWS SDK + S3 connection type) |
+| Phase 2 | `sink_object_storage` CSV+SQL ✅ — Excel (xlsx) belum diimplementasi |
 | Phase 3 | `transform_sql` node (in-memory filter), schedule trigger, SSE live log |
 | Phase 4 | Streaming cursor untuk large dataset, preview per node, `source_table` shortcut, multi-branch fan-out |

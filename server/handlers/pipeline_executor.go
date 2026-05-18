@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -157,6 +159,21 @@ func RunPipeline(pipelineID, runID int64, triggeredBy string) {
 			logStep(nodeIDPtr, n.label, fmt.Sprintf("Wrote %d rows", rowsWritten),
 				rowsWritten, time.Since(stepStart).Milliseconds())
 
+		case "sink_object_storage":
+			var upstreamID int64
+			if srcs := inEdges[n.id]; len(srcs) > 0 {
+				upstreamID = srcs[0]
+			}
+			objectKey, rowsExported, err := execSinkObjectStorage(ctx, n, buffers[upstreamID], colNames[upstreamID])
+			if err != nil {
+				logStep(nodeIDPtr, n.label, "Error: "+err.Error(), 0, time.Since(stepStart).Milliseconds())
+				finishRun("failed", err.Error(), totalRows)
+				return
+			}
+			totalRows += rowsExported
+			logStep(nodeIDPtr, n.label, fmt.Sprintf("Exported %d rows → %s", rowsExported, objectKey),
+				rowsExported, time.Since(stepStart).Milliseconds())
+
 		default:
 			logStep(nodeIDPtr, n.label, fmt.Sprintf("Skipping unsupported node type: %s", n.nodeType), 0, 0)
 		}
@@ -297,6 +314,96 @@ func execSinkTable(ctx context.Context, n *execNode, rows [][]any, cols []string
 	}
 
 	return inserted, nil
+}
+
+func execSinkObjectStorage(ctx context.Context, n *execNode, rows [][]any, cols []string) (objectKey string, rowsExported int64, err error) {
+	if n.connectionID == nil {
+		return "", 0, fmt.Errorf("node %q: connection_id required", n.label)
+	}
+	if len(rows) == 0 || len(cols) == 0 {
+		return "", 0, nil
+	}
+
+	format, _ := n.config["format"].(string)
+	if format == "" {
+		format = "csv"
+	}
+	subfolder, _ := n.config["subfolder"].(string)
+	prefix, _ := n.config["filename_prefix"].(string)
+	if prefix == "" {
+		prefix = "export"
+	}
+	tableName, _ := n.config["table_name"].(string)
+
+	dest, err := fetchBucketConn(*n.connectionID)
+	if err != nil {
+		return "", 0, fmt.Errorf("node %q: %w", n.label, err)
+	}
+
+	var buf bytes.Buffer
+	var ext string
+
+	switch format {
+	case "sql":
+		ext = "sql"
+		if tableName == "" {
+			tableName = "exported_table"
+		}
+		quotedCols := make([]string, len(cols))
+		for i, c := range cols {
+			quotedCols[i] = `"` + strings.ReplaceAll(c, `"`, `""`) + `"`
+		}
+		colList := strings.Join(quotedCols, ", ")
+		for _, row := range rows {
+			vals := make([]string, len(row))
+			for i, v := range row {
+				if v == nil {
+					vals[i] = "NULL"
+				} else {
+					s := fmt.Sprintf("%v", v)
+					s = strings.ReplaceAll(s, "'", "''")
+					vals[i] = "'" + s + "'"
+				}
+			}
+			fmt.Fprintf(&buf, "INSERT INTO %s (%s) VALUES (%s);\n",
+				`"`+strings.ReplaceAll(tableName, `"`, `""`)+`"`,
+				colList,
+				strings.Join(vals, ", "),
+			)
+		}
+	default: // csv
+		ext = "csv"
+		w := csv.NewWriter(&buf)
+		w.Write(cols)
+		for _, row := range rows {
+			rec := make([]string, len(row))
+			for i, v := range row {
+				if v == nil {
+					rec[i] = ""
+				} else {
+					rec[i] = fmt.Sprintf("%v", v)
+				}
+			}
+			w.Write(rec)
+		}
+		w.Flush()
+		if err := w.Error(); err != nil {
+			return "", 0, fmt.Errorf("node %q: csv write: %w", n.label, err)
+		}
+	}
+
+	ts := time.Now().UTC().Format("20060102_150405")
+	filename := fmt.Sprintf("%s_%s.%s", prefix, ts, ext)
+	key := filename
+	if sf := strings.Trim(strings.TrimSpace(subfolder), "/"); sf != "" {
+		key = sf + "/" + filename
+	}
+
+	if err := uploadToBucket(ctx, dest, key, buf.Bytes()); err != nil {
+		return "", 0, fmt.Errorf("node %q: upload failed: %w", n.label, err)
+	}
+
+	return key, int64(len(rows)), nil
 }
 
 func topoSort(nodeIDs []int64, inEdges map[int64][]int64) ([]int64, error) {
