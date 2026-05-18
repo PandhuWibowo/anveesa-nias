@@ -149,14 +149,13 @@ func CreatePipeline() http.HandlerFunc {
 			userID = &uid
 		}
 
-		result, err := appdb.DB.ExecContext(r.Context(), appdb.ConvertQuery(
+		id, err := insertRowReturningID(appdb.ConvertQuery(
 			`INSERT INTO pipelines (name, description, created_by, status) VALUES (?, ?, ?, 'draft')`),
 			body.Name, body.Description, userID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
 		}
-		id, _ := result.LastInsertId()
 		json.NewEncoder(w).Encode(map[string]any{"id": id})
 	}
 }
@@ -264,12 +263,11 @@ func UpdatePipeline() http.HandlerFunc {
 		nodeIDMap := map[int64]int64{} // temp_id → real_id
 		for _, n := range body.Nodes {
 			configJSON, _ := json.Marshal(n.Config)
-			result, err := appdb.DB.ExecContext(r.Context(), appdb.ConvertQuery(
+			newID, e := insertRowReturningID(appdb.ConvertQuery(
 				`INSERT INTO pipeline_nodes (pipeline_id, node_type, connection_id, config, position_x, position_y, label)
 				 VALUES (?, ?, ?, ?, ?, ?, ?)`),
 				id, n.NodeType, n.ConnectionID, string(configJSON), n.PositionX, n.PositionY, n.Label)
-			if err == nil {
-				newID, _ := result.LastInsertId()
+			if e == nil {
 				nodeIDMap[n.ID] = newID
 			}
 		}
@@ -327,14 +325,13 @@ func TriggerPipelineRun() http.HandlerFunc {
 
 		username := r.Header.Get("X-Username")
 
-		result, err := appdb.DB.ExecContext(r.Context(), appdb.ConvertQuery(
+		runID, err := insertRowReturningID(appdb.ConvertQuery(
 			`INSERT INTO pipeline_runs (pipeline_id, triggered_by, status) VALUES (?, 'manual', 'running')`),
 			pipelineID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
 		}
-		runID, _ := result.LastInsertId()
 
 		go RunPipeline(pipelineID, runID, username)
 
