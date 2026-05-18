@@ -277,6 +277,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['roles.manage', 'folders.manage', 'users.manage'] },
         },
         {
+          path: 'data-pipelines',
+          name: 'data-pipelines',
+          component: () => import('@/views/DataPipelinesView.vue'),
+          meta: { requiredPermissionsAny: ['pipelines.view'] },
+        },
+        {
           path: 'workflows',
           name: 'workflows',
           component: () => import('@/views/ApprovalWorkflowsView.vue'),

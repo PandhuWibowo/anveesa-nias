@@ -961,6 +961,45 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 
+	// ── Data Pipelines ───────────────────────────────────────────
+	mux.HandleFunc("/api/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermPipelinesView)(handlers.ListPipelines())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermPipelinesManage)(handlers.CreatePipeline())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/pipelines/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/api/pipelines/")
+		parts := strings.Split(path, "/")
+		switch {
+		case len(parts) == 1:
+			switch r.Method {
+			case http.MethodGet:
+				requireAny(handlers.PermPipelinesView)(handlers.GetPipeline())(w, r)
+			case http.MethodPut:
+				requireAny(handlers.PermPipelinesManage)(handlers.UpdatePipeline())(w, r)
+			case http.MethodDelete:
+				requireAny(handlers.PermPipelinesManage)(handlers.DeletePipeline())(w, r)
+			default:
+				http.NotFound(w, r)
+			}
+		case len(parts) == 2 && parts[1] == "run" && r.Method == http.MethodPost:
+			requireAny(handlers.PermPipelinesRun)(handlers.TriggerPipelineRun())(w, r)
+		case len(parts) == 2 && parts[1] == "runs" && r.Method == http.MethodGet:
+			requireAny(handlers.PermPipelinesView)(handlers.ListPipelineRuns())(w, r)
+		case len(parts) == 3 && parts[1] == "runs" && r.Method == http.MethodGet:
+			requireAny(handlers.PermPipelinesView)(handlers.GetPipelineRunStatus())(w, r)
+		case len(parts) == 4 && parts[1] == "runs" && parts[3] == "logs" && r.Method == http.MethodGet:
+			requireAny(handlers.PermPipelinesView)(handlers.GetRunLogs())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
 	// ── Snippets ─────────────────────────────────────────────────
 	mux.HandleFunc("/api/snippets", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {

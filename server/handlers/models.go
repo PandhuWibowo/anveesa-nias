@@ -149,6 +149,9 @@ const (
 	PermFoldersManage       = "folders.manage"
 	PermRolesManage         = "roles.manage"
 	PermWorkflowsManage     = "workflows.manage"
+	PermPipelinesView   = "pipelines.view"
+	PermPipelinesManage = "pipelines.manage"
+	PermPipelinesRun    = "pipelines.run"
 	// Observability
 	PermObservabilityView = "observability.view"
 	PermDiscoverView      = "discover.view"
@@ -206,6 +209,9 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermFoldersManage, Label: "Manage Folders", Group: "Administration"},
 	{Key: PermRolesManage, Label: "Manage Roles", Group: "Administration"},
 	{Key: PermWorkflowsManage, Label: "Manage Workflows", Group: "Administration"},
+	{Key: PermPipelinesView, Label: "View Data Pipelines", Group: "Data Engineering"},
+	{Key: PermPipelinesManage, Label: "Manage Data Pipelines", Group: "Data Engineering"},
+	{Key: PermPipelinesRun, Label: "Run Data Pipelines", Group: "Data Engineering"},
 	// Observability
 	{Key: PermObservabilityView, Label: "View Observability", Group: "Observability"},
 	{Key: PermDiscoverView, Label: "Access Discover (Log Explorer)", Group: "Observability"},

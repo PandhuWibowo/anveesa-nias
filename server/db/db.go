@@ -951,6 +951,65 @@ func migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_search_app_policies_conn ON search_app_policies(conn_id)`,
 
+		// ── Data Pipelines ────────────────────────────────────────────
+		`CREATE TABLE IF NOT EXISTS pipelines (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			name        TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			created_by  INTEGER REFERENCES users(id),
+			status      TEXT NOT NULL DEFAULT 'draft',
+			schedule    TEXT,
+			last_run_at DATETIME,
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS pipeline_nodes (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			pipeline_id   INTEGER NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
+			node_type     TEXT NOT NULL,
+			connection_id INTEGER REFERENCES connections(id) ON DELETE SET NULL,
+			config        TEXT NOT NULL DEFAULT '{}',
+			position_x    REAL NOT NULL DEFAULT 0,
+			position_y    REAL NOT NULL DEFAULT 0,
+			label         TEXT NOT NULL DEFAULT '',
+			created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS pipeline_edges (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			pipeline_id    INTEGER NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
+			source_node_id INTEGER NOT NULL REFERENCES pipeline_nodes(id) ON DELETE CASCADE,
+			target_node_id INTEGER NOT NULL REFERENCES pipeline_nodes(id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS pipeline_runs (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			pipeline_id    INTEGER NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
+			triggered_by   TEXT NOT NULL DEFAULT 'manual',
+			status         TEXT NOT NULL DEFAULT 'running',
+			started_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+			finished_at    DATETIME,
+			rows_processed INTEGER NOT NULL DEFAULT 0,
+			error_message  TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS pipeline_run_logs (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			run_id        INTEGER NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+			node_id       INTEGER REFERENCES pipeline_nodes(id),
+			node_label    TEXT NOT NULL DEFAULT '',
+			message       TEXT NOT NULL DEFAULT '',
+			rows_affected INTEGER NOT NULL DEFAULT 0,
+			duration_ms   INTEGER NOT NULL DEFAULT 0,
+			logged_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_pipeline_nodes_pipeline ON pipeline_nodes(pipeline_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_pipeline_edges_pipeline ON pipeline_edges(pipeline_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_pipeline_runs_pipeline ON pipeline_runs(pipeline_id, started_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_pipeline_run_logs_run ON pipeline_run_logs(run_id)`,
+
+		// Grant pipeline permissions to admin/poweruser roles
+		`UPDATE roles SET permissions = JSON_SET(permissions, '$[#]', 'pipelines.view') WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.view%'`,
+		`UPDATE roles SET permissions = JSON_SET(permissions, '$[#]', 'pipelines.manage') WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.manage%'`,
+		`UPDATE roles SET permissions = JSON_SET(permissions, '$[#]', 'pipelines.run') WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.run%'`,
+
 		// ── Cloud Provider Configs (Huawei RDS, AWS RDS log integration) ──
 		`CREATE TABLE IF NOT EXISTS cloud_provider_configs (
 			id           INTEGER PRIMARY KEY AUTOINCREMENT,
