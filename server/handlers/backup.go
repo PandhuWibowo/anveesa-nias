@@ -646,6 +646,17 @@ func writePostData(ctx context.Context, w io.Writer, db *sql.DB, driver, schema 
 			}
 		}
 
+		if driver == "postgres" {
+			pkStmts, err := generatePKsDDL(ctx, db, schema, tbl)
+			if err == nil && len(pkStmts) > 0 {
+				fmt.Fprintf(w, "-- Primary keys for %s\n", tbl)
+				for _, s := range pkStmts {
+					fmt.Fprintln(w, s+";")
+				}
+				fmt.Fprintln(w)
+			}
+		}
+
 		if opts.IncludeFKs && (driver == "postgres" || driver == "mysql" || driver == "mariadb") {
 			fkStmts, err := generateFKsDDL(ctx, db, driver, schema, tbl)
 			if err == nil && len(fkStmts) > 0 {
@@ -736,6 +747,44 @@ func generateIndexesDDL(ctx context.Context, db *sql.DB, driver, schema, table s
 	return stmts, nil
 }
 
+// generatePKsDDL emits ALTER TABLE … ADD PRIMARY KEY wrapped in a DO block so
+// it is a no-op when the constraint already exists (duplicate_object) but still
+// gets applied when the table was previously created without one.
+func generatePKsDDL(ctx context.Context, db *sql.DB, schema, table string) ([]string, error) {
+	if schema == "" {
+		schema = "public"
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT kc.column_name
+		FROM information_schema.table_constraints tc
+		JOIN information_schema.key_column_usage kc
+			ON tc.constraint_name = kc.constraint_name AND tc.table_schema = kc.table_schema
+		WHERE tc.constraint_type = 'PRIMARY KEY'
+		  AND tc.table_schema = $1 AND tc.table_name = $2
+		ORDER BY kc.ordinal_position`, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var cols []string
+	for rows.Next() {
+		var col string
+		if err := rows.Scan(&col); err != nil {
+			continue
+		}
+		cols = append(cols, fmt.Sprintf("%q", col))
+	}
+	if len(cols) == 0 {
+		return nil, nil
+	}
+
+	stmt := fmt.Sprintf(
+		"DO $$ BEGIN ALTER TABLE %q.%q ADD PRIMARY KEY (%s); EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+		schema, table, strings.Join(cols, ", "))
+	return []string{stmt}, nil
+}
+
 func generateFKsDDL(ctx context.Context, db *sql.DB, driver, schema, table string) ([]string, error) {
 	var stmts []string
 	switch driver {
@@ -755,7 +804,7 @@ func generateFKsDDL(ctx context.Context, db *sql.DB, driver, schema, table strin
 			var name, def string
 			rows.Scan(&name, &def)
 			stmts = append(stmts, fmt.Sprintf(
-				"DO $$ BEGIN ALTER TABLE %q.%q ADD CONSTRAINT %q %s; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+				"DO $$ BEGIN ALTER TABLE %q.%q ADD CONSTRAINT %q %s; EXCEPTION WHEN duplicate_object THEN NULL; WHEN SQLSTATE '42830' THEN NULL; END $$",
 				schema, table, name, def))
 		}
 	case "mysql", "mariadb":
