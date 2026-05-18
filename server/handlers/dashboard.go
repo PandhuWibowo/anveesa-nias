@@ -105,6 +105,10 @@ func GetDashboard() http.HandlerFunc {
 			json.NewEncoder(w).Encode(DashboardData{Driver: "mongodb", Tables: []TableStat{}, SlowQueries: SlowQuerySummary{Queries: []SlowQueryStat{}}})
 			return
 		}
+		if rawDriver == "cassandra" {
+			json.NewEncoder(w).Encode(DashboardData{Driver: "cassandra", Tables: []TableStat{}, SlowQueries: SlowQuerySummary{Queries: []SlowQueryStat{}}})
+			return
+		}
 
 		db, driver, err := GetDB(connID)
 		if err != nil {

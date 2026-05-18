@@ -2,31 +2,6 @@
 
 Monitoring and audit features help teams understand application usage, database activity, performance risk, and historical changes.
 
-## Dashboard
-
-Route:
-- `/dashboard`
-
-Purpose:
-- Shows a high-level operational overview.
-- Gives users a quick status page before drilling into deeper monitoring screens.
-
-Use cases:
-- Check whether the app and configured connections look healthy.
-- Give administrators a summary before investigating details.
-- Provide a landing point for operational monitoring.
-
-Typical workflow:
-1. Open the dashboard.
-2. Review high-level metrics and status cards.
-3. Navigate to detailed monitoring pages when something needs attention.
-
-Expected result:
-- Users can quickly identify whether they need to investigate performance, audit, health, or access activity.
-
-Screenshot:
-- `docs/screenshots/dashboard-page.png`
-
 ## Query Performance
 
 Route:

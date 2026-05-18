@@ -138,6 +138,9 @@ func GetUserAppPermissions(userID int64) ([]string, error) {
 		permsMap["query.execute"] = true
 		permsMap["schema.browse"] = true
 	}
+	if permsMap["schema.browse"] {
+		permsMap["cassandra.view"] = true
+	}
 	if permsMap["er.view"] {
 		permsMap["schema.browse"] = true
 	}
@@ -155,6 +158,10 @@ func GetUserAppPermissions(userID int64) ([]string, error) {
 		permsMap["mongodb.view"] = true
 	}
 	if permsMap["mongodb.view"] {
+		permsMap["connections.view"] = true
+		permsMap["schema.browse"] = true
+	}
+	if permsMap["cassandra.view"] {
 		permsMap["connections.view"] = true
 		permsMap["schema.browse"] = true
 	}

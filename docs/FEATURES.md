@@ -25,7 +25,6 @@ Current primary routes covered:
 - `/login`
 - `/welcome`
 - `/docs`
-- `/dashboard`
 - `/analytics`
 - `/ai-analytics`
 - `/settings`
@@ -35,6 +34,7 @@ Current primary routes covered:
 - `/embed/dashboards/:token/blocks/:blockId`
 - `/data`
 - `/kafka`
+- `/cassandra`
 - `/connections`
 - `/er`
 - `/saved-queries`

@@ -128,6 +128,7 @@ const (
 	PermMongoAdmin          = "mongodb.admin"
 	PermMongoExport         = "mongodb.export"
 	PermMongoImport         = "mongodb.import"
+	PermCassandraView       = "cassandra.view"
 	PermAuditView           = "audit.view"
 	PermOperationsView      = "operations.view"
 	PermPerformanceView     = "performance.view"
@@ -185,8 +186,8 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermMongoAdmin, Label: "Manage MongoDB Collections and Indexes", Group: "Document Database"},
 	{Key: PermMongoExport, Label: "Export MongoDB Data", Group: "Document Database"},
 	{Key: PermMongoImport, Label: "Import MongoDB Data", Group: "Document Database"},
+	{Key: PermCassandraView, Label: "Use Cassandra Workbench", Group: "Wide-column Database"},
 	{Key: PermAuditView, Label: "View Audit Logs", Group: "Audit"},
-	{Key: PermOperationsView, Label: "View Operations Overview", Group: "Operations"},
 	{Key: PermPerformanceView, Label: "View Query Performance", Group: "Operations"},
 	{Key: PermDatabaseAuditView, Label: "View Database Audit", Group: "Operations"},
 	{Key: PermWatchersManage, Label: "Manage Watchers", Group: "Operations"},

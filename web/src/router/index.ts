@@ -6,7 +6,7 @@ const LAST_ROUTE_KEY = 'nias:lastRoute'
 
 function restoredStartRoute() {
   const saved = localStorage.getItem(LAST_ROUTE_KEY)
-  if (!saved || saved === '/' || saved.startsWith('/login') || saved.startsWith('/shared-dashboards') || saved.startsWith('/embed/')) {
+  if (!saved || saved === '/' || saved === '/dashboard' || saved.startsWith('/login') || saved.startsWith('/shared-dashboards') || saved.startsWith('/embed/')) {
     return { name: 'analytics' }
   }
   return saved
@@ -58,12 +58,6 @@ const router = createRouter({
           path: 'welcome',
           name: 'welcome',
           component: () => import('@/views/WelcomeView.vue'),
-        },
-        {
-          path: 'dashboard',
-          name: 'dashboard',
-          component: () => import('@/views/DashboardView.vue'),
-          meta: { requiredPermissionsAny: ['operations.view'] },
         },
         {
           path: 'docs',
@@ -179,6 +173,12 @@ const router = createRouter({
           name: 'mongodb',
           component: () => import('@/views/MongoDBView.vue'),
           meta: { requiredPermissionsAny: ['mongodb.view'] },
+        },
+        {
+          path: 'cassandra',
+          name: 'cassandra',
+          component: () => import('@/views/CassandraView.vue'),
+          meta: { requiredPermissionsAny: ['cassandra.view'] },
         },
         {
           path: 'search',

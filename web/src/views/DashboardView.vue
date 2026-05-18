@@ -73,10 +73,10 @@ function formatExecutedAt(value: string): string {
 
 const driverColors: Record<string, string> = {
   postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b',
-  mssql: '#cc2927', mongodb: '#00a35c',
+  mssql: '#cc2927', mongodb: '#00a35c', cassandra: '#1f6feb',
 }
 const driverLabels: Record<string, string> = {
-  postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', mongodb: 'MG',
+  postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', mongodb: 'MG', cassandra: 'CA',
 }
 
 async function loadOne(id: number) {
@@ -107,7 +107,7 @@ function toggleExpand(id: number) {
 function openInBrowser(id: number) {
   emit('set-conn', id)
   const conn = connections.value.find(c => c.id === id)
-  router.push({ name: conn?.driver === 'mongodb' ? 'mongodb' : 'data' })
+  router.push({ name: conn?.driver === 'mongodb' ? 'mongodb' : conn?.driver === 'cassandra' ? 'cassandra' : 'data' })
 }
 
 // Aggregates
