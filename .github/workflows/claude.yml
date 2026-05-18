@@ -9,19 +9,92 @@ on:
     types: [opened, synchronize]
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
   issues: write
-  id-token: write
 
 jobs:
-  claude:
+  review:
     runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-      - run: git checkout --detach && git branch -D main
-      - uses: anthropics/claude-code-action@v1
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      - name: Resolve PR number
+        id: pr
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
+            echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          else
+            echo "number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Fetch PR data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR=${{ steps.pr.outputs.number }}
+          gh pr view $PR --json title -q .title > pr_title.txt
+          gh pr diff $PR > pr_full.diff 2>/dev/null || touch pr_full.diff
+          head -c 15000 pr_full.diff > pr.diff
+
+      - name: Call OpenRouter and post review
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          python3 - <<'EOF'
+          import os, json, urllib.request, subprocess
+
+          api_key = os.environ['OPENROUTER_API_KEY']
+          event_name = os.environ['EVENT_NAME']
+          comment_body = os.environ.get('COMMENT_BODY', '')
+          pr_number = os.environ['PR_NUMBER']
+
+          with open('pr_title.txt') as f:
+              pr_title = f.read().strip()
+          with open('pr.diff') as f:
+              diff = f.read().strip() or '(empty diff)'
+
+          if event_name in ('issue_comment', 'pull_request_review_comment'):
+              question = comment_body.replace('@claude', '').strip()
+              messages = [
+                  {"role": "system", "content": "You are a code reviewer. Answer questions about the PR concisely."},
+                  {"role": "user", "content": f"PR: {pr_title}\n\nDiff:\n{diff}\n\nQuestion: {question}"}
+              ]
+          else:
+              messages = [
+                  {"role": "system", "content": "You are an expert code reviewer. Be concise and constructive."},
+                  {"role": "user", "content": f"Review this PR.\n\nTitle: {pr_title}\n\nDiff:\n{diff}\n\nCover: summary, issues, suggestions."}
+              ]
+
+          payload = json.dumps({
+              "model": "z-ai/glm-4.5-air:free",
+              "messages": messages
+          }).encode()
+
+          req = urllib.request.Request(
+              "https://openrouter.ai/api/v1/chat/completions",
+              data=payload,
+              headers={
+                  "Authorization": f"Bearer {api_key}",
+                  "Content-Type": "application/json",
+                  "HTTP-Referer": "https://github.com",
+                  "X-Title": "PR Review Bot"
+              }
+          )
+
+          with urllib.request.urlopen(req) as resp:
+              data = json.loads(resp.read())
+
+          review = data['choices'][0]['message']['content']
+          subprocess.run(['gh', 'pr', 'comment', pr_number, '--body', review], check=True)
+          print("Review posted successfully.")
+          EOF
