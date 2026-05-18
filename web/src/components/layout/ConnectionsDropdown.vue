@@ -14,7 +14,7 @@ const emit = defineEmits<{
 
 const router = useRouter()
 const { connections, removeConnection, fetchConnections } = useConnections()
-const { folders, fetchFolders, createFolder, updateFolder, deleteFolder, moveConnection, setConnectionVisibility } = useFolders()
+const { folders, error: folderError, fetchFolders, createFolder, updateFolder, deleteFolder, moveConnection, setConnectionVisibility } = useFolders()
 const { confirm } = useConfirm()
 const toast = useToast()
 
@@ -38,8 +38,8 @@ const editFolderVisibility = ref<'private' | 'shared'>('private')
 const contextMenu = ref<{ x: number; y: number; type: 'folder' | 'conn'; item: ConnectionFolder | Connection } | null>(null)
 
 const FOLDER_COLORS = ['#4f9cf9','#56c490','#f97f4f','#c45ef9','#f9d44f','#f9584f','#4fc8f9','#9cf94f','#f94f9c']
-const driverLabel: Record<string, string> = { sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF', elasticsearch: 'ES', opensearch: 'OS', s3_aws: 'S3', s3_gcp: 'GCS', s3_oss: 'OSS', s3_obs: 'OBS' }
-const driverColor: Record<string, string> = { sqlite: '#4b5563', postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927', redis: '#c6302b', memcache: '#16a34a', kafka: '#231f20', elasticsearch: '#00bfb3', opensearch: '#005eb8', s3_aws: '#f59e0b', s3_gcp: '#4285f4', s3_oss: '#ff6a00', s3_obs: '#c00000' }
+const driverLabel: Record<string, string> = { sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF', mongodb: 'MG', cassandra: 'CA', elasticsearch: 'ES', opensearch: 'OS', s3_aws: 'S3', s3_gcp: 'GCS', s3_oss: 'OSS', s3_obs: 'OBS' }
+const driverColor: Record<string, string> = { sqlite: '#4b5563', postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b', mssql: '#cc2927', redis: '#c6302b', memcache: '#16a34a', kafka: '#231f20', mongodb: '#00a35c', cassandra: '#1f6feb', elasticsearch: '#00bfb3', opensearch: '#005eb8', s3_aws: '#f59e0b', s3_gcp: '#4285f4', s3_oss: '#ff6a00', s3_obs: '#c00000' }
 function isObjectStorageDriver(driver: string) { return driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs' }
 function isSearchDriver(driver: string) { return driver === 'elasticsearch' || driver === 'opensearch' }
 
@@ -82,14 +82,16 @@ function toggleFolder(id: number) {
 function selectConn(conn: Connection) {
   emit('select-conn', conn.id)
   emit('close')
-  const stayViews = ['data', 'er', 'dashboard', 'redis', 'memcache', 'search', 'laravel-queue', 'kafka']
+  const stayViews = ['data', 'er', 'dashboard', 'redis', 'memcache', 'mongodb', 'cassandra', 'search', 'laravel-queue', 'kafka']
   const current = router.currentRoute.value.name as string
   if (conn.driver === 'redis' && current !== 'redis') router.push({ name: 'redis' })
   else if (conn.driver === 'memcache' && current !== 'memcache') router.push({ name: 'memcache' })
   else if (conn.driver === 'kafka' && current !== 'kafka') router.push({ name: 'kafka' })
+  else if (conn.driver === 'mongodb' && current !== 'mongodb') router.push({ name: 'mongodb' })
+  else if (conn.driver === 'cassandra' && current !== 'cassandra') router.push({ name: 'cassandra' })
   else if (isSearchDriver(conn.driver) && current !== 'search') router.push({ name: 'search' })
   else if (isObjectStorageDriver(conn.driver)) router.push({ name: 'connections' })
-  else if (conn.driver !== 'redis' && conn.driver !== 'memcache' && conn.driver !== 'kafka' && !isSearchDriver(conn.driver) && ((current === 'redis' || current === 'memcache' || current === 'kafka' || current === 'search') || !stayViews.includes(current))) router.push({ name: 'data' })
+  else if (conn.driver !== 'redis' && conn.driver !== 'memcache' && conn.driver !== 'kafka' && conn.driver !== 'mongodb' && conn.driver !== 'cassandra' && !isSearchDriver(conn.driver) && ((current === 'redis' || current === 'memcache' || current === 'kafka' || current === 'mongodb' || current === 'cassandra' || current === 'search') || !stayViews.includes(current))) router.push({ name: 'data' })
 }
 
 // ── Folder ops ──
@@ -106,7 +108,7 @@ async function submitNewFolder() {
     showNewFolder.value = false
     toast.success(`Folder "${result.name}" created`)
   } else {
-    toast.error('Failed to create folder — check server logs')
+    toast.error(folderError.value || 'Failed to create folder')
   }
 }
 
@@ -118,8 +120,13 @@ function startEditFolder(f: ConnectionFolder) {
 
 async function submitEditFolder() {
   if (!editingFolder.value || !editFolderName.value.trim()) return
-  await updateFolder(editingFolder.value.id, { name: editFolderName.value.trim(), color: editFolderColor.value, visibility: editFolderVisibility.value, parent_id: editingFolder.value.parent_id })
-  editingFolder.value = null
+  const ok = await updateFolder(editingFolder.value.id, { name: editFolderName.value.trim(), color: editFolderColor.value, visibility: editFolderVisibility.value, parent_id: editingFolder.value.parent_id })
+  if (ok) {
+    editingFolder.value = null
+    toast.success('Folder updated')
+  } else {
+    toast.error(folderError.value || 'Failed to update folder')
+  }
 }
 
 async function doDeleteFolder(f: ConnectionFolder) {

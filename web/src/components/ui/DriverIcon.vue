@@ -129,6 +129,26 @@ defineProps<{
       <circle cx="19" cy="18.5" r="2" fill="white" opacity="0.85"/>
     </g>
 
+    <!-- ── MongoDB: leaf over document store ──────────────────── -->
+    <g v-else-if="driver === 'mongodb'">
+      <ellipse cx="12" cy="5.5" rx="7" ry="2.5" fill="white" opacity="0.9"/>
+      <path d="M5 5.5v10.5c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V5.5" fill="white" opacity="0.55"/>
+      <ellipse cx="12" cy="16" rx="7" ry="2.5" fill="white" opacity="0.75"/>
+      <path d="M12 3C15 6.2 15.5 10.5 12.2 14.5C9 10.5 9.3 6.2 12 3Z" fill="#00a35c" opacity="0.95"/>
+      <path d="M12.1 5.6V17" stroke="white" stroke-width="1.3" stroke-linecap="round" opacity="0.8"/>
+    </g>
+
+    <!-- Cassandra: wide-column ring and nodes -->
+    <g v-else-if="driver === 'cassandra'">
+      <ellipse cx="12" cy="12" rx="8" ry="4.5" stroke="white" stroke-width="2" fill="none" opacity="0.9"/>
+      <ellipse cx="12" cy="12" rx="4.5" ry="8" stroke="white" stroke-width="2" fill="none" opacity="0.55"/>
+      <circle cx="12" cy="12" r="2.3" fill="white" opacity="0.95"/>
+      <circle cx="5" cy="12" r="1.8" fill="white" opacity="0.85"/>
+      <circle cx="19" cy="12" r="1.8" fill="white" opacity="0.85"/>
+      <circle cx="12" cy="5" r="1.8" fill="white" opacity="0.85"/>
+      <circle cx="12" cy="19" r="1.8" fill="white" opacity="0.85"/>
+    </g>
+
     <!-- ── Elasticsearch: search cluster rings ────────────────── -->
     <g v-else-if="driver === 'elasticsearch'">
       <circle cx="10" cy="10" r="5.5" stroke="white" stroke-width="2.2" fill="none" opacity="0.95"/>

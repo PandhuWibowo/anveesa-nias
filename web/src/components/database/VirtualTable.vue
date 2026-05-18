@@ -11,6 +11,8 @@ interface Props {
   selectable?: boolean
   connId?: number | null
   tableName?: string
+  editable?: boolean
+  pkColumn?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -18,6 +20,8 @@ const props = withDefaults(defineProps<Props>(), {
   loading: false,
   showRowNumbers: true,
   selectable: false,
+  editable: false,
+  pkColumn: '',
 })
 
 const emit = defineEmits<{
@@ -25,7 +29,89 @@ const emit = defineEmits<{
   (e: 'bulk-delete', rows: unknown[][]): void
   (e: 'bulk-export', rows: unknown[][], format: 'csv' | 'json'): void
   (e: 'profile-column', column: string): void
+  (e: 'save-row', payload: { rowIdx: number; pkValue: unknown; changes: Record<string, unknown> }): void
+  (e: 'dirty-change', dirtyCount: number): void
 }>()
+
+// ── Inline editing ────────────────────────────────────────────────────────────
+
+interface EditingCell { rowIdx: number; colIdx: number; value: string }
+const editingCell = ref<EditingCell | null>(null)
+// keyed by the original row index (not display index after sort)
+const dirtyRows = ref<Map<number, Record<string, unknown>>>(new Map())
+
+function realRowIdx(displayIdx: number): number {
+  // If sorted, displayRows is a sorted copy; map back to original props.rows index
+  if (!sortCol.value) return displayIdx
+  const row = displayRows.value[displayIdx]
+  return props.rows.indexOf(row)
+}
+
+function startEdit(displayIdx: number, colIdx: number, currentVal: unknown) {
+  if (!props.editable) return
+  editingCell.value = { rowIdx: displayIdx, colIdx, value: String(currentVal ?? '') }
+}
+
+function commitEdit() {
+  if (!editingCell.value) return
+  const { rowIdx, colIdx, value } = editingCell.value
+  const col = props.columns[colIdx]
+  const origIdx = realRowIdx(rowIdx)
+  if (!dirtyRows.value.has(origIdx)) dirtyRows.value.set(origIdx, {})
+  dirtyRows.value.get(origIdx)![col] = value
+  dirtyRows.value = new Map(dirtyRows.value) // trigger reactivity
+  editingCell.value = null
+  emit('dirty-change', dirtyRows.value.size)
+}
+
+function discardRow(displayIdx: number) {
+  const origIdx = realRowIdx(displayIdx)
+  dirtyRows.value.delete(origIdx)
+  dirtyRows.value = new Map(dirtyRows.value)
+  emit('dirty-change', dirtyRows.value.size)
+}
+
+function saveRow(displayIdx: number) {
+  const origIdx = realRowIdx(displayIdx)
+  const row = props.rows[origIdx]
+  const pkIdx = props.pkColumn ? props.columns.indexOf(props.pkColumn) : 0
+  const pkValue = pkIdx >= 0 ? row[pkIdx] : row[0]
+  const changes = dirtyRows.value.get(origIdx) ?? {}
+  emit('save-row', { rowIdx: origIdx, pkValue, changes })
+}
+
+function saveAllRows() {
+  // snapshot keys before iterating since saveRow mutates the map
+  const keys = [...dirtyRows.value.keys()]
+  for (const origIdx of keys) {
+    const displayIdx = sortCol.value
+      ? displayRows.value.findIndex(r => props.rows.indexOf(r) === origIdx)
+      : origIdx
+    saveRow(displayIdx >= 0 ? displayIdx : origIdx)
+  }
+}
+
+function discardAllRows() {
+  dirtyRows.value = new Map()
+  emit('dirty-change', 0)
+}
+
+defineExpose({ saveAllRows, discardAllRows })
+
+// Display value: prefer dirty edit over original
+function displayVal(displayIdx: number, colIdx: number, origVal: unknown): unknown {
+  const origIdx = realRowIdx(displayIdx)
+  const dirty = dirtyRows.value.get(origIdx)
+  if (dirty && props.columns[colIdx] in dirty) return dirty[props.columns[colIdx]]
+  return origVal
+}
+
+// Clear dirty state when rows prop changes (new query result)
+watch(() => props.rows, () => {
+  dirtyRows.value = new Map()
+  editingCell.value = null
+  emit('dirty-change', 0)
+})
 
 // Multi-row selection
 const selectedIndices = ref(new Set<number>())
@@ -97,7 +183,10 @@ onMounted(() => {
   updateSize()
   window.addEventListener('resize', updateSize)
 })
-onBeforeUnmount(() => window.removeEventListener('resize', updateSize))
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', updateSize)
+  // pointer capture releases automatically; no manual cleanup needed
+})
 
 watch(() => props.rows, () => {
   if (scrollEl.value) scrollEl.value.scrollTop = 0
@@ -157,6 +246,7 @@ const displayPaddingBottom = computed(() =>
 const displayVisible = computed(() => displayRows.value.slice(displayStart.value, displayEnd.value))
 
 function handleSort(col: string) {
+  if (_resizeMoved) return   // don't sort after a real resize drag
   if (sortCol.value === col) {
     sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
   } else {
@@ -166,10 +256,72 @@ function handleSort(col: string) {
   if (scrollEl.value) scrollEl.value.scrollTop = 0
   scrollTop.value = 0
 }
+
+// ── Column resize ─────────────────────────────────────────────────
+const COL_MIN_W = 50
+const COL_DEFAULT_W = 120
+
+const colWidths = ref<Record<string, number>>({})
+const isResizing = ref(false)
+
+watch(() => props.columns, (cols) => {
+  const next: Record<string, number> = {}
+  for (const col of cols) {
+    // keep existing width, or init from column name length
+    next[col] = colWidths.value[col] ?? Math.max(COL_MIN_W, Math.min(260, col.length * 9 + 40))
+  }
+  colWidths.value = next
+}, { immediate: true })
+
+function colStyle(col: string): Record<string, string> {
+  const w = colWidths.value[col] ?? COL_DEFAULT_W
+  return { flex: 'none', width: `${w}px`, minWidth: `${w}px`, maxWidth: `${w}px` }
+}
+
+let _resizeCol = ''
+let _resizeStartX = 0
+let _resizeStartW = 0
+let _resizeMoved = false
+
+// Use Pointer Events + setPointerCapture to bypass any drag interception
+function startResize(col: string, e: PointerEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  _resizeCol    = col
+  _resizeStartX = e.clientX
+  _resizeStartW = colWidths.value[col] ?? COL_DEFAULT_W
+  _resizeMoved  = false
+  isResizing.value = true
+}
+
+function onResizeMove(e: PointerEvent) {
+  if (!_resizeCol) return
+  e.preventDefault()
+  const delta = e.clientX - _resizeStartX
+  if (Math.abs(delta) > 2) _resizeMoved = true
+  colWidths.value = { ...colWidths.value, [_resizeCol]: Math.max(COL_MIN_W, _resizeStartW + delta) }
+}
+
+function onResizeEnd(e: PointerEvent) {
+  if (!_resizeCol) return
+  ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+  _resizeCol = ''
+  isResizing.value = false
+  setTimeout(() => { _resizeMoved = false }, 0)
+}
+
+// double-click handle → auto-fit width from visible data
+function autoFitCol(col: string) {
+  const cIdx = props.columns.indexOf(col)
+  const sample = displayRows.value.slice(0, 100)
+  const maxLen = sample.reduce((m, row) => Math.max(m, String(row[cIdx] ?? '').length), col.length)
+  colWidths.value = { ...colWidths.value, [col]: Math.max(COL_MIN_W, Math.min(480, maxLen * 8 + 24)) }
+}
 </script>
 
 <template>
-  <div class="vt-root">
+  <div class="vt-root" :class="{ 'vt-resizing': isResizing }">
     <!-- Loading -->
     <div v-if="loading" class="vt-loading">
       <svg class="spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
@@ -181,6 +333,27 @@ function handleSort(col: string) {
 
     <!-- Table -->
     <template v-else>
+      <!-- Edit-mode banner -->
+      <div v-if="editable" class="vt-edit-banner" :class="{ 'vt-edit-banner--dirty': dirtyRows.size > 0 }">
+        <!-- Left: hint -->
+        <div class="vt-edit-banner__info">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          <span><strong>Edit mode</strong> — double-click a cell to edit, Enter to confirm, Esc to cancel</span>
+        </div>
+        <!-- Right: save actions -->
+        <div class="vt-edit-banner__actions">
+          <template v-if="dirtyRows.size > 0">
+            <span class="vt-edit-unsaved">{{ dirtyRows.size }} unsaved</span>
+            <button class="vt-btn-discard" @click="discardAllRows">Discard</button>
+            <button class="vt-btn-save" @click="saveAllRows">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+              Save {{ dirtyRows.size }} row{{ dirtyRows.size > 1 ? 's' : '' }}
+            </button>
+          </template>
+          <span v-else style="font-size:11.5px;color:var(--text-secondary);opacity:.7">No changes yet</span>
+        </div>
+      </div>
+
       <!-- Bulk action toolbar -->
       <div v-if="selectable && selectedIndices.size > 0" class="vt-bulk-bar">
         <span class="vt-bulk-count">{{ selectedIndices.size }} selected</span>
@@ -190,45 +363,64 @@ function handleSort(col: string) {
         <button class="base-btn base-btn--ghost base-btn--sm" @click="clearSelection">Clear</button>
       </div>
 
-      <!-- Sticky header -->
-      <div class="vt-header">
-        <div class="vt-row vt-row--head">
-          <div v-if="selectable" class="vt-cell vt-cell--check vt-cell--head">
-            <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" />
-          </div>
-          <div v-if="showRowNumbers" class="vt-cell vt-cell--rownum vt-cell--head">#</div>
-          <div
-            v-for="col in columns"
-            :key="col"
-            class="vt-cell vt-cell--head"
-            :class="{ 'vt-cell--sorted': sortCol === col }"
-            @click="handleSort(col)"
-          >
-            {{ col }}
-            <span class="vt-sort-icon">
-              <template v-if="sortCol === col">{{ sortDir === 'asc' ? '↑' : '↓' }}</template>
-              <template v-else>↕</template>
-            </span>
-            <span
-              v-if="tableName"
-              class="vt-profile-btn"
-              title="Profile column"
-              @click.stop="emit('profile-column', col)"
-            >⊞</span>
+      <!-- Single scroll container: header sticky inside, body virtual-scrolls below -->
+      <div class="vt-scroll-wrap" ref="scrollEl" @scroll="onScroll">
+        <!-- Sticky header -->
+        <div class="vt-header">
+          <div class="vt-row vt-row--head">
+            <div v-if="selectable" class="vt-cell vt-cell--check vt-cell--head">
+              <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" />
+            </div>
+            <div v-if="showRowNumbers" class="vt-cell vt-cell--rownum vt-cell--head">#</div>
+            <div
+              v-for="col in columns"
+              :key="col"
+              class="vt-cell vt-cell--head"
+              :class="{ 'vt-cell--sorted': sortCol === col }"
+              :style="colStyle(col)"
+              @click="handleSort(col)"
+            >
+              <span class="vt-head-label">
+                {{ col }}
+                <span class="vt-sort-icon">
+                  <template v-if="sortCol === col">{{ sortDir === 'asc' ? '↑' : '↓' }}</template>
+                  <template v-else>↕</template>
+                </span>
+              </span>
+              <span
+                v-if="tableName"
+                class="vt-profile-btn"
+                title="Profile column"
+                @click.stop="emit('profile-column', col)"
+              >⊞</span>
+              <!-- Resize handle — pointer events bypass header drag interception -->
+              <div
+                class="vt-resize-handle"
+                draggable="false"
+                title="Drag to resize · Double-click to auto-fit"
+                @pointerdown.stop.prevent="startResize(col, $event)"
+                @pointermove.stop="onResizeMove($event)"
+                @pointerup.stop="onResizeEnd($event)"
+                @pointercancel.stop="onResizeEnd($event)"
+                @dragstart.stop.prevent
+                @dblclick.stop="autoFitCol(col)"
+              />
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- Virtual body -->
-      <div class="vt-body" ref="scrollEl" @scroll="onScroll">
+        <!-- Virtual body -->
         <div :style="{ height: totalDisplayHeight + 'px', position: 'relative' }">
           <div :style="{ paddingTop: displayPaddingTop + 'px', paddingBottom: displayPaddingBottom + 'px' }">
             <div
               v-for="(row, i) in displayVisible"
               :key="displayStart + i"
               class="vt-row"
-              :class="{ 'vt-row--selected': selectable && selectedIndices.has(displayStart + i) }"
-              :style="{ height: rowHeight + 'px' }"
+              :class="{
+                'vt-row--selected': selectable && selectedIndices.has(displayStart + i),
+                'vt-row--dirty': editable && dirtyRows.has(realRowIdx(displayStart + i)),
+              }"
+              :style="{ height: editable && dirtyRows.has(realRowIdx(displayStart + i)) ? 'auto' : rowHeight + 'px', minHeight: rowHeight + 'px' }"
             >
               <div v-if="selectable" class="vt-cell vt-cell--check" @click.stop>
                 <input type="checkbox" :checked="selectedIndices.has(displayStart + i)" @change="toggleRow(i)" />
@@ -240,11 +432,36 @@ function handleSort(col: string) {
                 v-for="(val, cIdx) in row"
                 :key="cIdx"
                 class="vt-cell"
-                :class="cellCls(val)"
-                :title="formatCell(val)"
-                @click="openInspector(displayStart + i, cIdx)"
+                :class="[
+                  cellCls(displayVal(displayStart + i, cIdx, val)),
+                  editable && dirtyRows.has(realRowIdx(displayStart + i)) && columns[cIdx] in (dirtyRows.get(realRowIdx(displayStart + i)) ?? {}) ? 'vt-cell--edited' : '',
+                ]"
+                :style="colStyle(columns[cIdx])"
+                :title="editable ? 'Double-click to edit' : formatCell(val)"
+                @click="editable ? undefined : openInspector(displayStart + i, cIdx)"
+                @dblclick="editable ? startEdit(displayStart + i, cIdx, displayVal(displayStart + i, cIdx, val)) : undefined"
               >
-                {{ formatCell(val) }}
+                <!-- Editing input -->
+                <input
+                  v-if="editable && editingCell?.rowIdx === displayStart + i && editingCell?.colIdx === cIdx"
+                  class="vt-edit-input"
+                  :value="editingCell.value"
+                  @input="editingCell!.value = ($event.target as HTMLInputElement).value"
+                  @blur="commitEdit"
+                  @keydown.enter.prevent="commitEdit"
+                  @keydown.escape.prevent="editingCell = null"
+                  @click.stop
+                  autofocus
+                />
+                <template v-else>{{ formatCell(displayVal(displayStart + i, cIdx, val)) }}</template>
+              </div>
+              <!-- Per-row discard (small, inline) -->
+              <div
+                v-if="editable && dirtyRows.has(realRowIdx(displayStart + i))"
+                class="vt-cell vt-row-actions"
+                @click.stop
+              >
+                <button class="vt-row-discard" title="Discard this row's changes" @click="discardRow(displayStart + i)">✕</button>
               </div>
             </div>
           </div>
@@ -256,8 +473,12 @@ function handleSort(col: string) {
         <span>{{ rows.length.toLocaleString() }} rows</span>
         <span v-if="selectable && selectedIndices.size > 0"> · <strong>{{ selectedIndices.size }}</strong> selected</span>
         <span v-if="sortCol"> · sorted by <strong>{{ sortCol }}</strong> {{ sortDir }}</span>
+        <span v-if="editable && dirtyRows.size > 0" style="color:var(--warning)"> · {{ dirtyRows.size }} unsaved</span>
         <span style="flex:1"/>
-        <span style="font-size:10.5px;color:var(--text-muted)">Click cell to inspect · Click column to sort<template v-if="selectable"> · Check rows to select</template></span>
+        <span style="font-size:10.5px;color:var(--text-muted)">
+          <template v-if="editable">Double-click cell to edit · Enter/blur to confirm · Esc to cancel</template>
+          <template v-else>Click cell to inspect · Click column to sort<template v-if="selectable"> · Check rows to select</template></template>
+        </span>
       </div>
     </template>
 
@@ -280,14 +501,20 @@ function handleSort(col: string) {
   flex: 1; display: flex; align-items: center; justify-content: center;
   gap: 8px; color: var(--text-muted);
 }
+/* Single container handles both axes — header is sticky inside it */
+.vt-scroll-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;       /* scroll both axes here */
+}
 .vt-header {
-  flex-shrink: 0;
-  overflow: hidden;
+  position: sticky;
+  top: 0;
+  z-index: 2;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elevated);
-}
-.vt-body {
-  flex: 1; min-height: 0; overflow-y: auto; overflow-x: auto;
+  /* min-width mirrors the row width so it never shrinks below content */
+  min-width: max-content;
 }
 .vt-footer {
   flex-shrink: 0; display: flex; align-items: center; gap: 8px;
@@ -300,6 +527,7 @@ function handleSort(col: string) {
   display: flex; align-items: stretch;
   border-bottom: 1px solid var(--border);
   transition: background 0.1s;
+  min-width: max-content;
 }
 .vt-row:hover { background: var(--bg-hover); }
 .vt-row--head { cursor: default; }
@@ -340,9 +568,52 @@ function handleSort(col: string) {
   color: var(--text-muted);
   background: var(--bg-elevated);
   justify-content: space-between;
+  position: relative;         /* anchor the resize handle */
+  user-select: none;
+  overflow: visible;          /* let handle bleed outside */
 }
 .vt-cell--head:hover { background: var(--bg-hover); }
 .vt-cell--sorted { color: var(--brand); }
+
+/* Resize handle — 6 px zone on the right edge of each header cell */
+.vt-resize-handle {
+  position: absolute;
+  right: -3px;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.vt-resize-handle::after {
+  content: '';
+  display: block;
+  width: 2px;
+  height: 60%;
+  border-radius: 1px;
+  background: transparent;
+  transition: background 0.12s;
+}
+.vt-cell--head:hover .vt-resize-handle::after { background: var(--border); }
+.vt-resize-handle:hover::after,
+.vt-resize-handle:active::after { background: var(--brand) !important; }
+
+/* Suppress text selection and pointer cursor while actively resizing */
+.vt-resizing { cursor: col-resize !important; }
+.vt-resizing * { user-select: none !important; cursor: col-resize !important; }
+
+/* Label inside header keeps flex layout tidy */
+.vt-head-label {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+}
 .vt-cell--rownum {
   min-width: 44px; max-width: 44px;
   flex: none; font-variant-numeric: tabular-nums;
@@ -354,4 +625,81 @@ function handleSort(col: string) {
 .vt-num { color: #60a5fa; justify-content: flex-end; }
 .vt-bool { color: #c084fc; }
 .vt-sort-icon { font-size: 10px; margin-left: 4px; opacity: 0.6; }
+
+/* Edit mode banner */
+.vt-edit-banner {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-shrink: 0;
+  padding: 7px 14px;
+  font-size: 12px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  color: var(--accent);
+}
+.vt-edit-banner--dirty {
+  background: color-mix(in srgb, #f59e0b 8%, transparent);
+  border-bottom-color: color-mix(in srgb, #f59e0b 30%, transparent);
+  color: #b45309;
+}
+.vt-edit-banner__info {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; flex: 1; min-width: 0;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.vt-edit-banner__actions {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
+.vt-edit-unsaved {
+  font-size: 11.5px; font-weight: 600; color: #d97706;
+  background: rgba(245,158,11,.12); padding: 2px 8px;
+  border-radius: 4px; white-space: nowrap;
+}
+.vt-btn-save {
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 14px; font-size: 12.5px; font-weight: 700;
+  background: #22c55e; color: #fff; border: none;
+  border-radius: 6px; cursor: pointer; white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(34,197,94,.35);
+  transition: opacity .15s;
+}
+.vt-btn-save:hover { opacity: .88; }
+.vt-btn-discard {
+  padding: 5px 12px; font-size: 12px; font-weight: 500;
+  background: none; color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: 6px;
+  cursor: pointer; white-space: nowrap;
+  transition: background .1s;
+}
+.vt-btn-discard:hover { background: var(--border); }
+.vt-row--dirty { background: color-mix(in srgb, #f59e0b 6%, transparent) !important; }
+.vt-row--dirty:hover { background: color-mix(in srgb, #f59e0b 10%, transparent) !important; }
+.vt-cell--edited {
+  background: color-mix(in srgb, #f59e0b 12%, transparent);
+  color: #d97706 !important;
+  font-weight: 600;
+}
+.vt-edit-input {
+  width: 100%; height: 100%; border: none; outline: none;
+  background: var(--bg);
+  color: var(--text);
+  font-size: inherit; font-family: inherit;
+  padding: 0 4px;
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.vt-row-actions {
+  display: flex; align-items: center; gap: 4px;
+  flex: none; width: auto; min-width: auto; max-width: none;
+  padding: 0 8px;
+}
+.vt-row-save {
+  padding: 2px 8px; font-size: 11px; font-weight: 700;
+  background: var(--accent); color: #fff; border: none;
+  border-radius: 4px; cursor: pointer; white-space: nowrap;
+}
+.vt-row-discard {
+  padding: 2px 6px; font-size: 11px;
+  background: none; color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+}
 </style>

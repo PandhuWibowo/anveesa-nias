@@ -108,7 +108,7 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 			if !totp.Validate(body.TotpCode, totpSecret) {
 				// Check backup codes
 				var backupCodesJSON string
-				appdb.DB.QueryRow(`SELECT COALESCE(backup_codes, '[]') FROM users WHERE id = ?`, id).Scan(&backupCodesJSON)
+				appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COALESCE(backup_codes, '[]') FROM users WHERE id = ?`), id).Scan(&backupCodesJSON)
 
 				var backupCodes []string
 				json.Unmarshal([]byte(backupCodesJSON), &backupCodes)
@@ -119,7 +119,7 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 						// Remove used backup code
 						backupCodes = append(backupCodes[:i], backupCodes[i+1:]...)
 						newJSON, _ := json.Marshal(backupCodes)
-						appdb.DB.Exec(`UPDATE users SET backup_codes = ? WHERE id = ?`, string(newJSON), id)
+						appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET backup_codes = ? WHERE id = ?`), string(newJSON), id)
 						valid = true
 						break
 					}
@@ -202,9 +202,10 @@ func RegisterHandler(cfg *config.Config) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 
 		var body struct {
-			Username string `json:"username"`
-			Password string `json:"password"`
-			RoleID   *int64 `json:"role_id"`
+			Username    string   `json:"username"`
+			Password    string   `json:"password"`
+			RoleID      *int64   `json:"role_id"`
+			Permissions []string `json:"permissions"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Username == "" || body.Password == "" {
 			http.Error(w, `{"error":"username and password required"}`, http.StatusBadRequest)
@@ -254,11 +255,12 @@ func RegisterHandler(cfg *config.Config) http.HandlerFunc {
 		}
 
 		var id int64
+		permissionsJSON := AppPermsToJSON(body.Permissions)
 		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
 			// Use RETURNING for PostgreSQL/MySQL
 			err := appdb.DB.QueryRow(
-				`INSERT INTO users (username, password, role, role_id, is_active) VALUES ($1, $2, $3, $4, 1) RETURNING id`,
-				body.Username, string(hash), role, roleID,
+				`INSERT INTO users (username, password, role, role_id, is_active, permissions) VALUES ($1, $2, $3, $4, 1, $5) RETURNING id`,
+				body.Username, string(hash), role, roleID, permissionsJSON,
 			).Scan(&id)
 			if err != nil {
 				// Generic error to prevent username enumeration
@@ -268,8 +270,8 @@ func RegisterHandler(cfg *config.Config) http.HandlerFunc {
 		} else {
 			// Use LastInsertId for SQLite
 			res, err := appdb.DB.Exec(
-				`INSERT INTO users (username, password, role, role_id, is_active) VALUES (?, ?, ?, ?, 1)`,
-				body.Username, string(hash), role, roleID,
+				`INSERT INTO users (username, password, role, role_id, is_active, permissions) VALUES (?, ?, ?, ?, 1, ?)`,
+				body.Username, string(hash), role, roleID, permissionsJSON,
 			)
 			if err != nil {
 				// Generic error to prevent username enumeration

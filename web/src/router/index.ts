@@ -6,7 +6,7 @@ const LAST_ROUTE_KEY = 'nias:lastRoute'
 
 function restoredStartRoute() {
   const saved = localStorage.getItem(LAST_ROUTE_KEY)
-  if (!saved || saved === '/' || saved.startsWith('/login') || saved.startsWith('/shared-dashboards') || saved.startsWith('/embed/')) {
+  if (!saved || saved === '/' || saved === '/dashboard' || saved.startsWith('/login') || saved.startsWith('/shared-dashboards') || saved.startsWith('/embed/')) {
     return { name: 'analytics' }
   }
   return saved
@@ -60,12 +60,6 @@ const router = createRouter({
           component: () => import('@/views/WelcomeView.vue'),
         },
         {
-          path: 'dashboard',
-          name: 'dashboard',
-          component: () => import('@/views/DashboardView.vue'),
-          meta: { requiredPermissionsAny: ['operations.view'] },
-        },
-        {
           path: 'docs',
           name: 'docs',
           component: () => import('@/views/DocsView.vue'),
@@ -93,6 +87,12 @@ const router = createRouter({
           name: 'database-audit',
           component: () => import('@/views/DatabaseAuditView.vue'),
           meta: { requiredPermissionsAny: ['databaseaudit.view'] },
+        },
+        {
+          path: 'database-logs',
+          name: 'database-logs',
+          component: () => import('@/views/DatabaseLogsView.vue'),
+          meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
         },
         {
           path: 'diff',
@@ -167,6 +167,18 @@ const router = createRouter({
           name: 'memcache',
           component: () => import('@/views/MemcacheView.vue'),
           meta: { requiredPermissionsAny: ['redis.view'] },
+        },
+        {
+          path: 'mongodb',
+          name: 'mongodb',
+          component: () => import('@/views/MongoDBView.vue'),
+          meta: { requiredPermissionsAny: ['mongodb.view'] },
+        },
+        {
+          path: 'cassandra',
+          name: 'cassandra',
+          component: () => import('@/views/CassandraView.vue'),
+          meta: { requiredPermissionsAny: ['cassandra.view'] },
         },
         {
           path: 'search',

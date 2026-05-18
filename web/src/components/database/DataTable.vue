@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
+import { downloadExcel } from '@/utils/export'
 import CellInspector from '@/components/ui/CellInspector.vue'
 
 interface Props {
@@ -12,6 +13,7 @@ interface Props {
   totalRows?: number
   showRowNumbers?: boolean
   editable?: boolean
+  addable?: boolean
   pkColumn?: string
 }
 
@@ -23,6 +25,7 @@ const props = withDefaults(defineProps<Props>(), {
   totalRows: 0,
   showRowNumbers: true,
   editable: false,
+  addable: false,
   pkColumn: '',
 })
 
@@ -45,12 +48,139 @@ const sortDir = ref<'asc' | 'desc'>('asc')
 const visibleColumns = ref<Set<string>>(new Set(props.columns))
 const showColumnMenu = ref(false)
 
-// Reset all columns to visible when props.columns changes (new table selected)
+// Column order — tracks user-reordered sequence
+const colOrder = ref<string[]>([...props.columns])
+
+// ── Column resize — declared here so the watch below can reference it ──
+const COL_MIN_W = 50
+const colWidths = ref<Record<string, number>>({})
+const isResizing = ref(false)
+
+// Reset visibility + order + widths when columns prop changes
 watch(() => props.columns, (newColumns) => {
   visibleColumns.value = new Set(newColumns)
+  colOrder.value = [...newColumns]
+  const next: Record<string, number> = {}
+  for (const col of newColumns) {
+    next[col] = colWidths.value[col] ?? Math.max(60, Math.min(260, col.length * 9 + 40))
+  }
+  colWidths.value = next
 }, { immediate: true })
 
-const filteredColumns = computed(() => props.columns.filter(c => visibleColumns.value.has(c)))
+// Ordered, visible columns used by both thead and tbody
+const orderedColumns = computed(() =>
+  colOrder.value.filter(c => visibleColumns.value.has(c)),
+)
+
+// ── Column reorder via pointer events ────────────────────────────
+// HTML5 drag-and-drop doesn't work on position:sticky <th> inside
+// overflow:auto. We use window-level pointer listeners instead.
+const dragSrcCol  = ref<string | null>(null)
+const dragOverCol = ref<string | null>(null)
+let _dragged = false
+
+let _reorderSrc    = ''
+let _reorderStartX = 0
+let _reorderStartY = 0
+let _reorderActive = false
+
+function _reorderMove(e: PointerEvent) {
+  if (!_reorderSrc) return
+  if (!_reorderActive) {
+    if (Math.abs(e.clientX - _reorderStartX) < 4 && Math.abs(e.clientY - _reorderStartY) < 4) return
+    _reorderActive = true
+  }
+  const el = document.elementFromPoint(e.clientX, e.clientY)
+  const th = el?.closest('[data-col]') as HTMLElement | null
+  const over = th?.dataset?.col ?? null
+  dragOverCol.value = (over && over !== _reorderSrc) ? over : null
+}
+
+function _reorderEnd() {
+  window.removeEventListener('pointermove', _reorderMove)
+  window.removeEventListener('pointerup',   _reorderEnd)
+  window.removeEventListener('pointercancel', _reorderEnd)
+  if (_reorderActive && dragOverCol.value && dragOverCol.value !== _reorderSrc) {
+    _dragged = true
+    const order = [...colOrder.value]
+    const from  = order.indexOf(_reorderSrc)
+    const to    = order.indexOf(dragOverCol.value)
+    order.splice(from, 1)
+    order.splice(to, 0, _reorderSrc)
+    colOrder.value = order
+  }
+  _reorderSrc    = ''
+  _reorderActive = false
+  dragSrcCol.value  = null
+  dragOverCol.value = null
+  setTimeout(() => { _dragged = false }, 0)
+}
+
+function onGripPointerDown(col: string, e: PointerEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  _reorderSrc    = col
+  _reorderStartX = e.clientX
+  _reorderStartY = e.clientY
+  _reorderActive = false
+  dragSrcCol.value = col
+  window.addEventListener('pointermove',   _reorderMove)
+  window.addEventListener('pointerup',     _reorderEnd)
+  window.addEventListener('pointercancel', _reorderEnd)
+}
+
+// ── Column resize helpers ──────────────────────────────────────────
+function colStyle(col: string): Record<string, string> {
+  const w = colWidths.value[col] ?? 120
+  return { width: `${w}px`, minWidth: `${w}px`, maxWidth: `${w}px` }
+}
+
+let _resizeCol = ''
+let _resizeStartX = 0
+let _resizeStartW = 0
+let _resizeMoved = false
+
+// Use Pointer Events + setPointerCapture so the draggable="true" on <th>
+// never intercepts the move events during a resize gesture.
+function startResize(col: string, e: PointerEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  _resizeCol    = col
+  _resizeStartX = e.clientX
+  _resizeStartW = colWidths.value[col] ?? 120
+  _resizeMoved  = false
+  isResizing.value = true
+}
+
+function onResizeMove(e: PointerEvent) {
+  if (!_resizeCol) return
+  e.preventDefault()
+  const delta = e.clientX - _resizeStartX
+  if (Math.abs(delta) > 2) _resizeMoved = true
+  colWidths.value = { ...colWidths.value, [_resizeCol]: Math.max(COL_MIN_W, _resizeStartW + delta) }
+}
+
+function onResizeEnd(e: PointerEvent) {
+  if (!_resizeCol) return
+  ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+  _resizeCol = ''
+  isResizing.value = false
+  setTimeout(() => { _resizeMoved = false }, 0)
+}
+
+function autoFitCol(col: string) {
+  const cIdx = props.columns.indexOf(col)
+  const sample = props.rows.slice(0, 100)
+  const maxLen = sample.reduce((m, row) => Math.max(m, String(row[cIdx] ?? '').length), col.length)
+  colWidths.value = { ...colWidths.value, [col]: Math.max(COL_MIN_W, Math.min(480, maxLen * 8 + 24)) }
+}
+
+onBeforeUnmount(() => {
+  window.removeEventListener('pointermove',   _reorderMove)
+  window.removeEventListener('pointerup',     _reorderEnd)
+  window.removeEventListener('pointercancel', _reorderEnd)
+})
 
 function toggleColumn(col: string) {
   if (visibleColumns.value.has(col)) {
@@ -90,6 +220,7 @@ const totalPages = computed(() =>
 )
 
 function handleSort(col: string) {
+  if (_dragged || _resizeMoved) { _dragged = false; return }
   if (sortCol.value === col) {
     sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
   } else {
@@ -112,8 +243,8 @@ function cellClass(val: unknown): string {
   return ''
 }
 
-function handleCellClick(rIdx: number, cIdx: number, val: unknown) {
-  const col = props.columns[cIdx]
+function handleCellClick(rIdx: number, col: string, row: unknown[]) {
+  const val = row[props.columns.indexOf(col)]
   emit('cell-click', { row: rIdx, col, value: val })
   if (!props.editable) {
     openInspector(rIdx, col, val)
@@ -124,13 +255,13 @@ function openInspector(rIdx: number, col: string, val: unknown) {
   inspector.value = { show: true, column: col, value: val, rowIndex: rIdx }
 }
 
-function getCellValue(rIdx: number, col: string, originalVal: unknown): unknown {
-  return editedRows.value.get(rIdx)?.[col] ?? originalVal
+function getCellValue(rIdx: number, col: string, row: unknown[]): unknown {
+  return editedRows.value.get(rIdx)?.[col] ?? row[props.columns.indexOf(col)]
 }
 
 function onCellEdit(rIdx: number, col: string, event: Event) {
   const target = event.target as HTMLInputElement
-  const currentVal = getCellValue(rIdx, col, props.rows[rIdx]?.[props.columns.indexOf(col)])
+  const currentVal = getCellValue(rIdx, col, props.rows[rIdx] ?? [])
   if (currentVal === target.value) return
   if (!editedRows.value.has(rIdx)) {
     editedRows.value.set(rIdx, {})
@@ -161,8 +292,6 @@ function saveRow(rIdx: number, row: unknown[]) {
   const pkIdx = props.columns.indexOf(props.pkColumn)
   const pkValue = pkIdx >= 0 ? row[pkIdx] : null
   emit('save-row', { pkValue, updates: edits })
-  editedRows.value.delete(rIdx)
-  editHistory.value = editHistory.value.filter((entry) => entry.rowIndex !== rIdx)
 }
 
 function saveAllRows() {
@@ -174,8 +303,6 @@ function saveAllRows() {
   }).filter((item) => item.pkValue !== null && Object.keys(item.updates).length > 0)
   if (!payload.length) return
   emit('save-all-rows', payload)
-  editedRows.value.clear()
-  editHistory.value = []
 }
 
 function cancelEdit(rIdx: number) {
@@ -209,6 +336,11 @@ function clearAllEdits() {
   newRowValues.value = {}
 }
 
+function startAddRow() {
+  if (!props.columns.length) return
+  showNewRow.value = true
+}
+
 function deleteRow(rIdx: number, row: unknown[]) {
   const pkIdx = props.columns.indexOf(props.pkColumn)
   const pkValue = pkIdx >= 0 ? row[pkIdx] : null
@@ -221,8 +353,27 @@ function addRow() {
     values[col] = newRowValues.value[col] ?? ''
   }
   emit('add-row', { values })
+}
+
+watch(() => props.rows, () => {
+  editedRows.value.clear()
+  editHistory.value = []
   newRowValues.value = {}
   showNewRow.value = false
+  emit('dirty-change', false)
+})
+
+function exportToExcel() {
+  const cols = orderedColumns.value
+  const rows = props.rows.map(row =>
+    cols.map(col => {
+      const val = row[props.columns.indexOf(col)]
+      if (typeof val === 'object' && val !== null) return JSON.stringify(val)
+      return val
+    }),
+  )
+  const timestamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')
+  downloadExcel(cols, rows, `export-${timestamp}`)
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -232,6 +383,8 @@ function handleKeydown(event: KeyboardEvent) {
     undoLastEdit()
   }
 }
+
+defineExpose({ startAddRow })
 </script>
 
 <template>
@@ -245,7 +398,7 @@ function handleKeydown(event: KeyboardEvent) {
     <!-- Empty -->
     <div v-else-if="rows.length === 0 && !showNewRow" class="empty-state">
       No rows returned.
-      <button v-if="editable" class="base-btn base-btn--ghost base-btn--xs" style="margin-top:8px" @click="showNewRow=true">
+      <button v-if="addable" class="base-btn base-btn--ghost base-btn--xs" style="margin-top:8px" @click="showNewRow=true">
         + Add row
       </button>
     </div>
@@ -264,31 +417,71 @@ function handleKeydown(event: KeyboardEvent) {
           <button class="base-btn base-btn--primary base-btn--xs" :disabled="!hasPendingEdits" @click="saveAllRows">Save All</button>
         </div>
       </div>
-      <table class="data-table">
+      <div v-if="showNewRow" class="insert-toolbar">
+        <div class="insert-toolbar__status">
+          <span class="insert-toolbar__badge">New</span>
+          <span>Fill the row values, then save to insert it.</span>
+        </div>
+        <div class="insert-toolbar__actions">
+          <button class="base-btn base-btn--ghost base-btn--xs" @click="showNewRow=false">Cancel</button>
+          <button class="base-btn base-btn--primary base-btn--xs" @click="addRow">Save Row</button>
+        </div>
+      </div>
+      <table class="data-table" :class="{ 'dt-resizing': isResizing }">
         <thead>
           <tr>
             <th class="col-rownum" v-if="showRowNumbers">#</th>
-            <th v-if="editable" class="col-actions" style="width:80px"></th>
+            <th v-if="editable || showNewRow" class="col-actions" style="width:80px;min-width:80px"></th>
             <th
-              v-for="col in columns"
+              v-for="col in orderedColumns"
               :key="col"
-              v-show="visibleColumns.has(col)"
-              :class="{ sorted: sortCol === col }"
+              :data-col="col"
+              :style="colStyle(col)"
+              :class="{
+                sorted: sortCol === col,
+                'th-dragging':  dragSrcCol  === col,
+                'th-drag-over': dragOverCol === col && dragSrcCol !== col,
+              }"
               @click="handleSort(col)"
             >
-              {{ col }}
-              <span class="sort-icon">
-                <template v-if="sortCol === col">{{ sortDir === 'asc' ? '↑' : '↓' }}</template>
-                <template v-else>↕</template>
+              <span
+                class="th-grip"
+                title="Drag to reorder"
+                @pointerdown.stop.prevent="onGripPointerDown(col, $event)"
+              >
+                <svg width="8" height="14" viewBox="0 0 8 14" fill="currentColor">
+                  <circle cx="2" cy="2"  r="1.2"/><circle cx="6" cy="2"  r="1.2"/>
+                  <circle cx="2" cy="7"  r="1.2"/><circle cx="6" cy="7"  r="1.2"/>
+                  <circle cx="2" cy="12" r="1.2"/><circle cx="6" cy="12" r="1.2"/>
+                </svg>
               </span>
+              <span class="th-label">
+                {{ col }}
+                <span class="sort-icon">
+                  <template v-if="sortCol === col">{{ sortDir === 'asc' ? '↑' : '↓' }}</template>
+                  <template v-else>↕</template>
+                </span>
+              </span>
+              <!-- Resize handle — pointer events bypass the th draggable system -->
+              <div
+                class="th-resize-handle"
+                draggable="false"
+                title="Drag to resize · Double-click to auto-fit"
+                @pointerdown.stop.prevent="startResize(col, $event)"
+                @pointermove.stop="onResizeMove($event)"
+                @pointerup.stop="onResizeEnd($event)"
+                @pointercancel.stop="onResizeEnd($event)"
+                @dragstart.stop.prevent
+                @dblclick.stop="autoFitCol(col)"
+              />
             </th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="(row, rIdx) in rows" :key="rIdx" :class="{ 'tr-edited': editedRows.has(rIdx) }">
             <td class="col-rownum" v-if="showRowNumbers">{{ (page - 1) * pageSize + rIdx + 1 }}</td>
-            <td v-if="editable" class="col-actions">
-              <div class="row-btns">
+            <td v-if="editable || showNewRow" class="col-actions">
+              <div v-if="editable" class="row-btns">
                 <template v-if="editedRows.has(rIdx)">
                   <span class="row-state-pill">{{ rowLabel(rIdx) }}</span>
                   <button class="rbtn rbtn--save" @click="saveRow(rIdx, row)" title="Save">✓</button>
@@ -300,34 +493,30 @@ function handleKeydown(event: KeyboardEvent) {
               </div>
             </td>
             <td
-              v-for="(val, cIdx) in row"
-              :key="cIdx"
-              v-show="visibleColumns.has(columns[cIdx])"
-              :class="cellClass(val)"
-              :data-edited="isCellEdited(rIdx, columns[cIdx])"
-              @click="handleCellClick(rIdx, cIdx, val)"
+              v-for="col in orderedColumns"
+              :key="col"
+              :class="cellClass(row[columns.indexOf(col)])"
+              :data-edited="isCellEdited(rIdx, col)"
+              @click="handleCellClick(rIdx, col, row)"
             >
               <input
                 v-if="editable"
                 class="cell-input"
-                :value="getCellValue(rIdx, columns[cIdx], val)"
-                @input="onCellEdit(rIdx, columns[cIdx], $event)"
+                :value="getCellValue(rIdx, col, row)"
+                @input="onCellEdit(rIdx, col, $event)"
                 @click.stop
               />
-              <template v-else>{{ formatCell(val) }}</template>
+              <template v-else>{{ formatCell(row[columns.indexOf(col)]) }}</template>
             </td>
           </tr>
 
           <!-- New row -->
           <tr v-if="showNewRow" class="tr-new">
             <td class="col-rownum" v-if="showRowNumbers">*</td>
-            <td v-if="editable" class="col-actions">
-              <div class="row-btns">
-                <button class="rbtn rbtn--save" @click="addRow" title="Insert">✓</button>
-                <button class="rbtn rbtn--cancel" @click="showNewRow=false" title="Cancel">✕</button>
-              </div>
+            <td v-if="editable || addable" class="col-actions">
+              <span class="row-state-pill row-state-pill--new">New</span>
             </td>
-            <td v-for="col in columns" :key="col" v-show="visibleColumns.has(col)">
+            <td v-for="col in orderedColumns" :key="col">
               <input
                 class="cell-input"
                 :placeholder="col"
@@ -338,11 +527,6 @@ function handleKeydown(event: KeyboardEvent) {
           </tr>
         </tbody>
       </table>
-    </div>
-
-    <!-- Add row toolbar -->
-    <div v-if="editable && rows.length > 0 && !showNewRow" class="add-row-bar">
-      <button class="base-btn base-btn--ghost base-btn--xs" @click="showNewRow=true">+ Add row</button>
     </div>
 
     <!-- Pagination & Controls -->
@@ -362,6 +546,15 @@ function handleKeydown(event: KeyboardEvent) {
       </div>
       <div class="pagination__spacer" />
       
+      <!-- Export to Excel -->
+      <button class="base-btn base-btn--ghost base-btn--xs" title="Export visible columns to Excel" @click="exportToExcel">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+          <line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/>
+        </svg>
+        Export
+      </button>
+
       <!-- Column visibility toggle -->
       <div class="col-vis-wrapper" @click.stop>
         <button class="base-btn base-btn--ghost base-btn--xs" @click="showColumnMenu = !showColumnMenu">
@@ -391,6 +584,14 @@ function handleKeydown(event: KeyboardEvent) {
     </div>
     <div class="pagination" v-else-if="rows.length > 0">
       <span class="pagination__info">{{ rows.length.toLocaleString() }} rows</span>
+      <div class="pagination__spacer" />
+      <button class="base-btn base-btn--ghost base-btn--xs" title="Export visible columns to Excel" @click="exportToExcel">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+          <line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/>
+        </svg>
+        Export
+      </button>
     </div>
 
     <!-- Cell inspector -->
@@ -405,9 +606,77 @@ function handleKeydown(event: KeyboardEvent) {
 </template>
 
 <style scoped>
-.col-actions { width: 70px; text-align: center; padding: 0 4px !important; }
+/* ── Column resize handle ──────────────────────────────── */
+.th-resize-handle {
+  position: absolute;
+  right: -3px;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.th-resize-handle::after {
+  content: '';
+  display: block;
+  width: 2px;
+  height: 60%;
+  border-radius: 1px;
+  background: transparent;
+  transition: background 0.12s;
+}
+th:hover .th-resize-handle::after { background: var(--border); }
+.th-resize-handle:hover::after,
+.th-resize-handle:active::after { background: var(--brand) !important; }
+
+/* Suppress text selection while resizing */
+.dt-resizing { cursor: col-resize !important; }
+.dt-resizing * { user-select: none !important; cursor: col-resize !important; }
+
+/* Label span keeps text + sort icon tidy with overflow clipping */
+.th-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+/* ── Drag-and-drop column reorder ─────────────────────── */
+.th-grip {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 5px;
+  color: var(--text-muted);
+  opacity: 0;
+  cursor: grab;
+  vertical-align: middle;
+  transition: opacity 0.12s;
+  flex-shrink: 0;
+  touch-action: none;
+  user-select: none;
+}
+th:hover .th-grip { opacity: 0.7; }
+.th-dragging  .th-grip { opacity: 1; cursor: grabbing; }
+.th-dragging {
+  opacity: 0.35;
+  cursor: grabbing;
+}
+.th-drag-over {
+  border-left: 2px solid var(--brand) !important;
+  background: rgba(var(--brand-rgb, 99 102 241), 0.1) !important;
+}
+
+.col-actions { width: 80px; min-width: 80px; text-align: center; padding: 0 6px !important; }
 .row-btns { display: flex; gap: 4px; justify-content: center; align-items: center; flex-wrap: wrap; }
-.edit-toolbar {
+.row-btns--insert { gap: 6px; flex-wrap: nowrap; }
+.edit-toolbar,
+.insert-toolbar {
   position: sticky;
   top: 0;
   z-index: 3;
@@ -419,10 +688,15 @@ function handleKeydown(event: KeyboardEvent) {
   border-bottom: 1px solid var(--border);
   background: var(--bg-elevated);
 }
+.insert-toolbar {
+  background: color-mix(in srgb, var(--success) 7%, var(--bg-elevated));
+  border-bottom-color: color-mix(in srgb, var(--success) 24%, var(--border));
+}
 .edit-toolbar--active {
   background: rgba(var(--brand-rgb, 99 102 241), 0.08);
 }
-.edit-toolbar__status {
+.edit-toolbar__status,
+.insert-toolbar__status {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -430,6 +704,7 @@ function handleKeydown(event: KeyboardEvent) {
   color: var(--text-secondary);
 }
 .edit-toolbar__badge,
+.insert-toolbar__badge,
 .row-state-pill {
   display: inline-flex;
   align-items: center;
@@ -443,7 +718,12 @@ function handleKeydown(event: KeyboardEvent) {
   font-size: 10px;
   font-weight: 700;
 }
-.edit-toolbar__actions {
+.insert-toolbar__badge,
+.row-state-pill--new {
+  background: var(--success);
+}
+.edit-toolbar__actions,
+.insert-toolbar__actions {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -453,19 +733,22 @@ function handleKeydown(event: KeyboardEvent) {
   color: var(--text-muted);
 }
 .rbtn {
-  width: 22px; height: 22px;
-  border-radius: 4px;
+  width: 26px; height: 26px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   background: transparent;
   cursor: pointer;
-  font-size: 11px;
+  color: var(--text-secondary);
   display: flex; align-items: center; justify-content: center;
-  transition: all 0.12s;
+  padding: 0;
+  transition: background .12s, border-color .12s, color .12s, box-shadow .12s;
 }
-.rbtn--save { color: #4ade80; }
-.rbtn--save:hover { background: rgba(74, 222, 128, 0.15); }
+.rbtn--save { color: var(--success); border-color: color-mix(in srgb, var(--success) 35%, var(--border)); }
+.rbtn--save:hover { background: var(--success-bg); border-color: var(--success); }
+.rbtn--primary { background: var(--success); border-color: var(--success); color: white; box-shadow: 0 1px 4px rgba(34, 197, 94, .25); }
+.rbtn--primary:hover { background: color-mix(in srgb, var(--success) 88%, black); color: white; }
 .rbtn--cancel { color: var(--text-muted); }
-.rbtn--cancel:hover { background: var(--bg-hover); }
+.rbtn--cancel:hover { background: var(--bg-hover); color: var(--text-primary); }
 .rbtn--delete { color: #f87171; }
 .rbtn--delete:hover { background: rgba(248, 113, 113, 0.15); }
 .cell-input {

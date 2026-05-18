@@ -22,6 +22,8 @@ const driverLabel: Record<string, string> = {
   redis: 'Redis',
   memcache: 'Memcache',
   kafka: 'Kafka',
+  mongodb: 'MongoDB',
+  cassandra: 'Cassandra',
   elasticsearch: 'Elasticsearch',
   opensearch: 'OpenSearch',
   s3_aws: 'AWS S3',
@@ -38,6 +40,8 @@ function activeConnRoute() {
   if (activeConn.value.driver === 'redis') return 'redis'
   if (activeConn.value.driver === 'memcache') return 'memcache'
   if (activeConn.value.driver === 'kafka') return 'kafka'
+  if (activeConn.value.driver === 'mongodb') return 'mongodb'
+  if (activeConn.value.driver === 'cassandra') return 'cassandra'
   if (isSearchDriver(activeConn.value.driver)) return 'search'
   if (isObjectStorageDriver(activeConn.value.driver)) return 'connections'
   return 'query'
@@ -48,6 +52,8 @@ function activeConnTargetLabel() {
   if (activeConn.value.driver === 'redis') return `Open Redis browser for ${activeConn.value.name}`
   if (activeConn.value.driver === 'memcache') return `Open Memcache browser for ${activeConn.value.name}`
   if (activeConn.value.driver === 'kafka') return `Open Kafka browser for ${activeConn.value.name}`
+  if (activeConn.value.driver === 'mongodb') return `Open MongoDB management for ${activeConn.value.name}`
+  if (activeConn.value.driver === 'cassandra') return `Open Cassandra workbench for ${activeConn.value.name}`
   if (isSearchDriver(activeConn.value.driver)) return `Open search browser for ${activeConn.value.name}`
   if (isObjectStorageDriver(activeConn.value.driver)) return `Manage object storage connection ${activeConn.value.name}`
   return `Open query editor for ${activeConn.value.name}`
@@ -80,7 +86,7 @@ function activeConnTargetLabel() {
       <div class="statusbar__sep" />
       <div class="statusbar__item">
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.7"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
-        <span>{{ activeConn.driver === 'redis' ? `DB ${activeConn.database || 0}` : activeConn.driver === 'memcache' ? 'Cache' : activeConn.driver === 'kafka' ? 'Broker' : activeConn.database }}</span>
+        <span>{{ activeConn.driver === 'redis' ? `DB ${activeConn.database || 0}` : activeConn.driver === 'memcache' ? 'Cache' : activeConn.driver === 'kafka' ? 'Broker' : activeConn.driver === 'mongodb' ? (activeConn.database || 'admin') : activeConn.driver === 'cassandra' ? (activeConn.database || 'No keyspace') : activeConn.database }}</span>
       </div>
     </template>
 

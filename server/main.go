@@ -377,6 +377,78 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermKafkaView)(handlers.KafkaGroups())(w, r)
 			case sub == "kafka" && len(parts) >= 3 && parts[2] == "groups-detail" && r.Method == http.MethodGet:
 				requireAny(handlers.PermKafkaView)(handlers.KafkaGroupDetailHandler())(w, r)
+			case sub == "kafka" && len(parts) >= 3 && parts[2] == "groups-health" && r.Method == http.MethodGet:
+				requireAny(handlers.PermKafkaView)(handlers.KafkaGroupsHealth())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "ping" && r.Method == http.MethodGet:
+				requireAny(handlers.PermMongoView)(handlers.MongoPing())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "dashboard" && r.Method == http.MethodGet:
+				requireAny(handlers.PermMongoView)(handlers.MongoDashboard())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "health" && r.Method == http.MethodGet:
+				requireAny(handlers.PermMongoView)(handlers.MongoHealth())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "databases" && r.Method == http.MethodGet:
+				requireAny(handlers.PermMongoView)(handlers.MongoDatabases())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "collections" && r.Method == http.MethodGet:
+				requireAny(handlers.PermMongoView)(handlers.MongoCollections())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "collections" && (r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete):
+				requireAny(handlers.PermMongoAdmin)(handlers.MongoCollections())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "documents" && r.Method == http.MethodGet:
+				requireAny(handlers.PermMongoView)(handlers.MongoDocuments())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "documents" && (r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete):
+				requireAny(handlers.PermMongoWrite)(handlers.MongoDocuments())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "indexes" && r.Method == http.MethodGet:
+				requireAny(handlers.PermMongoView)(handlers.MongoIndexes())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "indexes" && (r.Method == http.MethodPost || r.Method == http.MethodDelete):
+				requireAny(handlers.PermMongoAdmin)(handlers.MongoIndexes())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "aggregate" && r.Method == http.MethodPost:
+				requireAny(handlers.PermMongoView)(handlers.MongoAggregate())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "explain" && r.Method == http.MethodPost:
+				requireAny(handlers.PermMongoView)(handlers.MongoExplain())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "schema" && r.Method == http.MethodGet:
+				requireAny(handlers.PermMongoView)(handlers.MongoSchema())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "recommend-indexes" && r.Method == http.MethodGet:
+				requireAny(handlers.PermMongoView)(handlers.MongoIndexRecommendations())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "queries" && (r.Method == http.MethodGet || r.Method == http.MethodPost):
+				requireAny(handlers.PermMongoView)(handlers.MongoSavedQueries())(w, r)
+			case sub == "mongodb" && len(parts) >= 4 && parts[2] == "queries" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermMongoView)(handlers.MongoSavedQueryItem())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "import" && r.Method == http.MethodPost:
+				requireAny(handlers.PermMongoImport)(handlers.MongoImport())(w, r)
+			case sub == "mongodb" && len(parts) >= 3 && parts[2] == "export" && r.Method == http.MethodGet:
+				requireAny(handlers.PermMongoExport)(handlers.MongoExport())(w, r)
+			case sub == "cassandra" && len(parts) >= 3 && parts[2] == "ping" && r.Method == http.MethodGet:
+				requireAny(handlers.PermCassandraView)(handlers.CassandraPing())(w, r)
+			case sub == "cassandra" && len(parts) >= 3 && parts[2] == "dashboard" && r.Method == http.MethodGet:
+				requireAny(handlers.PermCassandraView)(handlers.CassandraDashboard())(w, r)
+			case sub == "cassandra" && len(parts) >= 3 && parts[2] == "keyspaces" && r.Method == http.MethodGet:
+				requireAny(handlers.PermCassandraView)(handlers.CassandraKeyspaces())(w, r)
+			case sub == "cassandra" && len(parts) >= 3 && parts[2] == "tables" && r.Method == http.MethodGet:
+				requireAny(handlers.PermCassandraView)(handlers.CassandraTables())(w, r)
+			case sub == "cassandra" && len(parts) >= 3 && parts[2] == "columns" && r.Method == http.MethodGet:
+				requireAny(handlers.PermCassandraView)(handlers.CassandraColumns())(w, r)
+			case sub == "cassandra" && len(parts) >= 3 && parts[2] == "rows" && r.Method == http.MethodGet:
+				requireAny(handlers.PermCassandraView)(handlers.CassandraRows())(w, r)
+			case sub == "cassandra" && len(parts) >= 3 && parts[2] == "query" && r.Method == http.MethodPost:
+				requireAny(handlers.PermQueryExecute)(handlers.CassandraQuery())(w, r)
+			case sub == "db-logs" && len(parts) >= 3 && parts[2] == "slow-queries" && r.Method == http.MethodGet:
+				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.DBSlowQueries())(w, r)
+			case sub == "db-logs" && len(parts) >= 3 && parts[2] == "error-logs" && r.Method == http.MethodGet:
+				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.DBErrorLogs())(w, r)
+			case sub == "cloud-config" && len(parts) >= 3 && parts[2] == "active" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit)(handlers.ActivateCloudConfig())(w, r)
+			case sub == "cloud-config" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView)(handlers.GetCloudConfig())(w, r)
+			case sub == "cloud-config" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit)(handlers.SaveCloudConfig())(w, r)
+			case sub == "cloud-config" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermConnectionsEdit)(handlers.DeleteCloudConfig())(w, r)
+			case sub == "cloud-logs" && len(parts) >= 3 && parts[2] == "error-logs" && r.Method == http.MethodGet:
+				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.CloudErrorLogs())(w, r)
+			case sub == "cloud-logs" && len(parts) >= 3 && parts[2] == "slow-logs" && r.Method == http.MethodGet:
+				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.CloudSlowLogs())(w, r)
+			case sub == "cloud-logs" && len(parts) >= 3 && parts[2] == "audit-logs" && r.Method == http.MethodGet:
+				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.CloudAuditLogs())(w, r)
+			case sub == "cloud-logs" && len(parts) >= 3 && parts[2] == "audit-log-links" && r.Method == http.MethodPost:
+				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.CloudAuditLogLinks())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "info" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchInfo())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "indices" && r.Method == http.MethodGet:

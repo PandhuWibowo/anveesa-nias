@@ -166,8 +166,8 @@ queues.view            ← Can use Laravel Queue
 kafka.view             ← Can use Kafka Browser
 kafka.produce          ← Can produce Kafka test messages
 kafka.manage           ← Can create, delete, and resize Kafka topics
+cassandra.view         ← Can use Cassandra Workbench
 audit.view             ← Can access audit logs
-operations.view        ← Can view Operations Overview
 performance.view       ← Can view Query Performance
 databaseaudit.view     ← Can view Database Audit
 watchers.manage        ← Can manage watchers
@@ -197,7 +197,9 @@ ALTER TABLE users ADD COLUMN role_id INTEGER;
 ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT '[]';
 ```
 
-Users inherit permissions from their role, but can have **additive** personal overrides.
+Users inherit permissions from their role, but can have **additive** personal overrides. These user-level grants are the ABAC layer for one-off access, such as granting `cassandra.view` or `query.execute` directly to a person without creating another role.
+
+Admin APIs expose these grants through `GET /api/admin/users` and `PUT /api/admin/users/:id` using a `permissions` JSON array.
 
 ---
 

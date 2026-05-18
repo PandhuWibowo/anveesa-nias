@@ -7,8 +7,9 @@ import { useFolders } from '@/composables/useFolders'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import DriverIcon from '@/components/ui/DriverIcon.vue'
+import { readableError } from '@/utils/httpError'
 
-const { connections, loading, testConnection, saveConnection, removeConnection, fetchConnections, disconnectConnection, reconnectConnection } = useConnections()
+const { connections, loading, error: connectionError, testConnection, saveConnection, removeConnection, fetchConnections, disconnectConnection, reconnectConnection } = useConnections()
 const { folders, fetchFolders, moveConnection, setConnectionVisibility } = useFolders()
 const toast = useToast()
 const { confirm } = useConfirm()
@@ -32,6 +33,8 @@ const defaultPorts: Record<DbDriver, number> = {
   redis: 6379,
   memcache: 11211,
   kafka: 9092,
+  mongodb: 27017,
+  cassandra: 9042,
   elasticsearch: 9200,
   opensearch: 9200,
   s3_aws: 443,
@@ -49,6 +52,8 @@ const defaultHosts: Record<DbDriver, string> = {
   redis: 'localhost',
   memcache: 'localhost',
   kafka: 'localhost',
+  mongodb: 'localhost',
+  cassandra: 'localhost',
   elasticsearch: 'localhost',
   opensearch: 'localhost',
   s3_aws: 's3.us-east-1.amazonaws.com',
@@ -106,6 +111,14 @@ const driverGroups: Array<{ key: string; label: string; options: DriverOption[] 
     ],
   },
   {
+    key: 'document',
+    label: 'Document & Wide-column',
+    options: [
+      { key: 'mongodb', label: 'MongoDB', badge: 'MG', sub: 'v6+' },
+      { key: 'cassandra', label: 'Cassandra', badge: 'CA', sub: 'v4+' },
+    ],
+  },
+  {
     key: 'search',
     label: 'Search & Observability',
     options: [
@@ -134,6 +147,8 @@ const defaultDatabases: Record<DbDriver, string> = {
   redis: '0',
   memcache: '',
   kafka: '',
+  mongodb: 'admin',
+  cassandra: '',
   elasticsearch: '',
   opensearch: '',
   s3_aws: '',
@@ -151,6 +166,8 @@ const driverDescriptions: Record<DbDriver, string> = {
   redis:    'In-memory key-value store. Only host, port, and an optional password are required. The "database" is a numeric index (0–15).',
   memcache: 'Distributed memory caching — no authentication. Just a host and port.',
   kafka:    'Distributed event streaming. Provide a broker host and port. SASL username/password are optional.',
+  mongodb:  'Document database. Use host/port or paste a mongodb:// / mongodb+srv:// URI in the host field.',
+  cassandra: 'Wide-column database. Provide one or more contact points, optional keyspace, and CQL credentials.',
   elasticsearch: 'Search and observability datastore. Provide the HTTP endpoint, optional credentials, and an optional default index.',
   opensearch:    'OpenSearch-compatible search cluster. Provide the HTTP endpoint, optional credentials, and an optional default index.',
   s3_aws:   'Amazon S3 object storage. Provide your bucket name, endpoint, Access Key ID, and Secret Access Key.',
@@ -164,6 +181,8 @@ const isSQLite    = computed(() => form.driver === 'sqlite')
 const isRedis     = computed(() => form.driver === 'redis')
 const isMemcache  = computed(() => form.driver === 'memcache')
 const isKafka     = computed(() => form.driver === 'kafka')
+const isMongoDB   = computed(() => form.driver === 'mongodb')
+const isCassandra = computed(() => form.driver === 'cassandra')
 const isSearch    = computed(() => form.driver === 'elasticsearch' || form.driver === 'opensearch')
 const isS3        = computed(() => isObjectStorageDriver(form.driver))
 const isRDBMS     = computed(() => ['postgres', 'mysql', 'mariadb', 'mssql'].includes(form.driver))
@@ -176,21 +195,22 @@ function driverCategory(driver: DbDriver): string {
   if (['postgres', 'mysql', 'mariadb', 'mssql', 'sqlite'].includes(driver)) return 'rdbms'
   if (driver === 'redis' || driver === 'memcache') return 'cache'
   if (driver === 'kafka') return 'streaming'
+  if (driver === 'mongodb' || driver === 'cassandra') return 'document'
   if (driver === 'elasticsearch' || driver === 'opensearch') return 'search'
   return 's3'
 }
 
 function categoryLabel(driver: DbDriver): string {
   const cat = driverCategory(driver)
-  return { rdbms: 'Relational DB', cache: 'Cache', streaming: 'Streaming', search: 'Search', s3: 'Object Storage' }[cat] ?? cat
+  return { rdbms: 'Relational DB', cache: 'Cache', streaming: 'Streaming', document: 'Document DB', search: 'Search', s3: 'Object Storage' }[cat] ?? cat
 }
 
 function driverBadge(driver: DbDriver) {
-  return ({ sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF', elasticsearch: 'ES', opensearch: 'OS', s3_aws: 'S3', s3_gcp: 'GCS', s3_oss: 'OSS', s3_obs: 'OBS' } as Record<DbDriver, string>)[driver] ?? driver.slice(0, 2).toUpperCase()
+  return ({ sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF', mongodb: 'MG', cassandra: 'CA', elasticsearch: 'ES', opensearch: 'OS', s3_aws: 'S3', s3_gcp: 'GCS', s3_oss: 'OSS', s3_obs: 'OBS' } as Record<DbDriver, string>)[driver] ?? driver.slice(0, 2).toUpperCase()
 }
 
 function driverFullName(driver: DbDriver) {
-  return ({ sqlite: 'SQLite', postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', mssql: 'SQL Server', redis: 'Redis', memcache: 'Memcache', kafka: 'Kafka', elasticsearch: 'Elasticsearch', opensearch: 'OpenSearch', s3_aws: 'AWS S3', s3_gcp: 'GCP Storage', s3_oss: 'Alibaba OSS', s3_obs: 'Huawei OBS' } as Record<DbDriver, string>)[driver] ?? driver
+  return ({ sqlite: 'SQLite', postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', mssql: 'SQL Server', redis: 'Redis', memcache: 'Memcache', kafka: 'Kafka', mongodb: 'MongoDB', cassandra: 'Cassandra', elasticsearch: 'Elasticsearch', opensearch: 'OpenSearch', s3_aws: 'AWS S3', s3_gcp: 'GCP Storage', s3_oss: 'Alibaba OSS', s3_obs: 'Huawei OBS' } as Record<DbDriver, string>)[driver] ?? driver
 }
 
 function connDetailLine(conn: { driver: DbDriver; host: string; port: number; database: string; username: string }): string {
@@ -211,6 +231,16 @@ function connDetailLine(conn: { driver: DbDriver; host: string; port: number; da
     const auth = conn.username ? `  ·  ${conn.username}` : ''
     return `${conn.host}${conn.port ? ':' + conn.port : ''}${index}${auth}`
   }
+  if (conn.driver === 'mongodb') {
+    const db = conn.database ? `  ·  ${conn.database}` : ''
+    const auth = conn.username ? `  ·  ${conn.username}` : ''
+    return `${conn.host}${conn.port ? ':' + conn.port : ''}${db}${auth}`
+  }
+  if (conn.driver === 'cassandra') {
+    const keyspace = conn.database ? `  ·  ${conn.database}` : ''
+    const auth = conn.username ? `  ·  ${conn.username}` : ''
+    return `${conn.host}${conn.port ? ':' + conn.port : ''}${keyspace}${auth}`
+  }
   if (conn.driver === 'redis') {
     const db = conn.database ? `  ·  db ${conn.database}` : '  ·  db 0'
     return `${conn.host}${conn.port ? ':' + conn.port : ''}${db}`
@@ -225,6 +255,8 @@ function openConnectionLabel(driver: DbDriver): string {
   if (driver === 'redis') return 'Browse'
   if (driver === 'memcache') return 'Browse'
   if (driver === 'kafka') return 'Browse'
+  if (driver === 'mongodb') return 'Manage'
+  if (driver === 'cassandra') return 'Browse'
   if (driver === 'elasticsearch' || driver === 'opensearch') return 'Browse'
   if (isObjectStorageDriver(driver)) return 'Browse'
   return 'Open'
@@ -303,6 +335,12 @@ function validateForm(): string | null {
   if ((form.driver === 'elasticsearch' || form.driver === 'opensearch') && !form.host.trim()) {
     return 'Search endpoint host is required'
   }
+  if (form.driver === 'mongodb' && !form.host.trim()) {
+    return 'MongoDB host or URI is required'
+  }
+  if (form.driver === 'cassandra' && !form.host.trim()) {
+    return 'Cassandra contact point or URI is required'
+  }
   const needsDb = ['sqlite', 'postgres', 'mysql', 'mariadb', 'mssql']
   if (needsDb.includes(form.driver) && !form.database.trim()) {
     return form.driver === 'sqlite' ? 'SQLite file path is required' : 'Database name is required'
@@ -330,13 +368,13 @@ async function handleSave() {
       conn = data
       await fetchConnections()
       toast.success(`Connection "${conn.name}" updated`)
-    } catch {
-      toast.error('Failed to update connection')
+    } catch (e) {
+      toast.error(readableError(e, { action: 'Update connection', fallback: 'Failed to update connection' }))
     }
   } else {
     conn = await saveConnection({ ...form })
     if (conn) toast.success(`Connection "${conn.name}" saved`)
-    else toast.error('Failed to save connection')
+    else toast.error(connectionError.value || 'Failed to save connection')
   }
   saving.value = false
   if (conn) { showForm.value = false; resetForm() }
@@ -357,6 +395,8 @@ function parseConnectionURL(raw: string) {
       redis: 'redis', rediss: 'redis',
       memcache: 'memcache', memcached: 'memcache',
       kafka: 'kafka',
+      mongodb: 'mongodb', 'mongodb+srv': 'mongodb',
+      cassandra: 'cassandra', cql: 'cassandra',
       elasticsearch: 'elasticsearch', elastic: 'elasticsearch', es: 'elasticsearch',
       opensearch: 'opensearch', os: 'opensearch',
       s3: 's3_aws', s3a: 's3_aws',
@@ -366,14 +406,14 @@ function parseConnectionURL(raw: string) {
     }
     const driver = driverMap[scheme] ?? ('postgres' as DbDriver)
     form.driver = driver
-    form.host = url.hostname || 'localhost'
+    form.host = (driver === 'mongodb' && (scheme === 'mongodb' || scheme === 'mongodb+srv')) || driver === 'cassandra' ? raw.trim() : (url.hostname || 'localhost')
     form.port = url.port ? parseInt(url.port) : defaultPorts[driver]
     form.database = url.pathname.replace(/^\//, '')
     form.username = decodeURIComponent(url.username || '')
     form.password = decodeURIComponent(url.password || '')
-    form.ssl = scheme === 'rediss' || scheme === 'https' || url.searchParams.get('sslmode') === 'require' || url.searchParams.get('ssl') === 'true'
+    form.ssl = scheme === 'rediss' || scheme === 'https' || scheme === 'mongodb+srv' || url.searchParams.get('sslmode') === 'require' || url.searchParams.get('ssl') === 'true' || url.searchParams.get('tls') === 'true'
     if (!form.name) {
-      form.name = driver === 'kafka' || driver === 'memcache' || driver === 'elasticsearch' || driver === 'opensearch'
+      form.name = driver === 'kafka' || driver === 'memcache' || driver === 'mongodb' || driver === 'cassandra' || driver === 'elasticsearch' || driver === 'opensearch'
         ? `${driver} / ${form.host}`
         : isObjectStorageDriver(driver)
           ? `${driverFullName(driver)} / ${form.database || form.host}`
@@ -389,7 +429,7 @@ function parseConnectionURL(raw: string) {
 
 function openConnection(id: number, driver: DbDriver) {
   emit('set-conn', id)
-  router.push({ name: driver === 'redis' ? 'redis' : driver === 'memcache' ? 'memcache' : driver === 'kafka' ? 'kafka' : driver === 'elasticsearch' || driver === 'opensearch' ? 'search' : isObjectStorageDriver(driver) ? 'connections' : 'data' })
+  router.push({ name: driver === 'redis' ? 'redis' : driver === 'memcache' ? 'memcache' : driver === 'kafka' ? 'kafka' : driver === 'mongodb' ? 'mongodb' : driver === 'cassandra' ? 'cassandra' : driver === 'elasticsearch' || driver === 'opensearch' ? 'search' : isObjectStorageDriver(driver) ? 'connections' : 'data' })
 }
 
 async function handleDelete(id: number, name: string) {
@@ -590,7 +630,7 @@ async function handleReconnect(id: number, name: string) {
                   <input
                     v-model="urlInput"
                     class="base-input"
-                    placeholder="postgres://user:pass@host:5432/dbname  ·  redis://host:6379  ·  s3://access:secret@endpoint/bucket"
+                    placeholder="postgres://user:pass@host:5432/dbname  ·  cassandra://user:pass@host:9042/keyspace  ·  redis://host:6379"
                     style="flex:1;font-family:var(--mono);font-size:11px"
                     @keydown.enter="parseConnectionURL(urlInput)"
                   />
@@ -781,6 +821,85 @@ async function handleReconnect(id: number, name: string) {
                   <div class="field-check-row">
                     <input id="kafka-ssl" type="checkbox" v-model="form.ssl" style="accent-color:var(--brand)" />
                     <label for="kafka-ssl" class="field-check-label">Enable SSL/TLS</label>
+                  </div>
+                </template>
+
+                <!-- ── MongoDB ───────────────────────────────────────────── -->
+                <template v-else-if="isMongoDB">
+                  <div class="form-row">
+                    <div class="form-group" style="flex:2">
+                      <label class="form-label">Host or URI</label>
+                      <input v-model="form.host" class="base-input" placeholder="localhost or mongodb+srv://cluster.example.net/app" />
+                    </div>
+                    <div class="form-group" style="flex:1">
+                      <label class="form-label">Port</label>
+                      <input v-model.number="form.port" class="base-input" type="number" />
+                    </div>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Default Database</label>
+                    <input v-model="form.database" class="base-input" placeholder="admin" />
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label class="form-label">
+                        Username
+                        <span class="field-optional">optional if URI includes auth</span>
+                      </label>
+                      <input v-model="form.username" class="base-input" placeholder="mongodb user" autocomplete="off" />
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">
+                        Password
+                        <span class="field-optional">optional if URI includes auth</span>
+                      </label>
+                      <input v-model="form.password" class="base-input" type="password" placeholder="(leave blank if none)" />
+                    </div>
+                  </div>
+                  <div class="field-check-row">
+                    <input id="mongodb-ssl" type="checkbox" v-model="form.ssl" style="accent-color:var(--brand)" />
+                    <label for="mongodb-ssl" class="field-check-label">Enable TLS</label>
+                  </div>
+                </template>
+
+                <!-- ── Cassandra ────────────────────────────────────────── -->
+                <template v-else-if="isCassandra">
+                  <div class="form-row">
+                    <div class="form-group" style="flex:2">
+                      <label class="form-label">Contact Points or URI</label>
+                      <input v-model="form.host" class="base-input" placeholder="localhost or cassandra://user:pass@host:9042/keyspace" />
+                    </div>
+                    <div class="form-group" style="flex:1">
+                      <label class="form-label">Port</label>
+                      <input v-model.number="form.port" class="base-input" type="number" />
+                    </div>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">
+                      Default Keyspace
+                      <span class="field-optional">optional</span>
+                    </label>
+                    <input v-model="form.database" class="base-input" placeholder="app_keyspace" />
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label class="form-label">
+                        Username
+                        <span class="field-optional">optional</span>
+                      </label>
+                      <input v-model="form.username" class="base-input" placeholder="cassandra user" autocomplete="off" />
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">
+                        Password
+                        <span class="field-optional">optional</span>
+                      </label>
+                      <input v-model="form.password" class="base-input" type="password" placeholder="(leave blank if none)" />
+                    </div>
+                  </div>
+                  <div class="field-check-row">
+                    <input id="cassandra-ssl" type="checkbox" v-model="form.ssl" style="accent-color:var(--brand)" />
+                    <label for="cassandra-ssl" class="field-check-label">Enable TLS</label>
                   </div>
                 </template>
 
@@ -1249,6 +1368,8 @@ async function handleReconnect(id: number, name: string) {
 .conn-badge--redis     { background: #c6302b; }
 .conn-badge--memcache  { background: #16a34a; }
 .conn-badge--kafka     { background: #231f20; }
+.conn-badge--mongodb   { background: #00a35c; }
+.conn-badge--cassandra { background: #1f6feb; }
 .conn-badge--elasticsearch { background: #00bfb3; }
 .conn-badge--opensearch    { background: #005eb8; }
 .conn-badge--sqlite    { background: #4b5563; }
@@ -1531,6 +1652,8 @@ async function handleReconnect(id: number, name: string) {
 .provider-card__icon--redis    { background: #c6302b; }
 .provider-card__icon--memcache { background: #16a34a; }
 .provider-card__icon--kafka    { background: #231f20; }
+.provider-card__icon--mongodb  { background: #00a35c; }
+.provider-card__icon--cassandra { background: #1f6feb; }
 .provider-card__icon--elasticsearch { background: #00bfb3; }
 .provider-card__icon--opensearch    { background: #005eb8; }
 .provider-card__icon--sqlite   { background: #4b5563; }

@@ -14,7 +14,8 @@ import { useDatabases } from '@/composables/useDatabases'
 import { useSchemaCompletion } from '@/composables/useSchemaCompletion'
 import { useConnections } from '@/composables/useConnections'
 import { formatSQL } from '@/utils/sqlFormat'
-import { downloadCSV, downloadJSON } from '@/utils/export'
+import { downloadCSV, downloadJSON, downloadExcel } from '@/utils/export'
+import { readableError, readableFetchError } from '@/utils/httpError'
 
 // ── Result payload type (emitted up to DataView) ──────────────────
 export interface ScriptResult {
@@ -47,7 +48,7 @@ const { connections } = useConnections()
 const { fetchHistory, clearHistory } = useQuery()
 const { getCompletionSource } = useSchemaCompletion()
 const { queries: savedQueries, fetchAll: fetchSaved, save: saveQuery, remove: removeQuery } = useSavedQueries()
-const { databases, fetchDatabases } = useDatabases()
+const { databases, error: databaseError, fetchDatabases } = useDatabases()
 
 const activeConn = computed(() =>
   props.connId ? connections.value.find(c => c.id === props.connId) ?? null : null
@@ -114,6 +115,10 @@ watch(() => props.connId, async (id) => {
   selectedDatabase.value = props.defaultDb ?? ''
   if (!id) return
   await fetchDatabases(id)
+  if (databaseError.value) {
+    setActiveError(databaseError.value)
+    return
+  }
   if (!selectedDatabase.value) selectedDatabase.value = databases.value[0] ?? ''
   const db = selectedDatabase.value || 'public'
   schemaCompletion.value = await getCompletionSource(id, db)
@@ -129,18 +134,30 @@ const txActive = ref(false)
 
 async function txBegin() {
   if (!props.connId) return
-  await axios.post(`/api/connections/${props.connId}/transaction/begin`)
-  txActive.value = true
+  try {
+    await axios.post(`/api/connections/${props.connId}/transaction/begin`)
+    txActive.value = true
+  } catch (e) {
+    setActiveError(readableError(e, { action: 'Begin transaction', fallback: 'Failed to begin transaction' }))
+  }
 }
 async function txCommit() {
   if (!props.connId) return
-  await axios.post(`/api/connections/${props.connId}/transaction/commit`)
-  txActive.value = false
+  try {
+    await axios.post(`/api/connections/${props.connId}/transaction/commit`)
+    txActive.value = false
+  } catch (e) {
+    setActiveError(readableError(e, { action: 'Commit transaction', fallback: 'Failed to commit transaction' }))
+  }
 }
 async function txRollback() {
   if (!props.connId) return
-  await axios.post(`/api/connections/${props.connId}/transaction/rollback`)
-  txActive.value = false
+  try {
+    await axios.post(`/api/connections/${props.connId}/transaction/rollback`)
+    txActive.value = false
+  } catch (e) {
+    setActiveError(readableError(e, { action: 'Rollback transaction', fallback: 'Failed to roll back transaction' }))
+  }
 }
 watch(() => props.connId, () => { txActive.value = false })
 
@@ -157,6 +174,14 @@ function formatCurrentSQL() {
   if (!activeTab.value) return
   const driver = activeConn.value?.driver ?? 'sql'
   activeTab.value.sql = formatSQL(activeTab.value.sql, driver)
+}
+
+function setActiveError(message: string, sql = activeTab.value?.sql ?? '') {
+  if (!activeTab.value) return
+  activeTab.value.error = message
+  activeTab.value.notice = ''
+  activeTab.value.noticeTone = 'error'
+  emit('result', { kind: 'error', error: message, sql })
 }
 
 function cancelQuery() {
@@ -244,15 +269,15 @@ async function runQuery() {
         try {
           await handleApprovalRequired(tab.sql, responseData)
           return
-        } catch (submitErr: any) {
-          tab.error = submitErr?.response?.data?.error ?? 'Failed to submit approval request'
+        } catch (submitErr) {
+          tab.error = readableError(submitErr, { action: 'Submit approval request', fallback: 'Failed to submit approval request' })
           tab.notice = ''
           tab.noticeTone = 'error'
           emit('result', { kind: 'error', error: tab.error, sql: tab.sql })
           return
         }
       }
-      tab.error = err.response?.data?.error ?? 'Query failed'
+      tab.error = readableError(e, { action: 'Run query', fallback: 'Query failed' })
       tab.notice = ''
       tab.noticeTone = 'error'
       emit('result', { kind: 'error', error: tab.error, sql: tab.sql })
@@ -272,10 +297,8 @@ async function submitApprovalRequest() {
     activeTab.value.error = ''
     activeTab.value.notice = `Approval request #${data.id} submitted for review.`
     activeTab.value.noticeTone = 'success'
-  } catch (e: any) {
-    activeTab.value.error = e?.response?.data?.error ?? 'Failed to submit approval request'
-    activeTab.value.notice = ''
-    activeTab.value.noticeTone = 'error'
+  } catch (e) {
+    setActiveError(readableError(e, { action: 'Submit approval request', fallback: 'Failed to submit approval request' }))
   } finally {
     approvalSubmitting.value = false
   }
@@ -290,8 +313,8 @@ async function runExplainPlan() {
       sql: activeTab.value.sql
     })
     emit('result', { kind: 'explain', data, sql: activeTab.value.sql })
-  } catch (e: any) {
-    emit('result', { kind: 'error', error: e?.response?.data?.error ?? 'Explain failed', sql: activeTab.value.sql })
+  } catch (e) {
+    setActiveError(readableError(e, { action: 'Explain query', fallback: 'Explain failed' }), activeTab.value.sql)
   } finally {
     activeTab.value.running = false
   }
@@ -317,7 +340,9 @@ async function runStreamQuery() {
       body: JSON.stringify({ sql: tab.sql, database: selectedDatabase.value || undefined }),
       signal: streamAbort.signal,
     })
-    const reader = resp.body!.getReader()
+    if (!resp.ok) throw new Error(await readableFetchError(resp, 'Stream query failed'))
+    if (!resp.body) throw new Error('Stream query failed: server returned an empty response.')
+    const reader = resp.body.getReader()
     const dec = new TextDecoder()
     let buf = ''
     while (true) {
@@ -329,7 +354,13 @@ async function runStreamQuery() {
       for (const part of parts) {
         for (const line of part.split('\n')) {
           if (!line.startsWith('data: ')) continue
-          const obj = JSON.parse(line.slice(6))
+          let obj: any
+          try {
+            obj = JSON.parse(line.slice(6))
+          } catch {
+            throw new Error('Stream query failed: server returned malformed stream data.')
+          }
+          if (obj.error) throw new Error(String(obj.error))
           if (obj.columns) { cols.push(...obj.columns) }
           else if (obj.row) { rows.push(obj.row); count++ }
           else if (obj.done) { durationMs = obj.duration_ms }
@@ -338,7 +369,12 @@ async function runStreamQuery() {
     }
     emit('result', { kind: 'stream', columns: cols, rows, count, duration_ms: durationMs })
   } catch (e: any) {
-    if (e?.name !== 'AbortError') tab.error = 'Stream aborted'
+    if (e?.name !== 'AbortError') {
+      tab.error = readableError(e, { action: 'Stream query', fallback: 'Stream query failed' })
+      tab.notice = ''
+      tab.noticeTone = 'error'
+      emit('result', { kind: 'error', error: tab.error, sql: tab.sql })
+    }
   } finally {
     tab.running = false
     streamAbort = null
@@ -364,11 +400,11 @@ async function runScript() {
     if (activeTab.value && responseData?.approval_required) {
       try {
         await handleApprovalRequired(activeTab.value.sql, responseData)
-      } catch (submitErr: any) {
-        activeTab.value.error = submitErr?.response?.data?.error ?? 'Failed to submit approval request'
+      } catch (submitErr) {
+        setActiveError(readableError(submitErr, { action: 'Submit approval request', fallback: 'Failed to submit approval request' }))
       }
     } else if (activeTab.value) {
-      activeTab.value.error = e?.response?.data?.error ?? 'Script failed'
+      setActiveError(readableError(e, { action: 'Run script', fallback: 'Script failed' }))
     }
   } finally {
     scriptRunning.value = false
@@ -380,15 +416,23 @@ const historyItems = ref<HistoryItem[]>([])
 
 async function showHistory() {
   if (!props.connId) return
-  historyItems.value = await fetchHistory(props.connId)
-  emit('result', { kind: 'history', items: historyItems.value })
+  try {
+    historyItems.value = await fetchHistory(props.connId)
+    emit('result', { kind: 'history', items: historyItems.value })
+  } catch (e) {
+    setActiveError(readableError(e, { action: 'Load query history', fallback: 'Failed to load query history' }))
+  }
 }
 
 async function doClearHistory() {
   if (!props.connId) return
-  await clearHistory(props.connId)
-  historyItems.value = []
-  emit('result', { kind: 'history', items: [] })
+  try {
+    await clearHistory(props.connId)
+    historyItems.value = []
+    emit('result', { kind: 'history', items: [] })
+  } catch (e) {
+    setActiveError(readableError(e, { action: 'Clear query history', fallback: 'Failed to clear query history' }))
+  }
 }
 
 // ── Saved queries ─────────────────────────────────────────────────
@@ -404,22 +448,31 @@ async function openSaveDialog() {
 
 async function confirmSave() {
   if (!saveName.value.trim() || !activeTab.value?.sql) return
-  await saveQuery(saveName.value.trim(), activeTab.value.sql, saveDesc.value, props.connId)
-  saveDialogOpen.value = false
-  await fetchSaved()
+  try {
+    await saveQuery(saveName.value.trim(), activeTab.value.sql, saveDesc.value, props.connId)
+    saveDialogOpen.value = false
+    await fetchSaved()
+  } catch (e) {
+    setActiveError(readableError(e, { action: 'Save query', fallback: 'Failed to save query' }))
+  }
 }
 
 async function showSaved() {
-  await fetchSaved()
-  emit('result', { kind: 'saved', queries: savedQueries.value })
+  try {
+    await fetchSaved()
+    emit('result', { kind: 'saved', queries: savedQueries.value })
+  } catch (e) {
+    setActiveError(readableError(e, { action: 'Load saved queries', fallback: 'Failed to load saved queries' }))
+  }
 }
 
 watch(() => props.connId, id => { if (id) fetchSaved() }, { immediate: true })
 
 // ── Export ────────────────────────────────────────────────────────
-function exportCurrentResult(format: 'csv' | 'json', columns: string[], rows: unknown[][]) {
+function exportCurrentResult(format: 'csv' | 'json' | 'excel', columns: string[], rows: unknown[][]) {
   if (format === 'csv') downloadCSV(columns, rows, 'query-results')
-  else downloadJSON(columns, rows, 'query-results')
+  else if (format === 'json') downloadJSON(columns, rows, 'query-results')
+  else downloadExcel(columns, rows, 'query-results')
 }
 
 // ── UI toggles ────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import axios from 'axios'
+import { readableError } from '@/utils/httpError'
 
 export interface SchemaTable {
   name: string
@@ -112,16 +113,18 @@ export function useSchema() {
   const columns = ref<SchemaColumn[]>([])
   const metadata = ref<SchemaMetadataCatalog | null>(null)
   const objectDetail = ref<SchemaObjectDetail | null>(null)
+  const error = ref('')
 
   async function fetchSchema(connId: number) {
     loadingSchema.value = true
+    error.value = ''
     try {
       const { data } = await axios.get<SchemaDatabase[]>(`/api/connections/${connId}/schema`)
       databases.value = Array.isArray(data)
         ? data.map((db) => ({ ...db, tables: Array.isArray(db.tables) ? db.tables : [] }))
         : []
     } catch (err) {
-      console.error('[useSchema] fetchSchema failed', { connId, err })
+      error.value = readableError(err, { action: 'Load schema', fallback: 'Failed to load schema' })
       databases.value = []
     } finally {
       loadingSchema.value = false
@@ -129,30 +132,34 @@ export function useSchema() {
   }
 
   async function fetchColumns(connId: number, db: string, table: string) {
+    error.value = ''
     try {
       const url = `/api/connections/${connId}/schema/${db}/tables/${table}/columns`
       const { data } = await axios.get<SchemaColumn[]>(url)
       columns.value = Array.isArray(data) ? data : []
     } catch (err: any) {
-      console.error('[useSchema] fetchColumns failed', { connId, db, table, err })
+      error.value = readableError(err, { action: 'Load columns', fallback: 'Failed to load columns' })
       columns.value = []
     }
   }
 
   async function fetchMetadata(connId: number, db: string) {
+    error.value = ''
     try {
       const { data } = await axios.get<SchemaMetadataCatalog>(
         `/api/connections/${connId}/schema/${encodeURIComponent(db)}/metadata`,
       )
       metadata.value = data
       return data
-    } catch {
+    } catch (err) {
+      error.value = readableError(err, { action: 'Load schema metadata', fallback: 'Failed to load schema metadata' })
       metadata.value = null
       return null
     }
   }
 
   async function fetchObjectDetail(connId: number, db: string, type: string, name: string) {
+    error.value = ''
     try {
       const { data } = await axios.get<SchemaObjectDetail>(
         `/api/connections/${connId}/schema/${encodeURIComponent(db)}/object-detail`,
@@ -161,7 +168,7 @@ export function useSchema() {
       objectDetail.value = data
       return data
     } catch (err) {
-      console.error('[useSchema] fetchObjectDetail failed', { connId, db, type, name, err })
+      error.value = readableError(err, { action: 'Load object detail', fallback: 'Failed to load object detail' })
       objectDetail.value = null
       return null
     }
@@ -176,23 +183,27 @@ export function useSchema() {
     orderBy?: string,
     orderDir: 'asc' | 'desc' = 'asc',
   ) {
+    error.value = ''
     try {
       const { data } = await axios.get(`/api/connections/${connId}/schema/${db}/tables/${table}/data`, {
         params: { page, page_size: pageSize, order_by: orderBy, order_dir: orderDir },
       })
       return data
-    } catch {
+    } catch (err) {
+      error.value = readableError(err, { action: 'Load table data', fallback: 'Failed to load table data' })
       return null
     }
   }
 
   async function fetchTableColumns(connId: number, db: string, table: string): Promise<SchemaColumn[]> {
+    error.value = ''
     try {
       const { data } = await axios.get<SchemaColumn[]>(
         `/api/connections/${connId}/schema/${db}/tables/${table}/columns`,
       )
       return data
-    } catch {
+    } catch (err) {
+      error.value = readableError(err, { action: 'Load table columns', fallback: 'Failed to load table columns' })
       return []
     }
   }
@@ -203,6 +214,7 @@ export function useSchema() {
     columns,
     metadata,
     objectDetail,
+    error,
     fetchSchema,
     fetchColumns,
     fetchMetadata,

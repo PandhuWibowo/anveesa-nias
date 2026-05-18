@@ -11,23 +11,25 @@ import (
 )
 
 type UserInfo struct {
-	ID        int64  `json:"id"`
-	Username  string `json:"username"`
-	Role      string `json:"role"`
-	RoleID    int64  `json:"role_id"`
-	IsActive  bool   `json:"is_active"`
-	CreatedAt string `json:"created_at"`
+	ID          int64    `json:"id"`
+	Username    string   `json:"username"`
+	Role        string   `json:"role"`
+	RoleID      int64    `json:"role_id"`
+	IsActive    bool     `json:"is_active"`
+	Permissions []string `json:"permissions"`
+	CreatedAt   string   `json:"created_at"`
 }
 
 func ListUsers() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		rows, err := appdb.DB.Query(`
-			SELECT u.id, u.username, COALESCE(r.name, u.role) as role, 
-			       COALESCE(u.role_id, 2) as role_id,
-			       COALESCE(u.is_active, 1) as is_active,
-			       u.created_at 
-			FROM users u
+				SELECT u.id, u.username, COALESCE(r.name, u.role) as role, 
+				       COALESCE(u.role_id, 2) as role_id,
+				       COALESCE(u.is_active, 1) as is_active,
+				       COALESCE(u.permissions, '[]') as permissions,
+				       u.created_at 
+				FROM users u
 			LEFT JOIN roles r ON r.id = u.role_id
 			ORDER BY u.id
 		`)
@@ -40,8 +42,10 @@ func ListUsers() http.HandlerFunc {
 		for rows.Next() {
 			var u UserInfo
 			var isActive int
-			rows.Scan(&u.ID, &u.Username, &u.Role, &u.RoleID, &isActive, &u.CreatedAt)
+			var permissions string
+			rows.Scan(&u.ID, &u.Username, &u.Role, &u.RoleID, &isActive, &permissions, &u.CreatedAt)
 			u.IsActive = isActive == 1
+			u.Permissions = ParseAppPerms(permissions)
 			users = append(users, u)
 		}
 		if users == nil {
@@ -61,13 +65,14 @@ func UpdateUser() http.HandlerFunc {
 			return
 		}
 
-	var body struct {
-		Role        string   `json:"role"`
-		RoleID      *int64   `json:"role_id"`
-		IsActive    *bool    `json:"is_active"`
-		Password    string   `json:"password"`
-		Connections []int64  `json:"connections"`
-	}
+		var body struct {
+			Role        string    `json:"role"`
+			RoleID      *int64    `json:"role_id"`
+			IsActive    *bool     `json:"is_active"`
+			Password    string    `json:"password"`
+			Connections []int64   `json:"connections"`
+			Permissions *[]string `json:"permissions"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
 			return
@@ -85,35 +90,40 @@ func UpdateUser() http.HandlerFunc {
 			appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET role = ? WHERE id = ?`), body.Role, id)
 		}
 
-	// Update password if provided
-	if body.Password != "" {
-		hash, err := bcrypt.GenerateFromPassword([]byte(body.Password), bcrypt.DefaultCost)
-		if err == nil {
-			appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET password = ? WHERE id = ?`), string(hash), id)
+		// Update user-level app permission overrides (ABAC grants)
+		if body.Permissions != nil {
+			appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET permissions = ? WHERE id = ?`), AppPermsToJSON(*body.Permissions), id)
 		}
-	}
 
-	if body.IsActive != nil {
-		isActive := 0
-		if *body.IsActive {
-			isActive = 1
+		// Update password if provided
+		if body.Password != "" {
+			hash, err := bcrypt.GenerateFromPassword([]byte(body.Password), bcrypt.DefaultCost)
+			if err == nil {
+				appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET password = ? WHERE id = ?`), string(hash), id)
+			}
 		}
-		appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET is_active = ? WHERE id = ?`), isActive, id)
-	}
 
-	// Update connection assignments
-	if body.Connections != nil {
-		// Clear existing connections
-		appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM user_connections WHERE user_id = ?`), id)
-		
-		// Add new connections
-		for _, connID := range body.Connections {
-			appdb.DB.Exec(appdb.ConvertQuery(`INSERT INTO user_connections (user_id, conn_id) VALUES (?, ?)`), id, connID)
+		if body.IsActive != nil {
+			isActive := 0
+			if *body.IsActive {
+				isActive = 1
+			}
+			appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET is_active = ? WHERE id = ?`), isActive, id)
 		}
-	}
 
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"message": "user updated"})
+		// Update connection assignments
+		if body.Connections != nil {
+			// Clear existing connections
+			appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM user_connections WHERE user_id = ?`), id)
+
+			// Add new connections
+			for _, connID := range body.Connections {
+				appdb.DB.Exec(appdb.ConvertQuery(`INSERT INTO user_connections (user_id, conn_id) VALUES (?, ?)`), id, connID)
+			}
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"message": "user updated"})
 	}
 }
 

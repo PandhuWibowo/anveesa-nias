@@ -123,6 +123,12 @@ const (
 	PermKafkaView           = "kafka.view"
 	PermKafkaProduce        = "kafka.produce"
 	PermKafkaManage         = "kafka.manage"
+	PermMongoView           = "mongodb.view"
+	PermMongoWrite          = "mongodb.write"
+	PermMongoAdmin          = "mongodb.admin"
+	PermMongoExport         = "mongodb.export"
+	PermMongoImport         = "mongodb.import"
+	PermCassandraView       = "cassandra.view"
 	PermAuditView           = "audit.view"
 	PermOperationsView      = "operations.view"
 	PermPerformanceView     = "performance.view"
@@ -143,9 +149,16 @@ const (
 	PermFoldersManage       = "folders.manage"
 	PermRolesManage         = "roles.manage"
 	PermWorkflowsManage     = "workflows.manage"
-	PermPipelinesView       = "pipelines.view"
-	PermPipelinesManage     = "pipelines.manage"
-	PermPipelinesRun        = "pipelines.run"
+	PermPipelinesView   = "pipelines.view"
+	PermPipelinesManage = "pipelines.manage"
+	PermPipelinesRun    = "pipelines.run"
+	// Observability
+	PermObservabilityView = "observability.view"
+	PermDiscoverView      = "discover.view"
+	PermUptimeView        = "uptime.view"
+	// Data
+	PermDataExport = "data.export"
+	PermDataImport = "data.import"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -171,8 +184,13 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermKafkaView, Label: "Use Kafka Browser", Group: "Messaging"},
 	{Key: PermKafkaProduce, Label: "Produce Kafka Messages", Group: "Messaging"},
 	{Key: PermKafkaManage, Label: "Manage Kafka Topics", Group: "Messaging"},
+	{Key: PermMongoView, Label: "Use MongoDB Browser", Group: "Document Database"},
+	{Key: PermMongoWrite, Label: "Write MongoDB Documents", Group: "Document Database"},
+	{Key: PermMongoAdmin, Label: "Manage MongoDB Collections and Indexes", Group: "Document Database"},
+	{Key: PermMongoExport, Label: "Export MongoDB Data", Group: "Document Database"},
+	{Key: PermMongoImport, Label: "Import MongoDB Data", Group: "Document Database"},
+	{Key: PermCassandraView, Label: "Use Cassandra Workbench", Group: "Wide-column Database"},
 	{Key: PermAuditView, Label: "View Audit Logs", Group: "Audit"},
-	{Key: PermOperationsView, Label: "View Operations Overview", Group: "Operations"},
 	{Key: PermPerformanceView, Label: "View Query Performance", Group: "Operations"},
 	{Key: PermDatabaseAuditView, Label: "View Database Audit", Group: "Operations"},
 	{Key: PermWatchersManage, Label: "Manage Watchers", Group: "Operations"},
@@ -194,6 +212,13 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermPipelinesView, Label: "View Data Pipelines", Group: "Data Engineering"},
 	{Key: PermPipelinesManage, Label: "Manage Data Pipelines", Group: "Data Engineering"},
 	{Key: PermPipelinesRun, Label: "Run Data Pipelines", Group: "Data Engineering"},
+	// Observability
+	{Key: PermObservabilityView, Label: "View Observability", Group: "Observability"},
+	{Key: PermDiscoverView, Label: "Access Discover (Log Explorer)", Group: "Observability"},
+	{Key: PermUptimeView, Label: "View Uptime Monitoring", Group: "Observability"},
+	// Data
+	{Key: PermDataExport, Label: "Export Data (CSV / JSON / Excel)", Group: "Data"},
+	{Key: PermDataImport, Label: "Import Data", Group: "Data"},
 }
 
 // PermissionDef describes a single permission for the UI.

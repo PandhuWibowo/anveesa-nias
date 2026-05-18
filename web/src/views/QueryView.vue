@@ -23,6 +23,7 @@ import { useSavedQueries } from '@/composables/useSavedQueries'
 import { useDatabases } from '@/composables/useDatabases'
 import { downloadCSV, downloadJSON } from '@/utils/export'
 import { formatSQL } from '@/utils/sqlFormat'
+import { readableError, readableFetchError } from '@/utils/httpError'
 
 const props = defineProps<{ activeConnId?: number | null }>()
 
@@ -31,7 +32,7 @@ const { fetchHistory, clearHistory } = useQuery()
 const { mode } = useTheme()
 const { getCompletionSource } = useSchemaCompletion()
 const { queries: savedQueries, fetchAll: fetchSaved, save: saveQuery, remove: removeQuery } = useSavedQueries()
-const { databases, fetchDatabases } = useDatabases()
+const { databases, error: databaseError, fetchDatabases } = useDatabases()
 
 const selectedDatabase = ref('')
 const showShortcuts = ref(false)
@@ -91,18 +92,30 @@ const txActive = ref(false)
 
 async function txBegin() {
   if (!connId.value) return
-  await axios.post(`/api/connections/${connId.value}/transaction/begin`)
-  txActive.value = true
+  try {
+    await axios.post(`/api/connections/${connId.value}/transaction/begin`)
+    txActive.value = true
+  } catch (e) {
+    if (activeTab.value) activeTab.value.error = readableError(e, { action: 'Begin transaction', fallback: 'Failed to begin transaction' })
+  }
 }
 async function txCommit() {
   if (!connId.value) return
-  await axios.post(`/api/connections/${connId.value}/transaction/commit`)
-  txActive.value = false
+  try {
+    await axios.post(`/api/connections/${connId.value}/transaction/commit`)
+    txActive.value = false
+  } catch (e) {
+    if (activeTab.value) activeTab.value.error = readableError(e, { action: 'Commit transaction', fallback: 'Failed to commit transaction' })
+  }
 }
 async function txRollback() {
   if (!connId.value) return
-  await axios.post(`/api/connections/${connId.value}/transaction/rollback`)
-  txActive.value = false
+  try {
+    await axios.post(`/api/connections/${connId.value}/transaction/rollback`)
+    txActive.value = false
+  } catch (e) {
+    if (activeTab.value) activeTab.value.error = readableError(e, { action: 'Rollback transaction', fallback: 'Failed to roll back transaction' })
+  }
 }
 
 watch(connId, () => { txActive.value = false })
@@ -193,7 +206,7 @@ async function runQuery() {
     if (err.code === 'ERR_CANCELED') {
       tab.error = 'Query cancelled.'
     } else {
-      tab.error = err.response?.data?.error ?? 'Query failed'
+      tab.error = readableError(e, { action: 'Run query', fallback: 'Query failed' })
       lastQueryError.value = tab.error
     }
   } finally {
@@ -215,7 +228,7 @@ async function runExplain() {
     )
     tab.result = data
   } catch (e: unknown) {
-    const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Explain failed'
+    const msg = readableError(e, { action: 'Explain query', fallback: 'Explain failed' })
     tab.error = msg
   } finally {
     tab.running = false
@@ -262,6 +275,10 @@ watch(
     selectedDatabase.value = ''
     if (!conn) return
     await fetchDatabases(conn.id)
+    if (databaseError.value) {
+      if (activeTab.value) activeTab.value.error = databaseError.value
+      return
+    }
     selectedDatabase.value = conn.database || (databases.value[0] ?? '')
     const db = selectedDatabase.value || 'public'
     schemaCompletion.value = await getCompletionSource(conn.id, db)
@@ -303,7 +320,7 @@ async function runScript() {
     )
     scriptResults.value = data
   } catch (e: unknown) {
-    const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Script failed'
+    const msg = readableError(e, { action: 'Run script', fallback: 'Script failed' })
     if (activeTab.value) activeTab.value.error = msg
   } finally {
     scriptRunning.value = false
@@ -358,7 +375,9 @@ async function runStreamQuery() {
       body: JSON.stringify({ sql: tab.sql, database: selectedDatabase.value || undefined }),
       signal: streamAbort.signal,
     })
-    const reader = resp.body!.getReader()
+    if (!resp.ok) throw new Error(await readableFetchError(resp, 'Stream query failed'))
+    if (!resp.body) throw new Error('Stream query failed: server returned an empty response.')
+    const reader = resp.body.getReader()
     const dec = new TextDecoder()
     let buf = ''
     while (true) {
@@ -370,7 +389,13 @@ async function runStreamQuery() {
       for (const part of parts) {
         for (const line of part.split('\n')) {
           if (!line.startsWith('data: ')) continue
-          const obj = JSON.parse(line.slice(6))
+          let obj: any
+          try {
+            obj = JSON.parse(line.slice(6))
+          } catch {
+            throw new Error('Stream query failed: server returned malformed stream data.')
+          }
+          if (obj.error) throw new Error(String(obj.error))
           if (obj.columns) { streamCols.value = obj.columns }
           else if (obj.row) { streamRows.value.push(obj.row); streamCount.value++ }
           else if (obj.done) { streamDurationMs.value = obj.duration_ms }
@@ -378,7 +403,7 @@ async function runStreamQuery() {
       }
     }
   } catch (e: any) {
-    if (e?.name !== 'AbortError' && tab) tab.error = 'Stream aborted'
+    if (e?.name !== 'AbortError' && tab) tab.error = readableError(e, { action: 'Stream query', fallback: 'Stream query failed' })
   } finally {
     streamLoading.value = false
     tab.running = false
@@ -398,8 +423,8 @@ async function runExplainPlan() {
   try {
     const { data } = await axios.post(`/api/connections/${connId.value}/explain`, { sql: activeTab.value.sql })
     explainResult.value = data
-  } catch (e: any) {
-    explainResult.value = { error: e?.response?.data?.error ?? 'Explain failed' }
+  } catch (e) {
+    explainResult.value = { error: readableError(e, { action: 'Explain query', fallback: 'Explain failed' }) }
   } finally {
     explainLoading.value = false
   }
@@ -420,9 +445,13 @@ async function openSaveDialog() {
 
 async function confirmSave() {
   if (!saveName.value.trim() || !activeTab.value?.sql) return
-  await saveQuery(saveName.value.trim(), activeTab.value.sql, saveDesc.value, connId.value)
-  saveDialogOpen.value = false
-  await fetchSaved()
+  try {
+    await saveQuery(saveName.value.trim(), activeTab.value.sql, saveDesc.value, connId.value)
+    saveDialogOpen.value = false
+    await fetchSaved()
+  } catch (e) {
+    activeTab.value.error = readableError(e, { action: 'Save query', fallback: 'Failed to save query' })
+  }
 }
 
 function loadSavedQuery(sql: string) {
@@ -437,14 +466,23 @@ watch(connId, () => fetchSaved(), { immediate: true })
 async function loadHistory() {
   if (!connId.value) return
   loadingHistory.value = true
-  historyItems.value = await fetchHistory(connId.value)
-  loadingHistory.value = false
+  try {
+    historyItems.value = await fetchHistory(connId.value)
+  } catch (e) {
+    if (activeTab.value) activeTab.value.error = readableError(e, { action: 'Load query history', fallback: 'Failed to load query history' })
+  } finally {
+    loadingHistory.value = false
+  }
 }
 
 async function doClearHistory() {
   if (!connId.value) return
-  await clearHistory(connId.value)
-  historyItems.value = []
+  try {
+    await clearHistory(connId.value)
+    historyItems.value = []
+  } catch (e) {
+    if (activeTab.value) activeTab.value.error = readableError(e, { action: 'Clear query history', fallback: 'Failed to clear query history' })
+  }
 }
 
 watch(connId, (id) => {

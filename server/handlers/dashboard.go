@@ -11,9 +11,9 @@ import (
 )
 
 type TableStat struct {
-	Name     string `json:"name"`
-	RowCount int64  `json:"row_count"`
-	SizeBytes int64 `json:"size_bytes"`
+	Name      string `json:"name"`
+	RowCount  int64  `json:"row_count"`
+	SizeBytes int64  `json:"size_bytes"`
 }
 
 type SlowQueryStat struct {
@@ -99,6 +99,14 @@ func GetDashboard() http.HandlerFunc {
 		_ = appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT driver FROM connections WHERE id=?`), connID).Scan(&rawDriver)
 		if rawDriver == "redis" {
 			json.NewEncoder(w).Encode(DashboardData{Driver: "redis", Tables: []TableStat{}, SlowQueries: SlowQuerySummary{Queries: []SlowQueryStat{}}})
+			return
+		}
+		if rawDriver == "mongodb" {
+			json.NewEncoder(w).Encode(DashboardData{Driver: "mongodb", Tables: []TableStat{}, SlowQueries: SlowQuerySummary{Queries: []SlowQueryStat{}}})
+			return
+		}
+		if rawDriver == "cassandra" {
+			json.NewEncoder(w).Encode(DashboardData{Driver: "cassandra", Tables: []TableStat{}, SlowQueries: SlowQuerySummary{Queries: []SlowQueryStat{}}})
 			return
 		}
 

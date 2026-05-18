@@ -73,10 +73,10 @@ function formatExecutedAt(value: string): string {
 
 const driverColors: Record<string, string> = {
   postgres: '#336791', mysql: '#f29111', mariadb: '#c0392b',
-  mssql: '#cc2927',
+  mssql: '#cc2927', mongodb: '#00a35c', cassandra: '#1f6feb',
 }
 const driverLabels: Record<string, string> = {
-  postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS',
+  postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', mongodb: 'MG', cassandra: 'CA',
 }
 
 async function loadOne(id: number) {
@@ -106,7 +106,8 @@ function toggleExpand(id: number) {
 
 function openInBrowser(id: number) {
   emit('set-conn', id)
-  router.push({ name: 'data' })
+  const conn = connections.value.find(c => c.id === id)
+  router.push({ name: conn?.driver === 'mongodb' ? 'mongodb' : conn?.driver === 'cassandra' ? 'cassandra' : 'data' })
 }
 
 // Aggregates
@@ -244,6 +245,13 @@ onMounted(loadAll)
             <div class="dash-redis-badge">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M12 12h.01"/><path d="M8 12h.01"/><path d="M16 12h.01"/></svg>
               Redis key-value store
+            </div>
+          </template>
+
+          <template v-else-if="states[conn.id]?.data?.driver === 'mongodb'">
+            <div class="dash-redis-badge" style="color:#00a35c;background:rgba(0,163,92,0.1)">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+              MongoDB document database
             </div>
           </template>
 

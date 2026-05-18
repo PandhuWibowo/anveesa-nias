@@ -384,6 +384,104 @@ func KafkaDeleteTopic() http.HandlerFunc {
 	}
 }
 
+// KafkaGroupsHealth returns a health summary for every consumer group in
+// parallel — one API call instead of N sequential group-detail calls.
+type KafkaGroupHealthSummary struct {
+	GroupID      string `json:"group_id"`
+	State        string `json:"state"`
+	Members      int    `json:"members"`
+	TopicCount   int    `json:"topic_count"`
+	PartCount    int    `json:"part_count"`
+	TotalLag     int64  `json:"total_lag"`
+	Health       string `json:"health"`  // "ok" | "warn" | "critical"
+	HealthReason string `json:"health_reason"`
+	Error        string `json:"error,omitempty"`
+}
+
+func KafkaGroupsHealth() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		connID, err := connectionIDFromPath(r.URL.Path)
+		if err != nil {
+			writeKafkaError(w, r, http.StatusBadRequest, "groups_health", "invalid connection id", err, nil)
+			return
+		}
+		in, err := kafkaConnectionInput(connID)
+		if err != nil {
+			writeKafkaError(w, r, http.StatusNotFound, "groups_health", err.Error(), err, kafkaErrorContext(connID, ConnectionInput{}, "", "", nil))
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+
+		groups, err := readKafkaGroups(ctx, in)
+		if err != nil {
+			writeKafkaError(w, r, http.StatusBadGateway, "groups_health", "failed to list groups", err, kafkaErrorContext(connID, in, "", "", nil))
+			return
+		}
+
+		type result struct {
+			idx int
+			s   KafkaGroupHealthSummary
+		}
+		ch := make(chan result, len(groups))
+		for i, g := range groups {
+			i, g := i, g
+			go func() {
+				s := KafkaGroupHealthSummary{GroupID: g.GroupID}
+				detail, detailErr := readKafkaGroupDetail(ctx, in, g.GroupID)
+				if detailErr != nil {
+					s.Health = "critical"
+					s.HealthReason = detailErr.Error()
+					s.Error = detailErr.Error()
+					ch <- result{i, s}
+					return
+				}
+				s.State = detail.State
+				s.Members = len(detail.Members)
+				s.TotalLag = detail.TotalLag
+				topics := map[string]struct{}{}
+				for _, o := range detail.Offsets {
+					topics[o.Topic] = struct{}{}
+				}
+				s.TopicCount = len(topics)
+				s.PartCount = len(detail.Offsets)
+				if detail.Error != "" {
+					s.Error = detail.Error
+				}
+				state := strings.ToLower(detail.State)
+				switch {
+				case state == "dead" || detail.Error != "":
+					s.Health = "critical"
+					s.HealthReason = "Group is Dead or has an error."
+				case detail.TotalLag > 1000:
+					s.Health = "critical"
+					s.HealthReason = fmt.Sprintf("Very high lag: %d messages behind.", detail.TotalLag)
+				case detail.TotalLag > 0:
+					s.Health = "warn"
+					s.HealthReason = fmt.Sprintf("Lag of %d messages. Consumer may be slow.", detail.TotalLag)
+				case state == "empty":
+					s.Health = "warn"
+					s.HealthReason = "No active consumers in this group."
+				default:
+					s.Health = "ok"
+					s.HealthReason = "Caught up and stable."
+				}
+				ch <- result{i, s}
+			}()
+		}
+
+		summaries := make([]KafkaGroupHealthSummary, len(groups))
+		for range groups {
+			res := <-ch
+			summaries[res.idx] = res.s
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(summaries)
+	}
+}
+
 func KafkaUpdatePartitions() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		connID, err := connectionIDFromPath(r.URL.Path)

@@ -5,6 +5,7 @@ import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConnections } from '@/composables/useConnections'
 import { useAuth } from '@/composables/useAuth'
+import { readableError } from '@/utils/httpError'
 
 const toast = useToast()
 const route = useRoute()
@@ -50,7 +51,7 @@ interface Role {
   id: number
   name: string
   description: string
-  permissions: string
+  permissions: string[]
   is_system: boolean
   is_active: boolean
   user_count: number
@@ -85,6 +86,17 @@ const groupedPermissions = computed(() => {
   })
   return grouped
 })
+
+function normalizePermissionList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string')
+  if (typeof value !== 'string') return []
+  try {
+    const parsed = JSON.parse(value || '[]')
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
+  } catch {
+    return []
+  }
+}
 
 async function fetchRoles() {
   rolesLoading.value = true
@@ -156,8 +168,8 @@ async function saveRole() {
     }
     showRoleForm.value = false
     await fetchRoles()
-  } catch (error: any) {
-    toast.error(error.response?.data || 'Failed to save role')
+  } catch (error) {
+    toast.error(readableError(error, { action: 'Save role', fallback: 'Failed to save role' }))
   } finally {
     roleSaving.value = false
   }
@@ -265,8 +277,8 @@ async function saveGroup() {
     }
     showGroupForm.value = false
     await fetchGroups()
-  } catch (error: any) {
-    toast.error(error.response?.data || 'Failed to save group')
+  } catch (error) {
+    toast.error(readableError(error, { action: 'Save access group', fallback: 'Failed to save group' }))
   } finally {
     groupSaving.value = false
   }
@@ -292,6 +304,7 @@ interface User {
   role: string
   role_id: number
   is_active: boolean
+  permissions: string[]
   created_at: string
 }
 
@@ -306,6 +319,7 @@ const userForm = reactive({
   password: '',
   role_id: 2,
   is_active: true,
+  permissions: [] as string[],
   connection_assignments: [] as Array<{
     conn_id: number
     permissions: string[]
@@ -387,7 +401,10 @@ async function fetchUsers() {
   usersLoading.value = true
   try {
     const { data } = await axios.get<User[]>('/api/admin/users')
-    users.value = data || []
+    users.value = (data || []).map((user: any) => ({
+      ...user,
+      permissions: normalizePermissionList(user.permissions),
+    }))
   } catch (error: any) {
     toast.error(error.response?.data || 'Failed to load users')
   } finally {
@@ -402,33 +419,33 @@ async function openUserForm(user: User | null = null) {
     userForm.password = ''
     userForm.role_id = user.role_id
     userForm.is_active = user.is_active
+    userForm.permissions = normalizePermissionList(user.permissions)
     
     // Load user's direct connection assignments
     try {
       const { data } = await axios.get(`/api/users/${user.id}/connections`)
-      console.log('Loaded user connections:', data)
       userForm.connection_assignments = (data || [])
         .filter((a: any) => a.source === 'direct')
         .map((a: any) => ({
           conn_id: a.conn_id,
           permissions: Array.isArray(a.permissions) ? a.permissions : []
         }))
-      console.log('Processed assignments:', userForm.connection_assignments)
     } catch (error: any) {
-      console.error('Failed to load user connections:', error)
       // If endpoint doesn't exist yet, just start with empty
       if (error.response?.status === 404 || error.response?.status === 501) {
-        console.log('Endpoint not implemented, starting with empty assignments')
+        userForm.connection_assignments = []
       } else {
-        toast.error('Failed to load user connections')
+        toast.error(readableError(error, { action: 'Load user connection assignments', fallback: 'Failed to load user connections' }))
+        editingUser.value = null
+        return
       }
-      userForm.connection_assignments = []
     }
   } else {
     userForm.username = ''
     userForm.password = ''
     userForm.role_id = 2
     userForm.is_active = true
+    userForm.permissions = []
     userForm.connection_assignments = []
   }
   showUserForm.value = true
@@ -452,7 +469,11 @@ async function saveUser() {
     if (editingUser.value) {
       // Update existing user
       userId = editingUser.value.id
-      const payload: any = { role_id: userForm.role_id, is_active: userForm.is_active }
+      const payload: any = {
+        role_id: userForm.role_id,
+        is_active: userForm.is_active,
+        permissions: userForm.permissions,
+      }
       if (userForm.password.trim()) {
         payload.password = userForm.password
       }
@@ -465,8 +486,7 @@ async function saveUser() {
           connection_permissions: userForm.connection_assignments
         })
       } catch (connError) {
-        console.error('Failed to update connections:', connError)
-        // Continue even if connection assignment fails
+        throw new Error(readableError(connError, { action: 'Update user connection assignments', fallback: 'Failed to update user connections' }))
       }
       
       toast.success('User updated successfully')
@@ -476,6 +496,7 @@ async function saveUser() {
         username: userForm.username,
         password: userForm.password,
         role_id: userForm.role_id,
+        permissions: userForm.permissions,
       })
       userId = data.id
 
@@ -487,8 +508,7 @@ async function saveUser() {
             connection_permissions: userForm.connection_assignments
           })
         } catch (connError) {
-          console.error('Failed to assign connections:', connError)
-          // Continue even if connection assignment fails
+          throw new Error(readableError(connError, { action: 'Assign user connections', fallback: 'Failed to assign user connections' }))
         }
       }
 
@@ -496,9 +516,8 @@ async function saveUser() {
     }
     showUserForm.value = false
     await fetchUsers()
-  } catch (error: any) {
-    console.error('Save user error:', error)
-    toast.error(error.response?.data || error.message || 'Failed to save user')
+  } catch (error) {
+    toast.error(readableError(error, { action: 'Save user', fallback: 'Failed to save user' }))
   } finally {
     userSaving.value = false
   }
@@ -552,7 +571,10 @@ onMounted(async () => {
 
   const tasks: Promise<unknown>[] = []
   if (canManageRoles.value) {
-    tasks.push(fetchRoles(), fetchPermissions())
+    tasks.push(fetchRoles())
+  }
+  if (canManageRoles.value || canManageUsers.value) {
+    tasks.push(fetchPermissions())
   }
   if (canManageGroups.value) {
     tasks.push(fetchGroups())
@@ -793,6 +815,7 @@ watch(() => route.query.tab, () => {
               <tr>
                 <th>Username</th>
                 <th>Role</th>
+                <th>Direct Grants</th>
                 <th>Status</th>
                 <th>Created</th>
                 <th></th>
@@ -805,6 +828,22 @@ watch(() => route.query.tab, () => {
                   <span class="perm-role-badge" :style="{ borderColor: getRoleColor(user.role), color: getRoleColor(user.role) }">
                     {{ user.role }}
                   </span>
+                </td>
+                <td class="perm-td-perms">
+                  <div v-if="user.permissions.length" class="perm-perms-display">
+                    <span
+                      v-for="perm in user.permissions.slice(0, 3)"
+                      :key="perm"
+                      class="perm-perm-badge"
+                      :title="getPermissionLabel(perm)"
+                    >
+                      {{ getPermissionLabel(perm) }}
+                    </span>
+                    <span v-if="user.permissions.length > 3" class="perm-perm-badge">
+                      +{{ user.permissions.length - 3 }}
+                    </span>
+                  </div>
+                  <span v-else class="perm-td-dim">Role only</span>
                 </td>
                 <td>
                   <span class="perm-status" :class="{ 'perm-status--active': user.is_active }">
@@ -820,7 +859,7 @@ watch(() => route.query.tab, () => {
                 </td>
               </tr>
               <tr v-if="users.length === 0">
-                <td colspan="5" class="perm-empty">No users found</td>
+                <td colspan="6" class="perm-empty">No users found</td>
               </tr>
             </tbody>
           </table>
@@ -975,6 +1014,22 @@ watch(() => route.query.tab, () => {
               <option :value="true">Active</option>
               <option :value="false">Locked</option>
             </select>
+
+            <label class="perm-label">Direct Feature Permissions</label>
+            <div class="perm-perms-container perm-perms-container--compact">
+              <div v-for="(perms, group) in groupedPermissions" :key="group" class="perm-perm-group">
+                <div class="perm-perm-group-header">{{ group }}</div>
+                <div class="perm-perm-group-items">
+                  <label v-for="perm in perms" :key="perm.key" class="perm-checkbox">
+                    <input type="checkbox" :value="perm.key" v-model="userForm.permissions" />
+                    <span class="perm-checkbox-label">{{ perm.label }}</span>
+                  </label>
+                </div>
+              </div>
+              <div v-if="permissions.length === 0" class="perm-empty-state">
+                No feature permissions available
+              </div>
+            </div>
 
             <label class="perm-label">Direct Connection Permissions</label>
             <div class="perm-connections-container">
@@ -1401,6 +1456,11 @@ watch(() => route.query.tab, () => {
   border-radius: 6px;
   max-height: 320px;
   overflow-y: auto;
+}
+
+.perm-perms-container--compact {
+  max-height: 240px;
+  padding: 12px;
 }
 
 .perm-perm-group {

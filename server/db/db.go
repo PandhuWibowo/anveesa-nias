@@ -913,13 +913,13 @@ func migrate() error {
 		// Seed system roles
 		`INSERT OR IGNORE INTO roles (name, description, permissions, is_system) VALUES
 			('admin', 'Full system access',
-			 '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage"]',
+			 '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage"]',
 			 1),
 			('poweruser', 'Non-admin full access for testing',
-			 '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage"]',
+			 '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage"]',
 			 1),
 			('user', 'Standard user access',
-			 '["connections.view","analytics.view","dashboards.manage","query.execute","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","er.view","redis.view","queues.view","operations.view","watchers.manage","ai.use","security.self","notifications.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view"]',
+			 '["connections.view","analytics.view","dashboards.manage","query.execute","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","er.view","redis.view","queues.view","mongodb.view","mongodb.export","cassandra.view","operations.view","watchers.manage","ai.use","security.self","notifications.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view"]',
 			 1)`,
 
 		// Add role_id and per-user permission overrides
@@ -929,9 +929,9 @@ func migrate() error {
 
 		// Set existing users to active
 		`UPDATE users SET is_active = 1 WHERE is_active IS NULL`,
-		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage"]' WHERE name = 'admin'`,
-		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage"]' WHERE name = 'poweruser'`,
-		`UPDATE roles SET permissions = '["connections.view","analytics.view","dashboards.manage","query.execute","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","er.view","redis.view","queues.view","operations.view","watchers.manage","ai.use","security.self","notifications.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view"]' WHERE name = 'user'`,
+		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage"]' WHERE name = 'admin'`,
+		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage"]' WHERE name = 'poweruser'`,
+		`UPDATE roles SET permissions = '["connections.view","analytics.view","dashboards.manage","query.execute","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","er.view","redis.view","queues.view","mongodb.view","mongodb.export","cassandra.view","operations.view","watchers.manage","ai.use","security.self","notifications.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view"]' WHERE name = 'user'`,
 		`ALTER TABLE query_approval_request ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE query_approval ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE connections ADD COLUMN disconnected INTEGER NOT NULL DEFAULT 0`,
@@ -1009,6 +1009,36 @@ func migrate() error {
 		`UPDATE roles SET permissions = JSON_SET(permissions, '$[#]', 'pipelines.view') WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.view%'`,
 		`UPDATE roles SET permissions = JSON_SET(permissions, '$[#]', 'pipelines.manage') WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.manage%'`,
 		`UPDATE roles SET permissions = JSON_SET(permissions, '$[#]', 'pipelines.run') WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.run%'`,
+
+		// ── Cloud Provider Configs (Huawei RDS, AWS RDS log integration) ──
+		`CREATE TABLE IF NOT EXISTS cloud_provider_configs (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			conn_id      INTEGER NOT NULL UNIQUE REFERENCES connections(id) ON DELETE CASCADE,
+			provider     TEXT NOT NULL DEFAULT 'huawei',
+			region       TEXT NOT NULL DEFAULT '',
+			project_id   TEXT NOT NULL DEFAULT '',
+			instance_id  TEXT NOT NULL DEFAULT '',
+			access_key   TEXT NOT NULL DEFAULT '',
+			secret_key   TEXT NOT NULL DEFAULT '',
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cloud_provider_configs_conn ON cloud_provider_configs(conn_id)`,
+		`CREATE TABLE IF NOT EXISTS cloud_provider_instances (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			conn_id      INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+			name         TEXT NOT NULL DEFAULT '',
+			provider     TEXT NOT NULL DEFAULT 'huawei',
+			region       TEXT NOT NULL DEFAULT '',
+			project_id   TEXT NOT NULL DEFAULT '',
+			instance_id  TEXT NOT NULL DEFAULT '',
+			access_key   TEXT NOT NULL DEFAULT '',
+			secret_key   TEXT NOT NULL DEFAULT '',
+			is_active    INTEGER NOT NULL DEFAULT 0,
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cloud_provider_instances_conn ON cloud_provider_instances(conn_id, is_active)`,
 	}
 	for _, s := range stmts {
 		convertedSQL := convertSQL(s)

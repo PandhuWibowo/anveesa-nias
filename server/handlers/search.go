@@ -307,7 +307,7 @@ func SearchQuery() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
 		}
-		path := fmt.Sprintf("/%s/_search?size=%d&from=%d", url.PathEscape(payload.Index), payload.Size, payload.From)
+		path := fmt.Sprintf("/%s/_search?size=%d&from=%d", searchIndexExpressionPath(payload.Index), payload.Size, payload.From)
 		var result map[string]any
 		if err := client.doJSON(r.Context(), http.MethodPost, path, body, &result); err != nil {
 			http.Error(w, jsonError("search query failed: "+err.Error()), http.StatusBadGateway)
@@ -315,6 +315,52 @@ func SearchQuery() http.HandlerFunc {
 		}
 		json.NewEncoder(w).Encode(result)
 	}
+}
+
+func searchResponseError(result map[string]any) string {
+	if result == nil {
+		return ""
+	}
+	if status, _ := result["status"].(float64); status >= 400 {
+		if reason := stringValue(result["error"]); reason != "" {
+			return reason
+		}
+	}
+	if errObj, ok := result["error"].(map[string]any); ok {
+		if causes, ok := errObj["root_cause"].([]any); ok && len(causes) > 0 {
+			if first, ok := causes[0].(map[string]any); ok {
+				if reason := stringValue(first["reason"]); reason != "" {
+					if typ := stringValue(first["type"]); typ != "" {
+						return typ + ": " + reason
+					}
+					return reason
+				}
+			}
+		}
+		if reason := stringValue(errObj["reason"]); reason != "" {
+			if typ := stringValue(errObj["type"]); typ != "" {
+				return typ + ": " + reason
+			}
+			return reason
+		}
+	}
+	return ""
+}
+
+func searchIndexExpressionPath(index string) string {
+	parts := strings.Split(index, ",")
+	escaped := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		value := url.PathEscape(part)
+		value = strings.ReplaceAll(value, "%2A", "*")
+		value = strings.ReplaceAll(value, "%3F", "?")
+		escaped = append(escaped, value)
+	}
+	return strings.Join(escaped, ",")
 }
 
 func SearchDocument() http.HandlerFunc {
