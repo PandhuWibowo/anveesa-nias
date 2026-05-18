@@ -168,7 +168,9 @@ jobs:
           with urllib.request.urlopen(req) as resp:
               ai_data = json.loads(resp.read())
 
-          content = (ai_data['choices'][0]['message'].get('content') or '').strip()
+          # glm-4.5-air returns content in 'reasoning' when 'content' is None
+          msg = ai_data['choices'][0]['message']
+          content = (msg.get('content') or msg.get('reasoning') or '').strip()
 
           if not content:
               raise ValueError(f"Empty response from model: {ai_data}")
