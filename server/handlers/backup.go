@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -35,6 +36,9 @@ type BackupOptions struct {
 	IncludeSequences bool `json:"include_sequences"` // emit CREATE SEQUENCE (PG only)
 	IncludeTriggers bool `json:"include_triggers"` // emit CREATE TRIGGER (best-effort)
 
+	// Output
+	Compress bool `json:"compress"` // gzip the output (.sql.gz)
+
 	// Filters
 	Schema        string   `json:"schema"`         // target schema (default varies per driver)
 	IncludeTables []string `json:"include_tables"` // if non-empty, only these tables
@@ -55,6 +59,7 @@ func DefaultBackupOptions() BackupOptions {
 		IncludeViews:    false,
 		IncludeSequences: false,
 		IncludeTriggers: false,
+		Compress:        false,
 	}
 }
 
@@ -86,6 +91,7 @@ func backupOptionsFromQuery(r *http.Request) BackupOptions {
 	opts.IncludeViews = boolQ("include_views", opts.IncludeViews)
 	opts.IncludeSequences = boolQ("include_sequences", opts.IncludeSequences)
 	opts.IncludeTriggers = boolQ("include_triggers", opts.IncludeTriggers)
+	opts.Compress = boolQ("compress", opts.Compress)
 	opts.Schema = strQ("schema", "")
 	if inc := q.Get("include_tables"); inc != "" {
 		for _, t := range strings.Split(inc, ",") {
@@ -151,12 +157,23 @@ func GetBackup() http.HandlerFunc {
 		}
 
 		opts := backupOptionsFromQuery(r)
-		filename := fmt.Sprintf("backup_%s_%s.sql", dbName, time.Now().Format("20060102_150405"))
-		w.Header().Set("Content-Type", "application/sql")
-		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
-		if err := writeBackupDump(r.Context(), w, db, driver, dbName, opts); err != nil {
-			// headers already sent; nothing we can do except log
-			return
+		ts := time.Now().Format("20060102_150405")
+		if opts.Compress {
+			filename := fmt.Sprintf("backup_%s_%s.sql.gz", dbName, ts)
+			w.Header().Set("Content-Type", "application/gzip")
+			w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+			gz := gzip.NewWriter(w)
+			defer gz.Close()
+			if err := writeBackupDump(r.Context(), gz, db, driver, dbName, opts); err != nil {
+				return
+			}
+		} else {
+			filename := fmt.Sprintf("backup_%s_%s.sql", dbName, ts)
+			w.Header().Set("Content-Type", "application/sql")
+			w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+			if err := writeBackupDump(r.Context(), w, db, driver, dbName, opts); err != nil {
+				return
+			}
 		}
 	}
 }

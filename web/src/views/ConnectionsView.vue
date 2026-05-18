@@ -23,6 +23,8 @@ const editingId = ref<number | null>(null)
 const testing = ref(false)
 const saving = ref(false)
 const testResult = ref<{ ok: boolean; message: string } | null>(null)
+const showPassword = ref(false)
+const showSSHPassword = ref(false)
 
 const defaultPorts: Record<DbDriver, number> = {
   sqlite: 0,
@@ -295,6 +297,8 @@ function resetForm() {
   form.folder_id = null
   form.visibility = 'shared'
   testResult.value = null
+  showPassword.value = false
+  showSSHPassword.value = false
 }
 
 async function editConnection(id: number) {
@@ -318,6 +322,8 @@ async function editConnection(id: number) {
     form.folder_id = conn.folder_id
     form.visibility = conn.visibility || 'shared'
     testResult.value = null
+    showPassword.value = false
+    showSSHPassword.value = false
     showForm.value = true
   } catch {
     toast.error('Failed to load connection')
@@ -730,7 +736,13 @@ async function handleReconnect(id: number, name: string) {
                     </div>
                     <div class="form-group">
                       <label class="form-label">Secret Access Key</label>
-                      <input v-model="form.password" class="base-input" type="password" placeholder="••••••••" />
+                      <div class="pw-wrap">
+                        <input v-model="form.password" class="base-input" :type="showPassword ? 'text' : 'password'" placeholder="••••••••" autocomplete="off" />
+                        <button type="button" class="pw-eye" @click="showPassword = !showPassword" :title="showPassword ? 'Hide' : 'Show'">
+                          <svg v-if="showPassword" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        </button>
+                      </div>
                     </div>
                   </div>
                   <div class="field-note field-note--info">
@@ -774,7 +786,13 @@ async function handleReconnect(id: number, name: string) {
                         Password
                         <span class="field-optional">optional</span>
                       </label>
-                      <input v-model="form.password" class="base-input" type="password" placeholder="(leave blank if none)" />
+                      <div class="pw-wrap">
+                        <input v-model="form.password" class="base-input" :type="showPassword ? 'text' : 'password'" placeholder="(leave blank if none)" />
+                        <button type="button" class="pw-eye" @click="showPassword = !showPassword" :title="showPassword ? 'Hide' : 'Show'">
+                          <svg v-if="showPassword" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        </button>
+                      </div>
                     </div>
                     <div class="form-group">
                       <label class="form-label">
@@ -815,7 +833,13 @@ async function handleReconnect(id: number, name: string) {
                         SASL Password
                         <span class="field-optional">optional</span>
                       </label>
-                      <input v-model="form.password" class="base-input" type="password" placeholder="(leave blank if no auth)" />
+                      <div class="pw-wrap">
+                        <input v-model="form.password" class="base-input" :type="showPassword ? 'text' : 'password'" placeholder="(leave blank if no auth)" />
+                        <button type="button" class="pw-eye" @click="showPassword = !showPassword" :title="showPassword ? 'Hide' : 'Show'">
+                          <svg v-if="showPassword" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        </button>
+                      </div>
                     </div>
                   </div>
                   <div class="field-check-row">
@@ -853,7 +877,13 @@ async function handleReconnect(id: number, name: string) {
                         Password
                         <span class="field-optional">optional if URI includes auth</span>
                       </label>
-                      <input v-model="form.password" class="base-input" type="password" placeholder="(leave blank if none)" />
+                      <div class="pw-wrap">
+                        <input v-model="form.password" class="base-input" :type="showPassword ? 'text' : 'password'" placeholder="(leave blank if none)" />
+                        <button type="button" class="pw-eye" @click="showPassword = !showPassword" :title="showPassword ? 'Hide' : 'Show'">
+                          <svg v-if="showPassword" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        </button>
+                      </div>
                     </div>
                   </div>
                   <div class="field-check-row">
@@ -894,7 +924,13 @@ async function handleReconnect(id: number, name: string) {
                         Password
                         <span class="field-optional">optional</span>
                       </label>
-                      <input v-model="form.password" class="base-input" type="password" placeholder="(leave blank if none)" />
+                      <div class="pw-wrap">
+                        <input v-model="form.password" class="base-input" :type="showPassword ? 'text' : 'password'" placeholder="(leave blank if none)" />
+                        <button type="button" class="pw-eye" @click="showPassword = !showPassword" :title="showPassword ? 'Hide' : 'Show'">
+                          <svg v-if="showPassword" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        </button>
+                      </div>
                     </div>
                   </div>
                   <div class="field-check-row">
@@ -935,7 +971,13 @@ async function handleReconnect(id: number, name: string) {
                         Password / API Key
                         <span class="field-optional">optional</span>
                       </label>
-                      <input v-model="form.password" class="base-input" type="password" placeholder="(leave blank if none)" />
+                      <div class="pw-wrap">
+                        <input v-model="form.password" class="base-input" :type="showPassword ? 'text' : 'password'" placeholder="(leave blank if none)" />
+                        <button type="button" class="pw-eye" @click="showPassword = !showPassword" :title="showPassword ? 'Hide' : 'Show'">
+                          <svg v-if="showPassword" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        </button>
+                      </div>
                     </div>
                   </div>
                   <div class="field-check-row">
@@ -967,7 +1009,13 @@ async function handleReconnect(id: number, name: string) {
                     </div>
                     <div class="form-group">
                       <label class="form-label">Password</label>
-                      <input v-model="form.password" class="base-input" type="password" placeholder="••••••••" />
+                      <div class="pw-wrap">
+                        <input v-model="form.password" class="base-input" :type="showPassword ? 'text' : 'password'" placeholder="••••••••" />
+                        <button type="button" class="pw-eye" @click="showPassword = !showPassword" :title="showPassword ? 'Hide' : 'Show'">
+                          <svg v-if="showPassword" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        </button>
+                      </div>
                     </div>
                   </div>
                   <div class="field-check-row">
@@ -1005,7 +1053,13 @@ async function handleReconnect(id: number, name: string) {
                     </div>
                     <div class="form-group">
                       <label class="form-label">SSH Password</label>
-                      <input v-model="form.ssh_password" class="base-input" type="password" placeholder="••••••••" />
+                      <div class="pw-wrap">
+                        <input v-model="form.ssh_password" class="base-input" :type="showSSHPassword ? 'text' : 'password'" placeholder="••••••••" />
+                        <button type="button" class="pw-eye" @click="showSSHPassword = !showSSHPassword" :title="showSSHPassword ? 'Hide' : 'Show'">
+                          <svg v-if="showSSHPassword" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        </button>
+                      </div>
                     </div>
                     <div class="form-group">
                       <label class="form-label">SSH Private Key <span class="field-optional">PEM, optional</span></label>
@@ -1747,6 +1801,40 @@ async function handleReconnect(id: number, name: string) {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-muted);
+}
+
+/* ── Password visibility toggle ── */
+.pw-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.pw-wrap .base-input {
+  flex: 1;
+  padding-right: 36px;
+}
+
+.pw-eye {
+  position: absolute;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.1s;
+  flex-shrink: 0;
+}
+
+.pw-eye:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface);
 }
 
 /* ── Conn tag ── */

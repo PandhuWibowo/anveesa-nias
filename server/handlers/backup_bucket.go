@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -113,7 +114,21 @@ func BackupToBucket() http.HandlerFunc {
 			return
 		}
 
-		// Build object key: subfolder/prefix_database_timestamp.sql
+		// Compress if requested
+		ext := ".sql"
+		if req.Options.Compress {
+			var gzBuf bytes.Buffer
+			gz := gzip.NewWriter(&gzBuf)
+			if _, err := gz.Write(buf.Bytes()); err != nil {
+				http.Error(w, `{"error":"compression failed: `+err.Error()+`"}`, http.StatusInternalServerError)
+				return
+			}
+			gz.Close()
+			buf = gzBuf
+			ext = ".sql.gz"
+		}
+
+		// Build object key: subfolder/prefix_database_timestamp[.sql|.sql.gz]
 		ts := time.Now().UTC().Format("20060102_150405")
 		prefix := strings.TrimSpace(req.Prefix)
 		if prefix == "" {
@@ -123,7 +138,7 @@ func BackupToBucket() http.HandlerFunc {
 		if dbPart == "" {
 			dbPart = "db"
 		}
-		objectName := fmt.Sprintf("%s_%s_%s.sql", prefix, dbPart, ts)
+		objectName := fmt.Sprintf("%s_%s_%s%s", prefix, dbPart, ts, ext)
 		subfolder := strings.Trim(strings.TrimSpace(req.Subfolder), "/")
 		if subfolder != "" {
 			objectName = subfolder + "/" + objectName
@@ -190,7 +205,9 @@ func uploadToBucket(ctx interface{ Done() <-chan struct{} }, dest *bucketConnRow
 	bucket := strings.Trim(dest.Bucket, "/")
 	key := strings.TrimPrefix(objectKey, "/")
 
-	uploadURL := fmt.Sprintf("%s://%s/%s/%s", scheme, endpointHost, url.PathEscape(bucket), url.PathEscape(key))
+	// Virtual-hosted style: {bucket}.{endpoint}/{key}
+	virtualHost := bucket + "." + endpointHost
+	uploadURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, url.PathEscape(key))
 
 	payloadHash := sha256.Sum256(data)
 	payloadHashHex := hex.EncodeToString(payloadHash[:])
@@ -245,7 +262,9 @@ func listBucketObjects(ctx interface {
 	}
 	bucket := strings.Trim(dest.Bucket, "/")
 
-	listURL := fmt.Sprintf("%s://%s/%s?list-type=2&max-keys=200", scheme, endpointHost, url.PathEscape(bucket))
+	// Virtual-hosted style: {bucket}.{endpoint}/?list-type=2
+	virtualHost := bucket + "." + endpointHost
+	listURL := fmt.Sprintf("%s://%s/?list-type=2&max-keys=200", scheme, virtualHost)
 	if prefix != "" {
 		listURL += "&prefix=" + url.QueryEscape(prefix+"/")
 	}

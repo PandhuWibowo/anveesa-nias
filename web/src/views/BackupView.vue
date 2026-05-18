@@ -73,6 +73,7 @@ function driverLabel(driver: DbDriver): string {
 // ── Shared backup options (pgAdmin-style) ────────────────────────────
 const backupOpts = reactive({
   sections:          'all'  as 'all' | 'pre-data' | 'data' | 'post-data',
+  compress:          true,
   drop_existing:     false,
   if_not_exists:     false,
   column_insert:     true,
@@ -93,6 +94,7 @@ const showAdvanced = ref(false)
 function toBackupOptionsPayload() {
   return {
     sections:          backupOpts.sections,
+    compress:          backupOpts.compress,
     drop_existing:     backupOpts.drop_existing,
     if_not_exists:     backupOpts.if_not_exists,
     column_insert:     backupOpts.column_insert,
@@ -169,7 +171,7 @@ async function loadBucketHistory() {
         subfolder: bucketForm.subfolder || '',
       },
     })
-    bucketHistory.value = (data.objects ?? []).filter((o: BucketObject) => o.key.endsWith('.sql'))
+    bucketHistory.value = (data.objects ?? []).filter((o: BucketObject) => o.key.endsWith('.sql') || o.key.endsWith('.sql.gz'))
       .sort((a: BucketObject, b: BucketObject) => b.last_modified.localeCompare(a.last_modified))
   } catch {
     bucketHistory.value = []
@@ -192,6 +194,14 @@ function formatBytes(b: number): string {
 function formatDate(value?: string) {
   if (!value) return '—'
   return new Date(value).toLocaleString()
+}
+
+function formatStatus(status: string): string {
+  return status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+}
+
+function copyKey(key: string) {
+  navigator.clipboard.writeText(key).then(() => toast.success('Key copied'))
 }
 
 // ── Request Download (existing) ───────────────────────────────────────
@@ -338,6 +348,7 @@ function downloadDirectBackup() {
     params: {
       database:          directDatabase.value,
       sections:          opts.sections,
+      compress:          opts.compress ? '1' : '0',
       drop_existing:     opts.drop_existing ? '1' : '0',
       if_not_exists:     opts.if_not_exists ? '1' : '0',
       column_insert:     opts.column_insert ? '1' : '0',
@@ -353,7 +364,7 @@ function downloadDirectBackup() {
       exclude_tables:    (opts.exclude_tables as string[]).join(','),
     },
     responseType: 'blob',
-  }).then(response => downloadBlob(response.data, `backup_${directDatabase.value || 'db'}.sql`))
+  }).then(response => downloadBlob(response.data, `backup_${directDatabase.value || 'db'}${backupOpts.compress ? '.sql.gz' : '.sql'}`))
     .catch((error: any) => toast.error(error.response?.data?.error || 'Failed to download backup'))
 }
 
@@ -490,7 +501,7 @@ onMounted(async () => {
               </div>
 
               <div v-if="bucketConnections.length === 0" class="bv-empty-hint">
-                No object storage connections found. <a href="/connections" style="color:var(--brand)">Add one →</a>
+                No object storage connection found. Go to <a href="/connections" style="color:var(--brand)">Connections → Add connection</a> and select your provider (Huawei OBS, AWS S3, GCP Storage, or Alibaba OSS), then enter your endpoint, access key, secret key, and bucket name.
               </div>
               <div v-else class="bv-conn-grid">
                 <button
@@ -547,6 +558,23 @@ onMounted(async () => {
               </div>
 
               <div v-if="showAdvanced" class="bv-opts-panel">
+
+                <!-- Output -->
+                <div class="bv-opts-group">
+                  <div class="bv-opts-group__label">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                    Output
+                  </div>
+                  <div class="bv-toggle-list">
+                    <label class="bv-toggle-row">
+                      <div>
+                        <span class="bv-toggle-row__name">Compress output (gzip)</span>
+                        <span class="bv-toggle-row__desc">Upload as .sql.gz — smaller file, faster transfer, compatible with your existing backups</span>
+                      </div>
+                      <div class="bv-switch" :class="{ 'is-on': backupOpts.compress }" @click="backupOpts.compress = !backupOpts.compress"><div class="bv-switch__knob"/></div>
+                    </label>
+                  </div>
+                </div>
 
                 <!-- Sections -->
                 <div class="bv-opts-group">
@@ -682,7 +710,7 @@ onMounted(async () => {
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                 <span>
                   Will upload to:
-                  <strong>{{ bucketConnections.find(c => c.id === bucketForm.dest_conn_id)?.database }}/{{ bucketForm.subfolder ? bucketForm.subfolder + '/' : '' }}{{ bucketForm.prefix || 'backup' }}_{{ bucketForm.database || 'db' }}_<em>YYYYMMDD_HHmmss</em>.sql</strong>
+                  <strong>{{ bucketConnections.find(c => c.id === bucketForm.dest_conn_id)?.database }}/{{ bucketForm.subfolder ? bucketForm.subfolder + '/' : '' }}{{ bucketForm.prefix || 'backup' }}_{{ bucketForm.database || 'db' }}_<em>YYYYMMDD_HHmmss</em>{{ backupOpts.compress ? '.sql.gz' : '.sql' }}</strong>
                 </span>
               </div>
 
@@ -777,6 +805,9 @@ onMounted(async () => {
                       <span>{{ formatDate(obj.last_modified) }}</span>
                     </div>
                   </div>
+                  <button class="bv-copy-btn" title="Copy object key" @click.stop="copyKey(obj.key)">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  </button>
                 </div>
               </div>
             </div>
@@ -838,7 +869,7 @@ onMounted(async () => {
                 <button v-for="item in filteredRequests" :key="item.id" class="bv-request-item" :class="{ 'bv-request-item--active': item.id === selectedRequestId }" @click="loadRequest(item.id)">
                   <div class="bv-request-item__top">
                     <strong>#{{ item.id }}</strong>
-                    <span class="bv-status" :data-status="item.status">{{ item.status }}</span>
+                    <span class="bv-status" :data-status="item.status">{{ formatStatus(item.status) }}</span>
                   </div>
                   <div class="bv-request-item__title">{{ item.title }}</div>
                   <div class="bv-request-item__meta">{{ item.connection || 'No connection' }} · {{ item.creator_name || 'unknown' }}</div>
@@ -853,7 +884,7 @@ onMounted(async () => {
                       <div class="bv-detail__title">{{ selectedRequest.title }}</div>
                       <div class="bv-detail__sub">{{ selectedRequest.connection }} · {{ selectedRequest.database_name || 'default' }}</div>
                     </div>
-                    <span class="bv-status" :data-status="selectedRequest.status">{{ selectedRequest.status }}</span>
+                    <span class="bv-status" :data-status="selectedRequest.status">{{ formatStatus(selectedRequest.status) }}</span>
                   </div>
                   <div class="bv-meta">
                     <span>Requested by {{ selectedRequest.creator_name || 'unknown' }}</span>
@@ -907,6 +938,21 @@ onMounted(async () => {
 
             <div v-if="showAdvanced" class="bv-opts-panel">
               <div class="bv-opts-group">
+                <div class="bv-opts-group__label">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                  Output
+                </div>
+                <div class="bv-toggle-list">
+                  <label class="bv-toggle-row">
+                    <div>
+                      <span class="bv-toggle-row__name">Compress output (gzip)</span>
+                      <span class="bv-toggle-row__desc">Download as .sql.gz instead of plain .sql</span>
+                    </div>
+                    <div class="bv-switch" :class="{ 'is-on': backupOpts.compress }" @click="backupOpts.compress = !backupOpts.compress"><div class="bv-switch__knob"/></div>
+                  </label>
+                </div>
+              </div>
+              <div class="bv-opts-group">
                 <div class="bv-opts-group__label">Sections</div>
                 <div class="bv-sections-grid">
                   <label v-for="s in [
@@ -925,7 +971,7 @@ onMounted(async () => {
 
             <button class="base-btn base-btn--primary" :disabled="!directConnId" @click="downloadDirectBackup">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              Download .sql
+              Download {{ backupOpts.compress ? '.sql.gz' : '.sql' }}
             </button>
           </div>
         </div>
@@ -1012,7 +1058,7 @@ onMounted(async () => {
 /* ── Connection picker grid ── */
 .bv-conn-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: 8px;
 }
 
@@ -1053,18 +1099,17 @@ onMounted(async () => {
 .bv-conn-card__info {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  min-width: 0;
+  gap: 2px;
   flex: 1;
+  min-width: 0;
 }
 
 .bv-conn-card__name {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  word-break: break-word;
+  line-height: 1.35;
 }
 
 .bv-conn-card.is-active .bv-conn-card__name { color: var(--brand); }
@@ -1072,9 +1117,8 @@ onMounted(async () => {
 .bv-conn-card__driver {
   font-size: 10.5px;
   color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  word-break: break-word;
+  line-height: 1.3;
 }
 
 .bv-conn-card__check {
@@ -1418,14 +1462,37 @@ onMounted(async () => {
 
 .bv-history-item__body { flex: 1; min-width: 0; }
 
+.bv-copy-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+
+.bv-history-item:hover .bv-copy-btn { opacity: 1; }
+
+.bv-copy-btn:hover {
+  background: var(--bg-elevated);
+  color: var(--brand);
+  border-color: var(--brand);
+}
+
 .bv-history-item__key {
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 500;
   color: var(--text-primary);
   font-family: var(--mono);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  word-break: break-all;
+  line-height: 1.4;
 }
 
 .bv-history-item__meta {
@@ -1611,16 +1678,48 @@ onMounted(async () => {
 
 @media (max-width: 900px) {
   .bv-bucket-layout { grid-template-columns: 1fr; }
-  .bv-sections-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
 @media (max-width: 720px) {
   .bv-card { padding: 16px; }
-  .bv-conn-grid { grid-template-columns: 1fr 1fr; }
+
+  /* Connection grid: horizontal scroll strip so cards never get squished */
+  .bv-conn-grid {
+    display: flex;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+    padding-bottom: 4px;
+    /* keep consistent gap */
+    gap: 8px;
+  }
+  .bv-conn-grid::-webkit-scrollbar { display: none; }
+  .bv-conn-grid .bv-conn-card {
+    flex-shrink: 0;
+    width: 175px;
+    scroll-snap-align: start;
+  }
+
+  /* Sections: same horizontal scroll so labels never wrap awkwardly */
+  .bv-sections-grid {
+    display: flex;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+    padding-bottom: 4px;
+  }
+  .bv-sections-grid::-webkit-scrollbar { display: none; }
+  .bv-sections-grid .bv-section-card {
+    flex-shrink: 0;
+    min-width: 120px;
+    scroll-snap-align: start;
+  }
 }
 
 @media (max-width: 480px) {
-  .bv-conn-grid { grid-template-columns: 1fr; }
   .bv-run-row { flex-direction: column; align-items: stretch; }
+  .bv-conn-grid .bv-conn-card { width: 160px; }
 }
 </style>
