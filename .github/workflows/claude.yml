@@ -169,8 +169,6 @@ jobs:
               ai_data = json.loads(resp.read())
 
           content = (ai_data['choices'][0]['message'].get('content') or '').strip()
-          print(f"[DEBUG] AI response length: {len(content)} chars")
-          print(f"[DEBUG] AI response preview: {content[:500]}")
 
           if not content:
               raise ValueError(f"Empty response from model: {ai_data}")
@@ -187,7 +185,6 @@ jobs:
 
                   summary      = review_data.get('summary', '').strip()
                   raw_comments = review_data.get('comments', [])
-                  print(f"[DEBUG] JSON parsed OK. summary={bool(summary)}, raw_comments={len(raw_comments)}")
 
                   valid_comments = []
                   for c in raw_comments:
@@ -196,7 +193,6 @@ jobs:
                       sl = c.get('start_line')
                       b  = c.get('body', '')
                       if not (f and l and b and f in valid_lines and int(l) in valid_lines[f]):
-                          print(f"[DEBUG] Skipped comment: file={f!r} line={l} (not in diff)")
                           continue
                       entry = {"path": f, "line": int(l), "side": "RIGHT", "body": b}
                       if sl and sl != l and int(sl) in valid_lines.get(f, set()) and int(sl) <= int(l):
@@ -204,7 +200,6 @@ jobs:
                           entry["start_side"] = "RIGHT"
                       valid_comments.append(entry)
 
-                  print(f"[DEBUG] valid_comments={len(valid_comments)}")
 
                   # If no inline comments survive filtering, post summary as plain comment
                   if not valid_comments:
@@ -243,7 +238,7 @@ jobs:
                       print(f"Posted review with {len(valid_comments)} inline comments.")
 
               except Exception as e:
-                  print(f"[DEBUG] Inline review failed: {e}. Falling back to plain comment.")
+                  print(f"Inline review failed ({e}), falling back to plain comment.")
                   post_plain(content)
           else:
               post_plain(content)
