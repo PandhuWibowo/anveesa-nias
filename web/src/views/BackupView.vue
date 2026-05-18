@@ -123,8 +123,46 @@ const bucketForm = reactive({
 const bucketRunning = ref(false)
 const bucketResult = ref<{ ok: boolean; object_key: string; bucket: string; size_bytes: number; uploaded_at: string } | null>(null)
 const bucketError = ref('')
+const bucketErrorDetail = ref<{ message: string; stage: string; status: number | null; time: string; hint: string } | null>(null)
+const bucketProgress = ref(0)
+const bucketStage = ref('')
 const bucketHistory = ref<BucketObject[]>([])
 const historyLoading = ref(false)
+
+const BACKUP_STAGES = [
+  { at: 5,  label: 'Connecting to source database…' },
+  { at: 20, label: 'Generating SQL dump…' },
+  { at: 55, label: 'Processing tables…' },
+  { at: 75, label: 'Compressing dump…' },
+  { at: 90, label: 'Uploading to bucket…' },
+]
+
+function stageFromError(msg: string): string {
+  if (msg.includes('source connection') || msg.includes('connection error')) return 'Database connection'
+  if (msg.includes('backup generation') || msg.includes('dump')) return 'SQL dump generation'
+  if (msg.includes('compress')) return 'Compression'
+  if (msg.includes('upload')) return 'Upload to bucket'
+  if (msg.includes('permission')) return 'Authorization'
+  if (msg.includes('bucket connection') || msg.includes('secret key') || msg.includes('object storage')) return 'Bucket configuration'
+  return 'Backup operation'
+}
+
+function hintFromError(msg: string): string {
+  if (msg.includes('permission denied')) return 'Check that your account has the required permissions on this connection.'
+  if (msg.includes('source connection') || msg.includes('connection error')) return 'Verify the source connection credentials and network access.'
+  if (msg.includes('secret key') || msg.includes('decrypt')) return 'The bucket connection credentials may be corrupted — re-enter them.'
+  if (msg.includes('object storage')) return 'The destination connection must be an S3-compatible storage provider.'
+  if (msg.includes('upload')) return 'Check bucket name, access key, and secret key. Ensure the bucket exists.'
+  if (msg.includes('compress')) return 'Unexpected error during gzip compression. Try disabling compression.'
+  return 'Check the server logs for more detail.'
+}
+
+function copyErrorToClipboard() {
+  if (!bucketErrorDetail.value) return
+  const d = bucketErrorDetail.value
+  const text = `Backup Error\nStage: ${d.stage}\nStatus: ${d.status ?? 'N/A'}\nTime: ${d.time}\nMessage: ${d.message}`
+  navigator.clipboard.writeText(text)
+}
 
 async function onSourceConnChange() {
   bucketForm.database = ''
@@ -142,6 +180,20 @@ async function runBucketBackup() {
   bucketRunning.value = true
   bucketResult.value = null
   bucketError.value = ''
+  bucketErrorDetail.value = null
+  bucketProgress.value = 0
+  bucketStage.value = BACKUP_STAGES[0].label
+
+  // Advance through simulated stages while the request is in flight
+  let stageIdx = 0
+  const progressTimer = setInterval(() => {
+    if (stageIdx < BACKUP_STAGES.length - 1) {
+      stageIdx++
+      bucketProgress.value = BACKUP_STAGES[stageIdx].at
+      bucketStage.value = BACKUP_STAGES[stageIdx].label
+    }
+  }, 1800)
+
   try {
     const { data } = await axios.post('/api/backup/to-bucket', {
       source_conn_id: bucketForm.source_conn_id,
@@ -151,11 +203,25 @@ async function runBucketBackup() {
       subfolder: bucketForm.subfolder,
       options: toBackupOptionsPayload(),
     })
+    clearInterval(progressTimer)
+    bucketProgress.value = 100
+    bucketStage.value = 'Upload complete!'
     bucketResult.value = data
     toast.success(`Backup uploaded → ${data.object_key}`)
     loadBucketHistory()
   } catch (err: any) {
-    bucketError.value = err?.response?.data?.error ?? 'Backup to bucket failed'
+    clearInterval(progressTimer)
+    const message = err?.response?.data?.error ?? 'Backup to bucket failed'
+    bucketError.value = message
+    bucketErrorDetail.value = {
+      message,
+      stage: stageFromError(message),
+      status: err?.response?.status ?? null,
+      time: new Date().toLocaleString(),
+      hint: hintFromError(message),
+    }
+    bucketProgress.value = 0
+    bucketStage.value = ''
   } finally {
     bucketRunning.value = false
   }
@@ -737,7 +803,21 @@ onMounted(async () => {
                 </button>
               </div>
 
-              <!-- Result / error -->
+              <!-- Progress bar (shown while running) -->
+              <div v-if="bucketRunning" class="bv-progress-wrap">
+                <div class="bv-progress-bar">
+                  <div class="bv-progress-bar__fill" :style="{ width: bucketProgress + '%' }"></div>
+                </div>
+                <div class="bv-progress-meta">
+                  <span class="bv-progress-stage">
+                    <svg class="spin" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                    {{ bucketStage }}
+                  </span>
+                  <span class="bv-progress-pct">{{ bucketProgress }}%</span>
+                </div>
+              </div>
+
+              <!-- Result card -->
               <div v-if="bucketResult" class="bv-result-card">
                 <div class="bv-result-card__head">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -762,9 +842,38 @@ onMounted(async () => {
                   </div>
                 </div>
               </div>
-              <div v-if="bucketError" class="notice notice--error">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                {{ bucketError }}
+
+              <!-- Detailed error card -->
+              <div v-if="bucketErrorDetail" class="bv-error-card">
+                <div class="bv-error-card__head">
+                  <div class="bv-error-card__head-left">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                    Backup failed
+                    <span v-if="bucketErrorDetail.status" class="bv-error-badge">HTTP {{ bucketErrorDetail.status }}</span>
+                  </div>
+                  <button class="bv-error-copy" title="Copy error details" @click="copyErrorToClipboard">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    Copy
+                  </button>
+                </div>
+                <div class="bv-error-card__rows">
+                  <div class="bv-error-row bv-error-row--message">
+                    <span class="bv-error-row__label">Error</span>
+                    <span class="bv-error-row__val">{{ bucketErrorDetail.message }}</span>
+                  </div>
+                  <div class="bv-error-row">
+                    <span class="bv-error-row__label">Failed at</span>
+                    <span class="bv-error-row__val">{{ bucketErrorDetail.stage }}</span>
+                  </div>
+                  <div class="bv-error-row">
+                    <span class="bv-error-row__label">Time</span>
+                    <span class="bv-error-row__val">{{ bucketErrorDetail.time }}</span>
+                  </div>
+                  <div class="bv-error-row bv-error-row--hint">
+                    <span class="bv-error-row__label">Hint</span>
+                    <span class="bv-error-row__val">{{ bucketErrorDetail.hint }}</span>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -1410,6 +1519,143 @@ onMounted(async () => {
   font-family: var(--mono);
   font-size: 11.5px;
   word-break: break-all;
+}
+
+/* ── Progress bar ── */
+.bv-progress-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bv-progress-bar {
+  height: 6px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--brand) 15%, transparent);
+  overflow: hidden;
+}
+
+.bv-progress-bar__fill {
+  height: 100%;
+  border-radius: 99px;
+  background: var(--brand);
+  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.bv-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.bv-progress-stage {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.bv-progress-pct {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--brand);
+  font-family: var(--mono);
+}
+
+/* ── Error card ── */
+.bv-error-card {
+  border: 1px solid color-mix(in srgb, var(--error, #e05252) 35%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--error, #e05252) 6%, transparent);
+  overflow: hidden;
+}
+
+.bv-error-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--error, #e05252) 20%, transparent);
+}
+
+.bv-error-card__head-left {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--error, #e05252);
+}
+
+.bv-error-badge {
+  padding: 1px 7px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--error, #e05252) 15%, transparent);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.bv-error-copy {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: transparent;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.bv-error-copy:hover {
+  background: color-mix(in srgb, var(--border) 40%, transparent);
+  color: var(--text-primary);
+}
+
+.bv-error-card__rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.bv-error-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  font-size: 12px;
+}
+.bv-error-row:last-child { border-bottom: none; }
+
+.bv-error-row__label {
+  min-width: 75px;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.bv-error-row__val {
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.bv-error-row--message .bv-error-row__val {
+  color: var(--error, #e05252);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.bv-error-row--hint .bv-error-row__val {
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 /* ── History ── */
