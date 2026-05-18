@@ -1165,8 +1165,11 @@ func testObjectStorageInput(ctx context.Context, in ConnectionInput) error {
 	}
 
 	region := objectStorageRegion(in.Driver, endpointHost)
-	path := "/" + url.PathEscape(bucket) + "/"
-	requestURL := fmt.Sprintf("%s://%s%s?list-type=2&max-keys=0", scheme, endpointHost, path)
+	// Use virtual-hosted style: {bucket}.{endpoint}/?list-type=2
+	// Path-style causes signature mismatches on OBS/GCS/S3 because the Host
+	// header differs from what the provider expects when it validates the sig.
+	virtualHost := bucket + "." + endpointHost
+	requestURL := fmt.Sprintf("%s://%s/?list-type=2&max-keys=0", scheme, virtualHost)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return err

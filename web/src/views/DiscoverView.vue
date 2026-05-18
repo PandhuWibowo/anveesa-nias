@@ -195,7 +195,9 @@ const appFilter    = ref<Set<string>>(new Set())  // multi-select
 const sortOrder    = ref<SortOrder>('desc')
 const appNames     = ref<string[]>([])
 const appSearch    = ref('')
+const appSearchLoading = ref(false)
 const showAppMenu  = ref(false)
+let appSearchTimer: ReturnType<typeof setTimeout> | null = null
 const showControls = ref(true)
 
 // ── Pagination ──────────────────────────────────────────────
@@ -255,6 +257,76 @@ const filteredFields = computed(() => {
   return fields.value.filter(f => f.name.toLowerCase().includes(q) || f.type.toLowerCase().includes(q))
 })
 
+const appsFromHits = computed(() => {
+  const names = new Set<string>()
+  for (const hit of hits.value) {
+    const app = getPath(hit._source, 'app_name') || getPath(hit._source, 'service.name')
+    if (app) names.add(app)
+  }
+  return [...names]
+})
+
+const visibleAppNames = computed(() => {
+  const merged = new Set([...appNames.value, ...appsFromHits.value])
+  const q = appSearch.value.trim().toLowerCase()
+  const list = [...merged].sort((a, b) => a.localeCompare(b))
+  if (!q) return list
+  return list.filter(a => a.toLowerCase().includes(q))
+})
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function mergeAppBucketKeys(data: Record<string, any> | undefined, search?: string): string[] {
+  const buckets: { key: string }[] = [
+    ...(data?.aggregations?.apps?.buckets ?? []),
+    ...(data?.aggregations?.apps_plain?.buckets ?? []),
+    ...(data?.aggregations?.services?.buckets ?? []),
+    ...(data?.aggregations?.services_plain?.buckets ?? []),
+  ]
+  const keys = buckets.map(b => b.key).filter(Boolean)
+  if (!search?.trim()) return [...new Set(keys)]
+  const q = search.trim().toLowerCase()
+  return [...new Set(keys.filter(k => k.toLowerCase().includes(q)))]
+}
+
+async function fetchAppNames(search = '') {
+  if (!activeConn.value || !indexPattern.value.trim()) return
+  const index = normalizeIndexPattern(indexPattern.value)
+  const q = buildQueryWithoutApp()
+  const needle = search.trim()
+  const termsOpts = (field: string) => {
+    const base: Record<string, unknown> = { field, size: needle ? 100 : 250, order: { _count: 'desc' as const } }
+    if (needle) base.include = `.*${escapeRegExp(needle)}.*`
+    return base
+  }
+  appSearchLoading.value = true
+  try {
+    const { data } = await axios.post(`/api/connections/${activeConn.value.id}/search/aggregate`, {
+      index,
+      query: q,
+      size: 0,
+      aggs: {
+        apps:           { terms: termsOpts('app_name.keyword') },
+        apps_plain:     { terms: termsOpts('app_name') },
+        services:       { terms: termsOpts('service.name.keyword') },
+        services_plain: { terms: termsOpts('service.name') },
+      },
+    })
+    const found = mergeAppBucketKeys(data, needle)
+    if (!needle) {
+      appNames.value = found.sort((a, b) => a.localeCompare(b))
+    } else if (found.length) {
+      appNames.value = [...new Set([...appNames.value, ...found])].sort((a, b) => a.localeCompare(b))
+    }
+  } catch {
+    // keep existing list
+  } finally {
+    appSearchLoading.value = false
+  }
+}
+
 const histogramMax = computed(() => Math.max(...histogram.value.map(b => b.doc_count), 1))
 const histogramHasData = computed(() => histogram.value.some(b => b.doc_count > 0))
 
@@ -286,6 +358,16 @@ watch(autoRefresh, (interval) => {
   }
 })
 
+watch(appSearch, (q) => {
+  if (!showAppMenu.value) return
+  if (appSearchTimer) clearTimeout(appSearchTimer)
+  appSearchTimer = setTimeout(() => { fetchAppNames(q) }, 300)
+})
+
+watch(showAppMenu, (open) => {
+  if (open && appSearch.value.trim()) fetchAppNames(appSearch.value)
+})
+
 const timeWrapEl = ref<HTMLElement | null>(null)
 const appMenuEl  = ref<HTMLElement | null>(null)
 
@@ -308,6 +390,7 @@ function onDocClick(e: MouseEvent) {
 onMounted(() => document.addEventListener('click', onDocClick, true))
 onBeforeUnmount(() => {
   clearTimer()
+  if (appSearchTimer) clearTimeout(appSearchTimer)
   document.removeEventListener('click', onDocClick, true)
 })
 
@@ -496,6 +579,7 @@ async function run(keepPage = false) {
   if (!keepPage) {
     currentPage.value = 1
     pageAfterCursors.value = new Map()
+    appNames.value = []
   }
   // Ensure fields are loaded before building queries so hasMsgKeyword is accurate
   if (!fields.value.length) await loadFields()
@@ -527,7 +611,7 @@ async function run(keepPage = false) {
     if (cursor) hitsBody.search_after = cursor
     else hitsBody.from = (page - 1) * pageSize.value
 
-    const [histSettled, hitsSettled, appSettled] = await Promise.allSettled([
+    const [histSettled, hitsSettled] = await Promise.allSettled([
       axios.post(aggUrl, {
         index,
         query,
@@ -546,15 +630,7 @@ async function run(keepPage = false) {
         },
       }),
       axios.post(aggUrl, hitsBody),
-      axios.post(aggUrl, {
-        index,
-        query: baseQuery,
-        size: 0,
-        aggs: {
-          apps:      { terms: { field: 'app_name.keyword', size: 50, order: { _count: 'desc' } } },
-          apps_plain:{ terms: { field: 'app_name',         size: 50, order: { _count: 'desc' } } },
-        },
-      }),
+      fetchAppNames(),
     ])
 
     const errors: string[] = []
@@ -580,14 +656,6 @@ async function run(keepPage = false) {
       hits.value = []
       totalHits.value = 0
       errors.push(axiosErrorMessage(hitsSettled.reason, 'Log fetch failed'))
-    }
-
-    if (appSettled.status === 'fulfilled') {
-      const appBuckets: { key: string }[] =
-        (appSettled.value.data?.aggregations?.apps?.buckets?.length
-          ? appSettled.value.data.aggregations.apps.buckets
-          : appSettled.value.data?.aggregations?.apps_plain?.buckets) ?? []
-      if (appBuckets.length) appNames.value = appBuckets.map(b => b.key)
     }
 
     lastRefreshed.value = new Date()
@@ -969,7 +1037,11 @@ function hitKey(hit: Hit, idx: number): string {
                     <input v-model="appSearch" class="disc-app-search" placeholder="Search apps…" @click.stop />
                   </div>
                   <div class="disc-app-list">
-                    <label v-for="app in appNames.filter(a => !appSearch || a.toLowerCase().includes(appSearch.toLowerCase()))"
+                    <div v-if="appSearchLoading" class="disc-app-state">Searching…</div>
+                    <div v-else-if="!visibleAppNames.length" class="disc-app-state">
+                      {{ appSearch.trim() ? 'No apps match — try the main filter: app_name:"your-app"' : 'No apps in this time range' }}
+                    </div>
+                    <label v-for="app in visibleAppNames"
                       :key="app" class="disc-app-item"
                       :class="{ selected: appFilter.has(app) }">
                       <input type="checkbox" :checked="appFilter.has(app)" @change="toggleApp(app)" />
@@ -1383,6 +1455,7 @@ export { flatSource }
   font-size:12px; padding:5px 9px; outline:none;
 }
 .disc-app-search:focus { border-color:var(--accent,#3b82f6); }
+.disc-app-state { padding:8px 12px; font-size:11.5px; color:var(--text-muted); }
 .disc-app-list { max-height:220px; overflow-y:auto; padding:4px 0; }
 .disc-app-item {
   display:flex; align-items:center; gap:8px;
