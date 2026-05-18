@@ -114,7 +114,7 @@ func backupOptionsFromQuery(r *http.Request) BackupOptions {
 
 var allowedRestoreStatements = []string{
 	"INSERT ", "CREATE TABLE", "CREATE INDEX", "CREATE UNIQUE INDEX",
-	"DROP TABLE", "DROP INDEX", "ALTER TABLE", "SET ", "BEGIN", "COMMIT", "ROLLBACK",
+	"DROP TABLE", "DROP INDEX", "ALTER TABLE", "SET ", "BEGIN", "COMMIT", "ROLLBACK", "DO ",
 }
 
 func isAllowedRestoreStatement(stmt string) bool {
@@ -679,6 +679,7 @@ func generateIndexesDDL(ctx context.Context, db *sql.DB, driver, schema, table s
 		for rows.Next() {
 			var name, def string
 			rows.Scan(&name, &def)
+			def = addIfNotExistsToIndex(def)
 			stmts = append(stmts, def)
 		}
 	case "sqlite":
@@ -753,7 +754,9 @@ func generateFKsDDL(ctx context.Context, db *sql.DB, driver, schema, table strin
 		for rows.Next() {
 			var name, def string
 			rows.Scan(&name, &def)
-			stmts = append(stmts, fmt.Sprintf(`ALTER TABLE %q.%q ADD CONSTRAINT %q %s`, schema, table, name, def))
+			stmts = append(stmts, fmt.Sprintf(
+				"DO $$ BEGIN ALTER TABLE %q.%q ADD CONSTRAINT %q %s; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+				schema, table, name, def))
 		}
 	case "mysql", "mariadb":
 		rows, err := db.QueryContext(ctx,
@@ -997,14 +1000,25 @@ func sqlLiteral(v interface{}) string {
 		return "'" + strings.ReplaceAll(t, "'", "''") + "'"
 	case bool:
 		if t {
-			return "1"
+			return "TRUE"
 		}
-		return "0"
+		return "FALSE"
 	case time.Time:
 		return "'" + t.Format("2006-01-02 15:04:05.999999999Z07:00") + "'"
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+func addIfNotExistsToIndex(def string) string {
+	upper := strings.ToUpper(def)
+	if strings.HasPrefix(upper, "CREATE UNIQUE INDEX ") && !strings.Contains(upper, " IF NOT EXISTS ") {
+		return "CREATE UNIQUE INDEX IF NOT EXISTS " + def[len("CREATE UNIQUE INDEX "):]
+	}
+	if strings.HasPrefix(upper, "CREATE INDEX ") && !strings.Contains(upper, " IF NOT EXISTS ") {
+		return "CREATE INDEX IF NOT EXISTS " + def[len("CREATE INDEX "):]
+	}
+	return def
 }
 
 func splitSQL(sql string) []string {
