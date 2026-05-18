@@ -11,8 +11,8 @@ permissions:
 jobs:
   generate-description:
     runs-on: ubuntu-latest
-    # Only run when the PR body is still the blank template (no real Summary written)
-    if: |
+    # Only run when the PR body still contains the blank template placeholder
+    if: >
       !contains(github.event.pull_request.body, '<!-- auto-skip -->') &&
       contains(github.event.pull_request.body, '<!-- 1-3 sentences describing what this PR does and why -->')
 
@@ -31,34 +31,10 @@ jobs:
             -q '"PR: \(.title)\nFiles: \(.changedFiles) | +\(.additions) -\(.deletions)"' > /tmp/pr_title.txt
           gh pr diff $PR > /tmp/pr.diff 2>/dev/null || touch /tmp/pr.diff
 
-      - name: Generate description via OpenRouter
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
+      - name: Write PR template file
         run: |
-          python3 - <<'EOF'
-          import os, json, urllib.request, re
-
-          MAX_CHARS = 12000
-
-          api_key   = os.environ['OPENROUTER_API_KEY']
-          pr_number = os.environ['PR_NUMBER']
-          gh_token  = os.environ['GH_TOKEN']
-          repo      = os.environ['REPO']
-
-          with open('/tmp/pr_title.txt') as f:
-              pr_title = f.read().strip()
-          with open('/tmp/pr.diff') as f:
-              full_diff = f.read().strip()
-
-          # Truncate diff to fit within token budget
-          diff = full_diff[:MAX_CHARS]
-          if len(full_diff) > MAX_CHARS:
-              diff += '\n\n[...diff truncated...]'
-
-          template = """## Summary
+          cat > /tmp/template.md << 'TMPL'
+## Summary
 
 <!-- 1-3 sentences describing what this PR does and why -->
 
@@ -99,7 +75,36 @@ jobs:
 
 ## Screenshots
 
-Add screenshots or video for visible UI changes."""
+Add screenshots or video for visible UI changes.
+TMPL
+
+      - name: Generate description via OpenRouter
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'EOF'
+          import os, json, urllib.request, re
+
+          MAX_CHARS = 12000
+
+          api_key   = os.environ['OPENROUTER_API_KEY']
+          pr_number = os.environ['PR_NUMBER']
+          gh_token  = os.environ['GH_TOKEN']
+          repo      = os.environ['REPO']
+
+          with open('/tmp/pr_title.txt') as f:
+              pr_title = f.read().strip()
+          with open('/tmp/pr.diff') as f:
+              full_diff = f.read().strip()
+          with open('/tmp/template.md') as f:
+              template = f.read().strip()
+
+          diff = full_diff[:MAX_CHARS]
+          if len(full_diff) > MAX_CHARS:
+              diff += '\n\n[...diff truncated...]'
 
           system_msg = (
               "You are a senior engineer writing a GitHub PR description. "
@@ -111,8 +116,8 @@ Add screenshots or video for visible UI changes."""
               f"Fill in the template below. Rules:\n"
               f"- Replace the Summary HTML comment with 1-3 concise sentences.\n"
               f"- Check ONLY the relevant Type of Change boxes (replace [ ] with [x]).\n"
-              f"- Replace the What Changed HTML comment with specific bullet points grouped by area "
-              f"(frontend / backend / db / bug fix). Name the actual files and features.\n"
+              f"- Replace the What Changed HTML comment with specific bullet points "
+              f"grouped by area (frontend / backend / db / bug fix). Name the actual files and features.\n"
               f"- Leave the Related Issues HTML comment as-is.\n"
               f"- Leave ALL Verification and Checklist boxes unchecked.\n"
               f"- Keep the Screenshots line unchanged.\n\n"
@@ -147,9 +152,9 @@ Add screenshots or video for visible UI changes."""
               raise ValueError(f"Empty response from model: {ai_data}")
 
           # Strip any accidental markdown fences the model added
-          body = re.sub(r'^```[a-z]*\n?', '', body).rstrip('`').strip()
+          body = re.sub(r'^```[a-z]*\n?', '', body, flags=re.MULTILINE)
+          body = body.strip('`').strip()
 
-          # Update the PR body via GitHub API
           gh_req = urllib.request.Request(
               f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
               data=json.dumps({"body": body}).encode(),
