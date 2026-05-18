@@ -44,12 +44,16 @@ const pageSize = ref(50)
 const timestampField = ref('@timestamp')
 
 const QUICK_PATTERNS = [
-  { label: 'Filebeat', pattern: 'filebeat-*', fields: ['@timestamp','app_name','environment','message'] },
+  { label: 'Filebeat', pattern: 'filebeat-*,.ds-filebeat-*', fields: ['@timestamp','app_name','environment','message'] },
   { label: 'SGPay Infra', pattern: '.ds-sgpay-infra-*', fields: ['@timestamp','app_name','environment','message'] },
 ]
 
+function normalizeIndexPattern(pattern: string): string {
+  return pattern.split(',').map(p => p.trim()).filter(Boolean).join(',')
+}
+
 function applyQuickPattern(p: typeof QUICK_PATTERNS[number]) {
-  indexPattern.value = p.pattern
+  indexPattern.value = normalizeIndexPattern(p.pattern)
   selectedFields.value = [...p.fields]
   run()
 }
@@ -252,6 +256,7 @@ const filteredFields = computed(() => {
 })
 
 const histogramMax = computed(() => Math.max(...histogram.value.map(b => b.doc_count), 1))
+const histogramHasData = computed(() => histogram.value.some(b => b.doc_count > 0))
 
 
 onMounted(async () => {
@@ -453,6 +458,19 @@ function setShortcut(type: 'today' | 'yesterday' | 'thisWeek' | 'last1h' | 'last
   }
 }
 
+function axiosErrorMessage(err: unknown, fallback: string): string {
+  if (axios.isAxiosError(err)) {
+    const data = err.response?.data
+    if (typeof data === 'string' && data.trim()) return data
+    if (data && typeof data === 'object' && 'error' in data && typeof (data as { error: unknown }).error === 'string') {
+      return (data as { error: string }).error
+    }
+    if (err.message) return err.message
+  }
+  if (err instanceof Error && err.message) return err.message
+  return fallback
+}
+
 function histogramInterval(): string {
   if (timeRange.value === 'custom') {
     if (customFrom.value && customTo.value) {
@@ -489,20 +507,37 @@ async function run(keepPage = false) {
     const page      = currentPage.value
     // For page 1, use from:0. For subsequent pages, use search_after cursor.
     const cursor    = page > 1 ? pageAfterCursors.value.get(page) : undefined
-    // Tiebreaker (_id) ensures stable ordering when multiple docs share the same timestamp.
-    const sortClause = [{ [timestampField.value]: { order: sortOrder.value } }, { _id: 'asc' }]
+    // _doc tiebreaker — _id sort breaks on many ES 8+ data-stream indices.
+    const tsField = timestampField.value
+    const sortClause = [
+      { [tsField]: { order: sortOrder.value, unmapped_type: 'date' } },
+      '_doc',
+    ]
 
-    const [histResult, hitsResult, appResult] = await Promise.all([
-      axios.post(`/api/connections/${activeConn.value.id}/search/aggregate`, {
-        index: indexPattern.value.trim(),
+    const index = normalizeIndexPattern(indexPattern.value)
+    indexPattern.value = index
+    const aggUrl = `/api/connections/${activeConn.value.id}/search/aggregate`
+
+    const hitsBody: Record<string, unknown> = {
+      index,
+      query,
+      size: pageSize.value,
+      sort: sortClause,
+    }
+    if (cursor) hitsBody.search_after = cursor
+    else hitsBody.from = (page - 1) * pageSize.value
+
+    const [histSettled, hitsSettled, appSettled] = await Promise.allSettled([
+      axios.post(aggUrl, {
+        index,
         query,
         size: 0,
         aggs: {
           over_time: {
             date_histogram: {
-              field: timestampField.value,
+              field: tsField,
               fixed_interval: interval,
-              min_doc_count: 0,
+              min_doc_count: 1,
               extended_bounds: timeRange.value === 'custom'
                 ? { min: localDtToUtcIso(customFrom.value || new Date(Date.now() - 86400_000).toISOString()), max: localDtToUtcIso(customTo.value || new Date().toISOString()) }
                 : { min: `now-${timeRange.value}`, max: 'now' },
@@ -510,17 +545,9 @@ async function run(keepPage = false) {
           },
         },
       }),
-      axios.post(`/api/connections/${activeConn.value.id}/search/aggregate`, {
-        index: indexPattern.value.trim(),
-        query,
-        size: pageSize.value,
-        from: cursor ? 0 : (page - 1) * pageSize.value,
-        search_after: cursor ?? null,
-        aggs: {},
-        sort: sortClause,
-      }),
-      axios.post(`/api/connections/${activeConn.value.id}/search/aggregate`, {
-        index: indexPattern.value.trim(),
+      axios.post(aggUrl, hitsBody),
+      axios.post(aggUrl, {
+        index,
         query: baseQuery,
         size: 0,
         aggs: {
@@ -529,33 +556,51 @@ async function run(keepPage = false) {
         },
       }),
     ])
-    histogram.value = histResult.data?.aggregations?.over_time?.buckets ?? []
-    const rawHits = hitsResult.data?.hits?.hits ?? []
-    hits.value = rawHits
-    const total = hitsResult.data?.hits?.total
-    totalHits.value = typeof total === 'number' ? total : (total?.value ?? rawHits.length)
-    lastRefreshed.value = new Date()
 
-    // Store the cursor for the next page from the last hit's sort values.
-    if (rawHits.length > 0) {
-      const lastSort = rawHits[rawHits.length - 1]?.sort
-      if (Array.isArray(lastSort) && lastSort.length > 0) {
-        pageAfterCursors.value = new Map(pageAfterCursors.value).set(page + 1, lastSort)
-      }
+    const errors: string[] = []
+    if (histSettled.status === 'fulfilled') {
+      histogram.value = histSettled.value.data?.aggregations?.over_time?.buckets ?? []
+    } else {
+      histogram.value = []
+      errors.push(axiosErrorMessage(histSettled.reason, 'Histogram query failed'))
     }
 
-    // Populate app list; keep existing list if the index has no app_name field
-    const appBuckets: { key: string }[] =
-      (appResult.data?.aggregations?.apps?.buckets?.length
-        ? appResult.data.aggregations.apps.buckets
-        : appResult.data?.aggregations?.apps_plain?.buckets) ?? []
-    if (appBuckets.length) appNames.value = appBuckets.map(b => b.key)
+    if (hitsSettled.status === 'fulfilled') {
+      const rawHits = hitsSettled.value.data?.hits?.hits ?? []
+      hits.value = rawHits
+      const total = hitsSettled.value.data?.hits?.total
+      totalHits.value = typeof total === 'number' ? total : (total?.value ?? rawHits.length)
+      if (rawHits.length > 0) {
+        const lastSort = rawHits[rawHits.length - 1]?.sort
+        if (Array.isArray(lastSort) && lastSort.length > 0) {
+          pageAfterCursors.value = new Map(pageAfterCursors.value).set(page + 1, lastSort)
+        }
+      }
+    } else {
+      hits.value = []
+      totalHits.value = 0
+      errors.push(axiosErrorMessage(hitsSettled.reason, 'Log fetch failed'))
+    }
+
+    if (appSettled.status === 'fulfilled') {
+      const appBuckets: { key: string }[] =
+        (appSettled.value.data?.aggregations?.apps?.buckets?.length
+          ? appSettled.value.data.aggregations.apps.buckets
+          : appSettled.value.data?.aggregations?.apps_plain?.buckets) ?? []
+      if (appBuckets.length) appNames.value = appBuckets.map(b => b.key)
+    }
+
+    lastRefreshed.value = new Date()
+    if (errors.length) toast.error(errors.join(' · '))
 
     // Scroll stream back to top after every page load
     await nextTick()
     streamEl.value?.scrollTo({ top: 0, behavior: 'smooth' })
   } catch (e: any) {
-    toast.error(e?.response?.data?.error ?? 'Discover query failed')
+    histogram.value = []
+    hits.value = []
+    totalHits.value = 0
+    toast.error(axiosErrorMessage(e, 'Discover query failed'))
   } finally {
     loading.value = false
   }
@@ -948,7 +993,7 @@ function hitKey(hit: Hit, idx: number): string {
           </div>
 
           <!-- Histogram -->
-          <div v-if="histogram.length" class="disc-histo">
+          <div v-if="histogramHasData" class="disc-histo">
             <div class="disc-histo-bars">
               <div v-for="b in histogram" :key="b.key"
                 class="disc-histo-col"

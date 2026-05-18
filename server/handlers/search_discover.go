@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 )
 
@@ -81,7 +80,9 @@ func SearchAggregate() http.HandlerFunc {
 			body["query"] = v
 		}
 		if v := decodeRawField(payload.Aggs); v != nil {
-			body["aggs"] = v
+			if aggs, ok := v.(map[string]any); !ok || len(aggs) > 0 {
+				body["aggs"] = v
+			}
 		}
 		if v := decodeRawField(payload.Sort); v != nil {
 			body["sort"] = v
@@ -93,10 +94,14 @@ func SearchAggregate() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
 		}
-		path := fmt.Sprintf("/%s/_search", url.PathEscape(payload.Index))
+		path := fmt.Sprintf("/%s/_search", searchIndexExpressionPath(payload.Index))
 		var result map[string]any
 		if err := client.doJSON(r.Context(), http.MethodPost, path, bodyBytes, &result); err != nil {
 			http.Error(w, jsonError("aggregate failed: "+err.Error()), http.StatusBadGateway)
+			return
+		}
+		if esErr := searchResponseError(result); esErr != "" {
+			http.Error(w, jsonError(esErr), http.StatusBadGateway)
 			return
 		}
 		json.NewEncoder(w).Encode(result)
@@ -128,7 +133,7 @@ func SearchIndexFields() http.HandlerFunc {
 			return
 		}
 		var mapping map[string]any
-		path := fmt.Sprintf("/%s/_mapping", url.PathEscape(index))
+		path := fmt.Sprintf("/%s/_mapping", searchIndexExpressionPath(index))
 		if err := client.doJSON(r.Context(), http.MethodGet, path, nil, &mapping); err != nil {
 			http.Error(w, jsonError("get fields failed: "+err.Error()), http.StatusBadGateway)
 			return

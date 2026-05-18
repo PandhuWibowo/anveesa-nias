@@ -65,9 +65,9 @@ const selectedIndex = ref('')
 const queryText = ref('{\n  "query": {\n    "match_all": {}\n  }\n}')
 const querySize = ref(50)
 const queryFrom = ref(0)
-const sortField = ref('@timestamp')
+const sortField = ref('')
 const sortDirection = ref<SortDirection>('desc')
-const timeRange = ref<TimeRange>('24h')
+const timeRange = ref<TimeRange>('all')
 const customTimeFrom = ref('')
 const customTimeTo = ref('')
 const searchResult = ref<Record<string, any> | null>(null)
@@ -618,6 +618,7 @@ function indexKindLabel(index: SearchIndex) {
                 <label>
                   <span>Sort</span>
                   <select v-model="sortField" class="base-input">
+                    <option value="">None</option>
                     <option value="@timestamp">Date</option>
                     <option value="_score">Score</option>
                     <option value="log.offset">Log offset</option>
