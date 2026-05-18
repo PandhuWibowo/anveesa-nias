@@ -1006,9 +1006,9 @@ func migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_pipeline_run_logs_run ON pipeline_run_logs(run_id)`,
 
 		// Grant pipeline permissions to admin/poweruser roles
-		`UPDATE roles SET permissions = JSON_SET(permissions, '$[#]', 'pipelines.view') WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.view%'`,
-		`UPDATE roles SET permissions = JSON_SET(permissions, '$[#]', 'pipelines.manage') WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.manage%'`,
-		`UPDATE roles SET permissions = JSON_SET(permissions, '$[#]', 'pipelines.run') WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.run%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"pipelines.view"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.view%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"pipelines.manage"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.manage%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"pipelines.run"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.run%'`,
 
 		// ── Cloud Provider Configs (Huawei RDS, AWS RDS log integration) ──
 		`CREATE TABLE IF NOT EXISTS cloud_provider_configs (
