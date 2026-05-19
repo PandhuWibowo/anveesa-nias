@@ -126,16 +126,23 @@ const bucketError = ref('')
 const bucketErrorDetail = ref<{ message: string; stage: string; status: number | null; time: string; hint: string } | null>(null)
 const bucketProgress = ref(0)
 const bucketStage = ref('')
+const bucketLogOpen = ref(false)
+const bucketStageIdx = ref(-1)
+const bucketStageTimes = ref<string[]>([])
 const bucketHistory = ref<BucketObject[]>([])
 const historyLoading = ref(false)
 
 const BACKUP_STAGES = [
-  { at: 5,  label: 'Connecting to source database…' },
-  { at: 20, label: 'Generating SQL dump…' },
-  { at: 55, label: 'Processing tables…' },
-  { at: 75, label: 'Compressing dump…' },
-  { at: 90, label: 'Uploading to bucket…' },
+  { at: 5,  label: 'Connecting to source database' },
+  { at: 20, label: 'Generating SQL dump' },
+  { at: 55, label: 'Processing tables' },
+  { at: 75, label: 'Compressing dump' },
+  { at: 90, label: 'Uploading to bucket' },
 ]
+
+function nowTime() {
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
 
 function stageFromError(msg: string): string {
   if (msg.includes('source connection') || msg.includes('connection error')) return 'Database connection'
@@ -182,7 +189,9 @@ async function runBucketBackup() {
   bucketError.value = ''
   bucketErrorDetail.value = null
   bucketProgress.value = 0
-  bucketStage.value = BACKUP_STAGES[0].label
+  bucketStageIdx.value = 0
+  bucketStageTimes.value = [nowTime()]
+  bucketStage.value = BACKUP_STAGES[0].label + '…'
 
   // Advance through simulated stages while the request is in flight
   let stageIdx = 0
@@ -190,7 +199,9 @@ async function runBucketBackup() {
     if (stageIdx < BACKUP_STAGES.length - 1) {
       stageIdx++
       bucketProgress.value = BACKUP_STAGES[stageIdx].at
-      bucketStage.value = BACKUP_STAGES[stageIdx].label
+      bucketStage.value = BACKUP_STAGES[stageIdx].label + '…'
+      bucketStageIdx.value = stageIdx
+      bucketStageTimes.value[stageIdx] = nowTime()
     }
   }, 1800)
 
@@ -205,6 +216,7 @@ async function runBucketBackup() {
     })
     clearInterval(progressTimer)
     bucketProgress.value = 100
+    bucketStageIdx.value = BACKUP_STAGES.length  // all done
     bucketStage.value = 'Upload complete!'
     bucketResult.value = data
     toast.success(`Backup uploaded → ${data.object_key}`)
@@ -813,7 +825,39 @@ onMounted(async () => {
                     <svg class="spin" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
                     {{ bucketStage }}
                   </span>
-                  <span class="bv-progress-pct">{{ bucketProgress }}%</span>
+                  <div class="bv-progress-right">
+                    <span class="bv-progress-pct">{{ bucketProgress }}%</span>
+                    <button class="bv-log-toggle" @click="bucketLogOpen = !bucketLogOpen">
+                      <svg :style="{ transform: bucketLogOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                      {{ bucketLogOpen ? 'Hide details' : 'Show details' }}
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Collapsible step log -->
+                <div v-if="bucketLogOpen" class="bv-log">
+                  <div
+                    v-for="(stage, i) in BACKUP_STAGES"
+                    :key="i"
+                    class="bv-log-row"
+                    :class="{
+                      'bv-log-row--done':    i < bucketStageIdx,
+                      'bv-log-row--active':  i === bucketStageIdx,
+                      'bv-log-row--pending': i > bucketStageIdx,
+                    }"
+                  >
+                    <!-- Status icon -->
+                    <span class="bv-log-icon">
+                      <!-- done -->
+                      <svg v-if="i < bucketStageIdx" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                      <!-- active -->
+                      <svg v-else-if="i === bucketStageIdx" class="spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                      <!-- pending -->
+                      <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/></svg>
+                    </span>
+                    <span class="bv-log-label">{{ stage.label }}</span>
+                    <span class="bv-log-time">{{ bucketStageTimes[i] ?? '' }}</span>
+                  </div>
                 </div>
               </div>
 
@@ -1546,6 +1590,7 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
 }
 
 .bv-progress-stage {
@@ -1556,11 +1601,87 @@ onMounted(async () => {
   color: var(--text-muted);
 }
 
+.bv-progress-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .bv-progress-pct {
   font-size: 11px;
   font-weight: 600;
   color: var(--brand);
   font-family: var(--mono);
+}
+
+.bv-log-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: transparent;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.bv-log-toggle:hover {
+  background: color-mix(in srgb, var(--border) 40%, transparent);
+  color: var(--text-primary);
+}
+
+/* ── Step log ── */
+.bv-log {
+  margin-top: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: 8px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bg-secondary, #1a1a1a) 60%, transparent);
+}
+
+.bv-log-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  font-size: 12px;
+  transition: background 0.15s;
+}
+.bv-log-row:last-child { border-bottom: none; }
+
+.bv-log-row--done   { color: var(--text-muted); }
+.bv-log-row--active { color: var(--text-primary); background: color-mix(in srgb, var(--brand) 6%, transparent); }
+.bv-log-row--pending { color: color-mix(in srgb, var(--text-muted) 50%, transparent); }
+
+.bv-log-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.bv-log-row--done   .bv-log-icon { color: var(--success, #4caf8a); }
+.bv-log-row--active .bv-log-icon { color: var(--brand); }
+.bv-log-row--pending .bv-log-icon { color: color-mix(in srgb, var(--text-muted) 40%, transparent); }
+
+.bv-log-label {
+  flex: 1;
+  font-size: 12px;
+}
+.bv-log-row--done .bv-log-label {
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--text-muted) 40%, transparent);
+}
+
+.bv-log-time {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  opacity: 0.7;
+  min-width: 70px;
+  text-align: right;
 }
 
 /* ── Error card ── */
