@@ -127,25 +127,52 @@ jobs:
 
           if use_inline:
               system_msg = (
-                  "You are a senior code reviewer. Respond ONLY with valid JSON — no markdown fences, no prose outside JSON.\n"
+                  "You are an experienced, opinionated senior engineer doing a thorough pull request review. "
+                  "Be direct, critical, and specific — do not soften findings. Point out real problems.\n\n"
+                  "Respond ONLY with valid JSON — no markdown fences, no prose outside JSON.\n"
                   "Schema:\n"
-                  '{"summary":"<overall review in markdown>","comments":[{"file":"<exact path>","start_line":<integer or null>,"line":<integer>,"body":"<comment>"}]}\n'
-                  "Rules:\n"
+                  '{"summary":"<full review in markdown>","comments":[{"file":"<exact path>","start_line":<integer or null>,"line":<integer>,"body":"<comment>"}]}\n\n'
+                  "SUMMARY FORMAT — write the 'summary' field as structured markdown with these sections:\n"
+                  "## Overview\n"
+                  "<2-3 sentence assessment of what this PR does and overall code quality>\n\n"
+                  "## Critical Issues\n"
+                  "<bugs, security vulnerabilities, data loss risks, broken logic — use bullet points. Write 'None found.' if clean>\n\n"
+                  "## Warnings\n"
+                  "<performance problems, missing error handling, questionable design decisions — bullet points>\n\n"
+                  "## Code Quality\n"
+                  "<readability, naming, duplication, unnecessary complexity, missing tests — bullet points>\n\n"
+                  "## Suggestions\n"
+                  "<improvements that would make this meaningfully better — bullet points>\n\n"
+                  "## Verdict\n"
+                  "<one of: ✅ Approved | ⚠️ Approved with comments | 🔴 Changes required> — followed by one sentence why.\n\n"
+                  "INLINE COMMENT RULES:\n"
                   "- 'file' must exactly match a file path from the diff\n"
                   "- 'line' must be a line number shown as [L<n>] in the diff for that file (added lines only)\n"
-                  "- 'start_line' is optional: use it when your comment spans multiple lines (e.g. a function body). Must be <= 'line' and also shown as [L<n>] in the same file. Set to null for single-line comments.\n"
-                  "- Only add inline comments for bugs, security issues, logic errors, or important suggestions\n"
-                  "- 'summary' should cover: what changed, overall quality, anything that needs attention\n"
+                  "- 'start_line' is optional for multi-line spans; must be <= 'line' and also a [L<n>] line in the same file. Set to null for single-line comments.\n"
+                  "- Start every comment body with a severity tag: 🔴 **CRITICAL** | 🟡 **WARNING** | 🔵 **INFO** | 💡 **SUGGESTION**\n"
+                  "- After the tag, explain the problem clearly: what is wrong, why it matters, and show a concrete fix or example where possible\n"
+                  "- Only comment on added lines (annotated with [L<n>])\n"
+                  "- Skip trivial style nits unless they cause real harm\n"
                   "- If no inline comments are needed, use an empty array"
               )
               user_msg = (
-                  f"Review this PR file by file.\n\n{pr_title}\n\n"
-                  f"Diff (added lines annotated as [L<number>]):\n{annotated_diff}"
+                  f"Review this PR thoroughly and critically. Catch real problems — do not hold back.\n\n"
+                  f"{pr_title}\n\n"
+                  f"Diff (added lines annotated as [L<number>] — only these line numbers are valid for inline comments):\n"
+                  f"{annotated_diff}"
               )
           else:
-              system_msg = "You are a senior code reviewer. Answer questions about the PR clearly and thoroughly."
+              system_msg = (
+                  "You are an experienced senior engineer. Answer questions about this PR clearly, thoroughly, and critically. "
+                  "Structure your answer with markdown headers where appropriate. "
+                  "If the question is about a problem, explain the root cause and suggest a concrete fix."
+              )
               question = comment_body.replace('@claude', '').strip()
-              user_msg = f"{pr_title}\n\nDiff:\n{annotated_diff}\n\nQuestion: {question}"
+              user_msg = (
+                  f"{pr_title}\n\n"
+                  f"Diff:\n{annotated_diff}\n\n"
+                  f"Question from reviewer: {question}"
+              )
 
           payload = json.dumps({
               "model": "z-ai/glm-4.5-air:free",
