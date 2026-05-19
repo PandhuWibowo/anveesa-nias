@@ -427,12 +427,13 @@ func uploadToBucket(ctx interface {
 	return uploadToBucketStream(ctx, dest, objectKey, bytes.NewReader(data))
 }
 
-// DownloadFromBucket generates a pre-signed URL and redirects the browser
-// directly to S3-compatible storage, bypassing the server for the data transfer.
-// For multi-GB files this is dramatically faster than proxying through the server.
-// GET /api/backup/bucket-download?dest_conn_id=N&object_key=path/to/file.sql.gz
-func DownloadFromBucket() http.HandlerFunc {
+// PresignDownload returns a short-lived pre-signed download URL for a bucket object.
+// The frontend fetches this endpoint (with auth), then opens the returned URL directly
+// so the browser downloads from OBS/S3 without routing through the app server.
+// GET /api/backup/presign?dest_conn_id=N&object_key=path/to/file.sql.gz
+func PresignDownload() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		destIDStr := r.URL.Query().Get("dest_conn_id")
 		destID, err := strconv.ParseInt(destIDStr, 10, 64)
 		if err != nil || destID == 0 {
@@ -457,8 +458,75 @@ func DownloadFromBucket() http.HandlerFunc {
 			return
 		}
 
-		// Redirect browser directly to S3 — no proxying, full download speed.
-		http.Redirect(w, r, signed, http.StatusFound)
+		json.NewEncoder(w).Encode(map[string]string{"url": signed})
+	}
+}
+
+// DownloadFromBucket proxies a file from S3-compatible storage to the browser.
+// Used as fallback when the bucket is not publicly reachable from the browser.
+// GET /api/backup/bucket-download?dest_conn_id=N&object_key=path/to/file.sql.gz
+func DownloadFromBucket() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		destIDStr := r.URL.Query().Get("dest_conn_id")
+		destID, err := strconv.ParseInt(destIDStr, 10, 64)
+		if err != nil || destID == 0 {
+			http.Error(w, `{"error":"dest_conn_id required"}`, http.StatusBadRequest)
+			return
+		}
+		objectKey := strings.TrimPrefix(r.URL.Query().Get("object_key"), "/")
+		if objectKey == "" {
+			http.Error(w, `{"error":"object_key required"}`, http.StatusBadRequest)
+			return
+		}
+
+		dest, err := fetchBucketConn(destID)
+		if err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+
+		endpointHost := buildS3Host(dest)
+		scheme := "https"
+		if !dest.SSL {
+			scheme = "http"
+		}
+		bucket := strings.Trim(dest.Bucket, "/")
+		virtualHost := bucket + "." + endpointHost
+		downloadURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, url.PathEscape(objectKey))
+
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, downloadURL, nil)
+		if err != nil {
+			http.Error(w, `{"error":"failed to build request: `+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+
+		payloadHash := sha256.Sum256([]byte{})
+		payloadHashHex := hex.EncodeToString(payloadHash[:])
+		region := objectStorageRegion(dest.Driver, endpointHost)
+		service := objectStorageService(dest.Driver)
+		signObjectStorageRequestFull(req, dest.Username, dest.Password, region, service, payloadHashHex, nil)
+
+		client := &http.Client{Timeout: 4 * time.Hour}
+		resp, err := client.Do(req)
+		if err != nil {
+			http.Error(w, `{"error":"download failed: `+err.Error()+`"}`, http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 400 {
+			http.Error(w, fmt.Sprintf(`{"error":"bucket returned HTTP %d"}`, resp.StatusCode), http.StatusBadGateway)
+			return
+		}
+
+		parts := strings.Split(objectKey, "/")
+		filename := parts[len(parts)-1]
+		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+		w.Header().Set("Content-Type", "application/octet-stream")
+		if cl := resp.Header.Get("Content-Length"); cl != "" {
+			w.Header().Set("Content-Length", cl)
+		}
+		io.Copy(w, resp.Body)
 	}
 }
 
