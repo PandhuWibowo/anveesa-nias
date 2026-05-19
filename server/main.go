@@ -823,6 +823,13 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 		requireAny(handlers.PermBackupsManage)(handlers.ListBucketBackups())(w, r)
 	})
+	mux.HandleFunc("/api/backup/presign", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		requireAny(handlers.PermBackupsManage)(handlers.PresignDownload())(w, r)
+	})
 	mux.HandleFunc("/api/backup/bucket-download", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.NotFound(w, r)

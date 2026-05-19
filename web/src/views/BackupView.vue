@@ -548,21 +548,32 @@ async function loadDlBucketFiles() {
 async function downloadFromBucket(key: string) {
   if (dlBucketDownloading.value.has(key)) return
   dlBucketDownloading.value = new Set([...dlBucketDownloading.value, key])
+  const params = new URLSearchParams({
+    dest_conn_id: String(dlBucketConnId.value),
+    object_key: key,
+  })
+  const filename = key.split('/').pop() ?? key
   try {
-    // Server returns a 302 redirect to a pre-signed S3 URL so the browser
-    // downloads directly from the bucket at full speed — no proxying.
-    const params = new URLSearchParams({
-      dest_conn_id: String(dlBucketConnId.value),
-      object_key: key,
-    })
+    // Try presigned URL first — browser downloads directly from bucket, no proxying.
+    const { data } = await axios.get<{ url: string }>(`/api/backup/presign?${params}`)
     const a = document.createElement('a')
-    a.href = `/api/backup/bucket-download?${params}`
-    a.download = key.split('/').pop() ?? key
+    a.href = data.url
+    a.download = filename
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
-  } catch (err: any) {
-    toast.error('Download failed')
+  } catch {
+    // Fall back to server-proxied download.
+    try {
+      const a = document.createElement('a')
+      a.href = `/api/backup/bucket-download?${params}`
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+    } catch (err: any) {
+      toast.error('Download failed')
+    }
   } finally {
     setTimeout(() => {
       dlBucketDownloading.value = new Set([...dlBucketDownloading.value].filter(k => k !== key))
