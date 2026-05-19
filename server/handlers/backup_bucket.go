@@ -309,6 +309,75 @@ func uploadToBucket(ctx interface {
 	return uploadToBucketStream(ctx, dest, objectKey, bytes.NewReader(data))
 }
 
+// DownloadFromBucket proxies a file from S3-compatible storage directly to the
+// browser, signing the request server-side so credentials are never exposed.
+// GET /api/backup/bucket-download?dest_conn_id=N&object_key=path/to/file.sql.gz
+func DownloadFromBucket() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		destIDStr := r.URL.Query().Get("dest_conn_id")
+		destID, err := strconv.ParseInt(destIDStr, 10, 64)
+		if err != nil || destID == 0 {
+			http.Error(w, `{"error":"dest_conn_id required"}`, http.StatusBadRequest)
+			return
+		}
+		objectKey := strings.TrimPrefix(r.URL.Query().Get("object_key"), "/")
+		if objectKey == "" {
+			http.Error(w, `{"error":"object_key required"}`, http.StatusBadRequest)
+			return
+		}
+
+		dest, err := fetchBucketConn(destID)
+		if err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+
+		endpointHost := buildS3Host(dest)
+		scheme := "https"
+		if !dest.SSL {
+			scheme = "http"
+		}
+		bucket := strings.Trim(dest.Bucket, "/")
+		virtualHost := bucket + "." + endpointHost
+		downloadURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, url.PathEscape(objectKey))
+
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, downloadURL, nil)
+		if err != nil {
+			http.Error(w, `{"error":"failed to build request: `+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+
+		payloadHash := sha256.Sum256([]byte{})
+		payloadHashHex := hex.EncodeToString(payloadHash[:])
+		region := objectStorageRegion(dest.Driver, endpointHost)
+		service := objectStorageService(dest.Driver)
+		signObjectStorageRequestFull(req, dest.Username, dest.Password, region, service, payloadHashHex, nil)
+
+		client := &http.Client{Timeout: 4 * time.Hour}
+		resp, err := client.Do(req)
+		if err != nil {
+			http.Error(w, `{"error":"download failed: `+err.Error()+`"}`, http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 400 {
+			http.Error(w, fmt.Sprintf(`{"error":"bucket returned HTTP %d"}`, resp.StatusCode), http.StatusBadGateway)
+			return
+		}
+
+		parts := strings.Split(objectKey, "/")
+		filename := parts[len(parts)-1]
+
+		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+		w.Header().Set("Content-Type", "application/octet-stream")
+		if cl := resp.Header.Get("Content-Length"); cl != "" {
+			w.Header().Set("Content-Length", cl)
+		}
+		io.Copy(w, resp.Body)
+	}
+}
+
 // ListBucketBackups lists objects in a bucket with an optional prefix filter.
 // GET /api/backup/bucket-list?dest_conn_id=N&subfolder=backups/
 func ListBucketBackups() http.HandlerFunc {
