@@ -259,6 +259,12 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 	fmt.Fprintf(w, "-- Generated: %s\n\n", time.Now().Format(time.RFC3339))
 
 	schema := resolveSchema(driver, opts.Schema)
+	// For MySQL/MariaDB, "schema" == the database name. Use the caller-supplied
+	// dbName so that table listing, index, and FK queries target the right database
+	// rather than whatever DATABASE() returns for the connection.
+	if (driver == "mysql" || driver == "mariadb") && schema == "" && dbName != "" {
+		schema = dbName
+	}
 
 	// Emit SET search_path for PostgreSQL so that unqualified names in FK
 	// REFERENCES clauses and other DDL produced by pg_get_constraintdef resolve
@@ -755,9 +761,13 @@ func generateIndexesDDL(ctx context.Context, db *sql.DB, driver, schema, table s
 		}
 	case "mysql", "mariadb":
 		// SHOW CREATE TABLE already includes indexes; emit CREATE INDEX separately
+		dbRef := "DATABASE()"
+		if schema != "" {
+			dbRef = "'" + strings.ReplaceAll(schema, "'", "''") + "'"
+		}
 		rows, err := db.QueryContext(ctx,
 			"SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE FROM INFORMATION_SCHEMA.STATISTICS "+
-				"WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? "+
+				"WHERE TABLE_SCHEMA="+dbRef+" AND TABLE_NAME=? "+
 				"AND INDEX_NAME != 'PRIMARY' ORDER BY INDEX_NAME, SEQ_IN_INDEX",
 			table)
 		if err != nil {
@@ -860,10 +870,14 @@ func generateFKsDDL(ctx context.Context, db *sql.DB, driver, schema, table strin
 				schema, table, name, def))
 		}
 	case "mysql", "mariadb":
+		fkDbRef := "DATABASE()"
+		if schema != "" {
+			fkDbRef = "'" + strings.ReplaceAll(schema, "'", "''") + "'"
+		}
 		rows, err := db.QueryContext(ctx,
 			`SELECT CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
 			 FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-			 WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND REFERENCED_TABLE_NAME IS NOT NULL
+			 WHERE TABLE_SCHEMA=`+fkDbRef+` AND TABLE_NAME=? AND REFERENCED_TABLE_NAME IS NOT NULL
 			 ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION`, table)
 		if err != nil {
 			return nil, err
@@ -911,8 +925,12 @@ func writeViews(ctx context.Context, w io.Writer, db *sql.DB, driver, schema str
 		rows, err = db.QueryContext(ctx,
 			`SELECT table_name, view_definition FROM information_schema.views WHERE table_schema=$1`, schema)
 	case "mysql", "mariadb":
+		viewDbRef := "DATABASE()"
+		if schema != "" {
+			viewDbRef = "'" + strings.ReplaceAll(schema, "'", "''") + "'"
+		}
 		rows, err = db.QueryContext(ctx,
-			`SELECT TABLE_NAME, VIEW_DEFINITION FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA=DATABASE()`)
+			`SELECT TABLE_NAME, VIEW_DEFINITION FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA=`+viewDbRef)
 	case "sqlite":
 		rows, err = db.QueryContext(ctx,
 			`SELECT name, sql FROM sqlite_master WHERE type='view'`)
@@ -1084,7 +1102,11 @@ func listBackupTables(ctx context.Context, db *sql.DB, driver, schema, dbName st
 		tableQ = fmt.Sprintf(
 			`SELECT table_name FROM information_schema.tables WHERE table_schema='%s' AND table_type='BASE TABLE' ORDER BY table_name`, schema)
 	case "mysql", "mariadb":
-		tableQ = `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME`
+		dbRef := "DATABASE()"
+		if schema != "" {
+			dbRef = "'" + strings.ReplaceAll(schema, "'", "''") + "'"
+		}
+		tableQ = `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=` + dbRef + ` AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME`
 	case "sqlite":
 		tableQ = `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
 	default:

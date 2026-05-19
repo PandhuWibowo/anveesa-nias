@@ -3,6 +3,8 @@ package handlers
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,11 +14,62 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	appdb "github.com/anveesa/nias/db"
 )
+
+// ── Async backup job store ────────────────────────────────────────────────────
+
+type BackupJobStatus string
+
+const (
+	BackupJobPending  BackupJobStatus = "pending"
+	BackupJobRunning  BackupJobStatus = "running"
+	BackupJobDone     BackupJobStatus = "done"
+	BackupJobFailed   BackupJobStatus = "failed"
+	BackupJobCanceled BackupJobStatus = "canceled"
+)
+
+type BackupJob struct {
+	ID        string          `json:"id"`
+	Status    BackupJobStatus `json:"status"`
+	StartedAt time.Time       `json:"started_at"`
+	DoneAt    *time.Time      `json:"done_at,omitempty"`
+
+	// Result (populated on done)
+	ObjectKey         string `json:"object_key,omitempty"`
+	Bucket            string `json:"bucket,omitempty"`
+	SizeBytes         int64  `json:"size_bytes,omitempty"`
+	UncompressedBytes int64  `json:"uncompressed_bytes,omitempty"`
+
+	// Error (populated on failed)
+	Error string `json:"error,omitempty"`
+
+	cancel context.CancelFunc
+	mu     sync.Mutex
+}
+
+var (
+	backupJobs   sync.Map          // id → *BackupJob
+	jobIDCounter uint64
+)
+
+func newJobID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func getBackupJob(id string) (*BackupJob, bool) {
+	v, ok := backupJobs.Load(id)
+	if !ok {
+		return nil, false
+	}
+	return v.(*BackupJob), true
+}
 
 // bucketConnRow holds the S3 connection credentials fetched from the DB.
 type bucketConnRow struct {
@@ -81,13 +134,9 @@ type dumpStats struct {
 	err               error
 }
 
-// BackupToBucket streams a SQL dump from a source database connection and
-// uploads it directly to an S3-compatible bucket without buffering the full
-// dump in memory.  The pipeline is:
-//
-//	writeBackupDump → [gzip.Writer] → io.PipeWriter
-//	                                       ↕ (zero-copy)
-//	                              io.PipeReader → S3 PUT (chunked, UNSIGNED-PAYLOAD)
+// BackupToBucket starts an async backup job and returns a job ID immediately.
+// The actual dump+upload runs in a background goroutine; callers poll
+// GET /api/backup/jobs/:id for status.
 //
 // POST /api/backup/to-bucket
 func BackupToBucket() http.HandlerFunc {
@@ -157,53 +206,109 @@ func BackupToBucket() http.HandlerFunc {
 			objectName = sub + "/" + objectName
 		}
 
-		// ── Streaming pipeline ────────────────────────────────────────────────
-		// Goroutine: writeBackupDump → countingWriter → [gzip BestCompression] → PipeWriter
-		// Main:      PipeReader → countingReader → S3 PUT (chunked, UNSIGNED-PAYLOAD)
-		// Peak RAM: one pipe buffer (~32 KB) regardless of database size.
-		pr, pw := io.Pipe()
-		statsCh := make(chan dumpStats, 1)
+		jobCtx, jobCancel := context.WithCancel(context.Background())
+		job := &BackupJob{
+			ID:        newJobID(),
+			Status:    BackupJobRunning,
+			StartedAt: time.Now(),
+			cancel:    jobCancel,
+		}
+		backupJobs.Store(job.ID, job)
 
+		// Run dump + upload in background so the HTTP response returns immediately.
 		go func() {
-			var gz *gzip.Writer
-			var pipeOut io.Writer = pw
+			defer jobCancel()
 
-			if req.Options.Compress {
-				gz, _ = gzip.NewWriterLevel(pw, gzip.BestCompression)
-				pipeOut = gz
+			// Streaming pipeline: dump → [gzip] → pipe → S3 PUT
+			pr, pw := io.Pipe()
+			statsCh := make(chan dumpStats, 1)
+
+			go func() {
+				var gz *gzip.Writer
+				var pipeOut io.Writer = pw
+				if req.Options.Compress {
+					gz, _ = gzip.NewWriterLevel(pw, gzip.BestCompression)
+					pipeOut = gz
+				}
+				cw := &countingWriter{w: pipeOut}
+				dumpErr := writeBackupDump(jobCtx, cw, srcDB, driver, req.Database, req.Options)
+				if gz != nil && dumpErr == nil {
+					dumpErr = gz.Close()
+				}
+				pw.CloseWithError(dumpErr)
+				statsCh <- dumpStats{uncompressedBytes: atomic.LoadInt64(&cw.n), err: dumpErr}
+			}()
+
+			cr := &countingReader{r: pr}
+			uploadErr := uploadToBucketStream(jobCtx, dest, objectName, cr)
+			if uploadErr != nil {
+				pr.CloseWithError(uploadErr)
 			}
+			<-statsCh // drain goroutine
 
-			// Count raw (pre-compression) bytes for reporting the compression ratio
-			cw := &countingWriter{w: pipeOut}
-			dumpErr := writeBackupDump(r.Context(), cw, srcDB, driver, req.Database, req.Options)
-
-			if gz != nil && dumpErr == nil {
-				dumpErr = gz.Close() // flush gzip footer
+			now := time.Now()
+			job.mu.Lock()
+			defer job.mu.Unlock()
+			job.DoneAt = &now
+			if uploadErr != nil || jobCtx.Err() != nil {
+				if jobCtx.Err() != nil && uploadErr == nil {
+					job.Status = BackupJobCanceled
+				} else {
+					job.Status = BackupJobFailed
+					if uploadErr != nil {
+						job.Error = uploadErr.Error()
+					} else {
+						job.Error = jobCtx.Err().Error()
+					}
+				}
+				return
 			}
-			pw.CloseWithError(dumpErr)
-			statsCh <- dumpStats{uncompressedBytes: atomic.LoadInt64(&cw.n), err: dumpErr}
+			job.Status = BackupJobDone
+			job.ObjectKey = objectName
+			job.Bucket = dest.Bucket
+			job.SizeBytes = atomic.LoadInt64(&cr.n)
 		}()
 
-		// Count compressed bytes actually sent to S3
-		cr := &countingReader{r: pr}
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{"job_id": job.ID})
+	}
+}
 
-		if err := uploadToBucketStream(r.Context(), dest, objectName, cr); err != nil {
-			pr.CloseWithError(err)
-			http.Error(w, `{"error":"upload failed: `+err.Error()+`"}`, http.StatusBadGateway)
+// GetBackupJobStatus returns the current status of a backup job.
+// GET /api/backup/jobs/:id
+func GetBackupJobStatus() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id := strings.TrimPrefix(r.URL.Path, "/api/backup/jobs/")
+		job, ok := getBackupJob(id)
+		if !ok {
+			http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
 			return
 		}
+		job.mu.Lock()
+		defer job.mu.Unlock()
+		json.NewEncoder(w).Encode(job)
+	}
+}
 
-		stats := <-statsCh
-		compressedBytes := atomic.LoadInt64(&cr.n)
-
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"ok":                 true,
-			"object_key":         objectName,
-			"bucket":             dest.Bucket,
-			"size_bytes":         compressedBytes,
-			"uncompressed_bytes": stats.uncompressedBytes,
-			"uploaded_at":        time.Now().UTC().Format(time.RFC3339),
-		})
+// CancelBackupJob cancels a running backup job.
+// DELETE /api/backup/jobs/:id
+func CancelBackupJob() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id := strings.TrimPrefix(r.URL.Path, "/api/backup/jobs/")
+		job, ok := getBackupJob(id)
+		if !ok {
+			http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
+			return
+		}
+		job.mu.Lock()
+		if job.Status == BackupJobRunning {
+			job.cancel()
+			job.Status = BackupJobCanceled
+		}
+		job.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 

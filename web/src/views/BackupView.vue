@@ -201,10 +201,9 @@ async function runBucketBackup() {
   bucketStageTimes.value = [nowTime()]
   bucketStage.value = BACKUP_STAGES[0].label + '…'
 
-  const controller = new AbortController()
-  bucketAbortController.value = controller
+  let activeJobId: string | null = null
 
-  // Advance through simulated stages while the request is in flight
+  // Advance through simulated stages while the job is running
   let stageIdx = 0
   const progressTimer = setInterval(() => {
     if (stageIdx < BACKUP_STAGES.length - 1) {
@@ -216,28 +215,68 @@ async function runBucketBackup() {
     }
   }, 1800)
 
+  // Store cancel function so the UI cancel button can call it
+  bucketAbortController.value = {
+    abort: () => {
+      bucketCancelled.value = true
+      if (activeJobId) {
+        axios.delete(`/api/backup/jobs/${activeJobId}`).catch(() => {})
+      }
+    },
+  } as any
+
   try {
-    const { data } = await axios.post('/api/backup/to-bucket', {
+    // POST returns immediately with a job_id (HTTP 202)
+    const { data: jobData } = await axios.post('/api/backup/to-bucket', {
       source_conn_id: bucketForm.source_conn_id,
       database: bucketForm.database,
       dest_conn_id: bucketForm.dest_conn_id,
       prefix: bucketForm.prefix || 'backup',
       subfolder: bucketForm.subfolder,
       options: toBackupOptionsPayload(),
-    }, { signal: controller.signal })
+    })
+    activeJobId = jobData.job_id
 
-    clearInterval(progressTimer)
-    bucketProgress.value = 100
-    bucketStageIdx.value = BACKUP_STAGES.length
-    bucketStage.value = 'Upload complete!'
-    bucketResult.value = data
-    toast.success(`Backup uploaded → ${data.object_key}`)
-    loadBucketHistory()
+    // Poll for completion
+    while (true) {
+      if (bucketCancelled.value) break
+      await new Promise(r => setTimeout(r, 2500))
+      if (bucketCancelled.value) break
+
+      const { data: status } = await axios.get(`/api/backup/jobs/${activeJobId}`)
+
+      if (status.status === 'done') {
+        clearInterval(progressTimer)
+        bucketProgress.value = 100
+        bucketStageIdx.value = BACKUP_STAGES.length
+        bucketStage.value = 'Upload complete!'
+        bucketResult.value = { ok: true, ...status }
+        toast.success(`Backup uploaded → ${status.object_key}`)
+        loadBucketHistory()
+        return
+      }
+
+      if (status.status === 'failed') {
+        throw new Error(status.error || 'Backup job failed')
+      }
+
+      if (status.status === 'canceled') {
+        break
+      }
+    }
+
+    if (bucketCancelled.value) {
+      clearInterval(progressTimer)
+      bucketProgress.value = 0
+      bucketStage.value = ''
+      bucketStageIdx.value = -1
+      toast.info('Backup cancelled')
+      return
+    }
   } catch (err: any) {
     clearInterval(progressTimer)
 
-    // Cancelled by user — reset silently
-    if (axios.isCancel(err) || err?.name === 'CanceledError' || bucketCancelled.value) {
+    if (bucketCancelled.value) {
       bucketProgress.value = 0
       bucketStage.value = ''
       bucketStageIdx.value = -1
@@ -245,7 +284,7 @@ async function runBucketBackup() {
       return
     }
 
-    const message = err?.response?.data?.error ?? 'Backup to bucket failed'
+    const message = err?.response?.data?.error ?? err?.message ?? 'Backup to bucket failed'
     bucketError.value = message
     bucketErrorDetail.value = {
       message,
@@ -257,6 +296,7 @@ async function runBucketBackup() {
     bucketProgress.value = 0
     bucketStage.value = ''
   } finally {
+    clearInterval(progressTimer)
     bucketRunning.value = false
     bucketAbortController.value = null
   }
@@ -582,10 +622,6 @@ onMounted(async () => {
           <button class="page-tab" :class="{ 'is-active': activeTab === 'bucket' }" @click="activeTab = 'bucket'">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             Backup to Bucket
-          </button>
-          <button class="page-tab" :class="{ 'is-active': activeTab === 'request' }" @click="activeTab = 'request'">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            Request Download
           </button>
           <button v-if="canDirectBackup" class="page-tab" :class="{ 'is-active': activeTab === 'direct' }" @click="activeTab = 'direct'">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -1064,7 +1100,7 @@ onMounted(async () => {
         </div>
 
         <!-- ══ REQUEST DOWNLOAD ══════════════════════════════════════════ -->
-        <section v-if="activeTab === 'request'" class="bv-request-layout">
+        <section v-if="false && activeTab === 'request'" class="bv-request-layout">
           <div class="page-card bv-card">
             <div class="page-card__head">
               <div>
@@ -1130,25 +1166,25 @@ onMounted(async () => {
                 <div v-else class="bv-detail-card">
                   <div class="bv-detail__head">
                     <div>
-                      <div class="bv-detail__title">{{ selectedRequest.title }}</div>
-                      <div class="bv-detail__sub">{{ selectedRequest.connection }} · {{ selectedRequest.database_name || 'default' }}</div>
+                      <div class="bv-detail__title">{{ selectedRequest?.title }}</div>
+                      <div class="bv-detail__sub">{{ selectedRequest?.connection }} · {{ selectedRequest?.database_name || 'default' }}</div>
                     </div>
-                    <span class="bv-status" :data-status="selectedRequest.status">{{ formatStatus(selectedRequest.status) }}</span>
+                    <span class="bv-status" :data-status="selectedRequest?.status">{{ formatStatus(selectedRequest?.status ?? '') }}</span>
                   </div>
                   <div class="bv-meta">
-                    <span>Requested by {{ selectedRequest.creator_name || 'unknown' }}</span>
-                    <span>Reviewer {{ selectedRequest.reviewer_name || '—' }}</span>
-                    <span>{{ formatDate(selectedRequest.created_at) }}</span>
+                    <span>Requested by {{ selectedRequest?.creator_name || 'unknown' }}</span>
+                    <span>Reviewer {{ selectedRequest?.reviewer_name || '—' }}</span>
+                    <span>{{ formatDate(selectedRequest?.created_at ?? '') }}</span>
                   </div>
-                  <div v-if="selectedRequest.description" class="bv-description">{{ selectedRequest.description }}</div>
+                  <div v-if="selectedRequest?.description" class="bv-description">{{ selectedRequest?.description }}</div>
                   <textarea v-model="reviewNote" class="base-input bv-note" rows="3" placeholder="Review note or rejection reason…" />
                   <div class="bv-actions">
-                    <button v-if="canApprove" class="base-btn base-btn--ghost base-btn--sm" :disabled="reviewLoading || selectedRequest.status !== 'pending_review'" @click="reviewRequest('rejected')">Reject</button>
-                    <button v-if="canApprove" class="base-btn base-btn--primary base-btn--sm" :disabled="reviewLoading || selectedRequest.status !== 'pending_review'" @click="reviewRequest('approved')">Approve</button>
-                    <button class="base-btn base-btn--primary base-btn--sm" :disabled="selectedRequest.status !== 'approved' && selectedRequest.status !== 'done'" @click="downloadApprovedRequest">Download Dump</button>
+                    <button v-if="canApprove" class="base-btn base-btn--ghost base-btn--sm" :disabled="reviewLoading || selectedRequest?.status !== 'pending_review'" @click="reviewRequest('rejected')">Reject</button>
+                    <button v-if="canApprove" class="base-btn base-btn--primary base-btn--sm" :disabled="reviewLoading || selectedRequest?.status !== 'pending_review'" @click="reviewRequest('approved')">Approve</button>
+                    <button class="base-btn base-btn--primary base-btn--sm" :disabled="selectedRequest?.status !== 'approved' && selectedRequest?.status !== 'done'" @click="downloadApprovedRequest">Download Dump</button>
                   </div>
-                  <div v-if="selectedRequest.review_note" class="notice notice--info"><strong>Review note:</strong> {{ selectedRequest.review_note }}</div>
-                  <div v-if="selectedRequest.execute_error" class="notice notice--error"><strong>Error:</strong> {{ selectedRequest.execute_error }}</div>
+                  <div v-if="selectedRequest?.review_note" class="notice notice--info"><strong>Review note:</strong> {{ selectedRequest?.review_note }}</div>
+                  <div v-if="selectedRequest?.execute_error" class="notice notice--error"><strong>Error:</strong> {{ selectedRequest?.execute_error }}</div>
                 </div>
               </div>
             </div>
