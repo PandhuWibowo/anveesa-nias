@@ -20,7 +20,7 @@ interface ScheduleRun {
   summary: string; error: string; alerted: boolean; ran_at: string
 }
 
-const { connections } = useConnections()
+const { activeConnections: connections } = useConnections()
 const toast = useToast()
 const schedules = ref<Schedule[]>([])
 const dashboards = ref<AnalyticsDashboard[]>([])

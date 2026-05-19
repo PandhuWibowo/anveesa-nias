@@ -117,7 +117,7 @@ interface SemanticFilterOption {
 const toast = useToast()
 const route = useRoute()
 const { queries, fetchAll: fetchSavedQueries, save: saveSavedQuery } = useSavedQueries()
-const { connections, fetchConnections } = useConnections()
+const { activeConnections: connections, fetchConnections } = useConnections()
 
 const dashboards = ref<Dashboard[]>([])
 const selectedDashboardId = ref<number | null>(null)

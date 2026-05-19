@@ -9,6 +9,7 @@ interface ConnectionOption {
   name: string
   driver: string
   environment?: string
+  disconnected?: boolean
 }
 
 interface NotificationItem {
@@ -342,7 +343,7 @@ async function loadDeliveries() {
 async function loadConnections() {
   if (!canManage.value) return
   const { data } = await axios.get<ConnectionOption[]>('/api/connections')
-  connections.value = data || []
+  connections.value = (data || []).filter(c => !c.disconnected)
 }
 
 async function loadAll() {

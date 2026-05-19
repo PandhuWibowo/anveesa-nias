@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import axios from 'axios'
 import { readableError } from '@/utils/httpError'
 
@@ -60,6 +60,7 @@ export interface ConnectionForm {
 }
 
 const connections = ref<Connection[]>([])
+const activeConnections = computed<Connection[]>(() => connections.value.filter(c => !c.disconnected))
 const loading = ref(false)
 const error = ref('')
 
@@ -143,6 +144,7 @@ export function useConnections() {
 
   return {
     connections,
+    activeConnections,
     loading,
     error,
     fetchConnections,
