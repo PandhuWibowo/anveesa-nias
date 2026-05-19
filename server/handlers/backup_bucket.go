@@ -39,6 +39,10 @@ type BackupJob struct {
 	StartedAt time.Time       `json:"started_at"`
 	DoneAt    *time.Time      `json:"done_at,omitempty"`
 
+	// Live upload progress (updated atomically, no lock needed)
+	Stage         string `json:"stage"`           // "dumping" | "uploading"
+	UploadedBytes int64  `json:"uploaded_bytes"`  // bytes sent to bucket so far
+
 	// Result (populated on done)
 	ObjectKey         string `json:"object_key,omitempty"`
 	Bucket            string `json:"bucket,omitempty"`
@@ -48,8 +52,9 @@ type BackupJob struct {
 	// Error (populated on failed)
 	Error string `json:"error,omitempty"`
 
-	cancel context.CancelFunc
-	mu     sync.Mutex
+	cancel        context.CancelFunc
+	uploadCounter *int64 // points to countingReader.n for live reads
+	mu            sync.Mutex
 }
 
 var (
@@ -210,6 +215,7 @@ func BackupToBucket() http.HandlerFunc {
 		job := &BackupJob{
 			ID:        newJobID(),
 			Status:    BackupJobRunning,
+			Stage:     "dumping",
 			StartedAt: time.Now(),
 			cancel:    jobCancel,
 		}
@@ -240,6 +246,10 @@ func BackupToBucket() http.HandlerFunc {
 			}()
 
 			cr := &countingReader{r: pr}
+			job.mu.Lock()
+			job.Stage = "uploading"
+			job.uploadCounter = &cr.n
+			job.mu.Unlock()
 			uploadErr := uploadToBucketStream(jobCtx, dest, objectName, cr)
 			if uploadErr != nil {
 				pr.CloseWithError(uploadErr)
@@ -286,6 +296,9 @@ func GetBackupJobStatus() http.HandlerFunc {
 			return
 		}
 		job.mu.Lock()
+		if job.uploadCounter != nil {
+			job.UploadedBytes = atomic.LoadInt64(job.uploadCounter)
+		}
 		defer job.mu.Unlock()
 		json.NewEncoder(w).Encode(job)
 	}
@@ -414,8 +427,9 @@ func uploadToBucket(ctx interface {
 	return uploadToBucketStream(ctx, dest, objectKey, bytes.NewReader(data))
 }
 
-// DownloadFromBucket proxies a file from S3-compatible storage directly to the
-// browser, signing the request server-side so credentials are never exposed.
+// DownloadFromBucket generates a pre-signed URL and redirects the browser
+// directly to S3-compatible storage, bypassing the server for the data transfer.
+// For multi-GB files this is dramatically faster than proxying through the server.
 // GET /api/backup/bucket-download?dest_conn_id=N&object_key=path/to/file.sql.gz
 func DownloadFromBucket() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -437,50 +451,70 @@ func DownloadFromBucket() http.HandlerFunc {
 			return
 		}
 
-		endpointHost := buildS3Host(dest)
-		scheme := "https"
-		if !dest.SSL {
-			scheme = "http"
-		}
-		bucket := strings.Trim(dest.Bucket, "/")
-		virtualHost := bucket + "." + endpointHost
-		downloadURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, url.PathEscape(objectKey))
-
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, downloadURL, nil)
+		signed, err := presignedDownloadURL(dest, objectKey, 60*time.Minute)
 		if err != nil {
-			http.Error(w, `{"error":"failed to build request: `+err.Error()+`"}`, http.StatusInternalServerError)
+			http.Error(w, `{"error":"failed to sign URL: `+err.Error()+`"}`, http.StatusInternalServerError)
 			return
 		}
 
-		payloadHash := sha256.Sum256([]byte{})
-		payloadHashHex := hex.EncodeToString(payloadHash[:])
-		region := objectStorageRegion(dest.Driver, endpointHost)
-		service := objectStorageService(dest.Driver)
-		signObjectStorageRequestFull(req, dest.Username, dest.Password, region, service, payloadHashHex, nil)
-
-		client := &http.Client{Timeout: 4 * time.Hour}
-		resp, err := client.Do(req)
-		if err != nil {
-			http.Error(w, `{"error":"download failed: `+err.Error()+`"}`, http.StatusBadGateway)
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode >= 400 {
-			http.Error(w, fmt.Sprintf(`{"error":"bucket returned HTTP %d"}`, resp.StatusCode), http.StatusBadGateway)
-			return
-		}
-
-		parts := strings.Split(objectKey, "/")
-		filename := parts[len(parts)-1]
-
-		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
-		w.Header().Set("Content-Type", "application/octet-stream")
-		if cl := resp.Header.Get("Content-Length"); cl != "" {
-			w.Header().Set("Content-Length", cl)
-		}
-		io.Copy(w, resp.Body)
+		// Redirect browser directly to S3 — no proxying, full download speed.
+		http.Redirect(w, r, signed, http.StatusFound)
 	}
+}
+
+// presignedDownloadURL returns a time-limited pre-signed GET URL for an object.
+// The browser can use this URL to download directly from the bucket without
+// routing through the application server.
+func presignedDownloadURL(dest *bucketConnRow, objectKey string, expires time.Duration) (string, error) {
+	endpointHost := buildS3Host(dest)
+	scheme := "https"
+	if !dest.SSL {
+		scheme = "http"
+	}
+	bucket := strings.Trim(dest.Bucket, "/")
+	key := strings.TrimPrefix(objectKey, "/")
+	virtualHost := bucket + "." + endpointHost
+	objectURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, url.PathEscape(key))
+
+	now := time.Now().UTC()
+	amzDate := now.Format("20060102T150405Z")
+	dateStamp := now.Format("20060102")
+	region := objectStorageRegion(dest.Driver, endpointHost)
+	service := objectStorageService(dest.Driver)
+
+	expireSecs := int(expires.Seconds())
+	credScope := dateStamp + "/" + region + "/" + service + "/aws4_request"
+	credential := dest.Username + "/" + credScope
+
+	// Build canonical query string (params must be sorted alphabetically)
+	q := url.Values{}
+	q.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
+	q.Set("X-Amz-Credential", credential)
+	q.Set("X-Amz-Date", amzDate)
+	q.Set("X-Amz-Expires", strconv.Itoa(expireSecs))
+	q.Set("X-Amz-SignedHeaders", "host")
+	canonicalQuery := q.Encode() // url.Values.Encode() sorts keys
+
+	canonicalHeaders := "host:" + virtualHost + "\n"
+	canonicalURI := "/" + url.PathEscape(key)
+
+	canonicalRequest := strings.Join([]string{
+		"GET",
+		canonicalURI,
+		canonicalQuery,
+		canonicalHeaders,
+		"host",           // signed headers
+		"UNSIGNED-PAYLOAD",
+	}, "\n")
+
+	hashReq := sha256.Sum256([]byte(canonicalRequest))
+	stringToSign := "AWS4-HMAC-SHA256\n" + amzDate + "\n" + credScope + "\n" + hex.EncodeToString(hashReq[:])
+
+	signingKey := hmacSHA256(hmacSHA256(hmacSHA256(hmacSHA256([]byte("AWS4"+dest.Password), dateStamp), region), service), "aws4_request")
+	sig := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
+
+	finalURL := objectURL + "?" + canonicalQuery + "&X-Amz-Signature=" + sig
+	return finalURL, nil
 }
 
 // ListBucketBackups lists objects in a bucket with an optional prefix filter.

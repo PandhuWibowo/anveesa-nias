@@ -245,6 +245,12 @@ async function runBucketBackup() {
 
       const { data: status } = await axios.get(`/api/backup/jobs/${activeJobId}`)
 
+      // Show live upload progress when in uploading stage
+      if (status.stage === 'uploading' && status.uploaded_bytes > 0) {
+        const mb = (status.uploaded_bytes / 1024 / 1024).toFixed(1)
+        bucketStage.value = `Uploading to bucket… ${mb} MB uploaded`
+      }
+
       if (status.status === 'done') {
         clearInterval(progressTimer)
         bucketProgress.value = 100
@@ -543,15 +549,24 @@ async function downloadFromBucket(key: string) {
   if (dlBucketDownloading.value.has(key)) return
   dlBucketDownloading.value = new Set([...dlBucketDownloading.value, key])
   try {
-    const response = await axios.get('/api/backup/bucket-download', {
-      params: { dest_conn_id: dlBucketConnId.value, object_key: key },
-      responseType: 'blob',
+    // Server returns a 302 redirect to a pre-signed S3 URL so the browser
+    // downloads directly from the bucket at full speed — no proxying.
+    const params = new URLSearchParams({
+      dest_conn_id: String(dlBucketConnId.value),
+      object_key: key,
     })
-    downloadBlob(response.data, key.split('/').pop() ?? key)
+    const a = document.createElement('a')
+    a.href = `/api/backup/bucket-download?${params}`
+    a.download = key.split('/').pop() ?? key
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
   } catch (err: any) {
-    toast.error(err?.response?.data?.error || 'Download failed')
+    toast.error('Download failed')
   } finally {
-    dlBucketDownloading.value = new Set([...dlBucketDownloading.value].filter(k => k !== key))
+    setTimeout(() => {
+      dlBucketDownloading.value = new Set([...dlBucketDownloading.value].filter(k => k !== key))
+    }, 1500)
   }
 }
 
