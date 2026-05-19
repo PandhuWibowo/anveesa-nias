@@ -11,13 +11,14 @@ import (
 )
 
 type UserInfo struct {
-	ID          int64    `json:"id"`
-	Username    string   `json:"username"`
-	Role        string   `json:"role"`
-	RoleID      int64    `json:"role_id"`
-	IsActive    bool     `json:"is_active"`
-	Permissions []string `json:"permissions"`
-	CreatedAt   string   `json:"created_at"`
+	ID                   int64    `json:"id"`
+	Username             string   `json:"username"`
+	Role                 string   `json:"role"`
+	RoleID               int64    `json:"role_id"`
+	IsActive             bool     `json:"is_active"`
+	Permissions          []string `json:"permissions"`
+	EffectivePermissions []string `json:"effective_permissions"`
+	CreatedAt            string   `json:"created_at"`
 }
 
 func ListUsers() http.HandlerFunc {
@@ -46,6 +47,11 @@ func ListUsers() http.HandlerFunc {
 			rows.Scan(&u.ID, &u.Username, &u.Role, &u.RoleID, &isActive, &permissions, &u.CreatedAt)
 			u.IsActive = isActive == 1
 			u.Permissions = ParseAppPerms(permissions)
+			if effectivePerms, err := appdb.GetUserAppPermissions(u.ID); err == nil {
+				u.EffectivePermissions = effectivePerms
+			} else {
+				u.EffectivePermissions = u.Permissions
+			}
 			users = append(users, u)
 		}
 		if users == nil {
