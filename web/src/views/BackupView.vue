@@ -469,6 +469,59 @@ function downloadDirectBackup() {
     .catch((error: any) => toast.error(error.response?.data?.error || 'Failed to download backup'))
 }
 
+// ── Download from Bucket ──────────────────────────────────────────────
+const dlBucketConnId = ref<number | null>(null)
+const dlBucketSubfolder = ref('')
+const dlBucketFiles = ref<BucketObject[]>([])
+const dlBucketLoading = ref(false)
+const dlBucketBrowsed = ref(false)
+const dlBucketDownloading = ref<Set<string>>(new Set())
+
+async function loadDlBucketFiles() {
+  if (!dlBucketConnId.value) return
+  dlBucketLoading.value = true
+  dlBucketFiles.value = []
+  try {
+    const { data } = await axios.get('/api/backup/bucket-list', {
+      params: {
+        dest_conn_id: dlBucketConnId.value,
+        subfolder: dlBucketSubfolder.value.trim(),
+      },
+    })
+    dlBucketFiles.value = (data.objects ?? [])
+      .filter((o: BucketObject) => o.key.endsWith('.sql') || o.key.endsWith('.sql.gz'))
+      .sort((a: BucketObject, b: BucketObject) => b.last_modified.localeCompare(a.last_modified))
+    dlBucketBrowsed.value = true
+  } catch (err: any) {
+    toast.error(err?.response?.data?.error || 'Failed to list bucket files')
+  } finally {
+    dlBucketLoading.value = false
+  }
+}
+
+async function downloadFromBucket(key: string) {
+  if (dlBucketDownloading.value.has(key)) return
+  dlBucketDownloading.value = new Set([...dlBucketDownloading.value, key])
+  try {
+    const response = await axios.get('/api/backup/bucket-download', {
+      params: { dest_conn_id: dlBucketConnId.value, object_key: key },
+      responseType: 'blob',
+    })
+    downloadBlob(response.data, key.split('/').pop() ?? key)
+  } catch (err: any) {
+    toast.error(err?.response?.data?.error || 'Download failed')
+  } finally {
+    dlBucketDownloading.value = new Set([...dlBucketDownloading.value].filter(k => k !== key))
+  }
+}
+
+watch(dlBucketConnId, () => {
+  dlBucketFiles.value = []
+  dlBucketSubfolder.value = ''
+  dlBucketBrowsed.value = false
+  if (dlBucketConnId.value) loadDlBucketFiles()
+})
+
 // ── Restore (existing) ────────────────────────────────────────────────
 const restoreConnId = ref<number | null>(null)
 const restoreSQL = ref('')
@@ -1169,6 +1222,89 @@ onMounted(async () => {
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               Download {{ backupOpts.compress ? '.sql.gz' : '.sql' }}
             </button>
+          </div>
+        </div>
+
+        <!-- ══ DOWNLOAD FROM BUCKET ════════════════════════════════════ -->
+        <div v-if="activeTab === 'direct' && canDirectBackup" class="page-card bv-card">
+          <div class="page-card__head">
+            <div>
+              <div class="page-card__title">Download from Bucket</div>
+              <div class="page-card__sub">Browse your object storage and download an existing backup file to your browser.</div>
+            </div>
+          </div>
+          <div class="page-card__body bv-card-body">
+
+            <div class="bv-section-label">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+              Storage Provider
+            </div>
+
+            <div v-if="bucketConnections.length === 0" class="bv-empty-hint">
+              No bucket connections found. <a href="/connections" style="color:var(--brand)">Add one →</a>
+            </div>
+            <template v-else>
+              <div class="bv-conn-grid">
+                <button
+                  v-for="c in bucketConnections"
+                  :key="c.id"
+                  class="bv-conn-card"
+                  :class="{ 'is-active': dlBucketConnId === c.id }"
+                  @click="dlBucketConnId = c.id"
+                >
+                  <div class="bv-conn-card__badge" :class="`conn-badge--${c.driver}`">
+                    <DriverIcon :driver="c.driver" :size="14" />
+                  </div>
+                  <div class="bv-conn-card__info">
+                    <span class="bv-conn-card__name">{{ c.name }}</span>
+                    <span class="bv-conn-card__driver">{{ driverLabel(c.driver) }}</span>
+                  </div>
+                  <svg v-if="dlBucketConnId === c.id" class="bv-conn-card__check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                </button>
+              </div>
+
+              <div v-if="dlBucketConnId" class="bv-dl-path-row">
+                <input
+                  class="base-input"
+                  v-model="dlBucketSubfolder"
+                  placeholder="Path / subfolder (e.g. database/prod)"
+                  style="flex:1"
+                  @keydown.enter="loadDlBucketFiles"
+                />
+                <button class="base-btn base-btn--secondary" :disabled="dlBucketLoading" @click="loadDlBucketFiles">
+                  <svg v-if="dlBucketLoading" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                  <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  {{ dlBucketLoading ? 'Loading…' : 'Browse' }}
+                </button>
+              </div>
+
+              <div v-if="dlBucketFiles.length > 0" class="bv-dl-files">
+                <div class="bv-dl-files__header">
+                  <span>File</span>
+                  <span>Size</span>
+                  <span>Last Modified</span>
+                  <span></span>
+                </div>
+                <div v-for="f in dlBucketFiles" :key="f.key" class="bv-dl-files__row">
+                  <span class="bv-dl-files__name" :title="f.key">{{ f.key.split('/').pop() }}</span>
+                  <span class="bv-dl-files__meta">{{ formatBytes(f.size) }}</span>
+                  <span class="bv-dl-files__meta">{{ formatDate(f.last_modified) }}</span>
+                  <button
+                    class="base-btn base-btn--primary base-btn--sm bv-dl-btn"
+                    :disabled="dlBucketDownloading.has(f.key)"
+                    @click="downloadFromBucket(f.key)"
+                  >
+                    <svg v-if="!dlBucketDownloading.has(f.key)" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                    {{ dlBucketDownloading.has(f.key) ? 'Downloading…' : 'Download' }}
+                  </button>
+                </div>
+              </div>
+
+              <div v-else-if="dlBucketConnId && !dlBucketLoading && dlBucketBrowsed" class="bv-empty-hint">
+                No backup files (.sql / .sql.gz) found in this path.
+              </div>
+            </template>
           </div>
         </div>
 
@@ -2171,6 +2307,64 @@ onMounted(async () => {
     scroll-snap-align: start;
   }
 }
+
+/* ── Download from Bucket ──────────────────────────────────────── */
+.bv-dl-path-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.bv-dl-files {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.bv-dl-files__header {
+  display: grid;
+  grid-template-columns: 1fr 90px 1fr 110px;
+  gap: 12px;
+  padding: 8px 14px;
+  background: var(--bg-2);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.bv-dl-files__row {
+  display: grid;
+  grid-template-columns: 1fr 90px 1fr 110px;
+  gap: 12px;
+  padding: 10px 14px;
+  align-items: center;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  transition: background 0.15s;
+}
+
+.bv-dl-files__row:hover { background: var(--bg-2); }
+
+.bv-dl-files__name {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bv-dl-files__meta {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.bv-dl-btn { min-width: 104px; justify-content: center; }
+
+@keyframes bv-spin { to { transform: rotate(360deg); } }
+.bv-spin { animation: bv-spin 0.8s linear infinite; }
 
 @media (max-width: 480px) {
   .bv-run-row { flex-direction: column; align-items: stretch; }
