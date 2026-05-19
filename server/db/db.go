@@ -1009,6 +1009,11 @@ func migrate() error {
 		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"pipelines.view"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.view%'`,
 		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"pipelines.manage"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.manage%'`,
 		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"pipelines.run"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.run%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"observability.view"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%observability.view%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"discover.view"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%discover.view%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"uptime.view"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%uptime.view%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"data.export"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%data.export%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"data.import"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%data.import%'`,
 
 		// ── Cloud Provider Configs (Huawei RDS, AWS RDS log integration) ──
 		`CREATE TABLE IF NOT EXISTS cloud_provider_configs (
