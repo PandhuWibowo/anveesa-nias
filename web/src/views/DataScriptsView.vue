@@ -109,7 +109,7 @@ foreach ($userIds as $userId) {
 
 const toast = useToast()
 const route = useRoute()
-const { connections, fetchConnections } = useConnections()
+const { activeConnections: connections, fetchConnections } = useConnections()
 const { databases, fetchDatabases, loading: databasesLoading } = useDatabases()
 const { hasPermission, isAdmin } = useAuth()
 

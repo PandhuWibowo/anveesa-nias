@@ -12,7 +12,7 @@ import { readableError } from '@/utils/httpError'
 
 const router = useRouter()
 const { queries, loading, fetchAll, save, remove } = useSavedQueries()
-const { connections } = useConnections()
+const { activeConnections: connections } = useConnections()
 const toast = useToast()
 
 const search = ref('')

@@ -17,7 +17,7 @@ interface Watcher {
   timerId?: ReturnType<typeof setInterval>
 }
 
-const { connections } = useConnections()
+const { activeConnections: connections } = useConnections()
 const watchers = ref<Watcher[]>([])
 const showForm = ref(false)
 const form = ref({ name: '', connId: 0, sql: 'SELECT COUNT(*) FROM ', intervalSec: 10 })
