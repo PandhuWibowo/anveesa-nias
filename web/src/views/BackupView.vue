@@ -121,7 +121,9 @@ const bucketForm = reactive({
 })
 
 const bucketRunning = ref(false)
-const bucketResult = ref<{ ok: boolean; object_key: string; bucket: string; size_bytes: number; uploaded_at: string } | null>(null)
+const bucketCancelled = ref(false)
+const bucketAbortController = ref<AbortController | null>(null)
+const bucketResult = ref<{ ok: boolean; object_key: string; bucket: string; size_bytes: number; uncompressed_bytes?: number; uploaded_at: string } | null>(null)
 const bucketError = ref('')
 const bucketErrorDetail = ref<{ message: string; stage: string; status: number | null; time: string; hint: string } | null>(null)
 const bucketProgress = ref(0)
@@ -131,6 +133,11 @@ const bucketStageIdx = ref(-1)
 const bucketStageTimes = ref<string[]>([])
 const bucketHistory = ref<BucketObject[]>([])
 const historyLoading = ref(false)
+
+function cancelBucketBackup() {
+  bucketAbortController.value?.abort()
+  bucketCancelled.value = true
+}
 
 const BACKUP_STAGES = [
   { at: 5,  label: 'Connecting to source database' },
@@ -185,6 +192,7 @@ async function runBucketBackup() {
     return
   }
   bucketRunning.value = true
+  bucketCancelled.value = false
   bucketResult.value = null
   bucketError.value = ''
   bucketErrorDetail.value = null
@@ -192,6 +200,9 @@ async function runBucketBackup() {
   bucketStageIdx.value = 0
   bucketStageTimes.value = [nowTime()]
   bucketStage.value = BACKUP_STAGES[0].label + '…'
+
+  const controller = new AbortController()
+  bucketAbortController.value = controller
 
   // Advance through simulated stages while the request is in flight
   let stageIdx = 0
@@ -213,16 +224,27 @@ async function runBucketBackup() {
       prefix: bucketForm.prefix || 'backup',
       subfolder: bucketForm.subfolder,
       options: toBackupOptionsPayload(),
-    })
+    }, { signal: controller.signal })
+
     clearInterval(progressTimer)
     bucketProgress.value = 100
-    bucketStageIdx.value = BACKUP_STAGES.length  // all done
+    bucketStageIdx.value = BACKUP_STAGES.length
     bucketStage.value = 'Upload complete!'
     bucketResult.value = data
     toast.success(`Backup uploaded → ${data.object_key}`)
     loadBucketHistory()
   } catch (err: any) {
     clearInterval(progressTimer)
+
+    // Cancelled by user — reset silently
+    if (axios.isCancel(err) || err?.name === 'CanceledError' || bucketCancelled.value) {
+      bucketProgress.value = 0
+      bucketStage.value = ''
+      bucketStageIdx.value = -1
+      toast.info('Backup cancelled')
+      return
+    }
+
     const message = err?.response?.data?.error ?? 'Backup to bucket failed'
     bucketError.value = message
     bucketErrorDetail.value = {
@@ -236,6 +258,7 @@ async function runBucketBackup() {
     bucketStage.value = ''
   } finally {
     bucketRunning.value = false
+    bucketAbortController.value = null
   }
 }
 
@@ -803,8 +826,20 @@ onMounted(async () => {
                   <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                   {{ bucketRunning ? 'Running backup…' : 'Run Backup Now' }}
                 </button>
+
+                <!-- Cancel — only shown while backup is running -->
                 <button
-                  v-if="bucketForm.dest_conn_id"
+                  v-if="bucketRunning"
+                  class="base-btn bv-cancel-btn"
+                  @click="cancelBucketBackup"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  Cancel
+                </button>
+
+                <!-- Refresh history — hidden while backup is running -->
+                <button
+                  v-if="bucketForm.dest_conn_id && !bucketRunning"
                   class="base-btn base-btn--ghost"
                   :disabled="historyLoading"
                   @click="loadBucketHistory"
@@ -878,7 +913,15 @@ onMounted(async () => {
                   </div>
                   <div class="bv-result-row">
                     <span class="bv-result-row__label">Size</span>
-                    <span class="bv-result-row__val">{{ formatBytes(bucketResult.size_bytes) }}</span>
+                    <span class="bv-result-row__val bv-result-size">
+                      {{ formatBytes(bucketResult.size_bytes) }}
+                      <template v-if="bucketResult.uncompressed_bytes && bucketResult.uncompressed_bytes > bucketResult.size_bytes">
+                        <span class="bv-result-size__orig">from {{ formatBytes(bucketResult.uncompressed_bytes) }}</span>
+                        <span class="bv-result-size__ratio">
+                          {{ Math.round((1 - bucketResult.size_bytes / bucketResult.uncompressed_bytes) * 100) }}% smaller
+                        </span>
+                      </template>
+                    </span>
                   </div>
                   <div class="bv-result-row">
                     <span class="bv-result-row__label">Uploaded at</span>
@@ -1512,6 +1555,26 @@ onMounted(async () => {
   align-items: center;
 }
 
+.bv-cancel-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--error, #e05252) 40%, transparent);
+  background: color-mix(in srgb, var(--error, #e05252) 8%, transparent);
+  color: var(--error, #e05252);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.bv-cancel-btn:hover {
+  background: color-mix(in srgb, var(--error, #e05252) 16%, transparent);
+  border-color: color-mix(in srgb, var(--error, #e05252) 60%, transparent);
+}
+
 /* ── Result card ── */
 .bv-result-card {
   border: 1px solid var(--success);
@@ -1563,6 +1626,30 @@ onMounted(async () => {
   font-family: var(--mono);
   font-size: 11.5px;
   word-break: break-all;
+}
+
+.bv-result-size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.bv-result-size__orig {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+}
+
+.bv-result-size__ratio {
+  padding: 1px 7px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  color: var(--success);
+  font-size: 10.5px;
+  font-weight: 600;
+  font-family: var(--sans-serif, inherit);
+  letter-spacing: 0.02em;
 }
 
 /* ── Progress bar ── */

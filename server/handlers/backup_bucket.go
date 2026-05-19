@@ -52,7 +52,7 @@ func fetchBucketConn(connID int64) (*bucketConnRow, error) {
 	return row, nil
 }
 
-// countingReader wraps an io.Reader and counts bytes read.
+// countingReader wraps an io.Reader and counts bytes read (upload side).
 type countingReader struct {
 	r io.Reader
 	n int64
@@ -62,6 +62,23 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	atomic.AddInt64(&c.n, int64(n))
 	return n, err
+}
+
+// countingWriter wraps an io.Writer and counts bytes written (dump side).
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	atomic.AddInt64(&c.n, int64(n))
+	return n, err
+}
+
+type dumpStats struct {
+	uncompressedBytes int64
+	err               error
 }
 
 // BackupToBucket streams a SQL dump from a source database connection and
@@ -141,45 +158,51 @@ func BackupToBucket() http.HandlerFunc {
 		}
 
 		// ── Streaming pipeline ────────────────────────────────────────────────
-		// Goroutine writes the dump (and optional gzip) into pw.
-		// The main goroutine reads from pr and streams directly to S3.
-		// Peak RAM usage: one small pipe buffer (~32 KB) instead of the full dump.
+		// Goroutine: writeBackupDump → countingWriter → [gzip BestCompression] → PipeWriter
+		// Main:      PipeReader → countingReader → S3 PUT (chunked, UNSIGNED-PAYLOAD)
+		// Peak RAM: one pipe buffer (~32 KB) regardless of database size.
 		pr, pw := io.Pipe()
+		statsCh := make(chan dumpStats, 1)
 
 		go func() {
-			out := io.Writer(pw)
 			var gz *gzip.Writer
+			var pipeOut io.Writer = pw
+
 			if req.Options.Compress {
-				gz = gzip.NewWriter(pw)
-				out = gz
+				gz, _ = gzip.NewWriterLevel(pw, gzip.BestCompression)
+				pipeOut = gz
 			}
 
-			dumpErr := writeBackupDump(r.Context(), out, srcDB, driver, req.Database, req.Options)
+			// Count raw (pre-compression) bytes for reporting the compression ratio
+			cw := &countingWriter{w: pipeOut}
+			dumpErr := writeBackupDump(r.Context(), cw, srcDB, driver, req.Database, req.Options)
 
 			if gz != nil && dumpErr == nil {
-				// flush gzip footer only when dump succeeded
-				dumpErr = gz.Close()
+				dumpErr = gz.Close() // flush gzip footer
 			}
-			// CloseWithError(nil) is equivalent to Close() — signals EOF to reader
 			pw.CloseWithError(dumpErr)
+			statsCh <- dumpStats{uncompressedBytes: atomic.LoadInt64(&cw.n), err: dumpErr}
 		}()
 
-		// Count bytes flowing through without buffering them
+		// Count compressed bytes actually sent to S3
 		cr := &countingReader{r: pr}
 
 		if err := uploadToBucketStream(r.Context(), dest, objectName, cr); err != nil {
-			// Stop the dump goroutine if still running
 			pr.CloseWithError(err)
 			http.Error(w, `{"error":"upload failed: `+err.Error()+`"}`, http.StatusBadGateway)
 			return
 		}
 
+		stats := <-statsCh
+		compressedBytes := atomic.LoadInt64(&cr.n)
+
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"ok":          true,
-			"object_key":  objectName,
-			"bucket":      dest.Bucket,
-			"size_bytes":  atomic.LoadInt64(&cr.n),
-			"uploaded_at": time.Now().UTC().Format(time.RFC3339),
+			"ok":                 true,
+			"object_key":         objectName,
+			"bucket":             dest.Bucket,
+			"size_bytes":         compressedBytes,
+			"uncompressed_bytes": stats.uncompressedBytes,
+			"uploaded_at":        time.Now().UTC().Format(time.RFC3339),
 		})
 	}
 }
