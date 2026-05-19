@@ -260,6 +260,13 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 
 	schema := resolveSchema(driver, opts.Schema)
 
+	// Emit SET search_path for PostgreSQL so that unqualified names in FK
+	// REFERENCES clauses and other DDL produced by pg_get_constraintdef resolve
+	// correctly when the dump is restored in a fresh database.
+	if driver == "postgres" && schema != "" {
+		fmt.Fprintf(w, "SET search_path TO %q;\n\n", schema)
+	}
+
 	tables, err := listBackupTables(ctx, db, driver, schema, dbName, opts)
 	if err != nil {
 		return err
@@ -284,6 +291,15 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 		fmt.Fprintf(w, "-- ================================================================\n")
 		fmt.Fprintf(w, "-- PRE-DATA: schema definitions\n")
 		fmt.Fprintf(w, "-- ================================================================\n\n")
+
+		// Emit ENUM type definitions before table DDL — tables with enum columns
+		// cannot be created if the types don't exist yet.
+		if driver == "postgres" {
+			if err := writePGEnums(ctx, w, db, schema); err != nil {
+				fmt.Fprintf(w, "-- Error writing enum types: %v\n\n", err)
+			}
+		}
+
 		var err error
 		activeTables, err = writePreData(ctx, w, db, driver, schema, tables, opts)
 		if err != nil {
@@ -296,7 +312,7 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 		fmt.Fprintf(w, "-- ================================================================\n")
 		fmt.Fprintf(w, "-- DATA: row inserts\n")
 		fmt.Fprintf(w, "-- ================================================================\n\n")
-		if err := writeData(ctx, w, db, driver, activeTables, opts); err != nil {
+		if err := writeData(ctx, w, db, driver, schema, activeTables, opts); err != nil {
 			return err
 		}
 	}
@@ -588,13 +604,13 @@ func mssqlTableDDL(ctx context.Context, sb *strings.Builder, db *sql.DB, schema,
 
 // ── Data ──────────────────────────────────────────────────────────────────────
 
-func writeData(ctx context.Context, w io.Writer, db *sql.DB, driver string, tables []string, opts BackupOptions) error {
+func writeData(ctx context.Context, w io.Writer, db *sql.DB, driver, schema string, tables []string, opts BackupOptions) error {
 	for _, tbl := range tables {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 
-		tblQ := quoteIdentForDriver(driver, "", tbl)
+		tblQ := quoteIdentForDriver(driver, schema, tbl)
 		fmt.Fprintf(w, "-- Table: %s\n", tbl)
 
 		if opts.UseTransaction {
@@ -809,11 +825,11 @@ func generatePKsDDL(ctx context.Context, db *sql.DB, schema, table string) ([]st
 
 	stmt := fmt.Sprintf(
 		"DO $$ BEGIN"+
-			" IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = '%s.%s'::regclass AND contype = 'p') THEN"+
+			" IF to_regclass('%s.%s') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = '%s.%s'::regclass AND contype = 'p') THEN"+
 			" ALTER TABLE %q.%q ADD PRIMARY KEY (%s);"+
 			" END IF;"+
 			" END $$",
-		schema, table, schema, table, strings.Join(cols, ", "))
+		schema, table, schema, table, schema, table, strings.Join(cols, ", "))
 	return []string{stmt}, nil
 }
 
@@ -918,6 +934,47 @@ func writeViews(ctx context.Context, w io.Writer, db *sql.DB, driver, schema str
 		}
 	}
 	return nil
+}
+
+// ── Enums (PostgreSQL only) ───────────────────────────────────────────────────
+
+// writePGEnums emits CREATE TYPE … AS ENUM statements for all enum types in the
+// target schema. These must appear before CREATE TABLE because table columns can
+// reference them, and pg_get_constraintdef output also uses unqualified type names.
+func writePGEnums(ctx context.Context, w io.Writer, db *sql.DB, schema string) error {
+	if schema == "" {
+		schema = "public"
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT t.typname, string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder) AS labels
+		FROM pg_type t
+		JOIN pg_namespace n ON n.oid = t.typnamespace
+		JOIN pg_enum e ON e.enumtypid = t.oid
+		WHERE n.nspname = $1
+		GROUP BY t.typname
+		ORDER BY t.typname`, schema)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	any := false
+	for rows.Next() {
+		var typeName, labels string
+		if err := rows.Scan(&typeName, &labels); err != nil {
+			continue
+		}
+		quoted := []string{}
+		for _, lbl := range strings.Split(labels, ",") {
+			quoted = append(quoted, "'"+strings.ReplaceAll(lbl, "'", "''")+"'")
+		}
+		fmt.Fprintf(w, "CREATE TYPE %q.%q AS ENUM (%s);\n", schema, typeName, strings.Join(quoted, ", "))
+		any = true
+	}
+	if any {
+		fmt.Fprintln(w)
+	}
+	return rows.Err()
 }
 
 // ── Sequences (PostgreSQL only) ───────────────────────────────────────────────
