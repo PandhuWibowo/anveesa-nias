@@ -292,9 +292,13 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 		fmt.Fprintf(w, "-- PRE-DATA: schema definitions\n")
 		fmt.Fprintf(w, "-- ================================================================\n\n")
 
-		// Emit ENUM type definitions before table DDL — tables with enum columns
-		// cannot be created if the types don't exist yet.
 		if driver == "postgres" {
+			// Sequences must come before CREATE TABLE: DEFAULT nextval('seq') is
+			// resolved at CREATE TABLE parse time, so the sequence must already exist.
+			if err := writePGCreateSequences(ctx, w, db, schema); err != nil {
+				fmt.Fprintf(w, "-- Error writing sequences: %v\n\n", err)
+			}
+			// ENUM types must also exist before tables that reference them.
 			if err := writePGEnums(ctx, w, db, schema); err != nil {
 				fmt.Fprintf(w, "-- Error writing enum types: %v\n\n", err)
 			}
@@ -315,6 +319,13 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 		if err := writeData(ctx, w, db, driver, schema, activeTables, opts); err != nil {
 			return err
 		}
+
+		// Reset sequences after data so nextval() continues from the correct value.
+		if driver == "postgres" {
+			if err := writePGSequenceReset(ctx, w, db, schema); err != nil {
+				fmt.Fprintf(w, "-- Error resetting sequences: %v\n\n", err)
+			}
+		}
 	}
 
 	// Post-data: indexes, FK constraints
@@ -331,13 +342,6 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 	if opts.IncludeViews && (emitPreData || emitPostData) {
 		if err := writeViews(ctx, w, db, driver, schema); err != nil {
 			fmt.Fprintf(w, "-- Error writing views: %v\n\n", err)
-		}
-	}
-
-	// Sequences (PG only)
-	if opts.IncludeSequences && driver == "postgres" && emitPreData {
-		if err := writePGSequences(ctx, w, db, schema); err != nil {
-			fmt.Fprintf(w, "-- Error writing sequences: %v\n\n", err)
 		}
 	}
 
@@ -979,29 +983,93 @@ func writePGEnums(ctx context.Context, w io.Writer, db *sql.DB, schema string) e
 
 // ── Sequences (PostgreSQL only) ───────────────────────────────────────────────
 
-func writePGSequences(ctx context.Context, w io.Writer, db *sql.DB, schema string) error {
+// writePGCreateSequences emits CREATE SEQUENCE statements. Must run BEFORE
+// CREATE TABLE because DEFAULT nextval('seq') is resolved at parse time — if
+// the sequence doesn't exist, the CREATE TABLE fails immediately.
+func writePGCreateSequences(ctx context.Context, w io.Writer, db *sql.DB, schema string) error {
 	if schema == "" {
 		schema = "public"
 	}
+	// pg_sequences is available in PostgreSQL 10+.
+	rows, err := db.QueryContext(ctx, `
+		SELECT sequencename, increment, minimum_value, maximum_value, start_value, cache_size, cycle_option
+		FROM pg_sequences WHERE schemaname = $1
+		ORDER BY sequencename`, schema)
+	if err != nil {
+		// Fallback: basic CREATE SEQUENCE without parameters.
+		return writePGSequencesFallback(ctx, w, db, schema)
+	}
+	defer rows.Close()
+
+	any := false
+	for rows.Next() {
+		var name string
+		var inc, minV, maxV, startV, cache int64
+		var cycle bool
+		if err := rows.Scan(&name, &inc, &minV, &maxV, &startV, &cache, &cycle); err != nil {
+			continue
+		}
+		cycleKW := "NO CYCLE"
+		if cycle {
+			cycleKW = "CYCLE"
+		}
+		fmt.Fprintf(w,
+			"CREATE SEQUENCE IF NOT EXISTS %q.%q INCREMENT BY %d MINVALUE %d MAXVALUE %d START WITH %d CACHE %d %s;\n",
+			schema, name, inc, minV, maxV, startV, cache, cycleKW)
+		any = true
+	}
+	if any {
+		fmt.Fprintln(w)
+	}
+	return rows.Err()
+}
+
+// writePGSequencesFallback is used when pg_sequences is not available.
+func writePGSequencesFallback(ctx context.Context, w io.Writer, db *sql.DB, schema string) error {
 	rows, err := db.QueryContext(ctx,
 		`SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema=$1 ORDER BY sequence_name`, schema)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-
-	fmt.Fprintf(w, "-- ================================================================\n")
-	fmt.Fprintf(w, "-- SEQUENCES\n")
-	fmt.Fprintf(w, "-- ================================================================\n\n")
-
 	for rows.Next() {
 		var name string
 		rows.Scan(&name)
-		// Emit a basic CREATE SEQUENCE; current value would need nextval() call
 		fmt.Fprintf(w, "CREATE SEQUENCE IF NOT EXISTS %q.%q;\n", schema, name)
 	}
 	fmt.Fprintln(w)
 	return nil
+}
+
+// writePGSequenceReset emits SELECT setval(...) for all sequences so that
+// after data is restored the sequences continue from the correct value.
+func writePGSequenceReset(ctx context.Context, w io.Writer, db *sql.DB, schema string) error {
+	if schema == "" {
+		schema = "public"
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT sequencename, last_value
+		FROM pg_sequences WHERE schemaname = $1 AND last_value IS NOT NULL
+		ORDER BY sequencename`, schema)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	any := false
+	for rows.Next() {
+		var name string
+		var lastVal int64
+		if err := rows.Scan(&name, &lastVal); err != nil {
+			continue
+		}
+		fmt.Fprintf(w, "SELECT setval('%s.%s', %d);\n", schema, name, lastVal)
+		any = true
+	}
+	if any {
+		fmt.Fprintln(w)
+	}
+	return rows.Err()
 }
 
 // ── Table list ────────────────────────────────────────────────────────────────
