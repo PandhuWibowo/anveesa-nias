@@ -1138,7 +1138,7 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	// ── RBAC: Permissions ─────────────────────────────────────────
 	mux.HandleFunc("/api/app-permissions", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			requireAny(handlers.PermRolesManage)(handlers.ListAppPermissions())(w, r)
+			requireAny(handlers.PermRolesManage, handlers.PermUsersManage)(handlers.ListAppPermissions())(w, r)
 		} else {
 			http.NotFound(w, r)
 		}

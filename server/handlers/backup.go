@@ -274,12 +274,19 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 		fmt.Fprintf(w, "%s\n\n", fkDisableStatement(driver))
 	}
 
+	// activeTables is the list used for data/post-data phases. When pre-data is
+	// included we restrict it to tables whose DDL succeeded, keeping the dump
+	// self-consistent (no INSERT without a preceding CREATE TABLE).
+	activeTables := tables
+
 	// Pre-data: CREATE TABLE DDL
 	if emitPreData {
 		fmt.Fprintf(w, "-- ================================================================\n")
 		fmt.Fprintf(w, "-- PRE-DATA: schema definitions\n")
 		fmt.Fprintf(w, "-- ================================================================\n\n")
-		if err := writePreData(ctx, w, db, driver, schema, tables, opts); err != nil {
+		var err error
+		activeTables, err = writePreData(ctx, w, db, driver, schema, tables, opts)
+		if err != nil {
 			return err
 		}
 	}
@@ -289,7 +296,7 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 		fmt.Fprintf(w, "-- ================================================================\n")
 		fmt.Fprintf(w, "-- DATA: row inserts\n")
 		fmt.Fprintf(w, "-- ================================================================\n\n")
-		if err := writeData(ctx, w, db, driver, tables, opts); err != nil {
+		if err := writeData(ctx, w, db, driver, activeTables, opts); err != nil {
 			return err
 		}
 	}
@@ -299,7 +306,7 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 		fmt.Fprintf(w, "-- ================================================================\n")
 		fmt.Fprintf(w, "-- POST-DATA: indexes and constraints\n")
 		fmt.Fprintf(w, "-- ================================================================\n\n")
-		if err := writePostData(ctx, w, db, driver, schema, tables, opts); err != nil {
+		if err := writePostData(ctx, w, db, driver, schema, activeTables, opts); err != nil {
 			return err
 		}
 	}
@@ -329,10 +336,14 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 
 // ── Pre-data ──────────────────────────────────────────────────────────────────
 
-func writePreData(ctx context.Context, w io.Writer, db *sql.DB, driver, schema string, tables []string, opts BackupOptions) error {
+// writePreData writes CREATE TABLE DDL for each table and returns the subset of
+// tables whose DDL was successfully generated. Callers should use this returned
+// slice for data/post-data phases so the dump stays self-consistent.
+func writePreData(ctx context.Context, w io.Writer, db *sql.DB, driver, schema string, tables []string, opts BackupOptions) ([]string, error) {
+	var ok []string
 	for _, tbl := range tables {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return ok, ctx.Err()
 		}
 		ddl, err := generateTableDDL(ctx, db, driver, schema, tbl, opts)
 		if err != nil {
@@ -341,8 +352,9 @@ func writePreData(ctx context.Context, w io.Writer, db *sql.DB, driver, schema s
 		}
 		fmt.Fprintln(w, ddl)
 		fmt.Fprintln(w)
+		ok = append(ok, tbl)
 	}
-	return nil
+	return ok, nil
 }
 
 func generateTableDDL(ctx context.Context, db *sql.DB, driver, schema, table string, opts BackupOptions) (string, error) {
@@ -419,6 +431,13 @@ func pgTableDDL(ctx context.Context, sb *strings.Builder, db *sql.DB, schema, ta
 				WHEN data_type = 'numeric' AND numeric_precision IS NOT NULL AND numeric_scale IS NOT NULL
 					THEN 'numeric(' || numeric_precision || ',' || numeric_scale || ')'
 				WHEN data_type = 'ARRAY'
+					-- udt_name for arrays has a leading '_' (e.g. _text → text[])
+					THEN CASE WHEN LEFT(udt_name, 1) = '_'
+					          THEN SUBSTRING(udt_name FROM 2) || '[]'
+					          ELSE udt_name || '[]'
+					     END
+				WHEN data_type = 'USER-DEFINED'
+					-- enums, domains, composite types — use the actual type name
 					THEN udt_name
 				ELSE data_type
 			END,
@@ -436,9 +455,12 @@ func pgTableDDL(ctx context.Context, sb *strings.Builder, db *sql.DB, schema, ta
 	for rows.Next() {
 		var c colDef
 		if err := rows.Scan(&c.name, &c.colType, &c.nullable, &c.defVal); err != nil {
-			return "", err
+			return "", fmt.Errorf("scanning columns for %s.%s: %w", schema, table, err)
 		}
 		cols = append(cols, c)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("iterating columns for %s.%s: %w", schema, table, err)
 	}
 	if len(cols) == 0 {
 		return "", fmt.Errorf("table not found: %s.%s", schema, table)
@@ -476,7 +498,13 @@ func pgTableDDL(ctx context.Context, sb *strings.Builder, db *sql.DB, schema, ta
 			line += " NOT NULL"
 		}
 		if c.defVal.Valid && c.defVal.String != "" {
-			line += " DEFAULT " + c.defVal.String
+			// Strip ::regclass so nextval('seq'::regclass) → nextval('seq').
+			// PostgreSQL resolves an explicit ::regclass cast at CREATE TABLE parse
+			// time, failing immediately if the sequence doesn't exist yet. With an
+			// implicit text→regclass cast the lookup is deferred to call time, which
+			// our explicit-value INSERTs never trigger.
+			defStr := strings.ReplaceAll(c.defVal.String, "::regclass", "")
+			line += " DEFAULT " + defStr
 		}
 		colLines = append(colLines, line)
 	}
