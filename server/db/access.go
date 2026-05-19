@@ -98,6 +98,11 @@ func GetUserAppPermissions(userID int64) ([]string, error) {
 		permsMap["analytics.view"] = true
 		permsMap["operations.view"] = true
 	}
+	if permsMap["operations.view"] {
+		permsMap["observability.view"] = true
+		permsMap["discover.view"] = true
+		permsMap["uptime.view"] = true
+	}
 	if permsMap["connections.view"] && permsMap["schema.browse"] {
 		permsMap["redis.view"] = true
 		permsMap["queues.view"] = true
@@ -167,6 +172,10 @@ func GetUserAppPermissions(userID int64) ([]string, error) {
 	}
 	if permsMap["performance.view"] || permsMap["databaseaudit.view"] {
 		permsMap["audit.view"] = true
+	}
+	if permsMap["discover.view"] || permsMap["uptime.view"] || permsMap["observability.view"] {
+		permsMap["connections.view"] = true
+		permsMap["schema.browse"] = true
 	}
 	if permsMap["watchers.manage"] || permsMap["approvals.view"] || permsMap["changesets.manage"] || permsMap["datascripts.manage"] || permsMap["scriptrequests.view"] {
 		permsMap["query.execute"] = true

@@ -196,13 +196,13 @@ const router = createRouter({
           path: 'discover',
           name: 'discover',
           component: () => import('@/views/DiscoverView.vue'),
-          meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
+          meta: { requiredPermissionsAny: ['discover.view', 'observability.view', 'schema.browse', 'connections.view'] },
         },
         {
           path: 'uptime',
           name: 'uptime',
           component: () => import('@/views/UptimeView.vue'),
-          meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
+          meta: { requiredPermissionsAny: ['uptime.view', 'observability.view', 'schema.browse', 'connections.view'] },
         },
         {
           path: 'laravel-queue',
