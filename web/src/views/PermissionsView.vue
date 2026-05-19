@@ -305,6 +305,7 @@ interface User {
   role_id: number
   is_active: boolean
   permissions: string[]
+  effective_permissions: string[]
   created_at: string
 }
 
@@ -335,6 +336,8 @@ interface GroupedConnection {
   selected: boolean
   permissions: string[]
 }
+
+const groupConnectionAssignments = ref<Array<{ conn_id: number; source: string; permissions: string[] }>>([])
 
 const groupedConnections = computed(() => {
   const grouped: Record<string, GroupedConnection[]> = {}
@@ -397,6 +400,18 @@ function updateConnectionPermissions(connId: number, perms: string[]) {
   }
 }
 
+function getGroupSource(connId: number): string | null {
+  const ga = groupConnectionAssignments.value.find(a => a.conn_id === connId)
+  return ga ? ga.source : null
+}
+
+function isGroupAssigned(connId: number): boolean {
+  return (
+    !!getGroupSource(connId) &&
+    !userForm.connection_assignments.some(a => a.conn_id === connId)
+  )
+}
+
 async function fetchUsers() {
   usersLoading.value = true
   try {
@@ -404,6 +419,7 @@ async function fetchUsers() {
     users.value = (data || []).map((user: any) => ({
       ...user,
       permissions: normalizePermissionList(user.permissions),
+      effective_permissions: normalizePermissionList(user.effective_permissions),
     }))
   } catch (error: any) {
     toast.error(error.response?.data || 'Failed to load users')
@@ -424,16 +440,25 @@ async function openUserForm(user: User | null = null) {
     // Load user's direct connection assignments
     try {
       const { data } = await axios.get(`/api/users/${user.id}/connections`)
-      userForm.connection_assignments = (data || [])
+      const all = data || []
+      userForm.connection_assignments = all
         .filter((a: any) => a.source === 'direct')
         .map((a: any) => ({
           conn_id: a.conn_id,
+          permissions: Array.isArray(a.permissions) ? a.permissions : []
+        }))
+      groupConnectionAssignments.value = all
+        .filter((a: any) => a.source !== 'direct')
+        .map((a: any) => ({
+          conn_id: a.conn_id,
+          source: a.source,
           permissions: Array.isArray(a.permissions) ? a.permissions : []
         }))
     } catch (error: any) {
       // If endpoint doesn't exist yet, just start with empty
       if (error.response?.status === 404 || error.response?.status === 501) {
         userForm.connection_assignments = []
+        groupConnectionAssignments.value = []
       } else {
         toast.error(readableError(error, { action: 'Load user connection assignments', fallback: 'Failed to load user connections' }))
         editingUser.value = null
@@ -447,6 +472,7 @@ async function openUserForm(user: User | null = null) {
     userForm.is_active = true
     userForm.permissions = []
     userForm.connection_assignments = []
+    groupConnectionAssignments.value = []
   }
   showUserForm.value = true
 }
@@ -564,13 +590,47 @@ function getPermissionLabel(permKey: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
+function getUserEffectivePermissions(user: User): string[] {
+  const effective = user.effective_permissions.length ? user.effective_permissions : user.permissions
+  const knownOrder = permissions.value.map((permission) => permission.key)
+  return [...new Set(effective)].sort((a, b) => {
+    const ai = knownOrder.indexOf(a)
+    const bi = knownOrder.indexOf(b)
+    if (ai === -1 && bi === -1) return a.localeCompare(b)
+    if (ai === -1) return 1
+    if (bi === -1) return -1
+    return ai - bi
+  })
+}
+
+function hasDirectPermission(user: User, permission: string): boolean {
+  return user.permissions.includes(permission)
+}
+
+function isRoleInherited(permKey: string): boolean {
+  if (!editingUser.value) return false
+  return (
+    editingUser.value.effective_permissions.includes(permKey) &&
+    !userForm.permissions.includes(permKey)
+  )
+}
+
+function toggleDirectPermission(permKey: string) {
+  const idx = userForm.permissions.indexOf(permKey)
+  if (idx >= 0) {
+    userForm.permissions.splice(idx, 1)
+  } else {
+    userForm.permissions.push(permKey)
+  }
+}
+
 // ── Init ──
 
 onMounted(async () => {
   syncActiveTabFromRoute()
 
   const tasks: Promise<unknown>[] = []
-  if (canManageRoles.value) {
+  if (canManageRoles.value || canManageUsers.value || canManageGroups.value) {
     tasks.push(fetchRoles())
   }
   if (canManageRoles.value || canManageUsers.value) {
@@ -815,7 +875,7 @@ watch(() => route.query.tab, () => {
               <tr>
                 <th>Username</th>
                 <th>Role</th>
-                <th>Direct Grants</th>
+                <th>Effective Access</th>
                 <th>Status</th>
                 <th>Created</th>
                 <th></th>
@@ -830,20 +890,19 @@ watch(() => route.query.tab, () => {
                   </span>
                 </td>
                 <td class="perm-td-perms">
-                  <div v-if="user.permissions.length" class="perm-perms-display">
+                  <div v-if="getUserEffectivePermissions(user).length" class="perm-perms-display perm-perms-display--dense">
                     <span
-                      v-for="perm in user.permissions.slice(0, 3)"
+                      v-for="perm in getUserEffectivePermissions(user)"
                       :key="perm"
                       class="perm-perm-badge"
-                      :title="getPermissionLabel(perm)"
+                      :class="{ 'perm-perm-badge--direct': hasDirectPermission(user, perm) }"
+                      :title="hasDirectPermission(user, perm) ? `${getPermissionLabel(perm)} - direct grant` : `${getPermissionLabel(perm)} - from role or inherited access`"
                     >
                       {{ getPermissionLabel(perm) }}
-                    </span>
-                    <span v-if="user.permissions.length > 3" class="perm-perm-badge">
-                      +{{ user.permissions.length - 3 }}
+                      <span v-if="hasDirectPermission(user, perm)" class="perm-perm-source">Direct</span>
                     </span>
                   </div>
-                  <span v-else class="perm-td-dim">Role only</span>
+                  <span v-else class="perm-td-dim">No permissions</span>
                 </td>
                 <td>
                   <span class="perm-status" :class="{ 'perm-status--active': user.is_active }">
@@ -1020,9 +1079,17 @@ watch(() => route.query.tab, () => {
               <div v-for="(perms, group) in groupedPermissions" :key="group" class="perm-perm-group">
                 <div class="perm-perm-group-header">{{ group }}</div>
                 <div class="perm-perm-group-items">
-                  <label v-for="perm in perms" :key="perm.key" class="perm-checkbox">
-                    <input type="checkbox" :value="perm.key" v-model="userForm.permissions" />
-                    <span class="perm-checkbox-label">{{ perm.label }}</span>
+                  <label v-for="perm in perms" :key="perm.key" class="perm-checkbox" :class="{ 'perm-checkbox--role-active': isRoleInherited(perm.key), 'perm-checkbox--direct-active': userForm.permissions.includes(perm.key) }">
+                    <input
+                      type="checkbox"
+                      :class="{ 'perm-cb--inherited': isRoleInherited(perm.key) }"
+                      :checked="userForm.permissions.includes(perm.key) || isRoleInherited(perm.key)"
+                      @change="toggleDirectPermission(perm.key)"
+                    />
+                    <span class="perm-checkbox-label">
+                      {{ perm.label }}
+                      <span v-if="isRoleInherited(perm.key)" class="perm-role-badge">via role</span>
+                    </span>
                   </label>
                 </div>
               </div>
@@ -1041,20 +1108,25 @@ watch(() => route.query.tab, () => {
                   {{ folderName }}
                 </div>
                 <div class="perm-conn-list">
-                  <div v-for="conn in conns" :key="conn.conn_id" class="perm-conn-item">
+                  <div v-for="conn in conns" :key="conn.conn_id" class="perm-conn-item" :class="{ 'perm-conn-item--group-active': isGroupAssigned(conn.conn_id), 'perm-conn-item--direct-active': conn.selected }">
                     <label class="perm-conn-checkbox">
-                      <input 
-                        type="checkbox" 
-                        :checked="conn.selected"
+                      <input
+                        type="checkbox"
+                        :class="{ 'perm-cb--inherited': isGroupAssigned(conn.conn_id) }"
+                        :checked="conn.selected || isGroupAssigned(conn.conn_id)"
                         @change="toggleConnectionSelection(conn.conn_id)"
                       />
                       <span class="perm-conn-name">
                         <span class="perm-conn-driver">{{ conn.driver.toUpperCase() }}</span>
                         {{ conn.name }}
                       </span>
+                      <span class="perm-conn-status-badges">
+                        <span v-if="conn.selected" class="perm-conn-assigned-badge">Assigned</span>
+                        <span v-if="isGroupAssigned(conn.conn_id)" class="perm-role-badge">via {{ getGroupSource(conn.conn_id) }}</span>
+                      </span>
                     </label>
-                    
-                    <div v-if="conn.selected" class="perm-conn-perms">
+
+                    <div v-if="conn.selected || isGroupAssigned(conn.conn_id)" class="perm-conn-perms">
                       <label v-for="perm in dbPermissions" :key="perm.key" class="perm-perm-checkbox">
                         <input 
                           type="checkbox"
@@ -1514,6 +1586,49 @@ watch(() => route.query.tab, () => {
   font-size: 13px;
   color: var(--text-primary);
   line-height: 1.4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.perm-checkbox--role-active {
+  background: color-mix(in srgb, var(--brand) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--brand) 50%, transparent);
+}
+
+.perm-checkbox--role-active:hover {
+  background: color-mix(in srgb, var(--brand) 15%, transparent);
+}
+
+.perm-cb--inherited {
+  accent-color: var(--text-muted);
+  opacity: 0.65;
+}
+
+.perm-checkbox--direct-active {
+  background: color-mix(in srgb, var(--brand) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 45%, transparent);
+  border-left: 3px solid var(--brand);
+}
+
+.perm-checkbox--direct-active:hover {
+  background: color-mix(in srgb, var(--brand) 20%, transparent);
+}
+
+.perm-role-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: color-mix(in srgb, var(--brand) 15%, transparent);
+  color: var(--brand);
+  border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent);
+  flex-shrink: 0;
 }
 
 /* ─────────────────────────────────────────────────────────────── */
@@ -1561,8 +1676,22 @@ watch(() => route.query.tab, () => {
 .perm-conn-item {
   background: var(--bg-surface);
   border: 1px solid var(--border);
+  border-left: 3px solid transparent;
   border-radius: 6px;
   padding: 12px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.perm-conn-item--group-active {
+  background: color-mix(in srgb, var(--brand) 8%, var(--bg-surface));
+  border-color: color-mix(in srgb, var(--brand) 25%, var(--border));
+  border-left-color: color-mix(in srgb, var(--brand) 55%, transparent);
+}
+
+.perm-conn-item--direct-active {
+  background: color-mix(in srgb, var(--brand) 12%, var(--bg-surface));
+  border-color: color-mix(in srgb, var(--brand) 50%, var(--border));
+  border-left: 3px solid var(--brand);
 }
 
 .perm-conn-checkbox {
@@ -1571,6 +1700,34 @@ watch(() => route.query.tab, () => {
   gap: 10px;
   cursor: pointer;
   user-select: none;
+  width: 100%;
+}
+
+.perm-conn-status-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.perm-conn-assigned-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: var(--brand);
+  color: var(--brand-fg, #0d1117);
+}
+
+.perm-conn-assigned-badge::before {
+  content: '✓';
+  font-size: 10px;
 }
 
 .perm-conn-checkbox input[type="checkbox"] {
@@ -1644,7 +1801,8 @@ watch(() => route.query.tab, () => {
 /* ─────────────────────────────────────────────────────────────── */
 
 .perm-td-perms {
-  max-width: 400px;
+  min-width: 360px;
+  max-width: 560px;
 }
 
 .perm-perms-display {
@@ -1652,6 +1810,12 @@ watch(() => route.query.tab, () => {
   flex-wrap: wrap;
   gap: 4px;
   align-items: flex-start;
+}
+
+.perm-perms-display--dense {
+  max-height: 116px;
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .perm-perm-badge {
@@ -1664,6 +1828,21 @@ watch(() => route.query.tab, () => {
   color: var(--text-primary);
   border: 1px solid var(--border);
   white-space: nowrap;
+}
+
+.perm-perm-badge--direct {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-hover));
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+}
+
+.perm-perm-source {
+  display: inline-block;
+  margin-left: 6px;
+  padding-left: 6px;
+  border-left: 1px solid color-mix(in srgb, currentColor 24%, transparent);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
 }
 
 /* ─────────────────────────────────────────────────────────────── */
