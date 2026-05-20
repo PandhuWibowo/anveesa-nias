@@ -4,6 +4,7 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 const props = defineProps<{
   modelValue: string
   databases: string[]
+  direction?: 'down' | 'up'
 }>()
 
 const emit = defineEmits<{
@@ -48,7 +49,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
       </svg>
     </button>
 
-    <div v-if="open" class="dbpick__dropdown">
+    <div v-if="open" class="dbpick__dropdown" :class="{ 'dbpick__dropdown--up': direction === 'up' }">
       <div class="dbpick__list">
         <button
           v-for="db in databases"
@@ -120,6 +121,12 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
 .dbpick__dropdown {
   position: absolute;
   top: calc(100% + 4px);
+  left: 0;
+  z-index: 9999;
+}
+.dbpick__dropdown--up {
+  top: auto;
+  bottom: calc(100% + 4px);
   left: 0;
   z-index: 9999;
   background: var(--bg-elevated);

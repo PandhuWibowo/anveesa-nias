@@ -594,6 +594,7 @@ defineExpose({ loadSQL, currentSQL, exportCurrentResult })
         v-if="databases.length > 0"
         :model-value="selectedDatabase"
         :databases="databases"
+        direction="up"
         @update:model-value="selectedDatabase = $event"
       />
 
