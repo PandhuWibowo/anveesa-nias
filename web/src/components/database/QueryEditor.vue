@@ -27,6 +27,7 @@ let view: EditorView | null = null
 const themeCompartment = new Compartment()
 const completionCompartment = new Compartment()
 
+// Returns selected text if any, otherwise the statement at the cursor position.
 function getActiveSQL(): string {
   if (!view) return props.modelValue
   const state = view.state
@@ -34,6 +35,7 @@ function getActiveSQL(): string {
   if (from !== to) return state.sliceDoc(from, to).trim()
   const full = state.doc.toString()
   const cursor = state.selection.main.head
+  // Split on bare semicolons, respecting single/double-quoted strings
   const stmts: Array<{ from: number; to: number }> = []
   let inSingle = false, inDouble = false, stmtStart = 0
   for (let i = 0; i < full.length; i++) {
