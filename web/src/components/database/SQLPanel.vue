@@ -4,6 +4,7 @@ import type { CompletionSource } from '@codemirror/autocomplete'
 import axios from 'axios'
 import QueryEditor from '@/components/database/QueryEditor.vue'
 import ParamPanel from '@/components/ui/ParamPanel.vue'
+import DatabasePicker from '@/components/ui/DatabasePicker.vue'
 import AIAssistant from '@/components/ui/AIAssistant.vue'
 import SnippetLibrary from '@/components/ui/SnippetLibrary.vue'
 import ShortcutsModal from '@/components/ui/ShortcutsModal.vue'
@@ -585,6 +586,16 @@ defineExpose({ loadSQL, currentSQL, exportCurrentResult })
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2a10 10 0 1 0 10 10"/><path d="M12 8v4l2 2"/><path d="M18 2l4 4-4 4"/><path d="M22 6H16"/></svg>
         AI
       </button>
+
+      <div class="sp-divider" />
+
+      <!-- Database picker -->
+      <DatabasePicker
+        v-if="databases.length > 0"
+        :model-value="selectedDatabase"
+        :databases="databases"
+        @update:model-value="selectedDatabase = $event"
+      />
 
       <div class="sp-divider" />
 
