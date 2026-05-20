@@ -1146,7 +1146,11 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
             <button class="res-tab" :class="{'res-tab--active':tab.activeResultTab==='chart'}" :disabled="tab.result.kind!=='query'" @click="tab.activeResultTab='chart'">Chart</button>
             <div style="flex:1"/>
             <template v-if="tab.result.kind==='query'">
-              <span class="res-meta">{{ (tab.result as any).duration_ms }}ms · {{ (tab.result as any).row_count }} rows</span>
+              <span class="res-meta">
+                {{ (tab.result as any).duration_ms }}ms ·
+                <template v-if="(tab.result as any).columns?.length">{{ (tab.result as any).row_count }} rows</template>
+                <template v-else>{{ (tab.result as any).affected_rows }} affected</template>
+              </span>
               <button class="base-btn base-btn--ghost base-btn--xs" @click="sqlPanelRefs[tab.id]?.exportCurrentResult('csv',(tab.result as any).columns,(tab.result as any).rows)">CSV</button>
               <button class="base-btn base-btn--ghost base-btn--xs" @click="sqlPanelRefs[tab.id]?.exportCurrentResult('json',(tab.result as any).columns,(tab.result as any).rows)">JSON</button>
               <button class="base-btn base-btn--ghost base-btn--xs" title="Export to Excel (.xlsx)" @click="sqlPanelRefs[tab.id]?.exportCurrentResult('excel',(tab.result as any).columns,(tab.result as any).rows)">
@@ -1174,7 +1178,14 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
               {{ (tab.result as any).error }}
             </div>
             <template v-else-if="(tab.result.kind==='query'||tab.result.kind==='stream')&&tab.activeResultTab!=='chart'">
+              <div v-if="!(tab.result as any).columns?.length" class="res-ok">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:#4ade80;flex-shrink:0"><polyline points="20 6 9 17 4 12"/></svg>
+                Query OK
+                <span v-if="(tab.result as any).affected_rows > 0" style="color:var(--text-muted)">· {{ (tab.result as any).affected_rows }} row{{ (tab.result as any).affected_rows === 1 ? '' : 's' }} affected</span>
+                <span v-else style="color:var(--text-muted)">· 0 rows affected</span>
+              </div>
               <VirtualTable
+                v-else
                 :ref="(el: any) => { if (el) sqlVTableRefs[tab.id] = el; else delete sqlVTableRefs[tab.id] }"
                 :columns="(tab.result as any).columns"
                 :rows="(tab.result as any).rows"
@@ -1457,6 +1468,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 .res-tab__badge { background:var(--brand-dim);color:var(--brand);border-radius:10px;padding:0 5px;font-size:10px;font-weight:700; }
 .res-meta { font-size:11px;color:var(--text-muted);padding:0 4px; }
 .res-error { display:flex;align-items:flex-start;gap:8px;padding:12px;font-size:12px;color:#f87171;background:rgba(248,113,113,.06);border-bottom:1px solid rgba(248,113,113,.15);line-height:1.5;flex-shrink:0; }
+.res-ok { display:flex;align-items:center;gap:6px;padding:20px 16px;font-size:13px;color:var(--text-primary);font-weight:500; }
 .res-explain { flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden; }
 .res-explain__header { display:flex;gap:8px;padding:6px 12px;border-bottom:1px solid var(--border);background:var(--bg-surface);flex-shrink:0; }
 .explain-driver,.explain-format { font-size:11px;padding:2px 6px;border-radius:4px;background:var(--bg-elevated);color:var(--text-muted);font-weight:600; }
