@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { useConnections, type DbDriver, type ConnectionForm } from '@/composables/useConnections'
@@ -457,11 +457,113 @@ async function handleReconnect(id: number, name: string) {
   if (success) toast.success(`"${name}" reconnected`)
   else toast.error('Failed to reconnect')
 }
+
+// ── Filter ───────────────────────────────────────────────────────
+const connFilterSearch = ref('')
+const connFilterDriver = ref('')
+const connFilterStatus = ref('')
+
+const filteredConnections = computed(() => {
+  let list = connections.value
+  if (connFilterSearch.value.trim()) {
+    const q = connFilterSearch.value.toLowerCase()
+    list = list.filter(c => c.name.toLowerCase().includes(q) || driverFullName(c.driver).toLowerCase().includes(q))
+  }
+  if (connFilterDriver.value) {
+    list = list.filter(c => c.driver === connFilterDriver.value)
+  }
+  if (connFilterStatus.value) {
+    const disconnected = connFilterStatus.value === 'offline'
+    list = list.filter(c => !!c.disconnected === disconnected)
+  }
+  return list
+})
+
+const availableDrivers = computed(() => [...new Set(connections.value.map(c => c.driver))].sort())
+const hasConnFilters = computed(() => connFilterSearch.value || connFilterDriver.value || connFilterStatus.value)
+
+function clearConnFilters() {
+  connFilterSearch.value = ''
+  connFilterDriver.value = ''
+  connFilterStatus.value = ''
+}
+
+// ── Sort ─────────────────────────────────────────────────────────
+type ConnSortKey = 'name' | 'driver' | 'status'
+const connSortKey = ref<ConnSortKey>('name')
+const connSortDir = ref<'asc' | 'desc'>('asc')
+
+function setConnSort(key: ConnSortKey) {
+  if (connSortKey.value === key) {
+    connSortDir.value = connSortDir.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    connSortKey.value = key
+    connSortDir.value = 'asc'
+  }
+}
+
+const sortedConnections = computed(() => {
+  const list = [...filteredConnections.value]
+  list.sort((a, b) => {
+    let av: any, bv: any
+    if (connSortKey.value === 'name') { av = a.name.toLowerCase(); bv = b.name.toLowerCase() }
+    else if (connSortKey.value === 'driver') { av = a.driver; bv = b.driver }
+    else { av = a.disconnected ? 1 : 0; bv = b.disconnected ? 1 : 0 }
+    if (av < bv) return connSortDir.value === 'asc' ? -1 : 1
+    if (av > bv) return connSortDir.value === 'asc' ? 1 : -1
+    return 0
+  })
+  return list
+})
+
+// ── Pagination ───────────────────────────────────────────────────
+const connPageSize = ref(12)
+const connCurrentPage = ref(1)
+
+const connTotalPages = computed(() => Math.max(1, Math.ceil(sortedConnections.value.length / connPageSize.value)))
+
+const pagedConnections = computed(() => {
+  const start = (connCurrentPage.value - 1) * connPageSize.value
+  return sortedConnections.value.slice(start, start + connPageSize.value)
+})
+
+function setConnPage(p: number) {
+  connCurrentPage.value = Math.max(1, Math.min(p, connTotalPages.value))
+}
+
+function resetConnPage() { connCurrentPage.value = 1 }
+
+watch([connFilterSearch, connFilterDriver, connFilterStatus], resetConnPage)
+
+// ── Custom fields (card detail visibility) ───────────────────────
+const connShowFields = ref({
+  tags: true,
+  ssl: true,
+  ssh: true,
+  folder: true,
+  category: true,
+})
+const showConnColumnMenu = ref(false)
+
+const connFieldDefs = [
+  { key: 'category' as const, label: 'Category tag' },
+  { key: 'folder' as const, label: 'Folder' },
+  { key: 'tags' as const, label: 'Tags' },
+  { key: 'ssl' as const, label: 'SSL badge' },
+  { key: 'ssh' as const, label: 'SSH badge' },
+]
+
+// Sort pill UI
+const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
+  { key: 'name', label: 'Name' },
+  { key: 'driver', label: 'Driver' },
+  { key: 'status', label: 'Status' },
+]
 </script>
 
 <template>
   <div class="page-shell conn-page">
-    <div class="page-scroll">
+    <div class="page-scroll" @click="showConnColumnMenu = false">
       <div class="page-stack">
 
         <!-- Hero -->
@@ -484,8 +586,67 @@ async function handleReconnect(id: number, name: string) {
           <div class="conn-panel__head">
             <div>
               <div class="conn-panel__title">Saved Connections</div>
-              <div class="conn-panel__sub">{{ connections.length }} endpoint{{ connections.length !== 1 ? 's' : '' }}</div>
+              <div class="conn-panel__sub">{{ filteredConnections.length }} of {{ connections.length }} endpoint{{ connections.length !== 1 ? 's' : '' }}</div>
             </div>
+          </div>
+
+          <!-- Filter / Sort / Custom fields bar -->
+          <div class="conn-filter-bar">
+            <div class="conn-filter-search">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input
+                class="conn-filter-input"
+                v-model="connFilterSearch"
+                placeholder="Search connections…"
+              />
+            </div>
+            <select class="conn-filter-sel" v-model="connFilterDriver">
+              <option value="">All drivers</option>
+              <option v-for="d in availableDrivers" :key="d" :value="d">{{ driverFullName(d as any) }}</option>
+            </select>
+            <select class="conn-filter-sel" v-model="connFilterStatus">
+              <option value="">All status</option>
+              <option value="online">Connected</option>
+              <option value="offline">Disconnected</option>
+            </select>
+            <button v-if="hasConnFilters" class="conn-filter-clear" @click="clearConnFilters">Clear</button>
+
+            <!-- Sort pills -->
+            <div class="conn-sort-group">
+              <button
+                v-for="opt in connSortOptions"
+                :key="opt.key"
+                class="conn-sort-pill"
+                :class="{ 'conn-sort-pill--active': connSortKey === opt.key }"
+                @click="setConnSort(opt.key)"
+              >
+                {{ opt.label }}
+                <span v-if="connSortKey === opt.key">{{ connSortDir === 'asc' ? '↑' : '↓' }}</span>
+              </button>
+            </div>
+
+            <!-- Custom fields -->
+            <div class="conn-col-toggle" @click.stop>
+              <button class="base-btn base-btn--ghost base-btn--xs" @click="showConnColumnMenu = !showConnColumnMenu">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18"/></svg>
+                Fields
+              </button>
+              <div v-if="showConnColumnMenu" class="conn-col-menu">
+                <div class="conn-col-menu-title">Card Details</div>
+                <label v-for="f in connFieldDefs" :key="f.key" class="conn-col-item">
+                  <input type="checkbox" v-model="connShowFields[f.key]" />
+                  {{ f.label }}
+                </label>
+              </div>
+            </div>
+
+            <!-- Page size -->
+            <select class="conn-filter-sel" v-model="connPageSize" @change="resetConnPage">
+              <option :value="6">6 / page</option>
+              <option :value="12">12 / page</option>
+              <option :value="24">24 / page</option>
+              <option :value="48">48 / page</option>
+            </select>
           </div>
 
           <!-- Loading -->
@@ -494,7 +655,7 @@ async function handleReconnect(id: number, name: string) {
             Loading connections…
           </div>
 
-          <!-- Empty state -->
+          <!-- Empty state - no connections at all -->
           <div v-else-if="connections.length === 0" class="conn-empty">
             <div class="conn-empty__icon">
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4.03 3-9 3S3 13.66 3 12"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/></svg>
@@ -507,10 +668,17 @@ async function handleReconnect(id: number, name: string) {
             </button>
           </div>
 
+          <!-- Empty state - filters returned nothing -->
+          <div v-else-if="pagedConnections.length === 0" class="conn-empty">
+            <div class="conn-empty__title">No matches</div>
+            <div class="conn-empty__sub">No connections match the current filters.</div>
+            <button class="base-btn base-btn--ghost base-btn--sm" style="margin-top:4px" @click="clearConnFilters">Clear filters</button>
+          </div>
+
           <!-- Connection cards -->
           <div v-else class="conn-items">
             <div
-              v-for="conn in connections"
+              v-for="conn in pagedConnections"
               :key="conn.id"
               class="conn-card"
               :class="[`conn-card--${driverCategory(conn.driver)}`, { 'conn-card--disconnected': conn.disconnected }]"
@@ -525,22 +693,22 @@ async function handleReconnect(id: number, name: string) {
                 <div class="conn-card__title-row">
                   <span class="conn-card__name">{{ conn.name }}</span>
                   <span class="conn-card__driver-tag">{{ driverFullName(conn.driver) }}</span>
-                  <span class="conn-card__category-tag">{{ categoryLabel(conn.driver) }}</span>
+                  <span v-if="connShowFields.category" class="conn-card__category-tag">{{ categoryLabel(conn.driver) }}</span>
                   <span class="conn-card__vis" :title="conn.visibility === 'shared' ? 'Shared' : 'Private'">
                     {{ conn.visibility === 'shared' ? '🌐' : '🔒' }}
                   </span>
                 </div>
                 <div class="conn-card__detail">{{ connDetailLine(conn) }}</div>
                 <div class="conn-card__meta-row">
-                  <span v-if="conn.folder_id" class="conn-card__folder">
+                  <span v-if="connShowFields.folder && conn.folder_id" class="conn-card__folder">
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
                     {{ folders.find(f => f.id === conn.folder_id)?.name ?? 'Folder' }}
                   </span>
-                  <span v-if="conn.tags" class="conn-card__tags">
+                  <span v-if="connShowFields.tags && conn.tags" class="conn-card__tags">
                     <span v-for="tag in conn.tags.split(',').filter((t: string) => t.trim())" :key="tag" class="conn-tag">{{ tag.trim() }}</span>
                   </span>
-                  <span v-if="conn.ssl" class="conn-card__ssl-badge">SSL</span>
-                  <span v-if="conn.ssh_host" class="conn-card__ssh-badge">SSH</span>
+                  <span v-if="connShowFields.ssl && conn.ssl" class="conn-card__ssl-badge">SSL</span>
+                  <span v-if="connShowFields.ssh && conn.ssh_host" class="conn-card__ssh-badge">SSH</span>
                 </div>
               </div>
 
@@ -598,6 +766,28 @@ async function handleReconnect(id: number, name: string) {
                   </button>
                 </div>
               </div>
+            </div>
+          </div>
+
+          <!-- Pagination -->
+          <div v-if="!loading && connTotalPages > 1" class="conn-pagination">
+            <span class="conn-page-info">
+              {{ (connCurrentPage - 1) * connPageSize + 1 }}–{{ Math.min(connCurrentPage * connPageSize, sortedConnections.length) }} of {{ sortedConnections.length }}
+            </span>
+            <div class="conn-page-controls">
+              <button class="conn-page-btn" :disabled="connCurrentPage === 1" @click="setConnPage(1)">«</button>
+              <button class="conn-page-btn" :disabled="connCurrentPage === 1" @click="setConnPage(connCurrentPage - 1)">‹</button>
+              <template v-for="p in connTotalPages" :key="p">
+                <button
+                  v-if="Math.abs(p - connCurrentPage) <= 2 || p === 1 || p === connTotalPages"
+                  class="conn-page-btn"
+                  :class="{ 'conn-page-btn--active': p === connCurrentPage }"
+                  @click="setConnPage(p)"
+                >{{ p }}</button>
+                <span v-else-if="Math.abs(p - connCurrentPage) === 3" class="conn-page-ellipsis">…</span>
+              </template>
+              <button class="conn-page-btn" :disabled="connCurrentPage === connTotalPages" @click="setConnPage(connCurrentPage + 1)">›</button>
+              <button class="conn-page-btn" :disabled="connCurrentPage === connTotalPages" @click="setConnPage(connTotalPages)">»</button>
             </div>
           </div>
         </section>
@@ -1897,4 +2087,86 @@ async function handleReconnect(id: number, name: string) {
     display: none;
   }
 }
+
+/* Filter / sort / custom fields bar */
+.conn-filter-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 20px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.conn-filter-search {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--bg-body); border: 1px solid var(--border);
+  border-radius: 5px; padding: 5px 10px; flex: 1; min-width: 180px;
+}
+.conn-filter-search svg { color: var(--text-muted); flex-shrink: 0; }
+.conn-filter-input {
+  border: none; outline: none; background: transparent;
+  color: var(--text-primary); font-size: 13px; width: 100%;
+  font-family: inherit;
+}
+.conn-filter-input::placeholder { color: var(--text-muted); }
+.conn-filter-sel {
+  padding: 5px 8px; border: 1px solid var(--border);
+  border-radius: 5px; background: var(--bg-body); color: var(--text-primary);
+  font-size: 12px; font-family: inherit; outline: none; cursor: pointer;
+}
+.conn-filter-clear {
+  padding: 5px 10px; border: 1px solid var(--border);
+  border-radius: 5px; background: transparent; color: var(--text-muted);
+  font-size: 12px; cursor: pointer; font-family: inherit;
+  transition: color 0.15s, border-color 0.15s;
+}
+.conn-filter-clear:hover { color: var(--danger); border-color: var(--danger); }
+
+/* Sort pills */
+.conn-sort-group { display: flex; gap: 4px; }
+.conn-sort-pill {
+  padding: 4px 10px; border: 1px solid var(--border);
+  border-radius: 999px; background: transparent; color: var(--text-muted);
+  font-size: 11px; cursor: pointer; font-family: inherit;
+  transition: all 0.12s;
+}
+.conn-sort-pill:hover { border-color: var(--brand); color: var(--text-primary); }
+.conn-sort-pill--active { border-color: var(--brand); color: var(--brand); background: rgba(var(--brand-rgb, 99, 102, 241), 0.08); }
+
+/* Column / field toggle */
+.conn-col-toggle { position: relative; }
+.conn-col-menu {
+  position: absolute; top: calc(100% + 6px); right: 0;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 7px; padding: 10px 12px; min-width: 160px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3); z-index: 200;
+}
+.conn-col-menu-title {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--text-muted); margin-bottom: 8px;
+}
+.conn-col-item {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text-primary);
+  padding: 4px 0; cursor: pointer;
+}
+.conn-col-item input { cursor: pointer; }
+
+/* Pagination */
+.conn-pagination {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 20px; border-top: 1px solid var(--border);
+  flex-wrap: wrap; gap: 8px;
+}
+.conn-page-info { font-size: 12px; color: var(--text-muted); }
+.conn-page-controls { display: flex; align-items: center; gap: 3px; }
+.conn-page-btn {
+  min-width: 30px; height: 30px; padding: 0 6px;
+  border: 1px solid var(--border); border-radius: 5px;
+  background: transparent; color: var(--text-primary);
+  font-size: 12px; cursor: pointer; font-family: inherit;
+  transition: background 0.12s, border-color 0.12s;
+}
+.conn-page-btn:hover:not(:disabled) { background: rgba(255,255,255,0.06); border-color: var(--brand); }
+.conn-page-btn:disabled { opacity: 0.35; cursor: default; }
+.conn-page-btn--active { background: var(--brand) !important; border-color: var(--brand) !important; color: #fff !important; }
+.conn-page-ellipsis { padding: 0 4px; color: var(--text-muted); font-size: 12px; }
 </style>
