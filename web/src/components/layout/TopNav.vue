@@ -154,6 +154,7 @@ const allMenuGroups: MenuGroup[] = [
       { name: 'connections', label: 'Connections', desc: 'Manage environments and database access points', icon: 'plug', permissionsAny: ['connections.view'] },
       { name: 'permissions', label: 'Roles & Permissions', desc: 'Define roles and application permission policy', icon: 'rbac', permissionsAny: ['roles.manage'] },
       { name: 'permissions', label: 'Access Groups', desc: 'Manage folder-based connection access groups', icon: 'rbac', permissionsAny: ['folders.manage'], query: { tab: 'groups' } },
+      { name: 'db-users', label: 'DB User Manager', desc: 'Create database-level users and manage their privileges and grants', icon: 'users', permissionsAny: ['dbusers.manage'] },
     ],
   },
 ]

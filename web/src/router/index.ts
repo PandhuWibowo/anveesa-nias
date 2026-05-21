@@ -71,6 +71,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['users.manage'] },
         },
         {
+          path: 'db-users',
+          name: 'db-users',
+          component: () => import('@/views/DbUsersView.vue'),
+          meta: { requiredPermissionsAny: ['dbusers.manage'] },
+        },
+        {
           path: 'audit',
           name: 'audit',
           component: () => import('@/views/AuditLogView.vue'),

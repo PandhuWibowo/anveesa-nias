@@ -585,6 +585,39 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermRowHistoryView)(handlers.ListRowHistory())(w, r)
 			case sub == "row-history" && r.Method == http.MethodPost:
 				requireAny(handlers.PermRowHistoryView)(handlers.UndoRowChange())(w, r)
+
+			// ── DB User Management ────────────────────────────────────
+			case sub == "db-users" && r.Method == http.MethodGet:
+				requireAny(handlers.PermDBUsersManage)(handlers.ListDBUsers())(w, r)
+			case sub == "db-users" && r.Method == http.MethodPost:
+				requireAny(handlers.PermDBUsersManage)(handlers.CreateDBUser())(w, r)
+			case sub == "db-users-dbs" && r.Method == http.MethodGet:
+				requireAny(handlers.PermDBUsersManage)(handlers.ListDBsForGrantPicker())(w, r)
+			case sub == "db-users-schemas" && r.Method == http.MethodGet:
+				requireAny(handlers.PermDBUsersManage)(handlers.ListSchemasForGrantPicker())(w, r)
+			case sub == "db-users-tables" && r.Method == http.MethodGet:
+				requireAny(handlers.PermDBUsersManage)(handlers.ListTablesForGrantPicker())(w, r)
+			case sub == "db-users-sequences" && r.Method == http.MethodGet:
+				requireAny(handlers.PermDBUsersManage)(handlers.ListSequencesForGrantPicker())(w, r)
+			case sub == "db-users-functions" && r.Method == http.MethodGet:
+				requireAny(handlers.PermDBUsersManage)(handlers.ListFunctionsForGrantPicker())(w, r)
+
+			// Routes with username segment: /api/connections/{id}/db-users/{username}[/...]
+			case len(parts) >= 3 && parts[1] == "db-users":
+				lastSeg := parts[len(parts)-1]
+				switch {
+				case lastSeg == "password" && r.Method == http.MethodPatch:
+					requireAny(handlers.PermDBUsersManage)(handlers.ChangeDBUserPassword())(w, r)
+				case lastSeg == "grants" && r.Method == http.MethodGet:
+					requireAny(handlers.PermDBUsersManage)(handlers.GetDBUserGrants())(w, r)
+				case lastSeg == "grants" && r.Method == http.MethodPut:
+					requireAny(handlers.PermDBUsersManage)(handlers.ApplyDBUserGrants())(w, r)
+				case r.Method == http.MethodDelete:
+					requireAny(handlers.PermDBUsersManage)(handlers.DropDBUser())(w, r)
+				default:
+					http.NotFound(w, r)
+				}
+
 			default:
 				http.NotFound(w, r)
 			}
