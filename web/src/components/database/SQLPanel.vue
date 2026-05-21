@@ -55,6 +55,18 @@ const activeConn = computed(() =>
   props.connId ? connections.value.find(c => c.id === props.connId) ?? null : null
 )
 const selectedDatabase = ref(props.defaultDb ?? '')
+const editorRefs = ref<Record<string, InstanceType<typeof QueryEditor>>>({})
+
+function setEditorRef(tabId: string, el: InstanceType<typeof QueryEditor> | null) {
+  if (el) editorRefs.value[tabId] = el
+  else delete editorRefs.value[tabId]
+}
+
+function getActiveSQLFromEditor(): string {
+  const tab = activeTab.value
+  if (!tab) return ''
+  return editorRefs.value[tab.id]?.getActiveSQL() ?? tab.sql
+}
 
 // ── Tabs ──────────────────────────────────────────────────────────
 interface QueryTab {
@@ -70,17 +82,6 @@ function makeTab(sql = 'SELECT 1;'): QueryTab {
 const tabs = ref<QueryTab[]>([makeTab(props.initialSql || 'SELECT 1;')])
 const activeTabId = ref(tabs.value[0].id)
 const activeTab = computed(() => tabs.value.find(t => t.id === activeTabId.value) ?? tabs.value[0])
-
-// Per-tab editor refs so the Run button can call getActiveSQL() on the current editor
-const editorRefs = ref<Map<string, InstanceType<typeof QueryEditor>>>(new Map())
-function setEditorRef(tabId: string, el: InstanceType<typeof QueryEditor> | null) {
-  if (el) editorRefs.value.set(tabId, el)
-  else editorRefs.value.delete(tabId)
-}
-function getActiveSQLFromEditor(): string {
-  const editor = activeTab.value ? editorRefs.value.get(activeTab.value.id) : null
-  return editor?.getActiveSQL() ?? activeTab.value?.sql ?? ''
-}
 
 function addTab() {
   const t = makeTab()
@@ -321,12 +322,13 @@ async function submitApprovalRequest() {
 // ── Explain ───────────────────────────────────────────────────────
 async function runExplainPlan() {
   if (!props.connId || !activeTab.value?.sql) return
+  const sql = getActiveSQLFromEditor()
   activeTab.value.running = true
   try {
     const { data } = await axios.post(`/api/connections/${props.connId}/explain`, {
-      sql: activeTab.value.sql
+      sql
     })
-    emit('result', { kind: 'explain', data, sql: activeTab.value.sql })
+    emit('result', { kind: 'explain', data, sql })
   } catch (e) {
     setActiveError(readableError(e, { action: 'Explain query', fallback: 'Explain failed' }), activeTab.value.sql)
   } finally {
