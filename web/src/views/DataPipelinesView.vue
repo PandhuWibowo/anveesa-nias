@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { VueFlow, useVueFlow, Position, type Node, type Edge } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
@@ -140,6 +140,13 @@ function fromFlowNodes(flowNodes: Node[], flowEdges: Edge[]): { nodes: any[]; ed
 
 onMounted(async () => {
   await Promise.all([fetchPipelines(), fetchConnections()])
+})
+
+onBeforeUnmount(() => {
+  if (pollingInterval.value) {
+    clearInterval(pollingInterval.value)
+    pollingInterval.value = null
+  }
 })
 
 // ── Actions ───────────────────────────────────────────────────────────────────

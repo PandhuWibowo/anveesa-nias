@@ -18,7 +18,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
-  'run': []
+  'run': [sql: string]
 }>()
 
 const editorEl = ref<HTMLElement>()
@@ -26,6 +26,29 @@ const functionHint = ref<string | null>(null)
 let view: EditorView | null = null
 const themeCompartment = new Compartment()
 const completionCompartment = new Compartment()
+
+function getActiveSQL(): string {
+  if (!view) return props.modelValue
+  const state = view.state
+  const { from, to } = state.selection.main
+  if (from !== to) return state.sliceDoc(from, to).trim()
+  const full = state.doc.toString()
+  const cursor = state.selection.main.head
+  const stmts: Array<{ from: number; to: number }> = []
+  let inSingle = false, inDouble = false, stmtStart = 0
+  for (let i = 0; i < full.length; i++) {
+    const ch = full[i]
+    if (ch === "'" && !inDouble) inSingle = !inSingle
+    else if (ch === '"' && !inSingle) inDouble = !inDouble
+    else if (ch === ';' && !inSingle && !inDouble) {
+      stmts.push({ from: stmtStart, to: i })
+      stmtStart = i + 1
+    }
+  }
+  stmts.push({ from: stmtStart, to: full.length })
+  const match = stmts.find(s => cursor >= s.from && cursor <= s.to)
+  return match ? full.slice(match.from, match.to).trim() : full.trim()
+}
 
 const baseTheme = EditorView.theme({
   '&': {
@@ -83,8 +106,8 @@ function makeExtensions(dark: boolean) {
       { key: 'Ctrl-Space', run: startCompletion },
       { key: 'Mod-Space', run: startCompletion },
       { key: 'Alt-/', run: startCompletion },
-      { key: 'Ctrl-Enter', run: () => { emit('run'); return true } },
-      { key: 'Mod-Enter', run: () => { emit('run'); return true } },
+      { key: 'Ctrl-Enter', run: () => { emit('run', getActiveSQL()); return true } },
+      { key: 'Mod-Enter', run: () => { emit('run', getActiveSQL()); return true } },
     ]),
     EditorView.updateListener.of((update) => {
       if (update.docChanged) {
@@ -146,6 +169,8 @@ watch(() => props.schemaCompletion, (schemaCompletion) => {
     ),
   })
 })
+
+defineExpose({ getActiveSQL })
 </script>
 
 <template>

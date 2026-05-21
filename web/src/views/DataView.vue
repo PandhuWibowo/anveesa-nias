@@ -60,7 +60,12 @@ const activeSessionId = ref<string>(
     : (sessions.value[0]?.id ?? '')
 )
 
-watch(sessions, persistState, { deep: true })
+// Watch only the fields that actually get persisted — avoids firing on every SQL keystroke.
+watch(
+  () => sessions.value.map(s => ({ id: s.id, connId: s.connId, db: s.initialDb, table: s.initialTable, tab: s.initialTab })),
+  persistState,
+  { deep: true }
+)
 watch(activeSessionId, persistState)
 
 onMounted(() => { window.addEventListener('beforeunload', persistState) })
