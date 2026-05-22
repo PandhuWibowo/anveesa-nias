@@ -1044,6 +1044,33 @@ func migrate() error {
 			updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_cloud_provider_instances_conn ON cloud_provider_instances(conn_id, is_active)`,
+		`CREATE TABLE IF NOT EXISTS infra_alert_rules (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			conn_id    INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+			name       TEXT NOT NULL,
+			metric_field TEXT NOT NULL,
+			group_field  TEXT NOT NULL DEFAULT 'host.name',
+			index_pattern TEXT NOT NULL DEFAULT 'metricbeat-*',
+			threshold    REAL NOT NULL,
+			comparison   TEXT NOT NULL DEFAULT 'gt',
+			duration_min INTEGER NOT NULL DEFAULT 5,
+			enabled      INTEGER NOT NULL DEFAULT 1,
+			created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_infra_alert_rules_conn ON infra_alert_rules(conn_id)`,
+		`CREATE TABLE IF NOT EXISTS infra_annotations (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			conn_id     INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+			title       TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			color       TEXT NOT NULL DEFAULT '#6366f1',
+			event_time  DATETIME NOT NULL,
+			created_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_infra_annotations_conn ON infra_annotations(conn_id, event_time DESC)`,
 	}
 	for _, s := range stmts {
 		convertedSQL := convertSQL(s)

@@ -509,6 +509,47 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchDeactivateWatch())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "watch-history" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchWatchHistory())(w, r)
+
+			// ── Infra Metrics ──────────────────────────────────────────────
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-nodes" && r.Method == http.MethodGet:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsNodes())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-cluster" && r.Method == http.MethodGet:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsCluster())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-index-stats" && r.Method == http.MethodGet:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsIndexStats())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-timeseries" && r.Method == http.MethodPost:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsTimeSeries())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-inventory" && r.Method == http.MethodPost:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsInventory())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-host-detail" && r.Method == http.MethodGet:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsHostDetail())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-process-list" && r.Method == http.MethodGet:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsProcessList())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-sparklines" && r.Method == http.MethodPost:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsSparklines())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-correlation" && r.Method == http.MethodGet:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsCorrelation())(w, r)
+
+			// ── Infra Alert Rules ──────────────────────────────────────────────
+			case sub == "infra-alert-rules" && r.Method == http.MethodGet:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.ListInfraAlertRules())(w, r)
+			case sub == "infra-alert-rules" && r.Method == http.MethodPost:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.CreateInfraAlertRule())(w, r)
+			case len(parts) >= 3 && parts[1] == "infra-alert-rules" && r.Method == http.MethodPut:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.UpdateInfraAlertRule())(w, r)
+			case len(parts) >= 3 && parts[1] == "infra-alert-rules" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.DeleteInfraAlertRule())(w, r)
+			case len(parts) >= 4 && parts[1] == "infra-alert-rules" && parts[3] == "toggle" && r.Method == http.MethodPatch:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.ToggleInfraAlertRule())(w, r)
+
+			// ── Infra Annotations ──────────────────────────────────────────────
+			case sub == "infra-annotations" && r.Method == http.MethodGet:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.ListInfraAnnotations())(w, r)
+			case sub == "infra-annotations" && r.Method == http.MethodPost:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.CreateInfraAnnotation())(w, r)
+			case len(parts) >= 3 && parts[1] == "infra-annotations" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.DeleteInfraAnnotation())(w, r)
+
 			case sub == "backup" && r.Method == http.MethodGet:
 				requireAny(handlers.PermBackupsManage)(handlers.GetBackup())(w, r)
 			case sub == "restore" && r.Method == http.MethodPost:

@@ -398,7 +398,7 @@ defineExpose({ startAddRow })
     <!-- Empty -->
     <div v-else-if="rows.length === 0 && !showNewRow" class="empty-state">
       No rows returned.
-      <button v-if="addable" class="base-btn base-btn--ghost base-btn--xs" style="margin-top:8px" @click="showNewRow=true">
+      <button v-if="addable" class="base-btn base-btn--ghost base-btn--xs empty-state__action" type="button" @click="showNewRow=true">
         + Add row
       </button>
     </div>
@@ -412,9 +412,9 @@ defineExpose({ startAddRow })
         </div>
         <div class="edit-toolbar__actions">
           <span v-if="editHistory.length" class="edit-toolbar__hint">`Ctrl/Cmd+Z` undo</span>
-          <button class="base-btn base-btn--ghost base-btn--xs" :disabled="!editHistory.length" @click="undoLastEdit">Undo Last</button>
-          <button class="base-btn base-btn--ghost base-btn--xs" :disabled="!hasPendingEdits" @click="clearAllEdits">Discard All</button>
-          <button class="base-btn base-btn--primary base-btn--xs" :disabled="!hasPendingEdits" @click="saveAllRows">Save All</button>
+          <button class="base-btn base-btn--ghost base-btn--xs" type="button" :disabled="!editHistory.length" @click="undoLastEdit">Undo Last</button>
+          <button class="base-btn base-btn--ghost base-btn--xs" type="button" :disabled="!hasPendingEdits" @click="clearAllEdits">Discard All</button>
+          <button class="base-btn base-btn--primary base-btn--xs" type="button" :disabled="!hasPendingEdits" @click="saveAllRows">Save All</button>
         </div>
       </div>
       <div v-if="showNewRow" class="insert-toolbar">
@@ -423,15 +423,15 @@ defineExpose({ startAddRow })
           <span>Fill the row values, then save to insert it.</span>
         </div>
         <div class="insert-toolbar__actions">
-          <button class="base-btn base-btn--ghost base-btn--xs" @click="showNewRow=false">Cancel</button>
-          <button class="base-btn base-btn--primary base-btn--xs" @click="addRow">Save Row</button>
+          <button class="base-btn base-btn--ghost base-btn--xs" type="button" @click="showNewRow=false">Cancel</button>
+          <button class="base-btn base-btn--primary base-btn--xs" type="button" @click="addRow">Save Row</button>
         </div>
       </div>
       <table class="data-table" :class="{ 'dt-resizing': isResizing }">
         <thead>
           <tr>
             <th class="col-rownum" v-if="showRowNumbers">#</th>
-            <th v-if="editable || showNewRow" class="col-actions" style="width:80px;min-width:80px"></th>
+            <th v-if="editable || showNewRow" class="col-actions"></th>
             <th
               v-for="col in orderedColumns"
               :key="col"
@@ -484,11 +484,17 @@ defineExpose({ startAddRow })
               <div v-if="editable" class="row-btns">
                 <template v-if="editedRows.has(rIdx)">
                   <span class="row-state-pill">{{ rowLabel(rIdx) }}</span>
-                  <button class="rbtn rbtn--save" @click="saveRow(rIdx, row)" title="Save">✓</button>
-                  <button class="rbtn rbtn--cancel" @click="cancelEdit(rIdx)" title="Cancel">✕</button>
+                  <button class="rbtn rbtn--save" type="button" @click="saveRow(rIdx, row)" title="Save">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  </button>
+                  <button class="rbtn rbtn--cancel" type="button" @click="cancelEdit(rIdx)" title="Cancel">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
                 </template>
                 <template v-else>
-                  <button class="rbtn rbtn--delete" @click="deleteRow(rIdx, row)" title="Delete row">🗑</button>
+                  <button class="rbtn rbtn--delete" type="button" @click="deleteRow(rIdx, row)" title="Delete row">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                  </button>
                 </template>
               </div>
             </td>
@@ -534,8 +540,8 @@ defineExpose({ startAddRow })
       <span class="pagination__info">
         Rows {{ (page - 1) * pageSize + 1 }}–{{ Math.min(page * pageSize, totalRows) }} of {{ totalRows.toLocaleString() }}
       </span>
-      <div style="display:flex;align-items:center;gap:6px;margin-left:12px">
-        <span style="font-size:11px;color:var(--text-muted)">Per page:</span>
+      <div class="pagination__page-size">
+        <span class="pagination__label">Per page:</span>
         <select class="page-size-select" :value="pageSize" @change="emit('page-size-change', Number(($event.target as HTMLSelectElement).value))">
           <option value="25">25</option>
           <option value="50">50</option>
@@ -547,7 +553,7 @@ defineExpose({ startAddRow })
       <div class="pagination__spacer" />
       
       <!-- Export to Excel -->
-      <button class="base-btn base-btn--ghost base-btn--xs" title="Export visible columns to Excel" @click="exportToExcel">
+      <button class="base-btn base-btn--ghost base-btn--xs" type="button" title="Export visible columns to Excel" @click="exportToExcel">
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
           <line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/>
@@ -557,16 +563,16 @@ defineExpose({ startAddRow })
 
       <!-- Column visibility toggle -->
       <div class="col-vis-wrapper" @click.stop>
-        <button class="base-btn base-btn--ghost base-btn--xs" @click="showColumnMenu = !showColumnMenu">
+        <button class="base-btn base-btn--ghost base-btn--xs" type="button" @click="showColumnMenu = !showColumnMenu">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
           Columns
         </button>
         <div v-if="showColumnMenu" class="col-vis-menu">
           <div class="col-vis-header">
-            <span style="font-weight:600;font-size:11px">Column Visibility</span>
-            <div style="display:flex;gap:4px">
-              <button class="col-vis-btn" @click="showAllColumns">All</button>
-              <button class="col-vis-btn" @click="hideAllColumns">None</button>
+            <span class="col-vis-title">Column Visibility</span>
+            <div class="col-vis-actions">
+              <button class="col-vis-btn" type="button" @click="showAllColumns">All</button>
+              <button class="col-vis-btn" type="button" @click="hideAllColumns">None</button>
             </div>
           </div>
           <div class="col-vis-list">
@@ -578,14 +584,14 @@ defineExpose({ startAddRow })
         </div>
       </div>
       
-      <button class="base-btn base-btn--ghost base-btn--xs" :disabled="page <= 1" @click="emit('page-change', page - 1)">← Prev</button>
-      <span style="font-size:12px;color:var(--text-secondary)">{{ page }} / {{ totalPages }}</span>
-      <button class="base-btn base-btn--ghost base-btn--xs" :disabled="page >= totalPages" @click="emit('page-change', page + 1)">Next →</button>
+      <button class="base-btn base-btn--ghost base-btn--xs" type="button" :disabled="page <= 1" @click="emit('page-change', page - 1)">← Prev</button>
+      <span class="pagination__page">{{ page }} / {{ totalPages }}</span>
+      <button class="base-btn base-btn--ghost base-btn--xs" type="button" :disabled="page >= totalPages" @click="emit('page-change', page + 1)">Next →</button>
     </div>
     <div class="pagination" v-else-if="rows.length > 0">
       <span class="pagination__info">{{ rows.length.toLocaleString() }} rows</span>
       <div class="pagination__spacer" />
-      <button class="base-btn base-btn--ghost base-btn--xs" title="Export visible columns to Excel" @click="exportToExcel">
+      <button class="base-btn base-btn--ghost base-btn--xs" type="button" title="Export visible columns to Excel" @click="exportToExcel">
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
           <line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/>
@@ -675,6 +681,7 @@ th:hover .th-grip { opacity: 0.7; }
 .col-actions { width: 80px; min-width: 80px; text-align: center; padding: 0 6px !important; }
 .row-btns { display: flex; gap: 4px; justify-content: center; align-items: center; flex-wrap: wrap; }
 .row-btns--insert { gap: 6px; flex-wrap: nowrap; }
+.empty-state__action { margin-top: 8px; }
 .edit-toolbar,
 .insert-toolbar {
   position: sticky;
@@ -751,6 +758,10 @@ th:hover .th-grip { opacity: 0.7; }
 .rbtn--cancel:hover { background: var(--bg-hover); color: var(--text-primary); }
 .rbtn--delete { color: #f87171; }
 .rbtn--delete:hover { background: rgba(248, 113, 113, 0.15); }
+.rbtn:focus-visible {
+  outline: 2px solid var(--brand-ring);
+  outline-offset: 2px;
+}
 .cell-input {
   width: 100%;
   background: transparent;
@@ -792,6 +803,20 @@ th:hover .th-grip { opacity: 0.7; }
 .page-size-select:hover {
   background: var(--bg-hover);
 }
+.pagination__page-size {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 12px;
+}
+.pagination__label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.pagination__page {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
 
 /* Column visibility dropdown */
 .col-vis-wrapper {
@@ -819,6 +844,14 @@ th:hover .th-grip { opacity: 0.7; }
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   color: var(--text-secondary);
+}
+.col-vis-title {
+  font-size: 11px;
+  font-weight: 600;
+}
+.col-vis-actions {
+  display: flex;
+  gap: 4px;
 }
 .col-vis-btn {
   padding: 2px 6px;

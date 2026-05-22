@@ -211,6 +211,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['uptime.view', 'observability.view', 'schema.browse', 'connections.view'] },
         },
         {
+          path: 'infra-metrics',
+          name: 'infra-metrics',
+          component: () => import('@/views/InfraMetricsView.vue'),
+          meta: { requiredPermissionsAny: ['observability.view', 'connections.view'] },
+        },
+        {
           path: 'laravel-queue',
           name: 'laravel-queue',
           component: () => import('@/views/LaravelQueueView.vue'),
