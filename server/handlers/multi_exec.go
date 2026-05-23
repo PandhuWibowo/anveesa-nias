@@ -98,6 +98,7 @@ func RunScript() http.HandlerFunc {
 		}
 
 		results := make([]ScriptResult, 0, len(stmts))
+		schemaChanged := false
 
 		for i, stmt := range stmts {
 			stmt = strings.TrimSpace(stmt)
@@ -148,11 +149,18 @@ func RunScript() http.HandlerFunc {
 					sr.Error = err.Error()
 				} else {
 					sr.Affected, _ = res.RowsAffected()
+					if isSchemaChangingSQL(stmt) {
+						schemaChanged = true
+					}
 				}
 			}
 
 			sr.DurationMs = time.Since(start).Milliseconds()
 			results = append(results, sr)
+		}
+
+		if schemaChanged {
+			invalidateSchemaListCache(connID)
 		}
 
 		json.NewEncoder(w).Encode(results)

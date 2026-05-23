@@ -215,6 +215,7 @@ async function handleAddRow(payload: { values: Record<string, unknown> }) {
 // ── Schema tab state ──────────────────────────────────────────────
 const schemaSelected = ref<{ db: string; table: string; type: string } | null>(null)
 const schemaLoadingCols = ref(false)
+const schemaTreeRefreshKey = ref(0)
 
 async function handleSchemaSelectTable(payload: { db: string; table: string; type?: string }) {
   schemaSelected.value = { db: payload.db, table: payload.table, type: payload.type ?? 'table' }
@@ -243,6 +244,13 @@ const {
   fetchMetadata, 
   fetchObjectDetail 
 } = useSchemaExplorer()
+
+async function handleSQLSchemaChanged() {
+  schemaTreeRefreshKey.value += 1
+  if (!props.connId) return
+  await fetchSchemaList(props.connId, { refresh: true })
+  if (explorerError.value) toast.error(explorerError.value)
+}
 
 const activeDatabase = ref('')
 const selectedObjectKey = ref('')
@@ -809,7 +817,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ activeConn.name }}</span>
           <span class="driver-badge" :style="{ background: driverColor(activeConn.driver) }">{{ driverLabel(activeConn.driver) }}</span>
         </div>
-        <SchemaTree :connId="connId" :active="active" :selected-table="selected ? `${selected.db}.${selected.table}` : undefined" @select-table="handleSelectTable" />
+        <SchemaTree :connId="connId" :active="active" :refresh-key="schemaTreeRefreshKey" :selected-table="selected ? `${selected.db}.${selected.table}` : undefined" @select-table="handleSelectTable" />
       </div>
       <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden">
         <div class="browse-toolbar">
@@ -860,7 +868,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ activeConn.name }}</span>
           <span class="driver-badge" :style="{ background: driverColor(activeConn.driver) }">{{ driverLabel(activeConn.driver) }}</span>
         </div>
-        <SchemaTree :connId="connId" :active="active" :selected-table="schemaSelected ? `${schemaSelected.db}.${schemaSelected.table}` : undefined" @select-table="handleSchemaSelectTable" />
+        <SchemaTree :connId="connId" :active="active" :refresh-key="schemaTreeRefreshKey" :selected-table="schemaSelected ? `${schemaSelected.db}.${schemaSelected.table}` : undefined" @select-table="handleSchemaSelectTable" />
       </div>
       <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden">
         <div style="padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg-surface);display:flex;align-items:center;gap:10px;flex-shrink:0;min-height:40px">
@@ -1260,6 +1268,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
             :conn-id="connId" :default-db="selected?.db" :table-name="selected?.table" :dark-mode="darkMode"
             :initial-sql="tab.initialSQL"
             @result="(p) => onSQLResult(tab.id, p)"
+            @schema-changed="handleSQLSchemaChanged"
             @close="closeSqlTab(tab.id)"
           />
         </div>

@@ -92,6 +92,7 @@ func CommitTransaction() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
 		}
+		invalidateSchemaListCache(connID)
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "message": "Transaction committed"})
 	}
 }

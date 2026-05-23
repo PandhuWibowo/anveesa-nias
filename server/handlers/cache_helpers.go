@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -44,4 +45,8 @@ func invalidateNotificationCountCache(userIDs ...int64) {
 	for userID := range deduped {
 		_ = cache.Default().Delete(context.Background(), "notifications:unread:"+strconv.FormatInt(userID, 10))
 	}
+}
+
+func invalidateSchemaListCache(connID int64) {
+	_ = cache.Default().Delete(context.Background(), fmt.Sprintf("schema:list:%d", connID))
 }

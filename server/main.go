@@ -1091,6 +1091,8 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			requireAny(handlers.PermPipelinesView)(handlers.ListPipelineRuns())(w, r)
 		case len(parts) == 3 && parts[1] == "runs" && r.Method == http.MethodGet:
 			requireAny(handlers.PermPipelinesView)(handlers.GetPipelineRunStatus())(w, r)
+		case len(parts) == 4 && parts[1] == "runs" && parts[3] == "rerun" && r.Method == http.MethodPost:
+			requireAny(handlers.PermPipelinesRun)(handlers.RerunPipelineRun())(w, r)
 		case len(parts) == 4 && parts[1] == "runs" && parts[3] == "logs" && r.Method == http.MethodGet:
 			requireAny(handlers.PermPipelinesView)(handlers.GetRunLogs())(w, r)
 		default:
@@ -1122,6 +1124,7 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 
 	// ── Health ping ───────────────────────────────────────────────
 	mux.HandleFunc("/api/health", requireAny(handlers.PermHealthView)(handlers.PingAllConnections()))
+	mux.HandleFunc("/api/scheduler/status", requireAny(handlers.PermHealthView)(handlers.SchedulerStatus()))
 
 	// ── Notifications ─────────────────────────────────────────────
 	mux.HandleFunc("/api/notifications", func(w http.ResponseWriter, r *http.Request) {

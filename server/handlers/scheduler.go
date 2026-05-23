@@ -551,6 +551,33 @@ func recordScheduleRun(scheduleID, rowCount int64, summary, errMsg string, alert
 var schedulerStop chan struct{}
 var schedulerMu sync.Mutex
 var schedulerInstanceID = fmt.Sprintf("scheduler-%d", time.Now().UTC().UnixNano())
+var schedulerLastTick time.Time
+var schedulerStartedAt = time.Now().UTC()
+
+// SchedulerStatus returns whether the background scheduler is running.
+func SchedulerStatus() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		schedulerMu.Lock()
+		running := schedulerStop != nil
+		lastTick := schedulerLastTick
+		startedAt := schedulerStartedAt
+		schedulerMu.Unlock()
+
+		var lastTickStr string
+		if !lastTick.IsZero() {
+			lastTickStr = lastTick.Format(time.RFC3339)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"running":       running,
+			"instanceID":    schedulerInstanceID,
+			"lastTick":      lastTickStr,
+			"startedAt":     startedAt.Format(time.RFC3339),
+			"intervalSec":   60,
+		})
+	}
+}
 
 // StartScheduler runs due schedules in the background.
 func StartScheduler() {
@@ -618,7 +645,11 @@ func processSchedulerTick() {
 		defer releaseCancel()
 		_ = cache.Default().ReleaseLock(releaseCtx, lockKey, owner)
 	}()
+	schedulerMu.Lock()
+	schedulerLastTick = time.Now().UTC()
+	schedulerMu.Unlock()
 	runDueSchedules()
+	runDuePipelineSchedules()
 }
 
 func executeScheduleWithLock(s Schedule, manual bool) (map[string]any, error) {
@@ -647,4 +678,86 @@ func executeScheduleWithLock(s Schedule, manual bool) (map[string]any, error) {
 	}()
 
 	return executeSchedule(s)
+}
+
+// runDuePipelineSchedules fires any active pipeline whose cron schedule matches the current minute.
+func runDuePipelineSchedules() {
+	now := time.Now()
+	rows, err := appdb.DB.Query(appdb.ConvertQuery(
+		`SELECT id, COALESCE(schedule,'') FROM pipelines WHERE status='active' AND schedule IS NOT NULL AND schedule != ''`))
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var pipelineID int64
+		var schedule string
+		if err := rows.Scan(&pipelineID, &schedule); err != nil {
+			continue
+		}
+		if !cronMatches(schedule, now) {
+			continue
+		}
+		businessDate := now.Format("2006-01-02")
+		runID, err := insertRowReturningID(appdb.ConvertQuery(
+			`INSERT INTO pipeline_runs (pipeline_id, triggered_by, status, business_date, run_params)
+			 VALUES (?, ?, 'running', ?, '{}')`),
+			pipelineID, "scheduler", businessDate)
+		if err != nil {
+			continue
+		}
+		appdb.DB.Exec(appdb.ConvertQuery(`UPDATE pipelines SET last_run_at=CURRENT_TIMESTAMP WHERE id=?`), pipelineID)
+		go RunPipeline(pipelineID, runID, "scheduler")
+	}
+}
+
+// cronMatches returns true when the 5-field cron expression matches the given time (minute granularity).
+func cronMatches(expr string, t time.Time) bool {
+	fields := strings.Fields(expr)
+	if len(fields) != 5 {
+		return false
+	}
+	return cronField(fields[0], t.Minute()) &&
+		cronField(fields[1], t.Hour()) &&
+		cronField(fields[2], t.Day()) &&
+		cronField(fields[3], int(t.Month())) &&
+		cronField(fields[4], int(t.Weekday()))
+}
+
+func cronField(field string, val int) bool {
+	if field == "*" {
+		return true
+	}
+	for _, part := range strings.Split(field, ",") {
+		if strings.Contains(part, "/") {
+			sub := strings.SplitN(part, "/", 2)
+			step, err := strconv.Atoi(sub[1])
+			if err != nil || step <= 0 {
+				continue
+			}
+			start := 0
+			if sub[0] != "*" {
+				if s, err := strconv.Atoi(sub[0]); err == nil {
+					start = s
+				}
+			}
+			if val >= start && (val-start)%step == 0 {
+				return true
+			}
+			continue
+		}
+		if strings.Contains(part, "-") {
+			bounds := strings.SplitN(part, "-", 2)
+			lo, e1 := strconv.Atoi(bounds[0])
+			hi, e2 := strconv.Atoi(bounds[1])
+			if e1 == nil && e2 == nil && val >= lo && val <= hi {
+				return true
+			}
+			continue
+		}
+		if n, err := strconv.Atoi(part); err == nil && n == val {
+			return true
+		}
+	}
+	return false
 }
