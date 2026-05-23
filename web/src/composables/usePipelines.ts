@@ -23,9 +23,11 @@ export interface Pipeline {
   id: number
   name: string
   description: string
+  pipeline_type: string
   created_by: number | null
   status: string
   schedule: string | null
+  api_enabled: boolean
   last_run_at: string | null
   created_at: string
   updated_at: string
@@ -38,6 +40,10 @@ export interface PipelineRun {
   pipeline_id: number
   triggered_by: string
   status: string
+  business_date: string
+  run_params: Record<string, any>
+  parent_run_id: number | null
+  return_payload: Record<string, any>
   started_at: string
   finished_at: string | null
   rows_processed: number
@@ -73,8 +79,8 @@ export function usePipelines() {
     }
   }
 
-  async function createPipeline(name: string, description = '') {
-    const { data } = await axios.post<{ id: number }>('/api/pipelines', { name, description })
+  async function createPipeline(name: string, description = '', pipeline_type = 'custom') {
+    const { data } = await axios.post<{ id: number }>('/api/pipelines', { name, description, pipeline_type })
     return data.id
   }
 
@@ -91,8 +97,13 @@ export function usePipelines() {
     await axios.delete(`/api/pipelines/${id}`)
   }
 
-  async function triggerRun(id: number): Promise<number> {
-    const { data } = await axios.post<{ run_id: number }>(`/api/pipelines/${id}/run`)
+  async function triggerRun(id: number, payload: { business_date?: string; params?: Record<string, any>; parent_run_id?: number | null } = {}): Promise<number> {
+    const { data } = await axios.post<{ run_id: number }>(`/api/pipelines/${id}/run`, payload)
+    return data.run_id
+  }
+
+  async function rerunRun(pipelineId: number, runId: number, payload: { business_date?: string; params?: Record<string, any> } = {}): Promise<number> {
+    const { data } = await axios.post<{ run_id: number }>(`/api/pipelines/${pipelineId}/runs/${runId}/rerun`, payload)
     return data.run_id
   }
 
@@ -121,6 +132,7 @@ export function usePipelines() {
     savePipeline,
     deletePipeline,
     triggerRun,
+    rerunRun,
     fetchRuns,
     fetchRunStatus,
     fetchRunLogs,

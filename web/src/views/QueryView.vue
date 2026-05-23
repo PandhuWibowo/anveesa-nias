@@ -30,7 +30,7 @@ const props = defineProps<{ activeConnId?: number | null }>()
 const { connections } = useConnections()
 const { fetchHistory, clearHistory } = useQuery()
 const { mode } = useTheme()
-const { getCompletionSource } = useSchemaCompletion()
+const { getCompletionSource, invalidateCache: invalidateSchemaCompletionCache } = useSchemaCompletion()
 const { queries: savedQueries, fetchAll: fetchSaved, save: saveQuery, remove: removeQuery } = useSavedQueries()
 const { databases, error: databaseError, fetchDatabases } = useDatabases()
 
@@ -104,6 +104,7 @@ async function txCommit() {
   try {
     await axios.post(`/api/connections/${connId.value}/transaction/commit`)
     txActive.value = false
+    await refreshSchema()
   } catch (e) {
     if (activeTab.value) activeTab.value.error = readableError(e, { action: 'Commit transaction', fallback: 'Failed to commit transaction' })
   }
@@ -201,6 +202,7 @@ async function runQuery() {
       sql: tab.sql, duration_ms: data.duration_ms, row_count: data.row_count,
     }).catch(() => {})
     historyItems.value.unshift({ sql: tab.sql, time: new Date(), connId: connId.value!, duration_ms: data.duration_ms, row_count: data.row_count })
+    await refreshSchemaAfterDDL(buildParamSQL(tab.sql))
   } catch (e: unknown) {
     const err = e as { code?: string; response?: { data?: { error?: string } } }
     if (err.code === 'ERR_CANCELED') {
@@ -293,6 +295,24 @@ watch(selectedDatabase, async (db) => {
 
 // ── Schema panel ──────────────────────────────────────────────────
 const schemaVisible = ref(true)
+const schemaRefreshKey = ref(0)
+
+function isSchemaChangingSQL(sql: string) {
+  return /^\s*(?:\/\*[\s\S]*?\*\/\s*)*(?:create|alter|drop|truncate|rename|comment)\b/i.test(sql)
+}
+
+async function refreshSchema() {
+  if (!connId.value) return
+  schemaRefreshKey.value += 1
+  invalidateSchemaCompletionCache(connId.value)
+  const db = selectedDatabase.value || 'public'
+  schemaCompletion.value = await getCompletionSource(connId.value, db)
+}
+
+async function refreshSchemaAfterDDL(sql: string) {
+  if (!isSchemaChangingSQL(sql)) return
+  await refreshSchema()
+}
 
 function onSchemaSelect(payload: { db: string; table: string }) {
   if (activeTab.value) {
@@ -319,6 +339,9 @@ async function runScript() {
       { sql: buildParamSQL(activeTab.value.sql), database: selectedDatabase.value || undefined }
     )
     scriptResults.value = data
+    if (data.some((item) => !item.error && isSchemaChangingSQL(item.sql))) {
+      await refreshSchemaAfterDDL(data.find((item) => !item.error && isSchemaChangingSQL(item.sql))?.sql ?? activeTab.value.sql)
+    }
   } catch (e: unknown) {
     const msg = readableError(e, { action: 'Run script', fallback: 'Script failed' })
     if (activeTab.value) activeTab.value.error = msg
@@ -697,7 +720,7 @@ function exportResults(format: 'csv' | 'json') {
       <Transition name="schema-slide">
         <div v-if="schemaVisible" class="query-schema-panel">
           <div class="panel-header">Schema</div>
-          <SchemaTree :connId="connId" @select-table="onSchemaSelect" />
+          <SchemaTree :connId="connId" :active="true" :refresh-key="schemaRefreshKey" @select-table="onSchemaSelect" />
         </div>
       </Transition>
 

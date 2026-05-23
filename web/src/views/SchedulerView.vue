@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import axios from 'axios'
+import { useRouter } from 'vue-router'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
 import { readableError } from '@/utils/httpError'
@@ -20,14 +21,46 @@ interface ScheduleRun {
   summary: string; error: string; alerted: boolean; ran_at: string
 }
 
+interface SchedulerStatus {
+  running: boolean
+  instanceID: string
+  lastTick: string
+  startedAt: string
+  intervalSec: number
+}
+
 const { activeConnections: connections } = useConnections()
 const toast = useToast()
+const router = useRouter()
+
+function goToScheduleSource(s: Schedule) {
+  if (s.kind === 'dashboard_report') {
+    router.push({ name: 'dashboards' })
+  } else {
+    router.push({ name: 'data' })
+  }
+}
 const schedules = ref<Schedule[]>([])
 const dashboards = ref<AnalyticsDashboard[]>([])
 const loading = ref(false)
 const showForm = ref(false)
 const selectedRuns = ref<ScheduleRun[]>([])
 const runsFor = ref<number | null>(null)
+
+const schedulerStatus = ref<SchedulerStatus | null>(null)
+const statusLoading = ref(false)
+
+async function fetchSchedulerStatus() {
+  statusLoading.value = true
+  try {
+    const { data } = await axios.get<SchedulerStatus>('/api/scheduler/status')
+    schedulerStatus.value = data
+  } catch {
+    schedulerStatus.value = null
+  } finally {
+    statusLoading.value = false
+  }
+}
 
 const form = ref<Partial<Schedule>>({
   name: '', conn_id: 0, dashboard_id: 0, sql: '', kind: 'query', ai_prompt: '', interval_min: 60,
@@ -129,7 +162,7 @@ function dashboardName(id: number) {
   return dashboards.value.find((d) => d.id === id)?.name ?? `#${id}`
 }
 
-onMounted(load)
+onMounted(() => { load(); fetchSchedulerStatus() })
 </script>
 
 <template>
@@ -146,6 +179,60 @@ onMounted(load)
           <button class="base-btn base-btn--primary base-btn--sm" @click="resetForm(); showForm=true">+ New Schedule</button>
         </div>
       </section>
+
+      <!-- Scheduler status -->
+      <div class="page-card sc-status-card">
+        <div class="sc-status-row">
+          <div class="sc-status-meta">
+            <div class="sc-status-title">Background Scheduler</div>
+            <div class="sc-status-desc">The server process that automatically runs your scheduled jobs — SQL checks, AI summaries, dashboard reports, and pipeline cron triggers — on their configured intervals.</div>
+          </div>
+          <div class="sc-status-right">
+            <template v-if="statusLoading">
+              <svg class="spin sc-status-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+              <span class="sc-status-badge">Checking…</span>
+            </template>
+            <template v-else-if="schedulerStatus">
+              <div class="sc-status-indicator">
+                <div class="sc-dot" :class="schedulerStatus.running ? 'sc-dot--on' : 'sc-dot--err'" />
+                <span class="sc-status-badge" :class="schedulerStatus.running ? 'sc-badge--ok' : 'sc-badge--err'">
+                  {{ schedulerStatus.running ? 'Running' : 'Stopped' }}
+                </span>
+              </div>
+              <div class="sc-status-details">
+                <div class="sc-status-detail-row">
+                  <span class="sc-status-key">Runs every</span>
+                  <span class="sc-status-val">{{ schedulerStatus.intervalSec }}s</span>
+                </div>
+                <div class="sc-status-detail-row">
+                  <span class="sc-status-key">Last tick</span>
+                  <span class="sc-status-val">{{ schedulerStatus.lastTick ? new Date(schedulerStatus.lastTick).toLocaleString() : 'Not yet (no tick since startup)' }}</span>
+                </div>
+                <div class="sc-status-detail-row">
+                  <span class="sc-status-key">Started at</span>
+                  <span class="sc-status-val">{{ new Date(schedulerStatus.startedAt).toLocaleString() }}</span>
+                </div>
+                <div class="sc-status-detail-row">
+                  <span class="sc-status-key">Instance</span>
+                  <span class="sc-status-instance">{{ schedulerStatus.instanceID }}</span>
+                </div>
+              </div>
+            </template>
+            <template v-else>
+              <div class="sc-status-indicator">
+                <div class="sc-dot sc-dot--err" />
+                <span class="sc-status-badge sc-badge--err">Unreachable</span>
+              </div>
+              <div class="sc-status-row-sub">
+                <span class="sc-status-key">Could not connect to the scheduler endpoint.</span>
+              </div>
+            </template>
+            <button class="base-btn base-btn--ghost base-btn--sm sc-status-refresh" :disabled="statusLoading" @click="fetchSchedulerStatus">
+              {{ statusLoading ? '…' : 'Refresh' }}
+            </button>
+          </div>
+        </div>
+      </div>
 
       <!-- List -->
       <div class="page-grid sc-list">
@@ -176,6 +263,9 @@ onMounted(load)
                 {{ s.enabled ? 'Disable' : 'Enable' }}
               </button>
               <button class="base-btn base-btn--ghost base-btn--sm" @click="editSchedule(s)">Edit</button>
+              <button class="base-btn base-btn--ghost base-btn--sm sc-goto-btn" @click="goToScheduleSource(s)" :title="s.kind === 'dashboard_report' ? 'Go to Dashboard' : 'Go to Query'">
+                {{ s.kind === 'dashboard_report' ? '↗ Dashboard' : '↗ Query' }}
+              </button>
               <button class="base-btn base-btn--ghost base-btn--sm" style="color:var(--danger)" @click="del(s)">Delete</button>
             </div>
           </div>
@@ -299,6 +389,7 @@ onMounted(load)
 .sc-item-times { display:flex; flex-direction:column; gap:2px; }
 .sc-time { font-size:10.5px; color:var(--text-muted); }
 .sc-item-actions { display:flex; gap:4px; flex-wrap:wrap; }
+.sc-goto-btn { color:var(--brand); }
 .sc-sql { margin:0; padding:8px 14px; background:var(--bg-body); border-top:1px solid var(--border); font-family:var(--mono,monospace); font-size:11.5px; color:var(--text-secondary); white-space:pre-wrap; word-break:break-all; }
 .sc-dashboard-target { padding:10px 14px; border-top:1px solid var(--border); background:var(--bg-body); font-size:12px; color:var(--text-secondary); }
 .sc-helper { padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--bg-body); font-size:12px; line-height:1.6; color:var(--text-secondary); }
@@ -311,6 +402,27 @@ onMounted(load)
 .sc-run-summary { color:var(--text-primary); flex:1; min-width:220px; }
 .sc-run-err { color:var(--danger); font-family:var(--mono,monospace); font-size:11px; flex:1; }
 .cp-close { background:transparent; border:none; font-size:20px; color:var(--text-muted); cursor:pointer; padding:0 4px; line-height:1; }
+.sc-status-card { background:var(--bg-elevated); border:1px solid var(--border); border-radius:8px; padding:14px 18px; }
+.sc-status-row { display:flex; align-items:flex-start; gap:32px; }
+.sc-status-meta { min-width:0; max-width:400px; }
+.sc-status-title { font-size:13px; font-weight:700; color:var(--text-primary); margin-bottom:4px; }
+.sc-status-desc { font-size:12px; color:var(--text-muted); line-height:1.55; }
+.sc-status-right { display:flex; flex-direction:column; align-items:flex-start; gap:6px; flex-shrink:0; }
+.sc-status-indicator { display:flex; align-items:center; gap:7px; }
+.sc-status-badge { font-size:12px; font-weight:600; }
+.sc-badge--ok { color:#4ade80; }
+.sc-badge--err { color:var(--danger,#f87171); }
+.sc-status-row-sub { display:flex; align-items:center; gap:6px; }
+.sc-status-details { display:flex; flex-direction:column; gap:4px; margin-top:4px; }
+.sc-status-detail-row { display:flex; align-items:center; gap:8px; }
+.sc-status-key { font-size:11px; color:var(--text-muted); min-width:68px; flex-shrink:0; }
+.sc-status-val { font-size:11px; color:var(--text-secondary); }
+.sc-status-instance { font-size:10.5px; color:var(--text-muted); font-family:var(--mono,monospace); background:var(--bg-body); padding:2px 8px; border-radius:4px; border:1px solid var(--border); max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sc-status-refresh { align-self:flex-start; margin-top:2px; }
+.sc-status-spin { color:var(--text-muted); }
+.sc-dot--err { background:var(--danger,#f87171); box-shadow:0 0 6px rgba(248,113,113,0.5); }
+.spin { animation:rotate 1s linear infinite; }
+@keyframes rotate { to { transform:rotate(360deg) } }
 .sc-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.55); display:flex; align-items:center; justify-content:center; z-index:1100; }
 .sc-modal { background:var(--bg-elevated); border:1px solid var(--border); border-radius:10px; width:min(520px,94vw); max-height:85vh; display:flex; flex-direction:column; box-shadow:0 24px 64px rgba(0,0,0,0.55); }
 .sc-modal-header { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--border); font-size:14px; font-weight:700; color:var(--text-primary); }

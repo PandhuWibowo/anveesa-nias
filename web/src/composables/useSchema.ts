@@ -115,11 +115,13 @@ export function useSchema() {
   const objectDetail = ref<SchemaObjectDetail | null>(null)
   const error = ref('')
 
-  async function fetchSchema(connId: number) {
+  async function fetchSchema(connId: number, options: { refresh?: boolean } = {}) {
     loadingSchema.value = true
     error.value = ''
     try {
-      const { data } = await axios.get<SchemaDatabase[]>(`/api/connections/${connId}/schema`)
+      const { data } = await axios.get<SchemaDatabase[]>(`/api/connections/${connId}/schema`, {
+        params: options.refresh ? { refresh: 1 } : undefined,
+      })
       databases.value = Array.isArray(data)
         ? data.map((db) => ({ ...db, tables: Array.isArray(db.tables) ? db.tables : [] }))
         : []

@@ -956,9 +956,11 @@ func migrate() error {
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			name        TEXT NOT NULL,
 			description TEXT NOT NULL DEFAULT '',
+			pipeline_type TEXT NOT NULL DEFAULT 'custom',
 			created_by  INTEGER REFERENCES users(id),
 			status      TEXT NOT NULL DEFAULT 'draft',
 			schedule    TEXT,
+			api_enabled INTEGER NOT NULL DEFAULT 0,
 			last_run_at DATETIME,
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -985,6 +987,10 @@ func migrate() error {
 			pipeline_id    INTEGER NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
 			triggered_by   TEXT NOT NULL DEFAULT 'manual',
 			status         TEXT NOT NULL DEFAULT 'running',
+			business_date  TEXT NOT NULL DEFAULT '',
+			run_params     TEXT NOT NULL DEFAULT '{}',
+			parent_run_id  INTEGER DEFAULT NULL,
+			return_payload TEXT NOT NULL DEFAULT '{}',
 			started_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
 			finished_at    DATETIME,
 			rows_processed INTEGER NOT NULL DEFAULT 0,
@@ -1004,6 +1010,12 @@ func migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_pipeline_edges_pipeline ON pipeline_edges(pipeline_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_pipeline_runs_pipeline ON pipeline_runs(pipeline_id, started_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_pipeline_run_logs_run ON pipeline_run_logs(run_id)`,
+		`ALTER TABLE pipelines ADD COLUMN pipeline_type TEXT NOT NULL DEFAULT 'custom'`,
+		`ALTER TABLE pipelines ADD COLUMN api_enabled INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE pipeline_runs ADD COLUMN business_date TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE pipeline_runs ADD COLUMN run_params TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE pipeline_runs ADD COLUMN parent_run_id INTEGER DEFAULT NULL`,
+		`ALTER TABLE pipeline_runs ADD COLUMN return_payload TEXT NOT NULL DEFAULT '{}'`,
 
 		// Grant pipeline permissions to admin/poweruser roles
 		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"pipelines.view"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.view%'`,
@@ -1071,6 +1083,10 @@ func migrate() error {
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_infra_annotations_conn ON infra_annotations(conn_id, event_time DESC)`,
+
+		// Fix pipeline_run_logs.node_id FK to cascade SET NULL on node deletion
+		`ALTER TABLE pipeline_run_logs DROP CONSTRAINT IF EXISTS pipeline_run_logs_node_id_fkey`,
+		`ALTER TABLE pipeline_run_logs ADD CONSTRAINT pipeline_run_logs_node_id_fkey FOREIGN KEY (node_id) REFERENCES pipeline_nodes(id) ON DELETE SET NULL`,
 	}
 	for _, s := range stmts {
 		convertedSQL := convertSQL(s)

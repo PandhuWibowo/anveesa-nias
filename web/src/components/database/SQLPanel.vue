@@ -42,12 +42,13 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   result: [payload: SQLPanelPayload]
+  schemaChanged: []
   close: []
 }>()
 
 const { connections } = useConnections()
 const { fetchHistory, clearHistory } = useQuery()
-const { getCompletionSource } = useSchemaCompletion()
+const { getCompletionSource, invalidateCache: invalidateSchemaCompletionCache } = useSchemaCompletion()
 const { queries: savedQueries, fetchAll: fetchSaved, save: saveQuery, remove: removeQuery } = useSavedQueries()
 const { databases, error: databaseError, fetchDatabases } = useDatabases()
 
@@ -142,6 +143,23 @@ watch(selectedDatabase, async (db) => {
   schemaCompletion.value = await getCompletionSource(props.connId, db)
 })
 
+function isSchemaChangingSQL(sql: string) {
+  return /^\s*(?:\/\*[\s\S]*?\*\/\s*)*(?:create|alter|drop|truncate|rename|comment)\b/i.test(sql)
+}
+
+async function refreshSchemaAfterDDL(sql: string) {
+  if (!isSchemaChangingSQL(sql)) return
+  await refreshSchema()
+}
+
+async function refreshSchema() {
+  if (!props.connId) return
+  invalidateSchemaCompletionCache(props.connId)
+  const db = selectedDatabase.value || 'public'
+  schemaCompletion.value = await getCompletionSource(props.connId, db)
+  emit('schemaChanged')
+}
+
 // ── Transaction controls ──────────────────────────────────────────
 const txActive = ref(false)
 
@@ -159,6 +177,7 @@ async function txCommit() {
   try {
     await axios.post(`/api/connections/${props.connId}/transaction/commit`)
     txActive.value = false
+    await refreshSchema()
   } catch (e) {
     setActiveError(readableError(e, { action: 'Commit transaction', fallback: 'Failed to commit transaction' }))
   }
@@ -276,6 +295,7 @@ async function runQuery(sqlOverride?: string) {
     axios.post(`/api/connections/${props.connId}/history`, {
       sql, duration_ms: data.duration_ms, row_count: data.row_count,
     }).catch(() => {})
+    await refreshSchemaAfterDDL(buildParamSQL(sql))
   } catch (e: unknown) {
     const err = e as { code?: string; response?: { data?: { error?: string } } }
     if (err.code !== 'ERR_CANCELED') {
@@ -413,6 +433,8 @@ async function runScript() {
       { sql: buildParamSQL(activeTab.value.sql), database: selectedDatabase.value || undefined }
     )
     emit('result', { kind: 'script', results: data })
+    const schemaChangingResult = data.find((item) => !item.error && isSchemaChangingSQL(item.sql))
+    if (schemaChangingResult) await refreshSchemaAfterDDL(schemaChangingResult.sql)
   } catch (e: any) {
     const responseData = e?.response?.data
     if (activeTab.value && responseData?.approval_required) {
