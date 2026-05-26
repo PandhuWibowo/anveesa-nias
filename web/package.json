@@ -23,7 +23,7 @@
     "naive-ui": "^2.40",
     "pinia": "^2.3",
     "qrcode.vue": "^3.8.1",
-    "sql-formatter": "^15.7.3",
+    "sql-formatter": "^15.7.4",
     "vue": "^3.5",
     "vue-router": "^4.5"
   },
