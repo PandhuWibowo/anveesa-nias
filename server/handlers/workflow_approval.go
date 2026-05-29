@@ -886,7 +886,8 @@ func ExecuteApprovalRequest() http.HandlerFunc {
 				TargetUserIDs: []int64{req.CreatorID},
 				Payload:       map[string]any{"error": sanitizeDBError(execErr)},
 			})
-			http.Error(w, jsonError(sanitizeDBError(execErr)), http.StatusBadRequest)
+			msg := sanitizeDBError(execErr)
+			http.Error(w, jsonError(msg), dbErrorStatus(msg))
 			return
 		}
 

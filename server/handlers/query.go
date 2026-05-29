@@ -45,6 +45,20 @@ func sanitizeDBError(err error) string {
 	return msg
 }
 
+// dbErrorStatus returns the appropriate HTTP status for a sanitized DB error message.
+// Connection-level failures are infrastructure errors (502); permission/syntax errors
+// are client errors (403/400).
+func dbErrorStatus(sanitized string) int {
+	switch sanitized {
+	case "database connection error":
+		return http.StatusBadGateway
+	case "permission denied":
+		return http.StatusForbidden
+	default:
+		return http.StatusBadRequest
+	}
+}
+
 func ExecuteQuery() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -155,7 +169,8 @@ func ExecuteQuery() http.HandlerFunc {
 				rows, err = db.QueryContext(r.Context(), req.SQL)
 			}
 			if err != nil {
-				http.Error(w, jsonError(sanitizeDBError(err)), http.StatusBadRequest)
+				msg := sanitizeDBError(err)
+				http.Error(w, jsonError(msg), dbErrorStatus(msg))
 				return
 			}
 			defer rows.Close()
@@ -189,14 +204,16 @@ func ExecuteQuery() http.HandlerFunc {
 			if hasTx {
 				res, err := activeTx.ExecContext(r.Context(), req.SQL)
 				if err != nil {
-					http.Error(w, jsonError(sanitizeDBError(err)), http.StatusBadRequest)
+					msg := sanitizeDBError(err)
+					http.Error(w, jsonError(msg), dbErrorStatus(msg))
 					return
 				}
 				affected, _ = res.RowsAffected()
 			} else {
 				res, err := db.ExecContext(r.Context(), req.SQL)
 				if err != nil {
-					http.Error(w, jsonError(sanitizeDBError(err)), http.StatusBadRequest)
+					msg := sanitizeDBError(err)
+					http.Error(w, jsonError(msg), dbErrorStatus(msg))
 					return
 				}
 				affected, _ = res.RowsAffected()
