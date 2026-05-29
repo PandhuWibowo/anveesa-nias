@@ -774,13 +774,15 @@ func ExecuteDataChangePlan() http.HandlerFunc {
 					TargetUserIDs: []int64{plan.CreatorID},
 					Payload:       map[string]any{"error": sanitizeDBError(execErr)},
 				})
-				http.Error(w, jsonError(sanitizeDBError(execErr)), http.StatusBadRequest)
+				execMsg := sanitizeDBError(execErr)
+				http.Error(w, jsonError(execMsg), dbErrorStatus(execMsg))
 				return
 			}
 			affected += n
 		}
 		if err := tx.Commit(); err != nil {
-			markDataPlanExecution(id, QueryApprovalStatusFailed, sanitizeDBError(err))
+			commitMsg := sanitizeDBError(err)
+			markDataPlanExecution(id, QueryApprovalStatusFailed, commitMsg)
 			EmitNotification(NotificationEventInput{
 				EventType:     "data_script.failed",
 				Category:      "data_script",
@@ -792,9 +794,9 @@ func ExecuteDataChangePlan() http.HandlerFunc {
 				ConnectionID:  plan.ConnID,
 				ActorUserID:   userID,
 				TargetUserIDs: []int64{plan.CreatorID},
-				Payload:       map[string]any{"error": sanitizeDBError(err)},
+				Payload:       map[string]any{"error": commitMsg},
 			})
-			http.Error(w, jsonError(sanitizeDBError(err)), http.StatusBadRequest)
+			http.Error(w, jsonError(commitMsg), dbErrorStatus(commitMsg))
 			return
 		}
 

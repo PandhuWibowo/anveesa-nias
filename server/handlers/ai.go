@@ -363,7 +363,8 @@ func AIAnalytics() http.HandlerFunc {
 
 		result, err := executeAnalyticsQuery(r.Context(), dbConn, plan.SQL)
 		if err != nil {
-			http.Error(w, jsonError(sanitizeDBError(err)), http.StatusBadRequest)
+			msg := sanitizeDBError(err)
+			http.Error(w, jsonError(msg), dbErrorStatus(msg))
 			return
 		}
 
