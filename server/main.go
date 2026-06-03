@@ -85,6 +85,7 @@ func main() {
 		go startAutoBackup(backupCtx, cfg)
 	}
 	handlers.StartNotificationWorker()
+	handlers.StartFailedJobAlertWorker()
 
 	// Create router
 	mux := http.NewServeMux()
@@ -345,6 +346,12 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueHorizon())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "ops-settings" && (r.Method == http.MethodGet || r.Method == http.MethodPut):
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueOpsSettings())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "failed-job-alert" && (r.Method == http.MethodGet || r.Method == http.MethodPost):
+				if r.Method == http.MethodGet {
+					requireAny(handlers.PermConnectionsView)(handlers.GetFailedJobAlertConfig())(w, r)
+				} else {
+					requireAny(handlers.PermConnectionsEdit)(handlers.SaveFailedJobAlertConfig())(w, r)
+				}
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "audit" && r.Method == http.MethodGet:
 				requireAny(handlers.PermAuditView, handlers.PermConnectionsView)(handlers.LaravelQueueAudit())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "quarantine" && (r.Method == http.MethodGet || r.Method == http.MethodPost):

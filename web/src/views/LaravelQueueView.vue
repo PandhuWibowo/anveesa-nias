@@ -34,6 +34,8 @@ const {
   quarantineFailedJob,
   releaseQuarantine,
   emitQueueAlerts,
+  fetchFailedJobAlertConfig,
+  saveFailedJobAlertConfig,
   runLaravelAgent,
 } = useLaravelQueue()
 const toast = useToast()
@@ -78,6 +80,10 @@ const queueAudit = ref<LaravelQueueAuditItem[]>([])
 const expandedAuditEntryId = ref<number | null>(null)
 const opsSettingsLoaded = ref(false)
 const savingOpsSettings = ref(false)
+
+const failedJobAlertLoaded = ref(false)
+const failedJobAlertSaved = ref(false)
+const failedJobAlertConfig = ref({ enabled: false, poll_interval_min: 5, queues_filter: '', last_seen_id: 0 })
 const featureFlags = ref<LaravelQueueFeatureFlags>({
   retry: true,
   delete: true,
@@ -312,12 +318,12 @@ onMounted(async () => {
   if (isRedis.value) {
     failedConnId.value = sqlConnections.value[0]?.id ?? null
     await loadOpsSettings()
-    await Promise.all([loadQueues(), loadHorizon(), loadQuarantine(), loadQueueAudit()])
+    await Promise.all([loadQueues(), loadHorizon(), loadQuarantine(), loadQueueAudit(), loadFailedJobAlert()])
   } else if (isSql.value) {
     failedConnId.value = props.activeConnId
     activeState.value = 'failed'
     await loadOpsSettings()
-    await Promise.all([loadFailedJobs(), loadQuarantine(), loadQueueAudit()])
+    await Promise.all([loadFailedJobs(), loadQuarantine(), loadQueueAudit(), loadFailedJobAlert()])
   }
 })
 
@@ -343,12 +349,12 @@ watch(() => props.activeConnId, async () => {
   failedJobs.value = []
   if (isRedis.value) {
     await loadOpsSettings()
-    await Promise.all([loadQueues(), loadHorizon(), loadQuarantine(), loadQueueAudit()])
+    await Promise.all([loadQueues(), loadHorizon(), loadQuarantine(), loadQueueAudit(), loadFailedJobAlert()])
   } else if (isSql.value) {
     failedConnId.value = props.activeConnId
     activeState.value = 'failed'
     await loadOpsSettings()
-    await Promise.all([loadFailedJobs(), loadQuarantine(), loadQueueAudit()])
+    await Promise.all([loadFailedJobs(), loadQuarantine(), loadQueueAudit(), loadFailedJobAlert()])
   }
 })
 
@@ -824,6 +830,28 @@ async function confirmAction(action: 'retry' | 'delete' | 'clear' | 'editedRepla
     return false
   }
   return featureFlags.value.requireConfirm ? confirm(message, title) : true
+}
+
+async function loadFailedJobAlert() {
+  if (!activeConn.value) return
+  failedJobAlertLoaded.value = false
+  try {
+    const { data } = await fetchFailedJobAlertConfig(activeConn.value.id)
+    failedJobAlertConfig.value = { ...failedJobAlertConfig.value, ...data }
+  } catch {}
+  failedJobAlertLoaded.value = true
+}
+
+async function saveFailedJobAlert() {
+  if (!activeConn.value) return
+  try {
+    const { data } = await saveFailedJobAlertConfig(activeConn.value.id, failedJobAlertConfig.value)
+    failedJobAlertConfig.value = { ...failedJobAlertConfig.value, ...data }
+    failedJobAlertSaved.value = true
+    setTimeout(() => { failedJobAlertSaved.value = false }, 2000)
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to save alert config')
+  }
 }
 
 async function loadOpsSettings() {
@@ -1604,6 +1632,36 @@ function errorMessage(err: unknown, fallback: string) {
           </div>
 
           <div v-if="insightTab === 'settings'" class="lq-settings">
+
+            <!-- Failed Job Alerts -->
+            <div class="lq-settings-card lq-settings-card--alert">
+              <div class="lq-insight__title">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                Failed Job Alerts
+              </div>
+              <div v-if="!failedJobAlertLoaded" class="lq-muted">Loading…</div>
+              <template v-else>
+                <label class="lq-alert-toggle">
+                  <input type="checkbox" v-model="failedJobAlertConfig.enabled" @change="saveFailedJobAlert" />
+                  <span>Send alert via configured channels when a new failed job appears</span>
+                </label>
+                <template v-if="failedJobAlertConfig.enabled">
+                  <label>Poll every
+                    <input v-model.number="failedJobAlertConfig.poll_interval_min" class="base-input lq-short-input" type="number" min="1" max="60" @change="saveFailedJobAlert" />
+                    minutes
+                  </label>
+                  <label>
+                    Filter queues <span class="lq-muted">(optional, comma-separated)</span>
+                    <input v-model="failedJobAlertConfig.queues_filter" class="base-input" type="text" placeholder="default,critical" @blur="saveFailedJobAlert" />
+                  </label>
+                  <div class="lq-alert-notice">
+                    Alerts fire via <strong>Admin → Alert Settings</strong> channels. Make sure at least one channel is enabled and saved there.
+                  </div>
+                </template>
+                <div v-if="failedJobAlertSaved" class="lq-alert-saved">✓ Saved</div>
+              </template>
+            </div>
+
             <div class="lq-settings-card">
               <div class="lq-insight__title">Feature Flags</div>
               <label><input v-model="featureFlags.readOnly" type="checkbox" /> Read-only mode</label>
@@ -2543,6 +2601,41 @@ function errorMessage(err: unknown, fallback: string) {
 
 .lq-settings-card label:has(.base-input) {
   grid-template-columns: minmax(130px, auto) minmax(0, 1fr);
+}
+
+.lq-settings-card--alert {
+  border-color: rgba(251, 191, 36, 0.25);
+  background: rgba(251, 191, 36, 0.03);
+}
+
+.lq-alert-toggle {
+  display: flex !important;
+  grid-template-columns: unset !important;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-primary) !important;
+}
+
+.lq-alert-notice {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 6px 8px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.lq-alert-saved {
+  font-size: 11px;
+  color: #22c55e;
+  font-weight: 600;
+}
+
+.lq-short-input {
+  width: 60px !important;
+  display: inline-block;
+  text-align: center;
 }
 
 .lq-control-buttons {

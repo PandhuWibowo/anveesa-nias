@@ -195,6 +195,14 @@ export function useLaravelQueue() {
     await axios.post(`/api/connections/${connId}/laravel-queue/agent`, payload)
   }
 
+  async function fetchFailedJobAlertConfig(connId: number) {
+    return axios.get(`/api/connections/${connId}/laravel-queue/failed-job-alert`)
+  }
+
+  async function saveFailedJobAlertConfig(connId: number, payload: object) {
+    return axios.post(`/api/connections/${connId}/laravel-queue/failed-job-alert`, payload)
+  }
+
   return {
     fetchQueues,
     fetchJobs,
@@ -213,5 +221,7 @@ export function useLaravelQueue() {
     releaseQuarantine,
     emitQueueAlerts,
     runLaravelAgent,
+    fetchFailedJobAlertConfig,
+    saveFailedJobAlertConfig,
   }
 }

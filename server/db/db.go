@@ -1093,6 +1093,15 @@ func migrate() error {
 			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_alert_log_created ON alert_log(created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS laravel_failed_job_alerts (
+			id                INTEGER PRIMARY KEY AUTOINCREMENT,
+			conn_id           INTEGER NOT NULL UNIQUE REFERENCES connections(id) ON DELETE CASCADE,
+			enabled           INTEGER NOT NULL DEFAULT 0,
+			last_seen_id      INTEGER NOT NULL DEFAULT 0,
+			poll_interval_min INTEGER NOT NULL DEFAULT 5,
+			queues_filter     TEXT NOT NULL DEFAULT '',
+			updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
 
 		// Fix pipeline_run_logs.node_id FK to cascade SET NULL on node deletion
 		`ALTER TABLE pipeline_run_logs DROP CONSTRAINT IF EXISTS pipeline_run_logs_node_id_fkey`,
