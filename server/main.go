@@ -1264,6 +1264,56 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 
+	// ── Alert settings ────────────────────────────────────────────
+	mux.HandleFunc("/api/settings/alerts", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermSettingsAlerts)(handlers.GetAlertSettings())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermSettingsAlerts)(handlers.SaveAlertSettings())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/settings/alerts/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			requireAny(handlers.PermSettingsAlerts)(handlers.AlertSettingsStatus())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/settings/alerts/test", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			requireAny(handlers.PermSettingsAlerts)(handlers.TestAlertChannel())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/settings/alerts/telegram/create-topic", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			requireAny(handlers.PermSettingsAlerts)(handlers.CreateTelegramTopic())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/alerts/log/stats", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			requireAny(handlers.PermSettingsAlerts)(handlers.AlertLogStats())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/alerts/log", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermSettingsAlerts)(handlers.ListAlertLog())(w, r)
+		case http.MethodDelete:
+			requireAny(handlers.PermSettingsAlerts)(handlers.ClearAlertLog())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
 	// ── AI assistant ──────────────────────────────────────────────
 	mux.HandleFunc("/api/ai/settings", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {

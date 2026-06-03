@@ -157,9 +157,10 @@ const (
 	PermDiscoverView      = "discover.view"
 	PermUptimeView        = "uptime.view"
 	// Data
-	PermDataExport    = "data.export"
-	PermDataImport    = "data.import"
-	PermDBUsersManage = "dbusers.manage"
+	PermDataExport      = "data.export"
+	PermDataImport      = "data.import"
+	PermDBUsersManage   = "dbusers.manage"
+	PermSettingsAlerts  = "settings.alerts"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -222,6 +223,7 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermDataExport, Label: "Export Data (CSV / JSON / Excel)", Group: "Data"},
 	{Key: PermDataImport, Label: "Import Data", Group: "Data"},
 	{Key: PermDBUsersManage, Label: "Manage Database Users & Grants", Group: "Administration"},
+	{Key: PermSettingsAlerts, Label: "Manage Alert Settings", Group: "Administration"},
 }
 
 // PermissionDef describes a single permission for the UI.

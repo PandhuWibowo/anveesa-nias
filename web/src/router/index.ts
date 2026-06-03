@@ -241,6 +241,18 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['ai.use', 'ai.manage'] },
         },
         {
+          path: 'alert-settings',
+          name: 'alert-settings',
+          component: () => import('@/views/AlertSettingsView.vue'),
+          meta: { requiredPermissionsAny: ['settings.alerts'] },
+        },
+        {
+          path: 'alerts',
+          name: 'alerts',
+          component: () => import('@/views/AlertsView.vue'),
+          meta: { requiredPermissionsAny: ['settings.alerts'] },
+        },
+        {
           path: 'er',
           name: 'er',
           component: () => import('@/views/ERDiagramView.vue'),

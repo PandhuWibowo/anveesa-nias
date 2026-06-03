@@ -1083,6 +1083,16 @@ func migrate() error {
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_infra_annotations_conn ON infra_annotations(conn_id, event_time DESC)`,
+		`CREATE TABLE IF NOT EXISTS alert_log (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel      TEXT NOT NULL DEFAULT '',
+			target_name  TEXT NOT NULL DEFAULT '',
+			status       TEXT NOT NULL DEFAULT 'ok',
+			error_msg    TEXT NOT NULL DEFAULT '',
+			triggered_by TEXT NOT NULL DEFAULT 'manual',
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_alert_log_created ON alert_log(created_at DESC)`,
 
 		// Fix pipeline_run_logs.node_id FK to cascade SET NULL on node deletion
 		`ALTER TABLE pipeline_run_logs DROP CONSTRAINT IF EXISTS pipeline_run_logs_node_id_fkey`,

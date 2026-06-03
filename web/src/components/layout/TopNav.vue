@@ -156,6 +156,8 @@ const allMenuGroups: MenuGroup[] = [
       { name: 'permissions', label: 'Roles & Permissions', desc: 'Define roles and application permission policy', icon: 'rbac', permissionsAny: ['roles.manage'] },
       { name: 'permissions', label: 'Access Groups', desc: 'Manage folder-based connection access groups', icon: 'rbac', permissionsAny: ['folders.manage'], query: { tab: 'groups' } },
       { name: 'db-users', label: 'DB User Manager', desc: 'Create database-level users and manage their privileges and grants', icon: 'users', permissionsAny: ['dbusers.manage'] },
+      { name: 'alert-settings', label: 'Alert Settings', desc: 'Configure global alert channels — Telegram, Discord, Slack, and webhooks', icon: 'notification', permissionsAny: ['settings.alerts'] },
+      { name: 'alerts', label: 'Alert Log', desc: 'History of every alert delivery across all configured channels', icon: 'audit', permissionsAny: ['settings.alerts'] },
     ],
   },
 ]
@@ -244,6 +246,7 @@ const ICON_PATHS: Record<string, string> = {
   'service-health': '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   uptime: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/><path d="M12 22v-2"/><path d="M12 4V2"/><path d="M4.93 4.93l1.41 1.41"/><path d="M17.66 17.66l1.41 1.41"/>',
   layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
+  notification: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
 }
 
 function iconPath(icon: string): string {
