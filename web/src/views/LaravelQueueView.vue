@@ -2310,7 +2310,7 @@ function errorMessage(err: unknown, fallback: string) {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
   background: var(--bg-body);
 }
 
@@ -2919,7 +2919,7 @@ function errorMessage(err: unknown, fallback: string) {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
   gap: 14px;
-  min-height: 0;
+  min-height: 480px;
   flex: 1;
   padding: 14px;
   overflow: hidden;
