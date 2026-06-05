@@ -96,6 +96,77 @@ func loadFailedJobAlertConfig(connID int64) FailedJobAlertConfig {
 	return cfg
 }
 
+func SendSelectedFailedJobAlerts() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		connID, err := connectionIDFromPath(r.URL.Path)
+		if err != nil {
+			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
+			return
+		}
+
+		var req struct {
+			JobIDs []int64 `json:"job_ids"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.JobIDs) == 0 {
+			http.Error(w, jsonError("job_ids required"), http.StatusBadRequest)
+			return
+		}
+		if len(req.JobIDs) > 50 {
+			req.JobIDs = req.JobIDs[:50]
+		}
+
+		settings := ReadAlertSettings()
+		if !settings.Telegram.Enabled && !settings.Discord.Enabled && !settings.Slack.Enabled && !(settings.Webhook.Enabled && strings.TrimSpace(settings.Webhook.URL) != "") {
+			http.Error(w, jsonError("no alert channels are enabled — configure at least one in Admin → Alert Settings"), http.StatusBadRequest)
+			return
+		}
+
+		db, _, err := GetDB(connID)
+		if err != nil {
+			http.Error(w, jsonError("could not connect to database"), http.StatusInternalServerError)
+			return
+		}
+
+		placeholders := make([]string, len(req.JobIDs))
+		args := make([]any, len(req.JobIDs))
+		for i, id := range req.JobIDs {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+		query := fmt.Sprintf(
+			`SELECT id, COALESCE(queue,''), COALESCE(payload,''), COALESCE(exception,'') FROM failed_jobs WHERE id IN (%s) ORDER BY id DESC`,
+			strings.Join(placeholders, ","),
+		)
+		rows, err := db.Query(query, args...)
+		if err != nil {
+			http.Error(w, jsonError("query failed: "+err.Error()), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		count := 0
+		for rows.Next() {
+			var id int64
+			var queue, payload, exception string
+			if err := rows.Scan(&id, &queue, &payload, &exception); err != nil {
+				continue
+			}
+			jobClass := extractJobClass(payload)
+			exc := strings.SplitN(strings.TrimSpace(exception), "\n", 2)[0]
+			if len(exc) > 200 {
+				exc = exc[:200] + "…"
+			}
+			title := fmt.Sprintf("🔴 Failed Job — %s", jobClass)
+			message := fmt.Sprintf("ID: %d\nQueue: %s\nJob: %s\nError: %s", id, queue, jobClass, exc)
+			sendAlertToAllChannels(settings, title, message, "failed_job_manual")
+			count++
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{"sent": count})
+	}
+}
+
 func TestFailedJobAlertConfig() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

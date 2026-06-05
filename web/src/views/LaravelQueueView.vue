@@ -37,6 +37,7 @@ const {
   fetchFailedJobAlertConfig,
   saveFailedJobAlertConfig,
   testFailedJobAlertConfig,
+  sendSelectedFailedJobAlerts,
   runLaravelAgent,
 } = useLaravelQueue()
 const toast = useToast()
@@ -1294,6 +1295,17 @@ async function bulkDeleteFailed() {
   }
 }
 
+async function bulkSendAlerts() {
+  if (!activeConn.value || selectedFailedJobs.value.length === 0) return
+  try {
+    const ids = selectedFailedJobs.value.map(j => j.id)
+    const { data } = await sendSelectedFailedJobAlerts(activeConn.value.id, ids)
+    toast.success(`Alert sent for ${data.sent} failed job${data.sent === 1 ? '' : 's'}`)
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to send alerts')
+  }
+}
+
 async function refreshCurrentView() {
   await loadQueues()
   await loadHorizon()
@@ -1776,6 +1788,7 @@ function errorMessage(err: unknown, fallback: string) {
           <button class="base-btn base-btn--danger base-btn--sm" :disabled="!canAction('delete')" @click="bulkDeleteFailed">Delete failed</button>
           <button class="base-btn base-btn--ghost base-btn--sm" @click="quarantineSelectedFailed">Quarantine</button>
           <button class="base-btn base-btn--ghost base-btn--sm" @click="exportSelectedJobs">Export selected</button>
+          <button class="base-btn base-btn--ghost base-btn--sm" @click="bulkSendAlerts">Send Alert</button>
         </div>
 
         <div class="lq-exportbar">
