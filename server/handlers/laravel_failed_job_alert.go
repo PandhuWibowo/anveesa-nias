@@ -168,9 +168,15 @@ func SendSelectedFailedJobAlerts() http.HandlerFunc {
 			}
 			args[i] = id
 		}
+		failedAtCast := "COALESCE(failed_at::text,'')"
+		if driver == "mysql" {
+			failedAtCast = "COALESCE(CAST(failed_at AS CHAR),'')"
+		} else if driver == "sqlserver" {
+			failedAtCast = "COALESCE(CAST(failed_at AS NVARCHAR),'')"
+		}
 		query := fmt.Sprintf(
-			`SELECT id, COALESCE(queue,''), COALESCE(payload,''), COALESCE(exception,'') FROM failed_jobs WHERE id IN (%s) ORDER BY id DESC`,
-			strings.Join(placeholders, ","),
+			`SELECT id, COALESCE(queue,''), COALESCE(payload,''), COALESCE(exception,''), %s FROM failed_jobs WHERE id IN (%s) ORDER BY id DESC`,
+			failedAtCast, strings.Join(placeholders, ","),
 		)
 		rows, err := db.Query(query, args...)
 		if err != nil {
@@ -179,22 +185,32 @@ func SendSelectedFailedJobAlerts() http.HandlerFunc {
 		}
 		defer rows.Close()
 
+		var connName string
+		appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COALESCE(name,'') FROM connections WHERE id = ?`), connID).Scan(&connName)
+		if connName == "" {
+			connName = fmt.Sprintf("Connection #%d", connID)
+		}
+
 		bizFields := loadBusinessFields(connID)
 
 		count := 0
 		for rows.Next() {
 			var id int64
-			var queue, payload, exception string
-			if err := rows.Scan(&id, &queue, &payload, &exception); err != nil {
+			var queue, payload, exception, failedAt string
+			if err := rows.Scan(&id, &queue, &payload, &exception, &failedAt); err != nil {
 				continue
 			}
 			jobClass := extractJobClass(payload)
 			exc := strings.SplitN(strings.TrimSpace(exception), "\n", 2)[0]
-			if len(exc) > 200 {
-				exc = exc[:200] + "…"
+			if len(exc) > 300 {
+				exc = exc[:300] + "…"
 			}
 			title := fmt.Sprintf("🔴 Failed Job — %s", jobClass)
-			message := fmt.Sprintf("ID: %d | Queue: %s\nJob: %s\nError: %s", id, queue, jobClass, exc)
+			message := fmt.Sprintf("Connection: %s\nID: %d | Queue: %s", connName, id, queue)
+			if failedAt != "" {
+				message += fmt.Sprintf("\nFailed At: %s", failedAt)
+			}
+			message += fmt.Sprintf("\n\nJob: %s\nError: %s", jobClass, exc)
 			if ctx := extractBusinessContext(payload, bizFields); len(ctx) > 0 {
 				message += "\n\nBusiness Context:\n" + formatBusinessContext(ctx, bizFields)
 			}
@@ -294,9 +310,17 @@ func checkFailedJobsForConn(connID, lastSeenID int64, queuesFilter string, setti
 		return
 	}
 
-	query := `SELECT id, COALESCE(queue,''), COALESCE(payload,''), COALESCE(exception,'') FROM failed_jobs WHERE id > ? ORDER BY id ASC LIMIT 20`
-	if driver == "sqlserver" {
-		query = `SELECT TOP 20 id, COALESCE(queue,''), COALESCE(payload,''), COALESCE(exception,'') FROM failed_jobs WHERE id > ? ORDER BY id ASC`
+	var connName string
+	appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COALESCE(name,'') FROM connections WHERE id = ?`), connID).Scan(&connName)
+	if connName == "" {
+		connName = fmt.Sprintf("Connection #%d", connID)
+	}
+
+	query := `SELECT id, COALESCE(queue,''), COALESCE(payload,''), COALESCE(exception,''), COALESCE(failed_at::text,'') FROM failed_jobs WHERE id > ? ORDER BY id ASC LIMIT 20`
+	if driver == "mysql" {
+		query = `SELECT id, COALESCE(queue,''), COALESCE(payload,''), COALESCE(exception,''), COALESCE(CAST(failed_at AS CHAR),'') FROM failed_jobs WHERE id > ? ORDER BY id ASC LIMIT 20`
+	} else if driver == "sqlserver" {
+		query = `SELECT TOP 20 id, COALESCE(queue,''), COALESCE(payload,''), COALESCE(exception,''), COALESCE(CAST(failed_at AS NVARCHAR),'') FROM failed_jobs WHERE id > ? ORDER BY id ASC`
 	}
 	query = convertQueryForDriver(query, driver)
 
@@ -311,11 +335,12 @@ func checkFailedJobsForConn(connID, lastSeenID int64, queuesFilter string, setti
 		Queue     string
 		Payload   string
 		Exception string
+		FailedAt  string
 	}
 	var jobs []jobRow
 	for rows.Next() {
 		var j jobRow
-		if err := rows.Scan(&j.ID, &j.Queue, &j.Payload, &j.Exception); err == nil {
+		if err := rows.Scan(&j.ID, &j.Queue, &j.Payload, &j.Exception, &j.FailedAt); err == nil {
 			jobs = append(jobs, j)
 		}
 	}
@@ -346,12 +371,16 @@ func checkFailedJobsForConn(connID, lastSeenID int64, queuesFilter string, setti
 		jobClass := extractJobClass(j.Payload)
 
 		exception := strings.SplitN(strings.TrimSpace(j.Exception), "\n", 2)[0]
-		if len(exception) > 200 {
-			exception = exception[:200] + "…"
+		if len(exception) > 300 {
+			exception = exception[:300] + "…"
 		}
 
 		title := fmt.Sprintf("🔴 Failed Job — %s", jobClass)
-		message := fmt.Sprintf("ID: %d | Queue: %s\nJob: %s\nError: %s", j.ID, j.Queue, jobClass, exception)
+		message := fmt.Sprintf("Connection: %s\nID: %d | Queue: %s", connName, j.ID, j.Queue)
+		if j.FailedAt != "" {
+			message += fmt.Sprintf("\nFailed At: %s", j.FailedAt)
+		}
+		message += fmt.Sprintf("\n\nJob: %s\nError: %s", jobClass, exception)
 
 		if ctx := extractBusinessContext(j.Payload, bizFields); len(ctx) > 0 {
 			message += "\n\nBusiness Context:\n" + formatBusinessContext(ctx, bizFields)
