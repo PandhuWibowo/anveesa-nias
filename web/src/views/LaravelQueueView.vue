@@ -1707,11 +1707,11 @@ function errorMessage(err: unknown, fallback: string) {
                     <span v-if="failedJobAlertTestResult === 'ok'" class="lq-alert-saved">✓ Test sent to all channels</span>
                     <span v-else-if="failedJobAlertTestResult === 'error'" class="lq-alert-error">✗ Failed — check channel config</span>
                   </div>
-                  <div class="lq-alert-test-row">
-                    <button class="base-btn base-btn--sm base-btn--ghost" @click="markAllAsSeen">Mark all as seen</button>
-                    <span class="lq-muted" style="font-size:11px">Stops existing jobs from triggering alerts. Last seen ID: {{ failedJobAlertConfig.last_seen_id }}</span>
-                  </div>
                 </template>
+                <div class="lq-alert-test-row">
+                  <button class="base-btn base-btn--sm base-btn--ghost" @click="markAllAsSeen">Mark all as seen</button>
+                  <span class="lq-muted" style="font-size:11px">Stops existing jobs from triggering alerts. Last seen ID: {{ failedJobAlertConfig.last_seen_id }}</span>
+                </div>
                 <div v-if="failedJobAlertSaved" class="lq-alert-saved">✓ Saved</div>
               </template>
             </div>
