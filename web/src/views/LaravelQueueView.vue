@@ -838,19 +838,19 @@ async function confirmAction(action: 'retry' | 'delete' | 'clear' | 'editedRepla
 }
 
 async function loadFailedJobAlert() {
-  if (!activeConn.value) return
+  if (!failedConnId.value) return
   failedJobAlertLoaded.value = false
   try {
-    const { data } = await fetchFailedJobAlertConfig(activeConn.value.id)
+    const { data } = await fetchFailedJobAlertConfig(failedConnId.value)
     failedJobAlertConfig.value = { ...failedJobAlertConfig.value, ...data }
   } catch {}
   failedJobAlertLoaded.value = true
 }
 
 async function saveFailedJobAlert() {
-  if (!activeConn.value) return
+  if (!failedConnId.value) return
   try {
-    const { data } = await saveFailedJobAlertConfig(activeConn.value.id, failedJobAlertConfig.value)
+    const { data } = await saveFailedJobAlertConfig(failedConnId.value, failedJobAlertConfig.value)
     failedJobAlertConfig.value = { ...failedJobAlertConfig.value, ...data }
     failedJobAlertSaved.value = true
     setTimeout(() => { failedJobAlertSaved.value = false }, 2000)
@@ -860,11 +860,11 @@ async function saveFailedJobAlert() {
 }
 
 async function testFailedJobAlert() {
-  if (!activeConn.value || failedJobAlertTesting.value) return
+  if (!failedConnId.value || failedJobAlertTesting.value) return
   failedJobAlertTesting.value = true
   failedJobAlertTestResult.value = null
   try {
-    await testFailedJobAlertConfig(activeConn.value.id)
+    await testFailedJobAlertConfig(failedConnId.value)
     failedJobAlertTestResult.value = 'ok'
   } catch (e: any) {
     failedJobAlertTestResult.value = 'error'
@@ -1297,9 +1297,9 @@ async function bulkDeleteFailed() {
 }
 
 async function markAllAsSeen() {
-  if (!activeConn.value) return
+  if (!failedConnId.value) return
   try {
-    const { data } = await markFailedJobsAsSeen(activeConn.value.id)
+    const { data } = await markFailedJobsAsSeen(failedConnId.value)
     failedJobAlertConfig.value = { ...failedJobAlertConfig.value, ...data }
     toast.success(`Marked as seen up to ID ${data.last_seen_id} — future alerts only for new jobs`)
   } catch (e: any) {
@@ -1308,10 +1308,10 @@ async function markAllAsSeen() {
 }
 
 async function bulkSendAlerts() {
-  if (!activeConn.value || selectedFailedJobs.value.length === 0) return
+  if (!failedConnId.value || selectedFailedJobs.value.length === 0) return
   try {
     const ids = selectedFailedJobs.value.map(j => j.id)
-    const { data } = await sendSelectedFailedJobAlerts(activeConn.value.id, ids)
+    const { data } = await sendSelectedFailedJobAlerts(failedConnId.value, ids)
     toast.success(`Alert sent for ${data.sent} failed job${data.sent === 1 ? '' : 's'}`)
   } catch (e: any) {
     toast.error(e?.response?.data?.error || 'Failed to send alerts')
