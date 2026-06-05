@@ -152,7 +152,7 @@ func SendSelectedFailedJobAlerts() http.HandlerFunc {
 			return
 		}
 
-		db, _, err := GetDB(connID)
+		db, driver, err := GetDB(connID)
 		if err != nil {
 			http.Error(w, jsonError("could not connect to database"), http.StatusInternalServerError)
 			return
@@ -161,7 +161,11 @@ func SendSelectedFailedJobAlerts() http.HandlerFunc {
 		placeholders := make([]string, len(req.JobIDs))
 		args := make([]any, len(req.JobIDs))
 		for i, id := range req.JobIDs {
-			placeholders[i] = "?"
+			if driver == "postgres" {
+				placeholders[i] = fmt.Sprintf("$%d", i+1)
+			} else {
+				placeholders[i] = "?"
+			}
 			args[i] = id
 		}
 		query := fmt.Sprintf(
@@ -294,6 +298,7 @@ func checkFailedJobsForConn(connID, lastSeenID int64, queuesFilter string, setti
 	if driver == "sqlserver" {
 		query = `SELECT TOP 20 id, COALESCE(queue,''), COALESCE(payload,''), COALESCE(exception,'') FROM failed_jobs WHERE id > ? ORDER BY id ASC`
 	}
+	query = convertQueryForDriver(query, driver)
 
 	rows, err := db.Query(query, lastSeenID)
 	if err != nil {
@@ -359,6 +364,23 @@ func checkFailedJobsForConn(connID, lastSeenID int64, queuesFilter string, setti
 	appdb.DB.Exec(appdb.ConvertQuery(`
 		UPDATE laravel_failed_job_alerts SET last_seen_id = ?, updated_at = ? WHERE conn_id = ?
 	`), maxID, time.Now().UTC().Format("2006-01-02 15:04:05"), connID)
+}
+
+func convertQueryForDriver(query, driver string) string {
+	if driver != "postgres" {
+		return query
+	}
+	var buf strings.Builder
+	paramCount := 1
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			buf.WriteString(fmt.Sprintf("$%d", paramCount))
+			paramCount++
+		} else {
+			buf.WriteByte(query[i])
+		}
+	}
+	return buf.String()
 }
 
 func loadBusinessFields(connID int64) []string {
