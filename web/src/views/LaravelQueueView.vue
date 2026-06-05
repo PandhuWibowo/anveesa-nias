@@ -38,6 +38,7 @@ const {
   saveFailedJobAlertConfig,
   testFailedJobAlertConfig,
   sendSelectedFailedJobAlerts,
+  markFailedJobsAsSeen,
   runLaravelAgent,
 } = useLaravelQueue()
 const toast = useToast()
@@ -1295,6 +1296,17 @@ async function bulkDeleteFailed() {
   }
 }
 
+async function markAllAsSeen() {
+  if (!activeConn.value) return
+  try {
+    const { data } = await markFailedJobsAsSeen(activeConn.value.id)
+    failedJobAlertConfig.value = { ...failedJobAlertConfig.value, ...data }
+    toast.success(`Marked as seen up to ID ${data.last_seen_id} — future alerts only for new jobs`)
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to mark as seen')
+  }
+}
+
 async function bulkSendAlerts() {
   if (!activeConn.value || selectedFailedJobs.value.length === 0) return
   try {
@@ -1694,6 +1706,10 @@ function errorMessage(err: unknown, fallback: string) {
                     </button>
                     <span v-if="failedJobAlertTestResult === 'ok'" class="lq-alert-saved">✓ Test sent to all channels</span>
                     <span v-else-if="failedJobAlertTestResult === 'error'" class="lq-alert-error">✗ Failed — check channel config</span>
+                  </div>
+                  <div class="lq-alert-test-row">
+                    <button class="base-btn base-btn--sm base-btn--ghost" @click="markAllAsSeen">Mark all as seen</button>
+                    <span class="lq-muted" style="font-size:11px">Stops existing jobs from triggering alerts. Last seen ID: {{ failedJobAlertConfig.last_seen_id }}</span>
                   </div>
                 </template>
                 <div v-if="failedJobAlertSaved" class="lq-alert-saved">✓ Saved</div>

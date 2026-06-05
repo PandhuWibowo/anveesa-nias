@@ -79,6 +79,36 @@ func SaveFailedJobAlertConfig() http.HandlerFunc {
 	}
 }
 
+func MarkFailedJobsAsSeen() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		connID, err := connectionIDFromPath(r.URL.Path)
+		if err != nil {
+			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
+			return
+		}
+
+		db, _, err := GetDB(connID)
+		if err != nil {
+			http.Error(w, jsonError("could not connect to database"), http.StatusInternalServerError)
+			return
+		}
+
+		var maxID int64
+		if err := db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM failed_jobs`).Scan(&maxID); err != nil {
+			http.Error(w, jsonError("could not query failed_jobs"), http.StatusInternalServerError)
+			return
+		}
+
+		now := time.Now().UTC().Format("2006-01-02 15:04:05")
+		appdb.DB.Exec(appdb.ConvertQuery(`
+			UPDATE laravel_failed_job_alerts SET last_seen_id = ?, updated_at = ? WHERE conn_id = ?
+		`), maxID, now, connID)
+
+		json.NewEncoder(w).Encode(loadFailedJobAlertConfig(connID))
+	}
+}
+
 func loadFailedJobAlertConfig(connID int64) FailedJobAlertConfig {
 	cfg := FailedJobAlertConfig{ConnID: connID, PollIntervalMin: 5}
 	var enabled int
@@ -195,6 +225,8 @@ func TestFailedJobAlertConfig() http.HandlerFunc {
 	}
 }
 
+var failedJobAlertLastChecked = map[int64]time.Time{}
+
 // StartFailedJobAlertWorker runs a background goroutine that polls user database
 // connections for new failed Laravel jobs and sends alerts via Alert Settings.
 func StartFailedJobAlertWorker() {
@@ -235,8 +267,14 @@ func runFailedJobAlertCheck() {
 	}
 	rows.Close()
 
+	now := time.Now()
 	settings := ReadAlertSettings()
 	for _, e := range entries {
+		interval := time.Duration(e.PollIntervalMin) * time.Minute
+		if last, ok := failedJobAlertLastChecked[e.ConnID]; ok && now.Sub(last) < interval {
+			continue
+		}
+		failedJobAlertLastChecked[e.ConnID] = now
 		checkFailedJobsForConn(e.ConnID, e.LastSeenID, e.QueuesFilter, settings)
 	}
 }

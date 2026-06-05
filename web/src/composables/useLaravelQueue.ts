@@ -211,6 +211,10 @@ export function useLaravelQueue() {
     return axios.post<{ sent: number }>(`/api/connections/${connId}/laravel-queue/failed-job-alert/send-selected`, { job_ids: jobIds })
   }
 
+  async function markFailedJobsAsSeen(connId: number) {
+    return axios.post(`/api/connections/${connId}/laravel-queue/failed-job-alert/mark-seen`)
+  }
+
   return {
     fetchQueues,
     fetchJobs,
@@ -233,5 +237,6 @@ export function useLaravelQueue() {
     saveFailedJobAlertConfig,
     testFailedJobAlertConfig,
     sendSelectedFailedJobAlerts,
+    markFailedJobsAsSeen,
   }
 }
