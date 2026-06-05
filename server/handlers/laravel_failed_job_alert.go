@@ -54,22 +54,36 @@ func SaveFailedJobAlertConfig() http.HandlerFunc {
 		if req.Enabled {
 			enabled = 1
 		}
+
+		// When enabling for the first time (last_seen_id is still 0), seed last_seen_id
+		// to the current MAX(id) so existing jobs are skipped and only new ones alert.
+		existing := loadFailedJobAlertConfig(connID)
+		seedLastSeenID := existing.LastSeenID
+		if req.Enabled && existing.LastSeenID == 0 {
+			if db, driver, dbErr := GetDB(connID); dbErr == nil {
+				castExpr := "COALESCE(MAX(id), 0)"
+				seedQuery := convertQueryForDriver(fmt.Sprintf(`SELECT %s FROM failed_jobs`, castExpr), driver)
+				db.QueryRow(seedQuery).Scan(&seedLastSeenID)
+			}
+		}
+
 		_, err = appdb.DB.Exec(appdb.ConvertQuery(`
-			INSERT INTO laravel_failed_job_alerts (conn_id, enabled, poll_interval_min, queues_filter, updated_at)
-			VALUES (?, ?, ?, ?, ?)
+			INSERT INTO laravel_failed_job_alerts (conn_id, enabled, poll_interval_min, queues_filter, last_seen_id, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
 			ON CONFLICT(conn_id) DO UPDATE SET
 				enabled = excluded.enabled,
 				poll_interval_min = excluded.poll_interval_min,
 				queues_filter = excluded.queues_filter,
+				last_seen_id = excluded.last_seen_id,
 				updated_at = excluded.updated_at
-		`), connID, enabled, req.PollIntervalMin, strings.TrimSpace(req.QueuesFilter), now)
+		`), connID, enabled, req.PollIntervalMin, strings.TrimSpace(req.QueuesFilter), seedLastSeenID, now)
 		if err != nil {
 			// fallback: delete + insert for databases that don't support ON CONFLICT
 			appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM laravel_failed_job_alerts WHERE conn_id = ?`), connID)
 			_, err = appdb.DB.Exec(appdb.ConvertQuery(`
-				INSERT INTO laravel_failed_job_alerts (conn_id, enabled, poll_interval_min, queues_filter, updated_at)
-				VALUES (?, ?, ?, ?, ?)
-			`), connID, enabled, req.PollIntervalMin, strings.TrimSpace(req.QueuesFilter), now)
+				INSERT INTO laravel_failed_job_alerts (conn_id, enabled, poll_interval_min, queues_filter, last_seen_id, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?)
+			`), connID, enabled, req.PollIntervalMin, strings.TrimSpace(req.QueuesFilter), seedLastSeenID, now)
 			if err != nil {
 				http.Error(w, jsonError("failed to save config"), http.StatusInternalServerError)
 				return
