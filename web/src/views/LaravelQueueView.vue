@@ -3287,15 +3287,30 @@ function errorMessage(err: unknown, fallback: string) {
   resize: none;
 }
 
+/* ── Tablet landscape / iPad Pro (≤1024px) ─────────────────────────────────── */
+@media (max-width: 1024px) {
+  .lq-view {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+
+  .lq-view.is-sidebar-collapsed {
+    grid-template-columns: 48px minmax(0, 1fr);
+  }
+
+  .lq-insight-grid,
+  .lq-groups,
+  .lq-ops-grid,
+  .lq-settings {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* ── Tablet / iPad portrait (≤1000px) ──────────────────────────────────────── */
 @media (max-width: 1000px) {
   .lq-view {
     display: flex;
     flex-direction: column;
     overflow: auto;
-  }
-
-  .lq-content {
-    grid-template-columns: 1fr;
   }
 
   .lq-view.is-sidebar-collapsed {
@@ -3305,9 +3320,17 @@ function errorMessage(err: unknown, fallback: string) {
   .lq-insight-grid,
   .lq-groups,
   .lq-ops-grid,
-  .lq-settings,
+  .lq-settings {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
   .lq-audit-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: 24px minmax(120px, 1fr);
+    align-items: start;
+  }
+
+  .lq-audit-row span:nth-child(n + 4) {
+    grid-column: 2;
   }
 
   .lq-sidebar {
@@ -3368,6 +3391,7 @@ function errorMessage(err: unknown, fallback: string) {
   }
 
   .lq-content {
+    grid-template-columns: 1fr;
     gap: 10px;
     padding: 10px;
     overflow: visible;
@@ -3380,7 +3404,7 @@ function errorMessage(err: unknown, fallback: string) {
   }
 
   .lq-table {
-    min-width: 720px;
+    min-width: 640px;
   }
 
   .lq-insight-tabs {
@@ -3399,15 +3423,6 @@ function errorMessage(err: unknown, fallback: string) {
 
   .lq-audit-list {
     max-height: 360px;
-  }
-
-  .lq-audit-row {
-    grid-template-columns: 24px minmax(120px, 1fr);
-    align-items: start;
-  }
-
-  .lq-audit-row span:nth-child(n + 4) {
-    grid-column: 2;
   }
 
   .lq-audit-detail {
@@ -3440,6 +3455,52 @@ function errorMessage(err: unknown, fallback: string) {
   }
 }
 
+/* ── Small tablet / large phone (≤768px) ───────────────────────────────────── */
+@media (max-width: 768px) {
+  .lq-insight-grid,
+  .lq-groups,
+  .lq-ops-grid,
+  .lq-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .lq-sidebar {
+    max-height: min(38vh, 300px);
+  }
+
+  .lq-table {
+    min-width: 520px;
+  }
+
+  .lq-alert-test-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .lq-toolbar__actions {
+    gap: 6px;
+  }
+
+  .lq-bulkbar {
+    gap: 6px;
+    padding: 6px 10px;
+  }
+
+  .lq-healthbar {
+    gap: 8px;
+  }
+
+  .lq-insight-body {
+    padding: 10px;
+  }
+
+  .lq-detail {
+    padding: 10px;
+  }
+}
+
+/* ── Mobile phone (≤640px) ──────────────────────────────────────────────────── */
 @media (max-width: 640px) {
   .lq-panel-header,
   .lq-toolbar,
@@ -3453,7 +3514,7 @@ function errorMessage(err: unknown, fallback: string) {
   }
 
   .lq-sidebar {
-    max-height: 42vh;
+    max-height: 36vh;
   }
 
   .lq-profile-row,
@@ -3540,6 +3601,73 @@ function errorMessage(err: unknown, fallback: string) {
 
   .lq-payload-editor--fullscreen {
     min-height: 52vh;
+  }
+
+  .lq-alert-test-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .lq-bulkbar .base-btn {
+    flex: 1 1 calc(50% - 8px);
+    justify-content: center;
+  }
+}
+
+/* ── Small phone (≤480px) ───────────────────────────────────────────────────── */
+@media (max-width: 480px) {
+  .lq-sidebar {
+    max-height: 30vh;
+  }
+
+  .lq-table {
+    min-width: 360px;
+  }
+
+  .lq-tabs {
+    padding: 0 8px;
+    gap: 0;
+  }
+
+  .lq-tab {
+    padding: 8px 10px;
+    font-size: 11px;
+  }
+
+  .lq-healthbar {
+    padding: 6px 10px;
+    gap: 6px;
+    font-size: 11px;
+  }
+
+  .lq-toolbar {
+    padding: 8px 10px;
+    gap: 6px;
+  }
+
+  .lq-bulkbar .base-btn {
+    flex: 1 1 calc(50% - 6px);
+    font-size: 11px;
+    padding: 5px 8px;
+    justify-content: center;
+  }
+
+  .lq-detail__head {
+    font-size: 12px;
+  }
+
+  .lq-settings-card {
+    padding: 8px;
+  }
+
+  .lq-insight {
+    padding: 8px;
+  }
+
+  .lq-content {
+    padding: 6px;
+    gap: 8px;
   }
 }
 </style>

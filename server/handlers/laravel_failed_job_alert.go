@@ -175,6 +175,8 @@ func SendSelectedFailedJobAlerts() http.HandlerFunc {
 		}
 		defer rows.Close()
 
+		bizFields := loadBusinessFields(connID)
+
 		count := 0
 		for rows.Next() {
 			var id int64
@@ -188,7 +190,10 @@ func SendSelectedFailedJobAlerts() http.HandlerFunc {
 				exc = exc[:200] + "…"
 			}
 			title := fmt.Sprintf("🔴 Failed Job — %s", jobClass)
-			message := fmt.Sprintf("ID: %d\nQueue: %s\nJob: %s\nError: %s", id, queue, jobClass, exc)
+			message := fmt.Sprintf("ID: %d | Queue: %s\nJob: %s\nError: %s", id, queue, jobClass, exc)
+			if ctx := extractBusinessContext(payload, bizFields); len(ctx) > 0 {
+				message += "\n\nBusiness Context:\n" + formatBusinessContext(ctx, bizFields)
+			}
 			sendAlertToAllChannels(settings, title, message, "failed_job_manual")
 			count++
 		}
@@ -322,6 +327,8 @@ func checkFailedJobsForConn(connID, lastSeenID int64, queuesFilter string, setti
 		}
 	}
 
+	bizFields := loadBusinessFields(connID)
+
 	var maxID int64
 	for _, j := range jobs {
 		if j.ID > maxID {
@@ -331,17 +338,19 @@ func checkFailedJobsForConn(connID, lastSeenID int64, queuesFilter string, setti
 			continue
 		}
 
-		// extract job class from payload
 		jobClass := extractJobClass(j.Payload)
 
-		// truncate exception to first line
 		exception := strings.SplitN(strings.TrimSpace(j.Exception), "\n", 2)[0]
 		if len(exception) > 200 {
 			exception = exception[:200] + "…"
 		}
 
 		title := fmt.Sprintf("🔴 Failed Job — %s", jobClass)
-		message := fmt.Sprintf("Queue: %s\nJob: %s\nError: %s", j.Queue, jobClass, exception)
+		message := fmt.Sprintf("ID: %d | Queue: %s\nJob: %s\nError: %s", j.ID, j.Queue, jobClass, exception)
+
+		if ctx := extractBusinessContext(j.Payload, bizFields); len(ctx) > 0 {
+			message += "\n\nBusiness Context:\n" + formatBusinessContext(ctx, bizFields)
+		}
 
 		sendAlertToAllChannels(settings, title, message, "failed_job")
 	}
@@ -350,6 +359,74 @@ func checkFailedJobsForConn(connID, lastSeenID int64, queuesFilter string, setti
 	appdb.DB.Exec(appdb.ConvertQuery(`
 		UPDATE laravel_failed_job_alerts SET last_seen_id = ?, updated_at = ? WHERE conn_id = ?
 	`), maxID, time.Now().UTC().Format("2006-01-02 15:04:05"), connID)
+}
+
+func loadBusinessFields(connID int64) []string {
+	settings, err := getLaravelQueueOpsSettings(connID)
+	if err != nil || settings.BusinessFieldsInput == "" {
+		return nil
+	}
+	var fields []string
+	for _, f := range strings.Split(settings.BusinessFieldsInput, ",") {
+		f = strings.TrimSpace(f)
+		if f != "" {
+			fields = append(fields, f)
+		}
+	}
+	return fields
+}
+
+func extractBusinessContext(payload string, fields []string) map[string]any {
+	if len(fields) == 0 {
+		return nil
+	}
+	var root any
+	if err := json.Unmarshal([]byte(payload), &root); err != nil {
+		return nil
+	}
+	result := map[string]any{}
+	collectContext(root, fields, result, 0)
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func collectContext(v any, fields []string, result map[string]any, depth int) {
+	if depth > 6 {
+		return
+	}
+	switch val := v.(type) {
+	case map[string]any:
+		for k, child := range val {
+			for _, f := range fields {
+				if k == f {
+					if child != nil && child != "" && child != 0.0 {
+						result[k] = child
+					}
+				}
+			}
+			collectContext(child, fields, result, depth+1)
+		}
+	case []any:
+		for _, item := range val {
+			collectContext(item, fields, result, depth+1)
+		}
+	}
+}
+
+func formatBusinessContext(ctx map[string]any, fields []string) string {
+	if len(ctx) == 0 {
+		return ""
+	}
+	var lines []string
+	// output in the order the user configured
+	for _, f := range fields {
+		if v, ok := ctx[f]; ok {
+			lines = append(lines, fmt.Sprintf("• %s: %v", f, v))
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func extractJobClass(payload string) string {
