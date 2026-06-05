@@ -36,6 +36,7 @@ const {
   emitQueueAlerts,
   fetchFailedJobAlertConfig,
   saveFailedJobAlertConfig,
+  testFailedJobAlertConfig,
   runLaravelAgent,
 } = useLaravelQueue()
 const toast = useToast()
@@ -83,6 +84,8 @@ const savingOpsSettings = ref(false)
 
 const failedJobAlertLoaded = ref(false)
 const failedJobAlertSaved = ref(false)
+const failedJobAlertTesting = ref(false)
+const failedJobAlertTestResult = ref<'ok' | 'error' | null>(null)
 const failedJobAlertConfig = ref({ enabled: false, poll_interval_min: 5, queues_filter: '', last_seen_id: 0 })
 const featureFlags = ref<LaravelQueueFeatureFlags>({
   retry: true,
@@ -851,6 +854,22 @@ async function saveFailedJobAlert() {
     setTimeout(() => { failedJobAlertSaved.value = false }, 2000)
   } catch (e: any) {
     toast.error(e?.response?.data?.error || 'Failed to save alert config')
+  }
+}
+
+async function testFailedJobAlert() {
+  if (!activeConn.value || failedJobAlertTesting.value) return
+  failedJobAlertTesting.value = true
+  failedJobAlertTestResult.value = null
+  try {
+    await testFailedJobAlertConfig(activeConn.value.id)
+    failedJobAlertTestResult.value = 'ok'
+  } catch (e: any) {
+    failedJobAlertTestResult.value = 'error'
+    toast.error(e?.response?.data?.error || 'Test alert failed')
+  } finally {
+    failedJobAlertTesting.value = false
+    setTimeout(() => { failedJobAlertTestResult.value = null }, 4000)
   }
 }
 
@@ -1656,6 +1675,13 @@ function errorMessage(err: unknown, fallback: string) {
                   </label>
                   <div class="lq-alert-notice">
                     Alerts fire via <strong>Admin → Alert Settings</strong> channels. Make sure at least one channel is enabled and saved there.
+                  </div>
+                  <div class="lq-alert-test-row">
+                    <button class="base-btn base-btn--sm" :disabled="failedJobAlertTesting" @click="testFailedJobAlert">
+                      {{ failedJobAlertTesting ? 'Sending…' : 'Send Test Alert' }}
+                    </button>
+                    <span v-if="failedJobAlertTestResult === 'ok'" class="lq-alert-saved">✓ Test sent to all channels</span>
+                    <span v-else-if="failedJobAlertTestResult === 'error'" class="lq-alert-error">✗ Failed — check channel config</span>
                   </div>
                 </template>
                 <div v-if="failedJobAlertSaved" class="lq-alert-saved">✓ Saved</div>
@@ -2630,6 +2656,19 @@ function errorMessage(err: unknown, fallback: string) {
   font-size: 11px;
   color: #22c55e;
   font-weight: 600;
+}
+
+.lq-alert-error {
+  font-size: 11px;
+  color: #ef4444;
+  font-weight: 600;
+}
+
+.lq-alert-test-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
 }
 
 .lq-short-input {

@@ -96,6 +96,34 @@ func loadFailedJobAlertConfig(connID int64) FailedJobAlertConfig {
 	return cfg
 }
 
+func TestFailedJobAlertConfig() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		connID, err := connectionIDFromPath(r.URL.Path)
+		if err != nil {
+			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
+			return
+		}
+
+		var connName string
+		appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COALESCE(name,'') FROM connections WHERE id = ?`), connID).Scan(&connName)
+		if connName == "" {
+			connName = fmt.Sprintf("Connection #%d", connID)
+		}
+
+		settings := ReadAlertSettings()
+		if !settings.Telegram.Enabled && !settings.Discord.Enabled && !settings.Slack.Enabled && !(settings.Webhook.Enabled && strings.TrimSpace(settings.Webhook.URL) != "") {
+			http.Error(w, jsonError("no alert channels are enabled — configure at least one in Admin → Alert Settings"), http.StatusBadRequest)
+			return
+		}
+
+		title := fmt.Sprintf("🔔 Test Alert — %s", connName)
+		message := fmt.Sprintf("Connection: %s\nFailed Job Alerts are configured and active on this connection.", connName)
+		sendAlertToAllChannels(settings, title, message, "test_connection")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}
+}
+
 // StartFailedJobAlertWorker runs a background goroutine that polls user database
 // connections for new failed Laravel jobs and sends alerts via Alert Settings.
 func StartFailedJobAlertWorker() {
