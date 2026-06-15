@@ -415,6 +415,7 @@ async function confirmImport() {
 async function exportCsv() { if (!rows.value.length) return; const { downloadCSV } = await import('@/utils/export'); downloadCSV(columns.value, rows.value, selected.value?.table ?? 'export'); toast.success('CSV exported') }
 async function exportJson() { if (!rows.value.length) return; const { downloadJSON } = await import('@/utils/export'); downloadJSON(columns.value, rows.value, selected.value?.table ?? 'export'); toast.success('JSON exported') }
 async function exportExcel() { if (!rows.value.length) return; const { downloadExcel } = await import('@/utils/export'); downloadExcel(columns.value, rows.value, selected.value?.table ?? 'export'); toast.success('Excel exported') }
+async function exportSql() { if (!rows.value.length) return; const { downloadSQL } = await import('@/utils/export'); downloadSQL(columns.value, rows.value, selected.value?.table ?? 'export', selected.value?.table, activeConn.value?.driver); toast.success('SQL exported') }
 
 // ── Sub-tab + SQL tabs ────────────────────────────────────────────
 type ResultKind = 'query' | 'explain' | 'stream' | 'script' | 'history' | 'saved' | 'error' | 'chart'
@@ -630,6 +631,18 @@ function editableTargetForSQLResult(tab: SQLViewTab): SQLEditTarget | null {
   return { db, table }
 }
 
+function exportSQLResult(tab: SQLViewTab) {
+  const result = tab.result as any
+  if (!result?.columns?.length) return
+  let table = editableTargetForSQLResult(tab)?.table
+  if (!table) {
+    const input = window.prompt('Table name for the generated INSERT statements:', 'table_name')
+    if (!input?.trim()) return
+    table = input.trim()
+  }
+  sqlPanelRefs.value[tab.id]?.exportCurrentResult('sql', result.columns, result.rows, table)
+}
+
 async function editSQLResultRows(tab: SQLViewTab) {
   const target = editableTargetForSQLResult(tab)
   if (!target) {
@@ -843,6 +856,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
               <button class="base-btn base-btn--ghost base-btn--sm" @click="exportExcel" :disabled="!rows.length" title="Export to Excel (.xlsx)">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>Excel
               </button>
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportSql" :disabled="!rows.length" title="Export as SQL (INSERT statements)">SQL</button>
               <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!columns.length" @click="profilerShow=true">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
                 Profile
@@ -1164,6 +1178,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
               <button class="base-btn base-btn--ghost base-btn--xs" title="Export to Excel (.xlsx)" @click="sqlPanelRefs[tab.id]?.exportCurrentResult('excel',(tab.result as any).columns,(tab.result as any).rows)">
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>Excel
               </button>
+              <button class="base-btn base-btn--ghost base-btn--xs" title="Export as SQL (INSERT statements)" @click="exportSQLResult(tab)">SQL</button>
               <button
                 class="base-btn base-btn--xs"
                 :class="tab.sqlEditMode ? 'base-btn--primary' : 'base-btn--ghost'"

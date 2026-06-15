@@ -42,6 +42,34 @@ export function downloadCSV(columns: string[], rows: unknown[][], name = 'export
   downloadBlob(blob, `${sanitizeFileName(name)}.csv`)
 }
 
+export function downloadSQL(columns: string[], rows: unknown[][], name = 'export', tableName = 'table_name', driver = 'postgres') {
+  const quoteIdent = (id: string): string => {
+    switch (driver) {
+      case 'mysql':
+      case 'mariadb':
+        return '`' + id.replace(/`/g, '``') + '`'
+      case 'mssql':
+      case 'sqlserver':
+        return '[' + id.replace(/]/g, ']]') + ']'
+      default:
+        return '"' + id.replace(/"/g, '""') + '"'
+    }
+  }
+  const literal = (v: unknown): string => {
+    if (v === null || v === undefined) return 'NULL'
+    if (typeof v === 'number') return Number.isFinite(v) ? String(v) : 'NULL'
+    if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
+    if (typeof v === 'object') return "'" + JSON.stringify(v).replace(/'/g, "''") + "'"
+    return "'" + String(v).replace(/'/g, "''") + "'"
+  }
+  const table = quoteIdent(tableName || 'table_name')
+  const cols = columns.map(quoteIdent).join(', ')
+  const lines = rows.map((row) =>
+    `INSERT INTO ${table} (${cols}) VALUES (${(row as unknown[]).map(literal).join(', ')});`,
+  )
+  downloadText(lines.join('\n'), `${sanitizeFileName(name)}.sql`, 'application/sql;charset=utf-8;')
+}
+
 export function downloadJSON(columns: string[], rows: unknown[][], name = 'export') {
   const data = rows.map((row) => {
     const obj: Record<string, unknown> = {}
