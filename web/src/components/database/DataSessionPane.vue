@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import axios from 'axios'
 import SchemaTree from '@/components/database/SchemaTree.vue'
 import DataTable from '@/components/database/DataTable.vue'
@@ -42,127 +42,174 @@ function isNonSqlDriver(driver: string) {
 
 const supportsRelationalSchema = computed(() => !!activeConn.value && !isNonSqlDriver(activeConn.value.driver))
 
-// ── Data browser state ────────────────────────────────────────────
-const selected = ref<{ db: string; table: string } | null>(null)
-const columns = ref<string[]>([])
-const rows = ref<unknown[][]>([])
-const totalRows = ref(0)
-const page = ref(1)
-const pageSize = ref(100)
-const sortBy = ref<string | undefined>()
-const sortDir = ref<'asc' | 'desc'>('asc')
-const whereClause = ref('')
-const whereInput = ref('')
-const filterError = ref('')
-const filterMode = ref<'search' | 'sql'>('search')
-const loading = ref(false)
-const editMode = ref(false)
-const dataTableRef = ref<InstanceType<typeof DataTable> | null>(null)
-const pkColumn = ref('')
-const dataTableColumns = ref<Array<{ name: string; data_type: string }>>([])
-const hasUnsavedTableEdits = ref(false)
+// ── Data browser state (multi-tab) ────────────────────────────────
+interface TableTab {
+  id: string
+  db: string
+  table: string
+  columns: string[]
+  rows: unknown[][]
+  totalRows: number
+  page: number
+  pageSize: number
+  sortBy: string | undefined
+  sortDir: 'asc' | 'desc'
+  whereClause: string
+  whereInput: string
+  filterError: string
+  filterMode: 'search' | 'sql'
+  loading: boolean
+  editMode: boolean
+  pkColumn: string
+  dataTableColumns: Array<{ name: string; data_type: string }>
+  hasUnsavedEdits: boolean
+}
+
+let tableTabCounter = 0
+const tableTabs = ref<TableTab[]>([])
+const activeTableTabId = ref<string>('')
+const activeTab = computed(() => tableTabs.value.find(t => t.id === activeTableTabId.value) ?? null)
+const dataTableRefs = ref<Record<string, InstanceType<typeof DataTable>>>({})
+
+// Keep a virtual `selected` alias so legacy references (SQLPanel default-db, ColumnProfiler, etc.) still work
+const selected = computed(() => activeTab.value ? { db: activeTab.value.db, table: activeTab.value.table } : null)
+
 const activeSubTab = ref<string>('data')
 const sidebarVisible = ref(true)
 let suppressSubTabGuard = false
 let suppressSubTabTableSelect = false
 
 watch(() => props.connId, () => {
-  selected.value = null
-  columns.value = []; rows.value = []; totalRows.value = 0
+  tableTabs.value = []
+  activeTableTabId.value = ''
+  dataTableRefs.value = {}
   schemaSelected.value = null
 })
 
-async function loadData() {
-  if (!selected.value || !props.connId) return
-  loading.value = true
-  filterError.value = ''
-  const input = whereClause.value || undefined
-  const searchArg = filterMode.value === 'search' ? input : undefined
-  const whereArg = filterMode.value === 'sql' ? input : undefined
-  const data = await fetchTableData(props.connId, selected.value.db, selected.value.table, page.value, pageSize.value, sortBy.value, sortDir.value, whereArg, searchArg)
-  if (data) { columns.value = data.columns ?? []; rows.value = data.rows ?? []; totalRows.value = data.total_rows ?? 0 }
-  else if (schemaError.value) { filterError.value = schemaError.value }
-  loading.value = false
+async function loadData(tab?: TableTab) {
+  const t = tab ?? activeTab.value
+  if (!t || !props.connId) return
+  t.loading = true
+  t.filterError = ''
+  const input = t.whereClause || undefined
+  const searchArg = t.filterMode === 'search' ? input : undefined
+  const whereArg = t.filterMode === 'sql' ? input : undefined
+  const data = await fetchTableData(props.connId, t.db, t.table, t.page, t.pageSize, t.sortBy, t.sortDir, whereArg, searchArg)
+  if (data) { t.columns = data.columns ?? []; t.rows = data.rows ?? []; t.totalRows = data.total_rows ?? 0 }
+  else if (schemaError.value) { t.filterError = schemaError.value }
+  t.loading = false
 }
 
 function applyFilter() {
-  whereClause.value = whereInput.value.trim()
-  page.value = 1
+  const t = activeTab.value; if (!t) return
+  t.whereClause = t.whereInput.trim()
+  t.page = 1
   loadData()
 }
 
 function clearFilter() {
-  whereInput.value = ''
-  whereClause.value = ''
-  filterError.value = ''
-  page.value = 1
+  const t = activeTab.value; if (!t) return
+  t.whereInput = ''
+  t.whereClause = ''
+  t.filterError = ''
+  t.page = 1
   loadData()
 }
 
 function toggleFilterMode() {
-  whereInput.value = ''
-  whereClause.value = ''
-  filterError.value = ''
-  filterMode.value = filterMode.value === 'search' ? 'sql' : 'search'
+  const t = activeTab.value; if (!t) return
+  t.whereInput = ''
+  t.whereClause = ''
+  t.filterError = ''
+  t.filterMode = t.filterMode === 'search' ? 'sql' : 'search'
 }
 
 function confirmDiscardPendingEdits(actionLabel = 'continue') {
-  if (!hasUnsavedTableEdits.value) return true
+  if (!activeTab.value?.hasUnsavedEdits) return true
   return window.confirm(`You have unsaved row edits. Discard them and ${actionLabel}?`)
 }
 
 async function handleSelectTable(payload: { db: string; table: string }, openInEditMode = false) {
-  if (selected.value && (selected.value.db !== payload.db || selected.value.table !== payload.table) && !confirmDiscardPendingEdits('open another table')) {
+  // If the table is already open in a tab, just switch to it
+  const existing = tableTabs.value.find(t => t.db === payload.db && t.table === payload.table)
+  if (existing) {
+    activeTableTabId.value = existing.id
+    emit('table-selected', payload.db, payload.table)
     return
   }
-  hasUnsavedTableEdits.value = false
-  selected.value = payload
-  dataTableColumns.value = []
-  editMode.value = false; pkColumn.value = ''; page.value = 1
-  whereClause.value = ''; whereInput.value = ''; filterError.value = ''
-  loadData()
+  // Create a new tab
+  const id = `tt-${++tableTabCounter}`
+  const newTab: TableTab = {
+    id, db: payload.db, table: payload.table,
+    columns: [], rows: [], totalRows: 0,
+    page: 1, pageSize: 100,
+    sortBy: undefined, sortDir: 'asc',
+    whereClause: '', whereInput: '', filterError: '', filterMode: 'search',
+    loading: false, editMode: openInEditMode,
+    pkColumn: '', dataTableColumns: [], hasUnsavedEdits: false,
+  }
+  tableTabs.value.push(newTab)
+  activeTableTabId.value = id
+  await nextTick()
+  loadData(newTab)
   if (props.connId) {
     const cols = await fetchTableColumns(props.connId, payload.db, payload.table)
-    dataTableColumns.value = cols.map((column) => ({ name: column.name, data_type: column.data_type }))
-    if (schemaError.value) toast.error(schemaError.value)
-    fetchFKs(props.connId, payload.db)
-    const pk = cols?.find((c: any) => c.is_primary_key)
-    pkColumn.value = pk?.name ?? (cols?.[0]?.name ?? '')
+    const tab = tableTabs.value.find(t => t.id === id)
+    if (tab) {
+      tab.dataTableColumns = cols.map((column: any) => ({ name: column.name, data_type: column.data_type }))
+      if (schemaError.value) toast.error(schemaError.value)
+      fetchFKs(props.connId, payload.db)
+      const pk = cols?.find((c: any) => c.is_primary_key)
+      tab.pkColumn = pk?.name ?? (cols?.[0]?.name ?? '')
+    }
   }
-  if (openInEditMode) editMode.value = true
   emit('table-selected', payload.db, payload.table)
 }
 
+function closeTableTab(id: string) {
+  const tab = tableTabs.value.find(t => t.id === id)
+  if (tab?.hasUnsavedEdits && !confirm('This table has unsaved edits. Close anyway?')) return
+  const idx = tableTabs.value.findIndex(t => t.id === id)
+  if (idx === -1) return
+  tableTabs.value.splice(idx, 1)
+  delete dataTableRefs.value[id]
+  if (activeTableTabId.value === id) {
+    activeTableTabId.value = tableTabs.value[Math.max(0, idx - 1)]?.id ?? ''
+  }
+}
+
 function handleSort(col: string, dir: 'asc' | 'desc') {
+  const t = activeTab.value; if (!t) return
   if (!confirmDiscardPendingEdits('change sorting')) return
-  hasUnsavedTableEdits.value = false
-  sortBy.value = col; sortDir.value = dir; page.value = 1; loadData()
+  t.hasUnsavedEdits = false
+  t.sortBy = col; t.sortDir = dir; t.page = 1; loadData()
 }
 function handlePageChange(p: number) {
+  const t = activeTab.value; if (!t) return
   if (!confirmDiscardPendingEdits('change page')) return
-  hasUnsavedTableEdits.value = false
-  page.value = p; loadData()
+  t.hasUnsavedEdits = false
+  t.page = p; loadData()
 }
 function handlePageSizeChange(size: number) {
+  const t = activeTab.value; if (!t) return
   if (!confirmDiscardPendingEdits('change page size')) return
-  hasUnsavedTableEdits.value = false
-  pageSize.value = size; page.value = 1; loadData()
+  t.hasUnsavedEdits = false
+  t.pageSize = size; t.page = 1; loadData()
 }
 function handleRefreshData() {
   if (!confirmDiscardPendingEdits('refresh the table')) return
-  hasUnsavedTableEdits.value = false
+  if (activeTab.value) activeTab.value.hasUnsavedEdits = false
   loadData()
 }
 
 function handleAddDataRow() {
-  dataTableRef.value?.startAddRow()
+  if (activeTableTabId.value) dataTableRefs.value[activeTableTabId.value]?.startAddRow()
 }
 function handleToggleEditMode() {
-  if (editMode.value && !confirmDiscardPendingEdits('exit edit mode')) return
-  if (editMode.value) {
-    hasUnsavedTableEdits.value = false
-  }
-  editMode.value = !editMode.value
+  const t = activeTab.value; if (!t) return
+  if (t.editMode && !confirmDiscardPendingEdits('exit edit mode')) return
+  if (t.editMode) t.hasUnsavedEdits = false
+  t.editMode = !t.editMode
 }
 
 function inferColumnsFromTypeError(message: string, values: Record<string, unknown>) {
@@ -181,14 +228,14 @@ function inferColumnsFromTypeError(message: string, values: Record<string, unkno
     boolean: ['bool'],
   }
   const needles = typeAliases[failedType] ?? [failedType]
-  const candidates = dataTableColumns.value
-    .filter((column) => {
+  const candidates = (activeTab.value?.dataTableColumns ?? [])
+    .filter((column: { name: string; data_type: string }) => {
       if (!Object.prototype.hasOwnProperty.call(values, column.name)) return false
       if (String(values[column.name] ?? '') !== failedValue) return false
       const dataType = column.data_type.toLowerCase()
       return needles.some((needle) => dataType.includes(needle))
     })
-    .map((column) => column.name)
+    .map((column: { name: string }) => column.name)
   return candidates.join(', ')
 }
 
@@ -199,26 +246,25 @@ function rowSaveError(error: unknown, action: string, fallback: string, values: 
 }
 
 async function handleSaveRow(payload: { pkValue: unknown; updates: Record<string, unknown> }) {
-  if (!selected.value || !props.connId) return
+  const t = activeTab.value; if (!t || !props.connId) return
   try {
-    await axios.put(`/api/connections/${props.connId}/schema/${selected.value.db}/tables/${selected.value.table}/rows`, { pk_column: pkColumn.value, pk_value: payload.pkValue, updates: payload.updates })
-    hasUnsavedTableEdits.value = false
+    await axios.put(`/api/connections/${props.connId}/schema/${t.db}/tables/${t.table}/rows`, { pk_column: t.pkColumn, pk_value: payload.pkValue, updates: payload.updates })
+    t.hasUnsavedEdits = false
     toast.success('Row updated'); loadData()
   } catch (e) { toast.error(rowSaveError(e, 'Update row', 'Update failed', payload.updates)) }
 }
 
 async function handleSaveAllRows(payload: Array<{ pkValue: unknown; updates: Record<string, unknown> }>) {
-  if (!selected.value || !props.connId || !payload.length) return
-  const currentSelection = selected.value
+  const t = activeTab.value; if (!t || !props.connId || !payload.length) return
   try {
     await Promise.all(payload.map((item) =>
-      axios.put(`/api/connections/${props.connId}/schema/${currentSelection.db}/tables/${currentSelection.table}/rows`, {
-        pk_column: pkColumn.value,
+      axios.put(`/api/connections/${props.connId}/schema/${t.db}/tables/${t.table}/rows`, {
+        pk_column: t.pkColumn,
         pk_value: item.pkValue,
         updates: item.updates,
       }),
     ))
-    hasUnsavedTableEdits.value = false
+    t.hasUnsavedEdits = false
     toast.success(`${payload.length} row${payload.length > 1 ? 's' : ''} updated`)
     loadData()
   } catch (e) {
@@ -227,18 +273,18 @@ async function handleSaveAllRows(payload: Array<{ pkValue: unknown; updates: Rec
 }
 
 async function handleDeleteRow(payload: { pkValue: unknown }) {
-  if (!selected.value || !props.connId) return
+  const t = activeTab.value; if (!t || !props.connId) return
   if (!confirm('Delete this row?')) return
   try {
-    await axios.delete(`/api/connections/${props.connId}/schema/${selected.value.db}/tables/${selected.value.table}/rows`, { data: { pk_column: pkColumn.value, pk_value: payload.pkValue } })
+    await axios.delete(`/api/connections/${props.connId}/schema/${t.db}/tables/${t.table}/rows`, { data: { pk_column: t.pkColumn, pk_value: payload.pkValue } })
     toast.success('Row deleted'); loadData()
   } catch (e) { toast.error(readableError(e, { action: 'Delete row', fallback: 'Delete failed' })) }
 }
 
 async function handleAddRow(payload: { values: Record<string, unknown> }) {
-  if (!selected.value || !props.connId) return
+  const t = activeTab.value; if (!t || !props.connId) return
   try {
-    await axios.post(`/api/connections/${props.connId}/schema/${selected.value.db}/tables/${selected.value.table}/rows`, { values: payload.values })
+    await axios.post(`/api/connections/${props.connId}/schema/${t.db}/tables/${t.table}/rows`, { values: payload.values })
     toast.success('Row inserted'); loadData()
   } catch (e) { toast.error(rowSaveError(e, 'Insert row', 'Insert failed', payload.values)) }
 }
@@ -443,10 +489,10 @@ async function confirmImport() {
   finally { importLoading.value = false }
 }
 
-async function exportCsv() { if (!rows.value.length) return; const { downloadCSV } = await import('@/utils/export'); downloadCSV(columns.value, rows.value, selected.value?.table ?? 'export'); toast.success('CSV exported') }
-async function exportJson() { if (!rows.value.length) return; const { downloadJSON } = await import('@/utils/export'); downloadJSON(columns.value, rows.value, selected.value?.table ?? 'export'); toast.success('JSON exported') }
-async function exportExcel() { if (!rows.value.length) return; const { downloadExcel } = await import('@/utils/export'); downloadExcel(columns.value, rows.value, selected.value?.table ?? 'export'); toast.success('Excel exported') }
-async function exportSql() { if (!rows.value.length) return; const { downloadSQL } = await import('@/utils/export'); downloadSQL(columns.value, rows.value, selected.value?.table ?? 'export', selected.value?.table, activeConn.value?.driver); toast.success('SQL exported') }
+async function exportCsv() { const t = activeTab.value; if (!t?.rows.length) return; const { downloadCSV } = await import('@/utils/export'); downloadCSV(t.columns, t.rows, t.table); toast.success('CSV exported') }
+async function exportJson() { const t = activeTab.value; if (!t?.rows.length) return; const { downloadJSON } = await import('@/utils/export'); downloadJSON(t.columns, t.rows, t.table); toast.success('JSON exported') }
+async function exportExcel() { const t = activeTab.value; if (!t?.rows.length) return; const { downloadExcel } = await import('@/utils/export'); downloadExcel(t.columns, t.rows, t.table); toast.success('Excel exported') }
+async function exportSql() { const t = activeTab.value; if (!t?.rows.length) return; const { downloadSQL } = await import('@/utils/export'); downloadSQL(t.columns, t.rows, t.table, t.table, activeConn.value?.driver); toast.success('SQL exported') }
 
 // ── Sub-tab + SQL tabs ────────────────────────────────────────────
 type ResultKind = 'query' | 'explain' | 'stream' | 'script' | 'history' | 'saved' | 'error' | 'chart'
@@ -559,7 +605,7 @@ watch(sqlViewTabs, persistSQLState, { deep: true })
 watch(activeSubTab, (tab, previous) => {
   if (suppressSubTabGuard || previous !== 'data' || tab === 'data') return
   if (confirmDiscardPendingEdits(`switch to ${tab === 'schema' ? 'Schema' : tab === 'explorer' ? 'Explorer' : 'another tab'}`)) {
-    hasUnsavedTableEdits.value = false
+    if (activeTab.value) activeTab.value.hasUnsavedEdits = false
     return
   }
   suppressSubTabGuard = true
@@ -799,7 +845,7 @@ onMounted(() => {
 
 function handleBeforeUnload(event: BeforeUnloadEvent) {
   persistSQLState()
-  if (!hasUnsavedTableEdits.value) return
+  if (!tableTabs.value.some(t => t.hasUnsavedEdits)) return
   event.preventDefault()
   event.returnValue = ''
 }
@@ -870,47 +916,74 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ activeConn.name }}</span>
           <span class="driver-badge" :style="{ background: driverColor(activeConn.driver) }">{{ driverLabel(activeConn.driver) }}</span>
         </div>
-        <SchemaTree :connId="connId" :active="active" :refresh-key="schemaTreeRefreshKey" :selected-table="selected ? `${selected.db}.${selected.table}` : undefined" @select-table="handleSelectTable" />
+        <SchemaTree :connId="connId" :active="active" :refresh-key="schemaTreeRefreshKey" :selected-table="activeTab ? `${activeTab.db}.${activeTab.table}` : undefined" @select-table="handleSelectTable" />
       </div>
       <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden">
+        <!-- Table tabs bar -->
+        <div v-if="tableTabs.length > 0" class="table-tab-bar">
+          <button
+            v-for="tab in tableTabs"
+            :key="tab.id"
+            class="table-tab-btn"
+            :class="{ 'table-tab-btn--active': tab.id === activeTableTabId }"
+            @click="activeTableTabId = tab.id"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+            <span class="table-tab-btn__name">{{ tab.table }}</span>
+            <span v-if="tab.hasUnsavedEdits" class="table-tab-btn__dirty" title="Unsaved edits">●</span>
+            <span class="table-tab-btn__close" @click.stop="closeTableTab(tab.id)" title="Close tab">×</span>
+          </button>
+        </div>
         <div class="browse-toolbar">
-          <template v-if="selected">
+          <template v-if="activeTab">
             <div class="browse-toolbar__info">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--brand);flex-shrink:0"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
-              <span class="browse-toolbar__title">{{ selected.db }}.{{ selected.table }}</span>
-              <span v-if="totalRows" class="browse-toolbar__meta">{{ totalRows.toLocaleString() }}</span>
+              <span class="browse-toolbar__title">{{ activeTab.db }}.{{ activeTab.table }}</span>
+              <span v-if="activeTab.totalRows" class="browse-toolbar__meta">{{ activeTab.totalRows.toLocaleString() }}</span>
             </div>
             <div class="browse-toolbar__filter">
-              <button class="filter-mode-btn" :class="{ 'filter-mode-btn--sql': filterMode === 'sql' }" @click="toggleFilterMode" :title="filterMode === 'search' ? 'Switch to SQL WHERE filter' : 'Switch to value search'">{{ filterMode === 'search' ? 'Search' : 'WHERE' }}</button>
-              <input v-model="whereInput" class="filter-inline-input" :class="{ 'filter-inline-input--active': whereClause }" :placeholder="filterMode === 'search' ? 'Search all columns…' : 'id = 1 OR name LIKE \'%x%\''" @keydown.enter="applyFilter" />
-              <button v-if="whereClause" class="filter-clear-btn" @click="clearFilter" title="Clear filter">✕</button>
-              <span v-if="filterError" class="filter-inline-error" :title="filterError">!</span>
+              <button class="filter-mode-btn" :class="{ 'filter-mode-btn--sql': activeTab.filterMode === 'sql' }" @click="toggleFilterMode" :title="activeTab.filterMode === 'search' ? 'Switch to SQL WHERE filter' : 'Switch to value search'">{{ activeTab.filterMode === 'search' ? 'Search' : 'WHERE' }}</button>
+              <input v-model="activeTab.whereInput" class="filter-inline-input" :class="{ 'filter-inline-input--active': activeTab.whereClause }" :placeholder="activeTab.filterMode === 'search' ? 'Search all columns…' : 'id = 1 OR name LIKE \'%x%\''" @keydown.enter="applyFilter" />
+              <button v-if="activeTab.whereClause" class="filter-clear-btn" @click="clearFilter" title="Clear filter">✕</button>
+              <span v-if="activeTab.filterError" class="filter-inline-error" :title="activeTab.filterError">!</span>
             </div>
             <div class="browse-toolbar__actions">
               <button class="base-btn base-btn--ghost base-btn--sm" @click="handleRefreshData" title="Refresh">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.43"/></svg>
               </button>
-              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!columns.length || loading" @click="handleAddDataRow" title="Add row">
+              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!activeTab.columns.length || activeTab.loading" @click="handleAddDataRow" title="Add row">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               </button>
-              <button class="base-btn base-btn--sm" :class="editMode ? 'base-btn--primary' : 'base-btn--ghost'" @click="handleToggleEditMode">{{ editMode ? 'Editing' : 'Edit' }}</button>
+              <button class="base-btn base-btn--sm" :class="activeTab.editMode ? 'base-btn--primary' : 'base-btn--ghost'" @click="handleToggleEditMode">{{ activeTab.editMode ? 'Editing' : 'Edit' }}</button>
               <button class="base-btn base-btn--ghost base-btn--sm" @click="openImport">Import</button>
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportCsv" :disabled="!rows.length">CSV</button>
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportJson" :disabled="!rows.length">JSON</button>
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportExcel" :disabled="!rows.length" title="Export to Excel (.xlsx)">
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportCsv" :disabled="!activeTab.rows.length">CSV</button>
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportJson" :disabled="!activeTab.rows.length">JSON</button>
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportExcel" :disabled="!activeTab.rows.length" title="Export to Excel (.xlsx)">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>Excel
               </button>
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportSql" :disabled="!rows.length" title="Export as SQL (INSERT statements)">SQL</button>
-              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!columns.length" @click="profilerShow=true" title="Profile columns">
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportSql" :disabled="!activeTab.rows.length" title="Export as SQL (INSERT statements)">SQL</button>
+              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!activeTab.columns.length" @click="profilerShow=true" title="Profile columns">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
               </button>
             </div>
           </template>
           <span v-else class="browse-toolbar__empty">Select a table to browse data</span>
         </div>
-        <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column">
-          <DataTable v-if="selected" ref="dataTableRef" :columns="columns" :rows="rows" :loading="loading" :page="page" :page-size="pageSize" :total-rows="totalRows" :editable="editMode" :addable="true" :pk-column="pkColumn" @page-change="handlePageChange" @page-size-change="handlePageSizeChange" @sort="handleSort" @save-row="handleSaveRow" @save-all-rows="handleSaveAllRows" @delete-row="handleDeleteRow" @add-row="handleAddRow" @dirty-change="hasUnsavedTableEdits = $event" />
-          <div v-else class="empty-state">
+        <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;position:relative">
+          <template v-for="tab in tableTabs" :key="tab.id">
+            <DataTable
+              v-show="tab.id === activeTableTabId"
+              :ref="(el: any) => { if (el) dataTableRefs[tab.id] = el; else delete dataTableRefs[tab.id] }"
+              :columns="tab.columns" :rows="tab.rows" :loading="tab.loading"
+              :page="tab.page" :page-size="tab.pageSize" :total-rows="tab.totalRows"
+              :editable="tab.editMode" :addable="true" :pk-column="tab.pkColumn"
+              @page-change="handlePageChange" @page-size-change="handlePageSizeChange"
+              @sort="handleSort" @save-row="handleSaveRow" @save-all-rows="handleSaveAllRows"
+              @delete-row="handleDeleteRow" @add-row="handleAddRow"
+              @dirty-change="tab.hasUnsavedEdits = $event"
+            />
+          </template>
+          <div v-if="!activeTab" class="empty-state">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="color:var(--text-muted)"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
             Select a table from the left to browse its data.
           </div>
@@ -1334,7 +1407,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
     </template>
   </div>
 
-  <ColumnProfiler :show="profilerShow" :conn-id="connId" :table="selected?.table ?? ''" :column="columns[0] ?? ''" :database="selected?.db" @close="profilerShow=false" />
+  <ColumnProfiler :show="profilerShow" :conn-id="connId" :table="activeTab?.table ?? ''" :column="activeTab?.columns[0] ?? ''" :database="activeTab?.db" @close="profilerShow=false" />
 
   <!-- Import modal -->
   <Teleport to="body">
@@ -2017,4 +2090,67 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
   .explorer-view { grid-template-columns:1fr; }
   .explorer-panels { grid-template-columns:1fr; }
 }
+
+/* ── Table tabs bar ─────────────────────────────────────────────── */
+.table-tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex-shrink: 0;
+}
+.table-tab-bar::-webkit-scrollbar { display: none; }
+
+.table-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px 3px 7px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background .12s, color .12s;
+}
+.table-tab-btn:hover { background: var(--bg-elevated); color: var(--text-primary); }
+.table-tab-btn--active {
+  background: var(--bg-body);
+  color: var(--text-primary);
+  box-shadow: 0 1px 4px rgba(0,0,0,.08), inset 0 0 0 1px var(--border);
+}
+.table-tab-btn--active svg { color: var(--brand); opacity: 1; }
+.table-tab-btn svg { opacity: 0.6; }
+
+.table-tab-btn__name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+
+.table-tab-btn__dirty {
+  font-size: 9px;
+  color: var(--brand);
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.table-tab-btn__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  font-size: 14px;
+  color: var(--text-muted);
+  line-height: 1;
+  flex-shrink: 0;
+  transition: background .12s, color .12s;
+}
+.table-tab-btn__close:hover { background: var(--bg-elevated); color: var(--text-primary); }
 </style>
