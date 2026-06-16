@@ -1,13 +1,24 @@
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+var uuidWhereRe = regexp.MustCompile(`(?i)(=\s*)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b`)
+
+func quoteUnquotedUUIDs(where string) string {
+	return uuidWhereRe.ReplaceAllStringFunc(where, func(match string) string {
+		sub := uuidWhereRe.FindStringSubmatch(match)
+		return sub[1] + "'" + sub[2] + "'"
+	})
+}
 
 type SchemaTable struct {
 	Name     string `json:"name"`
@@ -352,6 +363,90 @@ func isValidSortDirection(dir string) bool {
 	return upper == "ASC" || upper == "DESC" || upper == ""
 }
 
+// buildSearchWhereFragment builds a WHERE clause that searches for `search`
+// across all columns in the table by casting each column to text and using
+// ILIKE/LIKE. Returns empty string if no columns found or driver unsupported.
+func buildSearchWhereFragment(db *sql.DB, driver, namespace, tableName, search string) string {
+	escaped := strings.ReplaceAll(search, "'", "''")
+	pattern := "%" + escaped + "%"
+
+	var columnNames []string
+
+	switch driver {
+	case "sqlite3":
+		rows, err := db.Query(`PRAGMA table_info(` + quoteIdent(driver, tableName) + `)`)
+		if err != nil {
+			return ""
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var cid, notNull, pk int
+			var name, dataType string
+			var defVal *string
+			rows.Scan(&cid, &name, &dataType, &notNull, &defVal, &pk)
+			columnNames = append(columnNames, name)
+		}
+	case "postgres":
+		if namespace == "" {
+			namespace = "public"
+		}
+		rows, err := db.Query(`SELECT column_name FROM information_schema.columns WHERE table_name = $1 AND table_schema = $2 ORDER BY ordinal_position`, tableName, namespace)
+		if err != nil {
+			return ""
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			rows.Scan(&name)
+			columnNames = append(columnNames, name)
+		}
+	case "mysql", "mariadb":
+		rows, err := db.Query(`SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`, namespace, tableName)
+		if err != nil {
+			return ""
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			rows.Scan(&name)
+			columnNames = append(columnNames, name)
+		}
+	case "sqlserver":
+		rows, err := db.Query(`SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_CATALOG = @p2 AND TABLE_NAME = @p1 ORDER BY ORDINAL_POSITION`, tableName, namespace)
+		if err != nil {
+			return ""
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			rows.Scan(&name)
+			columnNames = append(columnNames, name)
+		}
+	default:
+		return ""
+	}
+
+	if len(columnNames) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(columnNames))
+	for _, col := range columnNames {
+		quoted := quoteIdent(driver, col)
+		switch driver {
+		case "postgres":
+			parts = append(parts, fmt.Sprintf("%s::text ILIKE '%s'", quoted, pattern))
+		case "mysql", "mariadb":
+			parts = append(parts, fmt.Sprintf("%s LIKE '%s'", quoted, pattern))
+		case "sqlserver":
+			parts = append(parts, fmt.Sprintf("TRY_CAST(%s AS NVARCHAR(MAX)) LIKE '%s'", quoted, pattern))
+		case "sqlite3":
+			parts = append(parts, fmt.Sprintf("CAST(%s AS TEXT) LIKE '%s'", quoted, pattern))
+		}
+	}
+	return " WHERE (" + strings.Join(parts, " OR ") + ")"
+}
+
 func GetTableData() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -387,6 +482,8 @@ func GetTableData() http.HandlerFunc {
 		if q.Get("order_dir") == "desc" {
 			orderDir = "DESC"
 		}
+		whereClause := q.Get("where")
+		searchQuery := q.Get("search")
 
 		db, driver, err := GetDB(connID)
 		if err != nil {
@@ -396,21 +493,28 @@ func GetTableData() http.HandlerFunc {
 
 		offset := (page - 1) * pageSize
 
+		whereFragment := ""
+		if searchQuery != "" {
+			whereFragment = buildSearchWhereFragment(db, driver, dbName, tableName, searchQuery)
+		} else if whereClause != "" {
+			whereFragment = " WHERE " + quoteUnquotedUUIDs(whereClause)
+		}
+
 		// Build table reference and count query per driver
 		var tableRef, countSQL string
 		switch driver {
 		case "postgres":
 			tableRef = qualifiedTableName(driver, dbName, tableName)
-			countSQL = fmt.Sprintf(`SELECT COUNT(*) FROM %s`, tableRef)
+			countSQL = fmt.Sprintf(`SELECT COUNT(*) FROM %s%s`, tableRef, whereFragment)
 		case "mysql":
 			tableRef = qualifiedTableName(driver, dbName, tableName)
-			countSQL = fmt.Sprintf("SELECT COUNT(*) FROM %s", tableRef)
+			countSQL = fmt.Sprintf("SELECT COUNT(*) FROM %s%s", tableRef, whereFragment)
 		case "sqlserver":
 			tableRef = qualifiedTableName(driver, dbName, tableName)
-			countSQL = fmt.Sprintf("SELECT COUNT(*) FROM %s", tableRef)
+			countSQL = fmt.Sprintf("SELECT COUNT(*) FROM %s%s", tableRef, whereFragment)
 		default:
 			tableRef = quoteIdent(driver, tableName)
-			countSQL = fmt.Sprintf(`SELECT COUNT(*) FROM %s`, tableRef)
+			countSQL = fmt.Sprintf(`SELECT COUNT(*) FROM %s%s`, tableRef, whereFragment)
 		}
 
 		var total int64
@@ -421,7 +525,7 @@ func GetTableData() http.HandlerFunc {
 			orderDir = "ASC"
 		}
 
-		// Build SELECT with optional ORDER BY
+		// Build SELECT with optional WHERE and ORDER BY
 		var dataSQL string
 		switch driver {
 		case "sqlserver":
@@ -430,17 +534,17 @@ func GetTableData() http.HandlerFunc {
 				orderClause = fmt.Sprintf("ORDER BY %s %s", quoteIdent(driver, orderBy), orderDir)
 			}
 			dataSQL = fmt.Sprintf(
-				`SELECT * FROM %s %s OFFSET %d ROWS FETCH NEXT %d ROWS ONLY`,
-				tableRef, orderClause, offset, pageSize,
+				`SELECT * FROM %s%s %s OFFSET %d ROWS FETCH NEXT %d ROWS ONLY`,
+				tableRef, whereFragment, orderClause, offset, pageSize,
 			)
 		case "postgres":
-			dataSQL = fmt.Sprintf("SELECT * FROM %s", tableRef)
+			dataSQL = fmt.Sprintf("SELECT * FROM %s%s", tableRef, whereFragment)
 			if orderBy != "" {
 				dataSQL += fmt.Sprintf(` ORDER BY %s %s`, quoteIdent(driver, orderBy), orderDir)
 			}
 			dataSQL += fmt.Sprintf(" LIMIT $1 OFFSET $2")
 		default:
-			dataSQL = fmt.Sprintf("SELECT * FROM %s", tableRef)
+			dataSQL = fmt.Sprintf("SELECT * FROM %s%s", tableRef, whereFragment)
 			if orderBy != "" {
 				dataSQL += fmt.Sprintf(` ORDER BY %s %s`, quoteIdent(driver, orderBy), orderDir)
 			}

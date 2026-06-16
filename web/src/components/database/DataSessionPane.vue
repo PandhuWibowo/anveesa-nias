@@ -51,6 +51,10 @@ const page = ref(1)
 const pageSize = ref(100)
 const sortBy = ref<string | undefined>()
 const sortDir = ref<'asc' | 'desc'>('asc')
+const whereClause = ref('')
+const whereInput = ref('')
+const filterError = ref('')
+const filterMode = ref<'search' | 'sql'>('search')
 const loading = ref(false)
 const editMode = ref(false)
 const dataTableRef = ref<InstanceType<typeof DataTable> | null>(null)
@@ -58,6 +62,7 @@ const pkColumn = ref('')
 const dataTableColumns = ref<Array<{ name: string; data_type: string }>>([])
 const hasUnsavedTableEdits = ref(false)
 const activeSubTab = ref<string>('data')
+const sidebarVisible = ref(true)
 let suppressSubTabGuard = false
 let suppressSubTabTableSelect = false
 
@@ -70,10 +75,35 @@ watch(() => props.connId, () => {
 async function loadData() {
   if (!selected.value || !props.connId) return
   loading.value = true
-  const data = await fetchTableData(props.connId, selected.value.db, selected.value.table, page.value, pageSize.value, sortBy.value, sortDir.value)
+  filterError.value = ''
+  const input = whereClause.value || undefined
+  const searchArg = filterMode.value === 'search' ? input : undefined
+  const whereArg = filterMode.value === 'sql' ? input : undefined
+  const data = await fetchTableData(props.connId, selected.value.db, selected.value.table, page.value, pageSize.value, sortBy.value, sortDir.value, whereArg, searchArg)
   if (data) { columns.value = data.columns ?? []; rows.value = data.rows ?? []; totalRows.value = data.total_rows ?? 0 }
-  else if (schemaError.value) toast.error(schemaError.value)
+  else if (schemaError.value) { filterError.value = schemaError.value }
   loading.value = false
+}
+
+function applyFilter() {
+  whereClause.value = whereInput.value.trim()
+  page.value = 1
+  loadData()
+}
+
+function clearFilter() {
+  whereInput.value = ''
+  whereClause.value = ''
+  filterError.value = ''
+  page.value = 1
+  loadData()
+}
+
+function toggleFilterMode() {
+  whereInput.value = ''
+  whereClause.value = ''
+  filterError.value = ''
+  filterMode.value = filterMode.value === 'search' ? 'sql' : 'search'
 }
 
 function confirmDiscardPendingEdits(actionLabel = 'continue') {
@@ -89,6 +119,7 @@ async function handleSelectTable(payload: { db: string; table: string }, openInE
   selected.value = payload
   dataTableColumns.value = []
   editMode.value = false; pkColumn.value = ''; page.value = 1
+  whereClause.value = ''; whereInput.value = ''; filterError.value = ''
   loadData()
   if (props.connId) {
     const cols = await fetchTableColumns(props.connId, payload.db, payload.table)
@@ -810,6 +841,15 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           SQL
         </button>
       </div>
+      <button
+        v-if="activeSubTab === 'data' || activeSubTab === 'schema'"
+        class="sp-sidebar-toggle"
+        :title="sidebarVisible ? 'Hide sidebar' : 'Show sidebar'"
+        @click="sidebarVisible = !sidebarVisible"
+      >
+        <svg v-if="sidebarVisible" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+        <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+      </button>
     </div>
 
     <!-- No connection -->
@@ -825,7 +865,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
     </div>
 
     <div v-else v-show="activeSubTab === 'data'" style="display:flex;flex:1;min-height:0;overflow:hidden">
-      <div class="sidebar-panel">
+      <div v-show="sidebarVisible" class="sidebar-panel">
         <div class="panel-header">
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ activeConn.name }}</span>
           <span class="driver-badge" :style="{ background: driverColor(activeConn.driver) }">{{ driverLabel(activeConn.driver) }}</span>
@@ -836,18 +876,22 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
         <div class="browse-toolbar">
           <template v-if="selected">
             <div class="browse-toolbar__info">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--brand)"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--brand);flex-shrink:0"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
               <span class="browse-toolbar__title">{{ selected.db }}.{{ selected.table }}</span>
-              <span v-if="totalRows" class="browse-toolbar__meta">{{ totalRows.toLocaleString() }} rows</span>
+              <span v-if="totalRows" class="browse-toolbar__meta">{{ totalRows.toLocaleString() }}</span>
+            </div>
+            <div class="browse-toolbar__filter">
+              <button class="filter-mode-btn" :class="{ 'filter-mode-btn--sql': filterMode === 'sql' }" @click="toggleFilterMode" :title="filterMode === 'search' ? 'Switch to SQL WHERE filter' : 'Switch to value search'">{{ filterMode === 'search' ? 'Search' : 'WHERE' }}</button>
+              <input v-model="whereInput" class="filter-inline-input" :class="{ 'filter-inline-input--active': whereClause }" :placeholder="filterMode === 'search' ? 'Search all columns…' : 'id = 1 OR name LIKE \'%x%\''" @keydown.enter="applyFilter" />
+              <button v-if="whereClause" class="filter-clear-btn" @click="clearFilter" title="Clear filter">✕</button>
+              <span v-if="filterError" class="filter-inline-error" :title="filterError">!</span>
             </div>
             <div class="browse-toolbar__actions">
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="handleRefreshData">
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="handleRefreshData" title="Refresh">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.43"/></svg>
-                Refresh
               </button>
-              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!columns.length || loading" @click="handleAddDataRow">
+              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!columns.length || loading" @click="handleAddDataRow" title="Add row">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                Add
               </button>
               <button class="base-btn base-btn--sm" :class="editMode ? 'base-btn--primary' : 'base-btn--ghost'" @click="handleToggleEditMode">{{ editMode ? 'Editing' : 'Edit' }}</button>
               <button class="base-btn base-btn--ghost base-btn--sm" @click="openImport">Import</button>
@@ -857,9 +901,8 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>Excel
               </button>
               <button class="base-btn base-btn--ghost base-btn--sm" @click="exportSql" :disabled="!rows.length" title="Export as SQL (INSERT statements)">SQL</button>
-              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!columns.length" @click="profilerShow=true">
+              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!columns.length" @click="profilerShow=true" title="Profile columns">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-                Profile
               </button>
             </div>
           </template>
@@ -877,7 +920,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 
     <!-- SCHEMA -->
     <div v-if="activeConn && supportsRelationalSchema" v-show="activeSubTab === 'schema'" style="display:flex;flex:1;min-height:0;overflow:hidden">
-      <div class="sidebar-panel">
+      <div v-show="sidebarVisible" class="sidebar-panel">
         <div class="panel-header">
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ activeConn.name }}</span>
           <span class="driver-badge" :style="{ background: driverColor(activeConn.driver) }">{{ driverLabel(activeConn.driver) }}</span>
@@ -1331,7 +1374,28 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 </template>
 
 <style scoped>
-.sp-toolbar { 
+.sp-sidebar-toggle {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+  margin-left: 6px;
+}
+
+.sp-sidebar-toggle:hover {
+  background: color-mix(in srgb, var(--bg-elevated) 70%, transparent);
+  color: var(--text-primary);
+}
+
+.sp-toolbar {
   display: flex;
   align-items: center;
   padding: 8px 20px;
@@ -1460,12 +1524,22 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 .empty-state svg { opacity:.4; }
 
 /* ── Browse Toolbar (Modern & Spacious) ───────────────────────── */
-.browse-toolbar { padding:12px 18px;border-bottom:1px solid var(--border);background:var(--bg-surface);display:flex;align-items:center;justify-content:space-between;gap:16px;flex-shrink:0;min-height:48px; }
-.browse-toolbar__info { display:flex;align-items:center;gap:10px;flex:1;min-width:0; }
-.browse-toolbar__title { font-size:14px;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
-.browse-toolbar__meta { font-size:11px;color:var(--text-muted);background:var(--bg-elevated);padding:2px 8px;border-radius:4px;font-weight:600; }
-.browse-toolbar__actions { display:flex;align-items:center;gap:8px; }
+.browse-toolbar { padding:0 12px;border-bottom:1px solid var(--border);background:var(--bg-surface);display:flex;align-items:center;gap:10px;flex-shrink:0;height:38px; }
+.browse-toolbar__info { display:flex;align-items:center;gap:6px;flex-shrink:0;min-width:0; }
+.browse-toolbar__title { font-size:13px;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px; }
+.browse-toolbar__meta { font-size:10px;color:var(--text-muted);background:var(--bg-elevated);padding:1px 6px;border-radius:4px;font-weight:600;flex-shrink:0; }
+.browse-toolbar__filter { display:flex;align-items:center;gap:4px;flex:1;min-width:0; }
+.browse-toolbar__actions { display:flex;align-items:center;gap:4px;flex-shrink:0; }
 .browse-toolbar__empty { font-size:13px;color:var(--text-muted); }
+.filter-mode-btn { flex-shrink:0;height:24px;padding:0 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg-body);color:var(--text-muted);font-size:10px;font-weight:700;font-family:var(--mono,monospace);letter-spacing:0.3px;cursor:pointer;transition:border-color .15s,color .15s;white-space:nowrap; }
+.filter-mode-btn:hover,.filter-mode-btn--sql { border-color:var(--brand);color:var(--brand); }
+.filter-inline-input { flex:1;min-width:0;height:24px;padding:0 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg-body);color:var(--text-primary);font-size:12px;font-family:var(--mono,monospace);outline:none;transition:border-color .15s; }
+.filter-inline-input:focus { border-color:var(--brand); }
+.filter-inline-input--active { border-color:var(--brand);background:var(--bg-surface); }
+.filter-clear-btn { flex-shrink:0;width:20px;height:20px;border:none;background:none;color:var(--text-muted);font-size:11px;cursor:pointer;border-radius:4px;display:flex;align-items:center;justify-content:center;padding:0; }
+.filter-clear-btn:hover { background:var(--bg-elevated);color:var(--text-primary); }
+.filter-inline-error { flex-shrink:0;width:18px;height:18px;border-radius:50%;background:#f87171;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;cursor:default; }
+
 
 /* ── Sidebar Panel (Consistent Width & Styling) ───────────────── */
 .sidebar-panel { 

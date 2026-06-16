@@ -184,11 +184,13 @@ export function useSchema() {
     pageSize = 100,
     orderBy?: string,
     orderDir: 'asc' | 'desc' = 'asc',
+    whereClause?: string,
+    searchQuery?: string,
   ) {
     error.value = ''
     try {
       const { data } = await axios.get(`/api/connections/${connId}/schema/${db}/tables/${table}/data`, {
-        params: { page, page_size: pageSize, order_by: orderBy, order_dir: orderDir },
+        params: { page, page_size: pageSize, order_by: orderBy, order_dir: orderDir, where: whereClause || undefined, search: searchQuery || undefined },
       })
       return data
     } catch (err) {
