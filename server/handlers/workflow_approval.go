@@ -212,11 +212,11 @@ func UpdateWorkflow() http.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-		if _, err := tx.Exec(`
+		if _, err := tx.Exec(appdb.ConvertQuery(`
 			UPDATE approval_workflow
 			SET name = ?, description = ?, assign_all_groups = ?, assign_all_connections = ?, updated_at = ?
 			WHERE id = ?
-		`, strings.TrimSpace(req.Name), strings.TrimSpace(req.Description), boolInt(req.AssignAllGroups), boolInt(req.AssignAllConnections), time.Now().UTC().Format("2006-01-02 15:04:05"), id); err != nil {
+		`), strings.TrimSpace(req.Name), strings.TrimSpace(req.Description), boolInt(req.AssignAllGroups), boolInt(req.AssignAllConnections), time.Now().UTC().Format("2006-01-02 15:04:05"), id); err != nil {
 			http.Error(w, jsonError("failed to update workflow"), http.StatusInternalServerError)
 			return
 		}
