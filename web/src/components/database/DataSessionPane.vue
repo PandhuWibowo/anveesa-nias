@@ -87,7 +87,10 @@ watch(() => props.connId, () => {
 })
 
 async function loadData(tab?: TableTab) {
-  const t = tab ?? activeTab.value
+  // Resolve through the reactive array — a plain object reference bypasses
+  // Vue's Proxy so mutations won't trigger re-renders.
+  const raw = tab ?? activeTab.value
+  const t = raw ? (tableTabs.value.find(t => t.id === raw.id) ?? null) : null
   if (!t || !props.connId) return
   t.loading = true
   t.filterError = ''
