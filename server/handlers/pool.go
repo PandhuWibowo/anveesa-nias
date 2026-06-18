@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io"
@@ -11,6 +12,18 @@ import (
 
 	"golang.org/x/crypto/ssh"
 )
+
+// pingTimeout bounds the liveness check on a pooled connection so a stale or
+// unreachable database can never block a request indefinitely.
+const pingTimeout = 5 * time.Second
+
+// pingDB pings db with a bounded timeout, returning an error instead of hanging
+// forever when the remote database is slow or unreachable.
+func pingDB(db *sql.DB) error {
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+	return db.PingContext(ctx)
+}
 
 type poolEntry struct {
 	db        *sql.DB
@@ -37,7 +50,7 @@ func GetDB(connID int64) (*sql.DB, string, error) {
 	dbPool.RUnlock()
 
 	if ok {
-		if err := entry.db.Ping(); err == nil {
+		if err := pingDB(entry.db); err == nil {
 			// Update lastUsed under write lock to avoid the data race.
 			dbPool.Lock()
 			if e, still := dbPool.entries[connID]; still {
@@ -169,7 +182,7 @@ func GetDBWithSSH(connID int64, sshCfg *SSHConfig, dbHost string, dbPort int) (*
 	entry, ok := dbPool.entries[connID]
 	dbPool.RUnlock()
 	if ok {
-		if err := entry.db.Ping(); err == nil {
+		if err := pingDB(entry.db); err == nil {
 			entry.lastUsed = time.Now()
 			return entry.db, entry.driver, nil
 		}

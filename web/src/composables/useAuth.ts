@@ -33,6 +33,11 @@ window.addEventListener('storage', (event) => {
   }
 })
 
+// Default request timeout so a hung backend surfaces an error instead of an
+// endless spinner. Long-running endpoints (query execution, exports, backups)
+// override this per-call with a larger `timeout`.
+axios.defaults.timeout = 45_000
+
 // Add token to all requests
 axios.interceptors.request.use((config) => {
   if (token.value) {
@@ -52,6 +57,12 @@ axios.interceptors.request.use((config) => {
 axios.interceptors.response.use(
   (response) => response,
   (error) => {
+    // Give request timeouts a clear, user-facing message instead of the opaque
+    // "timeout of 45000ms exceeded" axios default.
+    if (error.code === 'ECONNABORTED' || /timeout/i.test(error.message ?? '')) {
+      error.message = 'Request timed out — the server took too long to respond. Please try again.'
+    }
+
     const status = error.response?.status
     const url: string = error.config?.url ?? ''
 
