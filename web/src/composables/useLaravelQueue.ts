@@ -128,7 +128,7 @@ export function useLaravelQueue() {
     return data
   }
 
-  async function fetchJobs(connId: number, params: { queue: string; db?: number; prefix?: string; limit?: number }) {
+  async function fetchJobs(connId: number, params: { queue: string; db?: number; prefix?: string; limit?: number; offset?: number }) {
     const { data } = await axios.get<{ queue: string; jobs: LaravelQueueJob[] }>(`/api/connections/${connId}/laravel-queue/jobs`, {
       params,
     })

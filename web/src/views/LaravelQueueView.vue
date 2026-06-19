@@ -51,6 +51,9 @@ const prefix = ref('queues')
 const queues = ref<LaravelQueueSummary[]>([])
 const selectedQueue = ref('default')
 const jobs = ref<LaravelQueueJob[]>([])
+const jobsOffset = ref(0)
+const loadingMoreJobs = ref(false)
+const JOBS_PAGE_SIZE = 100
 const activeJobs = ref<LaravelActiveJob[]>([])
 const activeHorizon = ref(false)
 const loadingActive = ref(false)
@@ -200,6 +203,19 @@ const filteredFailedJobs = computed(() => {
 })
 const selectedFailedJob = computed(() => failedJobs.value.find(job => job.id === selectedFailedJobId.value) ?? filteredFailedJobs.value[0] ?? null)
 const selectedSummary = computed(() => queues.value.find(queue => queue.name === selectedQueue.value) ?? null)
+// True per-state totals from the queue summary (LLEN/ZCARD), independent of the
+// capped batch currently loaded into the table.
+const jobsTotal = computed(() => {
+  const s = selectedSummary.value
+  return s ? s.ready + s.delayed + s.reserved : jobs.value.length
+})
+const hasMoreJobs = computed(() => {
+  const s = selectedSummary.value
+  if (!s) return false
+  // Each state is paged with the same offset window, so more remain whenever any
+  // state still has rows beyond what's been loaded.
+  return stateCount('ready') < s.ready || stateCount('delayed') < s.delayed || stateCount('reserved') < s.reserved
+})
 const detailFullscreenTitle = computed(() => {
   if (activeState.value === 'failed' && selectedFailedJob.value) {
     return selectedFailedJob.value.payload?.displayName || selectedFailedJob.value.payload?.job || 'Failed job'
@@ -443,9 +459,11 @@ async function loadJobs() {
       queue: selectedQueue.value,
       db: selectedDb.value,
       prefix: prefix.value,
-      limit: 100,
+      limit: JOBS_PAGE_SIZE,
+      offset: 0,
     })
     jobs.value = data.jobs
+    jobsOffset.value = 0
     selectedJobId.value = filteredJobs.value[0]?.id ?? ''
     selectedJobIds.value = new Set([...selectedJobIds.value].filter(id => jobs.value.some(job => job.id === id)))
     recordTimelineSample()
@@ -453,6 +471,29 @@ async function loadJobs() {
     toast.error(errorMessage(err, 'Failed to load Laravel queue jobs'))
   } finally {
     loadingJobs.value = false
+  }
+}
+
+async function loadMoreJobs() {
+  if (!activeConn.value || !isRedis.value || !selectedQueue.value || loadingMoreJobs.value) return
+  loadingMoreJobs.value = true
+  try {
+    const nextOffset = jobsOffset.value + JOBS_PAGE_SIZE
+    const data = await fetchJobs(activeConn.value.id, {
+      queue: selectedQueue.value,
+      db: selectedDb.value,
+      prefix: prefix.value,
+      limit: JOBS_PAGE_SIZE,
+      offset: nextOffset,
+    })
+    const existing = new Set(jobs.value.map(job => job.id))
+    jobs.value = [...jobs.value, ...data.jobs.filter(job => !existing.has(job.id))]
+    jobsOffset.value = nextOffset
+    recordTimelineSample()
+  } catch (err) {
+    toast.error(errorMessage(err, 'Failed to load more jobs'))
+  } finally {
+    loadingMoreJobs.value = false
   }
 }
 
@@ -1877,10 +1918,10 @@ function errorMessage(err: unknown, fallback: string) {
 
         <div class="lq-tabs">
           <template v-if="isRedis">
-            <button class="lq-tab" :class="{ active: activeState === 'all' }" @click="activeState = 'all'">All <span>{{ jobs.length }}</span></button>
-            <button class="lq-tab" :class="{ active: activeState === 'ready' }" @click="activeState = 'ready'">Ready <span>{{ stateCount('ready') }}</span></button>
-            <button class="lq-tab" :class="{ active: activeState === 'delayed' }" @click="activeState = 'delayed'">Delayed <span>{{ stateCount('delayed') }}</span></button>
-            <button class="lq-tab" :class="{ active: activeState === 'reserved' }" @click="activeState = 'reserved'">Reserved <span>{{ stateCount('reserved') }}</span></button>
+            <button class="lq-tab" :class="{ active: activeState === 'all' }" @click="activeState = 'all'">All <span>{{ jobsTotal }}</span></button>
+            <button class="lq-tab" :class="{ active: activeState === 'ready' }" @click="activeState = 'ready'">Ready <span>{{ selectedSummary?.ready ?? stateCount('ready') }}</span></button>
+            <button class="lq-tab" :class="{ active: activeState === 'delayed' }" @click="activeState = 'delayed'">Delayed <span>{{ selectedSummary?.delayed ?? stateCount('delayed') }}</span></button>
+            <button class="lq-tab" :class="{ active: activeState === 'reserved' }" @click="activeState = 'reserved'">Reserved <span>{{ selectedSummary?.reserved ?? stateCount('reserved') }}</span></button>
             <button class="lq-tab" :class="{ active: activeState === 'active' }" @click="activeState = 'active'; loadActiveJobs()">
               Active <span>{{ activeJobs.length }}</span>
               <span v-if="staleActiveCount" class="lq-tab-stale">{{ staleActiveCount }} stale</span>
@@ -1997,6 +2038,17 @@ function errorMessage(err: unknown, fallback: string) {
               </tbody>
             </table>
             <div v-if="!loadingJobs && filteredJobs.length === 0" class="lq-empty-inline">No jobs in this state.</div>
+            <div v-if="jobs.length > 0" class="lq-loadmore">
+              <span class="lq-loadmore__count">Showing {{ jobs.length }} of {{ jobsTotal }} jobs</span>
+              <button
+                v-if="hasMoreJobs"
+                class="base-btn base-btn--ghost base-btn--sm"
+                :disabled="loadingMoreJobs"
+                @click="loadMoreJobs"
+              >
+                {{ loadingMoreJobs ? 'Loading…' : 'Load more' }}
+              </button>
+            </div>
           </section>
 
           <section v-else class="lq-jobs">
@@ -3202,6 +3254,20 @@ function errorMessage(err: unknown, fallback: string) {
   padding: 24px;
   color: var(--text-muted);
   font-size: 13px;
+}
+
+.lq-loadmore {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.lq-loadmore__count {
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .lq-detail {

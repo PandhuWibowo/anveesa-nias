@@ -156,9 +156,12 @@ func LaravelQueueJobs() http.HandlerFunc {
 
 		prefix := laravelQueuePrefix(r)
 		limit := queryInt(r, "limit", 100, 1, 500)
+		offset := queryInt(r, "offset", 0, 0, 1<<30)
+		start := strconv.Itoa(offset)
+		stop := strconv.Itoa(offset + limit - 1)
 		jobs := make([]laravelQueueJob, 0, limit)
 
-		readyRaw, err := client.command(r.Context(), "LRANGE", laravelQueueKey(prefix, queue, ""), "0", strconv.Itoa(limit-1))
+		readyRaw, err := client.command(r.Context(), "LRANGE", laravelQueueKey(prefix, queue, ""), start, stop)
 		if err != nil {
 			http.Error(w, jsonError("redis lrange failed: "+err.Error()), http.StatusBadGateway)
 			return
@@ -168,7 +171,7 @@ func LaravelQueueJobs() http.HandlerFunc {
 		}
 
 		for _, state := range []string{"delayed", "reserved"} {
-			raw, err := client.command(r.Context(), "ZRANGE", laravelQueueKey(prefix, queue, state), "0", strconv.Itoa(limit-1), "WITHSCORES")
+			raw, err := client.command(r.Context(), "ZRANGE", laravelQueueKey(prefix, queue, state), start, stop, "WITHSCORES")
 			if err != nil {
 				http.Error(w, jsonError("redis zrange failed: "+err.Error()), http.StatusBadGateway)
 				return
