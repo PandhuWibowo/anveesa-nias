@@ -58,6 +58,37 @@ export interface LaravelHorizonSummary {
   sample_keys: string[]
 }
 
+export interface LaravelHorizonJob {
+  id: string
+  name: string
+  queue: string
+  connection?: string
+  status: string
+  queued_at?: string
+  reserved_at?: string
+  completed_at?: string
+  failed_at?: string
+  runtime?: number
+  attempts?: number
+  exception?: string
+}
+
+export interface LaravelHorizonStats {
+  window: number
+  completed: number
+  failed: number
+  pending: number
+  avg_runtime: number
+  max_runtime: number
+}
+
+export interface LaravelHorizonJobs {
+  detected: boolean
+  total: number
+  jobs: LaravelHorizonJob[]
+  stats: LaravelHorizonStats
+}
+
 export interface LaravelQueueFeatureFlags {
   retry: boolean
   delete: boolean
@@ -180,6 +211,13 @@ export function useLaravelQueue() {
     return data
   }
 
+  async function fetchHorizonJobs(connId: number, opts: { db?: number; limit?: number; offset?: number } = {}) {
+    const { data } = await axios.get<LaravelHorizonJobs>(`/api/connections/${connId}/laravel-queue/horizon/jobs`, {
+      params: { db: opts.db, limit: opts.limit ?? 50, offset: opts.offset ?? 0 },
+    })
+    return data
+  }
+
   async function fetchOpsSettings(connId: number) {
     const { data } = await axios.get<LaravelQueueOpsSettings>(`/api/connections/${connId}/laravel-queue/ops-settings`)
     return data
@@ -248,6 +286,7 @@ export function useLaravelQueue() {
     retryFailedJob,
     deleteFailedJob,
     fetchHorizon,
+    fetchHorizonJobs,
     fetchOpsSettings,
     saveOpsSettings,
     fetchQueueAudit,

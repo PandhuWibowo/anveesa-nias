@@ -210,9 +210,31 @@ const pageAfterCursors = ref(new Map<number, any[]>())
 const totalPages  = computed(() => Math.max(1, Math.ceil(totalHits.value / pageSize.value)))
 const pageTo      = computed(() => Math.min(currentPage.value * pageSize.value, totalHits.value))
 
+// Elasticsearch rejects from + size > index.max_result_window (default 10,000).
+// Any page whose last result sits within that window can be jumped to directly
+// via from:; deeper pages still require stepping through search_after cursors.
+const MAX_RESULT_WINDOW = 10000
+const maxJumpablePage = computed(() => Math.max(1, Math.floor(MAX_RESULT_WINDOW / pageSize.value)))
+const jumpTarget = computed(() => Math.min(totalPages.value, maxJumpablePage.value))
+const jumpPageInput = ref<number | null>(null)
+
 function canGoToPage(p: number): boolean {
   if (p === 1) return true
-  return pageAfterCursors.value.has(p)
+  if (p < 1 || p > totalPages.value) return false
+  // Reachable directly (within the from window) or already cursor-cached.
+  return p <= maxJumpablePage.value || pageAfterCursors.value.has(p)
+}
+
+function jumpToInputPage() {
+  const p = Math.trunc(Number(jumpPageInput.value))
+  if (!Number.isFinite(p) || p < 1) return
+  const target = Math.min(p, totalPages.value)
+  if (!canGoToPage(target)) {
+    toast.error(`Page ${target.toLocaleString()} is beyond the ${MAX_RESULT_WINDOW.toLocaleString()}-result jump window — use Next to step further, or narrow the filters/time range.`)
+    return
+  }
+  jumpPageInput.value = null
+  goToPage(target)
 }
 
 // Visible page window (up to 7 buttons)
@@ -1142,6 +1164,19 @@ function hitKey(hit: Hit, idx: number): string {
         <span class="disc-pg-info">
           Page {{ currentPage }} of {{ totalPages.toLocaleString() }}
         </span>
+
+        <span class="disc-pg-jump">
+          <input
+            v-model.number="jumpPageInput"
+            class="base-input disc-pg-jump-input"
+            type="number"
+            min="1"
+            :max="totalPages"
+            :placeholder="`1–${jumpTarget.toLocaleString()}`"
+            :title="`Jump directly to any page up to ${jumpTarget.toLocaleString()} (first ${MAX_RESULT_WINDOW.toLocaleString()} results). Use Next to step deeper.`"
+            @keyup.enter="jumpToInputPage" />
+          <button class="disc-pg-btn disc-pg-nav" :disabled="jumpPageInput == null" @click="jumpToInputPage">Go</button>
+        </span>
       </div>
 
     </template>
@@ -1788,4 +1823,13 @@ export { flatSource }
 .disc-pg-nav { padding: 0 12px; font-size: 13px; }
 .disc-pg-ellipsis { color: var(--text-muted); font-size: 13px; padding: 0 4px; line-height: 28px; }
 .disc-pg-info { font-size: 11.5px; color: var(--text-muted); margin-left: 8px; white-space: nowrap; }
+.disc-pg-jump { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; }
+.disc-pg-jump-input {
+  width: 78px; height: 28px; padding: 0 8px;
+  font-size: 12.5px; text-align: center;
+}
+/* Hide number spinners for a cleaner jump box */
+.disc-pg-jump-input::-webkit-outer-spin-button,
+.disc-pg-jump-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.disc-pg-jump-input { -moz-appearance: textfield; appearance: textfield; }
 </style>

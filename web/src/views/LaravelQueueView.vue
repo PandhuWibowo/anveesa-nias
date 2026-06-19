@@ -9,7 +9,7 @@ function debounce<T extends (...args: unknown[]) => void>(fn: T, ms: number): T 
   }) as T
 }
 import { useConnections } from '@/composables/useConnections'
-import { useLaravelQueue, type LaravelActiveJob, type LaravelFailedJob, type LaravelHorizonSummary, type LaravelQueueAuditItem, type LaravelQueueFeatureFlags, type LaravelQueueJob, type LaravelQueueQuarantineItem, type LaravelQueueRules, type LaravelQueueSummary } from '@/composables/useLaravelQueue'
+import { useLaravelQueue, type LaravelActiveJob, type LaravelFailedJob, type LaravelHorizonJobs, type LaravelHorizonSummary, type LaravelQueueAuditItem, type LaravelQueueFeatureFlags, type LaravelQueueJob, type LaravelQueueQuarantineItem, type LaravelQueueRules, type LaravelQueueSummary } from '@/composables/useLaravelQueue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 
@@ -29,6 +29,7 @@ const {
   retryFailedJob,
   deleteFailedJob,
   fetchHorizon,
+  fetchHorizonJobs,
   fetchOpsSettings,
   saveOpsSettings,
   fetchQueueAudit,
@@ -59,11 +60,14 @@ const activeHorizon = ref(false)
 const loadingActive = ref(false)
 const failedJobs = ref<LaravelFailedJob[]>([])
 const horizon = ref<LaravelHorizonSummary | null>(null)
+const horizonJobs = ref<LaravelHorizonJobs | null>(null)
+const loadingHorizonJobs = ref(false)
+const HORIZON_JOBS_PAGE_SIZE = 50
 const selectedJobId = ref('')
 const selectedFailedJobId = ref<number | null>(null)
 const activeState = ref<'all' | 'ready' | 'delayed' | 'reserved' | 'active' | 'failed'>('all')
 const detailTab = ref<'summary' | 'main' | 'payload' | 'command' | 'exception'>('summary')
-const insightTab = ref<'health' | 'timeline' | 'groups' | 'patterns' | 'quarantine' | 'controls' | 'settings' | 'audit'>('health')
+const insightTab = ref<'health' | 'timeline' | 'groups' | 'patterns' | 'quarantine' | 'controls' | 'settings' | 'audit' | 'executed' | 'docs'>('health')
 const sidebarCollapsed = ref(false)
 const insightsCollapsed = ref(false)
 const detailFullscreenOpen = ref(false)
@@ -573,6 +577,27 @@ async function loadHorizon() {
   } catch {
     horizon.value = null
   }
+}
+
+async function loadHorizonJobs() {
+  if (!activeConn.value || !isRedis.value) return
+  loadingHorizonJobs.value = true
+  try {
+    horizonJobs.value = await fetchHorizonJobs(activeConn.value.id, { db: selectedDb.value, limit: HORIZON_JOBS_PAGE_SIZE })
+  } catch {
+    horizonJobs.value = null
+  } finally {
+    loadingHorizonJobs.value = false
+  }
+}
+
+function formatRuntime(seconds?: number): string {
+  if (!seconds || seconds <= 0) return '-'
+  if (seconds < 1) return `${Math.round(seconds * 1000)}ms`
+  if (seconds < 60) return `${seconds.toFixed(2)}s`
+  const m = Math.floor(seconds / 60)
+  const s = Math.round(seconds % 60)
+  return `${m}m ${s}s`
 }
 
 async function loadFailedJobs() {
@@ -1705,7 +1730,9 @@ function errorMessage(err: unknown, fallback: string) {
               <button class="lq-insight-tab" :class="{ active: insightTab === 'quarantine' }" @click="insightTab = 'quarantine'; insightsCollapsed = false">Quarantine</button>
               <button class="lq-insight-tab" :class="{ active: insightTab === 'controls' }" @click="insightTab = 'controls'; insightsCollapsed = false">Controls</button>
               <button class="lq-insight-tab" :class="{ active: insightTab === 'settings' }" @click="insightTab = 'settings'; insightsCollapsed = false">Settings</button>
+              <button class="lq-insight-tab" :class="{ active: insightTab === 'executed' }" @click="insightTab = 'executed'; insightsCollapsed = false; loadHorizonJobs()">Executed</button>
               <button class="lq-insight-tab" :class="{ active: insightTab === 'audit' }" @click="insightTab = 'audit'; insightsCollapsed = false; loadQueueAudit()">Audit</button>
+              <button class="lq-insight-tab" :class="{ active: insightTab === 'docs' }" @click="insightTab = 'docs'; insightsCollapsed = false">Docs</button>
             </div>
             <button class="lq-insights-toggle" :title="insightsCollapsed ? 'Show insights' : 'Hide insights'" @click="insightsCollapsed = !insightsCollapsed">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1895,6 +1922,148 @@ function errorMessage(err: unknown, fallback: string) {
                 </div>
               </Transition>
             </div>
+          </div>
+
+          <div v-if="insightTab === 'executed'" class="lq-executed">
+            <div class="lq-executed__bar">
+              <div class="lq-executed__hint">
+                Recently executed jobs recorded by Horizon (<code>horizon:recent_jobs</code>). Succeeded jobs only
+                appear here when Horizon is running — a plain <code>queue:work</code> worker deletes jobs on success.
+              </div>
+              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="loadingHorizonJobs" @click="loadHorizonJobs">
+                {{ loadingHorizonJobs ? 'Loading…' : 'Refresh' }}
+              </button>
+            </div>
+
+            <div v-if="!horizonJobs && !loadingHorizonJobs" class="lq-muted">Open this tab or hit Refresh to load executed jobs.</div>
+            <div v-else-if="horizonJobs && !horizonJobs.detected" class="lq-muted">
+              Horizon not detected on this connection / DB. No executed-job history is available.
+            </div>
+            <template v-else-if="horizonJobs">
+              <div class="lq-executed__stats">
+                <div class="lq-stat">
+                  <span class="lq-stat__value">{{ horizonJobs.total.toLocaleString() }}</span>
+                  <span class="lq-stat__label">Retained by Horizon</span>
+                </div>
+                <div class="lq-stat is-success">
+                  <span class="lq-stat__value">{{ horizonJobs.stats.completed }}</span>
+                  <span class="lq-stat__label">Completed (window)</span>
+                </div>
+                <div class="lq-stat is-danger">
+                  <span class="lq-stat__value">{{ horizonJobs.stats.failed }}</span>
+                  <span class="lq-stat__label">Failed (window)</span>
+                </div>
+                <div class="lq-stat">
+                  <span class="lq-stat__value">{{ formatRuntime(horizonJobs.stats.avg_runtime) }}</span>
+                  <span class="lq-stat__label">Avg runtime</span>
+                </div>
+                <div class="lq-stat">
+                  <span class="lq-stat__value">{{ formatRuntime(horizonJobs.stats.max_runtime) }}</span>
+                  <span class="lq-stat__label">Max runtime</span>
+                </div>
+              </div>
+
+              <div v-if="horizonJobs.jobs.length === 0" class="lq-muted">No executed jobs in the retained window.</div>
+              <table v-else class="lq-executed__table">
+                <thead>
+                  <tr><th>Status</th><th>Job</th><th>Queue</th><th>Runtime</th><th>Finished</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="job in horizonJobs.jobs" :key="job.id" :title="job.exception || ''">
+                    <td><span class="lq-state" :data-state="job.status === 'completed' ? 'ready' : (job.status === 'failed' ? 'failed' : 'reserved')">{{ job.status || 'unknown' }}</span></td>
+                    <td class="lq-executed__name">{{ job.name || '-' }}</td>
+                    <td>{{ job.queue || '-' }}</td>
+                    <td>{{ formatRuntime(job.runtime) }}</td>
+                    <td>{{ formatDate(job.completed_at || job.failed_at || job.reserved_at || '') || '-' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </template>
+          </div>
+
+          <div v-if="insightTab === 'docs'" class="lq-docs">
+            <p class="lq-docs__intro">
+              This screen reads a Laravel queue straight from Redis. Below is how to read the states,
+              what the columns mean, and how to tell whether jobs are actually being worked.
+            </p>
+
+            <div class="lq-docs__section">
+              <h4 class="lq-docs__h">Job states</h4>
+              <p>Every job lives in exactly one state. The counters at the top and the state tabs map to these:</p>
+              <table class="lq-docs__table">
+                <thead>
+                  <tr><th>State</th><th>Where it lives in Redis</th><th>Meaning</th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><span class="lq-state" data-state="ready">READY</span></td>
+                    <td>The queue <strong>list</strong> (<code>queues:&lt;name&gt;</code>)</td>
+                    <td>Dispatched and waiting to be picked up. Available <em>now</em>; the next free worker pops it off.</td>
+                  </tr>
+                  <tr>
+                    <td><span class="lq-state" data-state="delayed">DELAYED</span></td>
+                    <td>Sorted set <code>:delayed</code>, score = run-at time</td>
+                    <td>Scheduled for the future (e.g. <code>-&gt;delay(...)</code>). Becomes <em>ready</em> when its time arrives.</td>
+                  </tr>
+                  <tr>
+                    <td><span class="lq-state" data-state="reserved">RESERVED</span></td>
+                    <td>Sorted set <code>:reserved</code>, score = retry deadline</td>
+                    <td>A worker has pulled it and is processing it right now. Should be brief.</td>
+                  </tr>
+                  <tr>
+                    <td><span class="lq-state" data-state="failed">FAILED</span></td>
+                    <td><code>failed_jobs</code> table (SQL connection)</td>
+                    <td>Ran and threw after exhausting retries. Loaded separately via <strong>Load Failed</strong>.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="lq-docs__section">
+              <h4 class="lq-docs__h">Reading the columns</h4>
+              <ul class="lq-docs__list">
+                <li><strong>Attempts</strong> — how many times a worker has tried this job. <code>0</code> on every row means nothing has ever picked them up.</li>
+                <li><strong>Available At</strong> — when the job becomes eligible to run. Only <em>delayed</em> and <em>reserved</em> jobs carry a timestamp (their sorted-set score). <strong>Ready jobs show <code>-</code> because they are already available</strong> — there is nothing to wait for. <em>Available</em> and <em>Age</em> in the detail panel are blank for the same reason.</li>
+                <li><strong>Max Tries / Timeout / Backoff</strong> — read from the job payload; how Laravel will retry it.</li>
+              </ul>
+            </div>
+
+            <div class="lq-docs__section">
+              <h4 class="lq-docs__h">Is the queue actually being worked?</h4>
+              <p>A job reaches Redis in two steps: the app <strong>dispatches</strong> it (producer) and a <strong>worker</strong> pulls it off and runs it (consumer). A healthy queue shows movement between Ready → Reserved → done.</p>
+              <p>Warning signs that <strong>nothing is consuming</strong> the queue:</p>
+              <ul class="lq-docs__list">
+                <li>A large and growing <strong>Ready</strong> count with <strong>Reserved 0 / Active 0</strong>.</li>
+                <li><strong>Attempts = 0</strong> on every job — they have never been touched.</li>
+                <li><strong>Horizon: not detected</strong> — the worker supervisor isn't visible.</li>
+              </ul>
+              <p>The producer is fine in that case (that's why the list grows); the consumer is the problem.</p>
+            </div>
+
+            <div class="lq-docs__section">
+              <h4 class="lq-docs__h">Common causes &amp; what to check on the server</h4>
+              <ul class="lq-docs__list">
+                <li><strong>No worker running</strong> — Horizon / <code>queue:work</code> crashed, was stopped, or the supervisor that keeps it alive died.</li>
+                <li><strong>Worker on the wrong queue</strong> — it's listening to <code>default</code> but these jobs are on <code>subscription</code>. It looks "running" but ignores this list.</li>
+                <li><strong>Wrong connection / DB / prefix</strong> — the worker points at a different Redis connection, DB, or queue prefix than where the jobs land.</li>
+              </ul>
+              <p>This tool only sees Redis, so confirm the cause on the box:</p>
+              <pre class="lq-docs__code">php artisan horizon:status            # if using Horizon
+ps aux | grep -E 'horizon|queue:work' # is a worker process alive?
+sudo supervisorctl status             # did the supervisor crash-loop?
+tail -n 100 storage/logs/laravel.log  # why the worker dies on boot
+# check the 'queue' list in config/horizon.php (or the --queue= flag)</pre>
+            </div>
+
+            <div class="lq-docs__section">
+              <h4 class="lq-docs__h">Note on Failed</h4>
+              <p>A non-zero <strong>Failed</strong> count means jobs <em>did</em> run and error at some earlier point (the list is capped, e.g. at 100). If Ready is piling up but Failed is non-zero, the queue used to be processed and something <strong>changed or stopped recently</strong> — often a deploy or a crashed worker.</p>
+            </div>
+
+            <p class="lq-docs__intro">
+              <strong>Left panel:</strong> pick the <em>Redis DB</em> and <em>Queue Prefix</em> that match your worker's connection,
+              then <em>Refresh</em>. The <strong>Controls</strong> tab can pause/resume Horizon once a Laravel agent is configured.
+            </p>
           </div>
             </div>
           </Transition>
@@ -3238,6 +3407,184 @@ function errorMessage(err: unknown, fallback: string) {
 .lq-state--failed {
   color: var(--danger);
   background: var(--danger-bg);
+}
+
+.lq-state[data-state="failed"] { color: var(--danger); background: var(--danger-bg); }
+
+.lq-executed {
+  padding: 4px 2px 8px;
+}
+
+.lq-executed__bar {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.lq-executed__hint {
+  max-width: 720px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.lq-executed__hint code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.lq-executed__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.lq-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 120px;
+  padding: 10px 14px;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.2));
+  border-radius: 10px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.06));
+}
+
+.lq-stat__value {
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.lq-stat__label {
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.lq-stat.is-success .lq-stat__value { color: var(--success); }
+.lq-stat.is-danger .lq-stat__value { color: var(--danger); }
+
+.lq-executed__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.lq-executed__table th,
+.lq-executed__table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border, rgba(127, 127, 127, 0.16));
+  text-align: left;
+  vertical-align: middle;
+}
+
+.lq-executed__table th {
+  color: var(--text-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.lq-executed__name {
+  max-width: 380px;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lq-docs {
+  max-width: 880px;
+  padding: 4px 2px 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.lq-docs__intro {
+  margin: 0 0 14px;
+  color: var(--text-secondary);
+}
+
+.lq-docs__section {
+  margin: 0 0 18px;
+}
+
+.lq-docs__h {
+  margin: 0 0 8px;
+  color: var(--text-primary);
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+.lq-docs p {
+  margin: 0 0 8px;
+}
+
+.lq-docs__list {
+  margin: 0 0 8px;
+  padding-left: 18px;
+}
+
+.lq-docs__list li {
+  margin-bottom: 5px;
+}
+
+.lq-docs code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.lq-docs__code {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.2));
+  border-radius: 8px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.08));
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.lq-docs__table {
+  width: 100%;
+  margin: 4px 0 0;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.lq-docs__table th,
+.lq-docs__table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border, rgba(127, 127, 127, 0.18));
+  text-align: left;
+  vertical-align: top;
+}
+
+.lq-docs__table th {
+  color: var(--text-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.lq-docs__table td:first-child {
+  white-space: nowrap;
 }
 
 .lq-job-name {
