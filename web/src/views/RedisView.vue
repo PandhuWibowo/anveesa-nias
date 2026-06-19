@@ -71,6 +71,7 @@ const monitorMessages = ref<RedisMonitorMessage[]>([])
 const monitoring = ref(false)
 const monitorError = ref('')
 let monitorStop: (() => void) | null = null
+const helpOpen = ref(false)
 
 const redisTypes: Array<{ value: RedisWritableType; label: string }> = [
   { value: 'string', label: 'String' },
@@ -849,6 +850,7 @@ function quoteCommandArg(value: string) {
             <span v-if="value" class="redis-breadcrumbs__key">{{ value.key }}</span>
           </div>
           <div class="redis-main-actions">
+            <button class="base-btn base-btn--ghost base-btn--sm" title="How this page works" @click="helpOpen = true">? Guide</button>
             <button class="base-btn base-btn--ghost base-btn--sm" :disabled="loadingKeys || !redisUsable" @click="loadKeys(true)">Refresh</button>
             <button v-if="redisConnected" class="base-btn base-btn--ghost base-btn--sm" :disabled="reconnecting" @click="disconnectRedis">Disconnect</button>
             <button v-else class="base-btn base-btn--primary base-btn--sm" :disabled="reconnecting" @click="reconnectRedis(true)">{{ reconnecting ? 'Connecting...' : 'Reconnect' }}</button>
@@ -1160,6 +1162,57 @@ function quoteCommandArg(value: string) {
         <div class="redis-editor__actions">
           <button class="base-btn base-btn--ghost base-btn--sm" @click="ttlEditOpen = false">Cancel</button>
           <button class="base-btn base-btn--primary base-btn--sm" :disabled="savingTtl || !redisUsable" @click="saveTtl">{{ savingTtl ? 'Saving…' : 'Save TTL' }}</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="helpOpen" class="redis-modal" @click.self="helpOpen = false">
+      <div class="redis-modal__panel">
+        <div class="redis-modal__head">
+          <div class="redis-modal__title">Redis Explorer — Guide</div>
+          <button class="base-btn base-btn--ghost base-btn--sm" @click="helpOpen = false">Close</button>
+        </div>
+        <div class="redis-guide">
+          <p class="redis-guide__intro">
+            A workbench for any connection whose driver is <code>redis</code>. Browse keys, edit every data type,
+            run commands and scripts, inspect server health, and tail pub/sub — all audited and permission-gated.
+          </p>
+
+          <h4 class="redis-guide__h">Explorer (left sidebar)</h4>
+          <ul class="redis-guide__list">
+            <li><strong>Connection card</strong> — name, host:port, and live status with ping latency. Use <strong>Disconnect</strong> / <strong>Reconnect</strong> to drop or re-verify the session.</li>
+            <li><strong>DB selector</strong> — switch between databases 0–15; each shows its key count from <code>INFO keyspace</code>.</li>
+            <li><strong>Filter</strong> — a glob pattern (default <code>*</code>) passed to <code>SCAN</code>. Keys load 100 at a time via <strong>Load more</strong> — never <code>KEYS *</code>, so it is safe on large databases.</li>
+            <li><strong>Tree / Flat</strong> — Tree groups keys by the prefix before the first <code>:</code> (e.g. <code>app:user:1</code> → group <code>app</code>).</li>
+            <li>Each row shows the key <strong>type</strong> and <strong>TTL</strong> (<code>no expiry</code>, <code>missing</code>, or a duration like <code>45s</code>).</li>
+          </ul>
+
+          <h4 class="redis-guide__h">Tabs</h4>
+          <ul class="redis-guide__list">
+            <li><strong>▦ Data</strong> — reads the selected key with type-aware commands (GET / HGETALL / LRANGE / SSCAN / ZRANGE / XRANGE / JSON.GET). Shows type, TTL, item count, memory, a filterable row table, and a click-to-expand JSON modal (Laravel jobs are parsed into a readable card). Large collections preview with <strong>Load more rows</strong> (up to 5000).</li>
+            <li><strong>✎ Edit</strong> — create or replace a key across 7 types (string, hash, list, set, zset, stream, json) with a live <strong>Command Preview</strong>. Also hosts <strong>Rename</strong> (RENAMENX — won't overwrite) and <strong>Move</strong> (between DBs). Saving does DEL then re-create, so set a TTL explicitly or it resets.</li>
+            <li><strong>⌘ Script</strong> — generate a replayable command script for one key or a whole pattern, edit it, then run it (max 100 commands; stops at the first error).</li>
+            <li><strong>&gt;_ Console</strong> — run one ad-hoc command. Destructive commands (FLUSHALL, CONFIG, EVAL, SHUTDOWN, …) are blocked server-side.</li>
+            <li><strong>◷ Server</strong> — parsed <code>INFO</code> stats (version, memory, clients, ops/sec, hits/misses), keyspace summary, and the slow log.</li>
+            <li><strong>📡 Monitor</strong> — subscribe to a channel or glob pattern and tail pub/sub messages live (SUBSCRIBE / PSUBSCRIBE), streamed over SSE for up to 10 minutes.</li>
+          </ul>
+
+          <h4 class="redis-guide__h">Value formats (Edit tab)</h4>
+          <ul class="redis-guide__list">
+            <li><strong>string</strong> — plain text.</li>
+            <li><strong>hash</strong> — JSON object <code>{ "field": "value" }</code>.</li>
+            <li><strong>list / set</strong> — JSON array of strings.</li>
+            <li><strong>zset</strong> — JSON array <code>[{ "member": "x", "score": 1 }]</code>.</li>
+            <li><strong>stream</strong> — JSON object of fields.</li>
+            <li><strong>json</strong> — any valid JSON (RedisJSON).</li>
+          </ul>
+
+          <h4 class="redis-guide__h">Good to know</h4>
+          <ul class="redis-guide__list">
+            <li>The connection's <code>database</code> field is a numeric DB index (default 0), not a name. Default port is 6379.</li>
+            <li>Read actions need <code>connections.view</code> or <code>schema.browse</code>; writes need <code>connections.edit</code> or <code>schema.browse</code>.</li>
+            <li>Every action is recorded in the audit log with the acting user, connection, and target key.</li>
+          </ul>
         </div>
       </div>
     </div>
@@ -1946,6 +1999,45 @@ html[data-theme='light'] .redis-data-table tbody tr:nth-child(even) td {
   flex: 1;
   min-height: 120px;
   max-height: none;
+}
+
+.redis-guide {
+  overflow-y: auto;
+  padding-right: 6px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+
+.redis-guide__intro {
+  margin: 0 0 14px;
+  color: var(--text-secondary);
+}
+
+.redis-guide__h {
+  margin: 16px 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--brand);
+}
+
+.redis-guide__list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.redis-guide__list li {
+  margin-bottom: 6px;
+}
+
+.redis-guide code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-body);
+  font-family: var(--mono);
+  font-size: 11.5px;
 }
 
 .redis-job-card {
