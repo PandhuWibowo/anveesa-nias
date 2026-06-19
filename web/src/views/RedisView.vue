@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useConnections } from '@/composables/useConnections'
-import { useRedis, type RedisKeySummary, type RedisScriptResult, type RedisValueResponse, type RedisWritableType } from '@/composables/useRedis'
+import { useRedis, type RedisInfoResponse, type RedisKeySummary, type RedisMonitorMessage, type RedisScriptResult, type RedisSlowlogEntry, type RedisValueResponse, type RedisWritableType } from '@/composables/useRedis'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 
@@ -9,7 +9,7 @@ const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
 
 const { connections, fetchConnections } = useConnections()
-const { ping, fetchKeys, fetchValue, saveKey, deleteKey, renameKey, moveKey, runCommand, generateScript, executeScript } = useRedis()
+const { ping, fetchKeys, fetchValue, saveKey, deleteKey, renameKey, moveKey, runCommand, generateScript, executeScript, setTtl, fetchInfo, fetchSlowlog, monitor } = useRedis()
 const toast = useToast()
 const { confirm } = useConfirm()
 
@@ -27,7 +27,7 @@ const connectionError = ref('')
 const lastPingMs = ref<number | null>(null)
 let keyLoadSeq = 0
 let valueLoadSeq = 0
-const activeWorkTab = ref<'value' | 'edit' | 'script' | 'console'>('value')
+const activeWorkTab = ref<'value' | 'edit' | 'script' | 'console' | 'info' | 'monitor'>('value')
 const saving = ref(false)
 const editorOpen = ref(false)
 const editingExisting = ref(false)
@@ -52,6 +52,25 @@ const editorPanel = ref<HTMLElement | null>(null)
 const renamePanel = ref<HTMLElement | null>(null)
 const movePanel = ref<HTMLElement | null>(null)
 const scriptPanel = ref<HTMLElement | null>(null)
+
+const valueLimit = ref(100)
+const loadingMore = ref(false)
+const rowFilter = ref('')
+const jsonModalOpen = ref(false)
+const jsonModalRow = ref<{ key: string; value: string } | null>(null)
+const ttlEditOpen = ref(false)
+const ttlEditValue = ref(0)
+const savingTtl = ref(false)
+const keyspaceCounts = ref<Record<string, number>>({})
+const infoData = ref<RedisInfoResponse | null>(null)
+const loadingInfo = ref(false)
+const slowlog = ref<RedisSlowlogEntry[]>([])
+const loadingSlowlog = ref(false)
+const monitorChannel = ref('')
+const monitorMessages = ref<RedisMonitorMessage[]>([])
+const monitoring = ref(false)
+const monitorError = ref('')
+let monitorStop: (() => void) | null = null
 
 const redisTypes: Array<{ value: RedisWritableType; label: string }> = [
   { value: 'string', label: 'String' },
@@ -123,6 +142,48 @@ const keyTypeCounts = computed(() => {
     .map(([type, count]) => ({ type, count }))
 })
 
+const allValueRows = computed(() => (value.value ? valueRows(value.value.value) : []))
+
+const filteredValueRows = computed(() => {
+  const term = rowFilter.value.trim().toLowerCase()
+  if (!term) return allValueRows.value
+  return allValueRows.value.filter(
+    (row) => row.key.toLowerCase().includes(term) || row.value.toLowerCase().includes(term),
+  )
+})
+
+// Detects a Laravel queue job payload and surfaces its readable fields.
+const modalLaravelJob = computed(() => {
+  if (!jsonModalRow.value) return null
+  let parsed: any
+  try {
+    parsed = JSON.parse(jsonModalRow.value.value)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object' || (!parsed.displayName && !parsed.job)) return null
+  return {
+    uuid: parsed.uuid ?? '',
+    displayName: parsed.displayName ?? '',
+    job: parsed.job ?? '',
+    queue: parsed.data?.queue ?? parsed.queue ?? '',
+    commandName: parsed.data?.commandName ?? '',
+    attempts: parsed.attempts ?? 0,
+    maxTries: parsed.maxTries ?? null,
+    timeout: parsed.timeout ?? null,
+    pushedAt: parsed.pushedAt ?? '',
+  }
+})
+
+const modalPretty = computed(() => {
+  if (!jsonModalRow.value) return ''
+  try {
+    return JSON.stringify(JSON.parse(jsonModalRow.value.value), null, 2)
+  } catch {
+    return jsonModalRow.value.value
+  }
+})
+
 onMounted(async () => {
   if (!connections.value.length) await fetchConnections()
   if (!isRedis.value && redisConnections.value.length === 1) {
@@ -133,6 +194,10 @@ onMounted(async () => {
 })
 
 watch(() => props.activeConnId, async () => {
+  stopMonitor()
+  infoData.value = null
+  slowlog.value = []
+  keyspaceCounts.value = {}
   resetRedisWorkspace()
   redisConnected.value = true
   connectionError.value = ''
@@ -142,13 +207,21 @@ watch(() => props.activeConnId, async () => {
 })
 
 watch(selectedDb, async () => {
+  stopMonitor()
+  infoData.value = null
+  slowlog.value = []
   resetRedisWorkspace()
   editorOpen.value = false
   renameOpen.value = false
   moveOpen.value = false
   scriptText.value = ''
-  if (redisUsable.value) await loadKeys(true)
+  if (redisUsable.value) {
+    await loadKeys(true)
+    await loadKeyspaceCounts()
+  }
 })
+
+onBeforeUnmount(() => stopMonitor())
 
 async function loadKeys(reset = false) {
   if (!activeConn.value || !redisUsable.value) return
@@ -171,25 +244,39 @@ async function loadKeys(reset = false) {
   }
 }
 
-async function openKey(key: string) {
+async function openKey(key: string, more = false) {
   if (!activeConn.value || !redisUsable.value) return
   const seq = ++valueLoadSeq
   const db = selectedDb.value
+  if (!more) {
+    valueLimit.value = 100
+    rowFilter.value = ''
+  }
   selectedKey.value = key
-  loadingValue.value = true
+  if (more) loadingMore.value = true
+  else loadingValue.value = true
   try {
-    const result = await fetchValue(activeConn.value.id, key, db)
+    const result = await fetchValue(activeConn.value.id, key, db, valueLimit.value)
     if (seq !== valueLoadSeq || db !== selectedDb.value) return
     value.value = result
-    activeWorkTab.value = 'value'
+    if (!more) activeWorkTab.value = 'value'
   } catch {
     if (seq === valueLoadSeq) {
       connectionError.value = 'Failed to read Redis key'
       toast.error('Failed to read Redis key')
     }
   } finally {
-    if (seq === valueLoadSeq) loadingValue.value = false
+    if (seq === valueLoadSeq) {
+      loadingValue.value = false
+      loadingMore.value = false
+    }
   }
+}
+
+async function loadMoreRows() {
+  if (!value.value || loadingMore.value) return
+  valueLimit.value = Math.min(valueLimit.value + 400, 5000)
+  await openKey(value.value.key, true)
 }
 
 async function openCreateForm() {
@@ -375,6 +462,140 @@ async function scrollToPanel(panel: { value: HTMLElement | null }) {
   panel.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
+async function copyText(text: string, label = 'Value') {
+  try {
+    await navigator.clipboard.writeText(text)
+    toast.success(`${label} copied`)
+  } catch {
+    toast.error('Clipboard not available')
+  }
+}
+
+function copyKey() {
+  if (value.value) copyText(value.value.key, 'Key')
+}
+
+function copyValue() {
+  if (value.value) copyText(formatValue(value.value.value), 'Value')
+}
+
+function openRowJson(row: { key: string; value: string }) {
+  jsonModalRow.value = row
+  jsonModalOpen.value = true
+}
+
+function closeJsonModal() {
+  jsonModalOpen.value = false
+  jsonModalRow.value = null
+}
+
+function openTtlEdit() {
+  if (!value.value) return
+  ttlEditValue.value = value.value.ttl > 0 ? value.value.ttl : 0
+  ttlEditOpen.value = true
+}
+
+async function saveTtl() {
+  if (!activeConn.value || !value.value || !redisUsable.value) return
+  savingTtl.value = true
+  try {
+    await setTtl(activeConn.value.id, value.value.key, Number(ttlEditValue.value || 0), selectedDb.value)
+    toast.success('TTL updated')
+    ttlEditOpen.value = false
+    await openKey(value.value.key)
+  } catch {
+    toast.error('Failed to update TTL')
+  } finally {
+    savingTtl.value = false
+  }
+}
+
+async function loadKeyspaceCounts() {
+  if (!activeConn.value || !redisUsable.value) return
+  try {
+    const info = await fetchInfo(activeConn.value.id, selectedDb.value)
+    keyspaceCounts.value = info.keyspace || {}
+  } catch {
+    /* non-critical */
+  }
+}
+
+async function loadInfo() {
+  if (!activeConn.value || !redisUsable.value) return
+  loadingInfo.value = true
+  try {
+    infoData.value = await fetchInfo(activeConn.value.id, selectedDb.value)
+    keyspaceCounts.value = infoData.value.keyspace || {}
+  } catch {
+    toast.error('Failed to load Redis info')
+  } finally {
+    loadingInfo.value = false
+  }
+}
+
+async function loadSlowlog() {
+  if (!activeConn.value || !redisUsable.value) return
+  loadingSlowlog.value = true
+  try {
+    slowlog.value = await fetchSlowlog(activeConn.value.id, selectedDb.value, 50)
+  } catch {
+    toast.error('Failed to load slow log')
+  } finally {
+    loadingSlowlog.value = false
+  }
+}
+
+function openInfoTab() {
+  activeWorkTab.value = 'info'
+  if (!infoData.value) loadInfo()
+  if (!slowlog.value.length) loadSlowlog()
+}
+
+function startMonitor() {
+  if (!activeConn.value || !redisUsable.value) return
+  const channel = monitorChannel.value.trim()
+  if (!channel) {
+    toast.error('Enter a channel or pattern (e.g. * or events:*)')
+    return
+  }
+  stopMonitor()
+  monitorMessages.value = []
+  monitorError.value = ''
+  monitoring.value = true
+  monitorStop = monitor(
+    activeConn.value.id,
+    channel,
+    selectedDb.value,
+    (msg) => {
+      monitorMessages.value.unshift(msg)
+      if (monitorMessages.value.length > 500) monitorMessages.value.length = 500
+    },
+    (err) => {
+      monitorError.value = err
+      monitoring.value = false
+    },
+  )
+}
+
+function stopMonitor() {
+  if (monitorStop) {
+    monitorStop()
+    monitorStop = null
+  }
+  monitoring.value = false
+}
+
+function formatBytes(bytes?: number) {
+  if (!bytes || bytes < 0) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+}
+
+function infoField(section: string, field: string) {
+  return infoData.value?.sections?.[section]?.[field] ?? '—'
+}
+
 async function runGeneratedScript() {
   if (!activeConn.value || !redisUsable.value || !scriptText.value.trim()) return
   const ok = await confirm('Run this Redis script against the selected connection?', 'Run Redis Script')
@@ -430,6 +651,7 @@ async function reconnectRedis(showToast = true) {
     redisConnected.value = true
     lastPingMs.value = result.latency_ms
     await loadKeys(true)
+    await loadKeyspaceCounts()
     if (showToast) toast.success(`Redis reconnected (${result.latency_ms}ms)`)
   } catch {
     redisConnected.value = false
@@ -540,7 +762,7 @@ function quoteCommandArg(value: string) {
             </div>
           </div>
           <select v-model.number="selectedDb" class="base-input redis-db-select" :disabled="reconnecting" title="Redis database index">
-            <option v-for="db in redisDbIndexes" :key="db" :value="db">DB {{ db }}</option>
+            <option v-for="db in redisDbIndexes" :key="db" :value="db">DB {{ db }}{{ keyspaceCounts[db] ? ` · ${keyspaceCounts[db]}` : '' }}</option>
           </select>
         </div>
 
@@ -638,6 +860,8 @@ function quoteCommandArg(value: string) {
           <button class="redis-tab" :class="{ active: activeWorkTab === 'edit' }" @click="activeWorkTab = 'edit'"><span>✎</span> Edit</button>
           <button class="redis-tab" :class="{ active: activeWorkTab === 'script' }" @click="activeWorkTab = 'script'"><span>⌘</span> Script</button>
           <button class="redis-tab" :class="{ active: activeWorkTab === 'console' }" @click="activeWorkTab = 'console'"><span>&gt;_</span> Console</button>
+          <button class="redis-tab" :class="{ active: activeWorkTab === 'info' }" @click="openInfoTab"><span>◷</span> Server</button>
+          <button class="redis-tab" :class="{ active: activeWorkTab === 'monitor' }" @click="activeWorkTab = 'monitor'"><span>📡</span> Monitor</button>
         </div>
 
         <div v-if="!redisConnected" class="redis-offline-banner">
@@ -658,6 +882,9 @@ function quoteCommandArg(value: string) {
                 </div>
               </div>
               <div class="redis-detail__actions">
+                <button class="base-btn base-btn--ghost base-btn--sm" title="Copy key name" @click="copyKey">Copy Key</button>
+                <button class="base-btn base-btn--ghost base-btn--sm" title="Copy full value" @click="copyValue">Copy Value</button>
+                <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!redisUsable" @click="openTtlEdit">TTL</button>
                 <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!redisUsable" @click="openEditForm">Edit</button>
                 <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!redisUsable" @click="openRenameForm">Rename</button>
                 <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!redisUsable" @click="openMoveForm">Move</button>
@@ -670,7 +897,14 @@ function quoteCommandArg(value: string) {
               <span class="redis-data-toolbar__item">{{ value.type }}</span>
               <span class="redis-data-toolbar__item">TTL {{ ttlLabel(value.ttl) }}</span>
               <span v-if="value.length != null" class="redis-data-toolbar__item">{{ value.length }} row{{ value.length === 1 ? '' : 's' }}</span>
-              <span v-if="value.truncated" class="redis-data-toolbar__item">Preview</span>
+              <span class="redis-data-toolbar__item">{{ formatBytes(value.memory_bytes) }}</span>
+              <span v-if="value.truncated" class="redis-data-toolbar__item">Showing {{ allValueRows.length }}</span>
+              <input
+                v-if="allValueRows.length"
+                v-model="rowFilter"
+                class="base-input redis-row-filter"
+                placeholder="Filter rows…"
+              />
             </div>
 
             <div class="redis-table-wrap">
@@ -679,15 +913,29 @@ function quoteCommandArg(value: string) {
                   <tr>
                     <th>Key / Index</th>
                     <th>Value</th>
+                    <th class="redis-data-table__action"></th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="row in valueRows(value.value)" :key="row.key">
+                  <tr v-for="row in filteredValueRows" :key="row.key" class="redis-data-row" @click="openRowJson(row)">
                     <td>{{ row.key }}</td>
                     <td><code>{{ row.value }}</code></td>
+                    <td class="redis-data-table__action">
+                      <button class="redis-row-copy" title="Copy value" @click.stop="copyText(row.value)">⧉</button>
+                    </td>
+                  </tr>
+                  <tr v-if="rowFilter && !filteredValueRows.length">
+                    <td colspan="3" class="redis-muted">No rows match "{{ rowFilter }}".</td>
                   </tr>
                 </tbody>
               </table>
+            </div>
+
+            <div v-if="value.truncated" class="redis-rows-more">
+              <span class="redis-muted">{{ allValueRows.length }} of {{ value.length }} loaded</span>
+              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="loadingMore || valueLimit >= 5000" @click="loadMoreRows">
+                {{ loadingMore ? 'Loading…' : 'Load more rows' }}
+              </button>
             </div>
           </template>
           <div v-else class="redis-muted redis-empty-work">Select a key from the explorer.</div>
@@ -783,8 +1031,138 @@ function quoteCommandArg(value: string) {
           </div>
           <pre v-if="commandResult !== null" class="redis-value redis-console__result">{{ formatValue(commandResult) }}</pre>
         </section>
+
+        <section v-if="activeWorkTab === 'info'" class="redis-tabbody" :class="{ 'is-disabled': !redisConnected }">
+          <div class="redis-editor__head">
+            <div class="redis-empty__title">Server Overview</div>
+            <div class="redis-detail__actions">
+              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="loadingInfo || !redisUsable" @click="loadInfo">{{ loadingInfo ? 'Loading…' : 'Refresh' }}</button>
+            </div>
+          </div>
+
+          <div v-if="loadingInfo && !infoData" class="redis-muted">Loading server info…</div>
+          <template v-else-if="infoData">
+            <div class="redis-stat-grid">
+              <div class="redis-stat"><span class="redis-stat__label">Version</span><span class="redis-stat__value">{{ infoField('server', 'redis_version') }}</span></div>
+              <div class="redis-stat"><span class="redis-stat__label">Uptime (days)</span><span class="redis-stat__value">{{ infoField('server', 'uptime_in_days') }}</span></div>
+              <div class="redis-stat"><span class="redis-stat__label">Memory Used</span><span class="redis-stat__value">{{ infoField('memory', 'used_memory_human') }}</span></div>
+              <div class="redis-stat"><span class="redis-stat__label">Peak Memory</span><span class="redis-stat__value">{{ infoField('memory', 'used_memory_peak_human') }}</span></div>
+              <div class="redis-stat"><span class="redis-stat__label">Connected Clients</span><span class="redis-stat__value">{{ infoField('clients', 'connected_clients') }}</span></div>
+              <div class="redis-stat"><span class="redis-stat__label">Ops / sec</span><span class="redis-stat__value">{{ infoField('stats', 'instantaneous_ops_per_sec') }}</span></div>
+              <div class="redis-stat"><span class="redis-stat__label">Hits</span><span class="redis-stat__value">{{ infoField('stats', 'keyspace_hits') }}</span></div>
+              <div class="redis-stat"><span class="redis-stat__label">Misses</span><span class="redis-stat__value">{{ infoField('stats', 'keyspace_misses') }}</span></div>
+              <div class="redis-stat"><span class="redis-stat__label">Total Commands</span><span class="redis-stat__value">{{ infoField('stats', 'total_commands_processed') }}</span></div>
+              <div class="redis-stat"><span class="redis-stat__label">Evicted Keys</span><span class="redis-stat__value">{{ infoField('stats', 'evicted_keys') }}</span></div>
+            </div>
+
+            <div class="redis-editor__head redis-section-head">
+              <div class="redis-empty__title">Keyspace</div>
+            </div>
+            <div class="redis-type-strip redis-keyspace-strip">
+              <span v-for="(count, db) in keyspaceCounts" :key="db">DB {{ db }} · {{ count }} keys</span>
+              <span v-if="!Object.keys(keyspaceCounts).length" class="redis-muted">All databases are empty.</span>
+            </div>
+
+            <div class="redis-editor__head redis-section-head">
+              <div class="redis-empty__title">Slow Log</div>
+              <div class="redis-detail__actions">
+                <button class="base-btn base-btn--ghost base-btn--sm" :disabled="loadingSlowlog || !redisUsable" @click="loadSlowlog">{{ loadingSlowlog ? 'Loading…' : 'Refresh' }}</button>
+              </div>
+            </div>
+            <div class="redis-table-wrap redis-slowlog-wrap">
+              <table class="redis-data-table">
+                <thead>
+                  <tr><th>ID</th><th>When</th><th>Duration</th><th>Command</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="entry in slowlog" :key="entry.id">
+                    <td>{{ entry.id }}</td>
+                    <td>{{ new Date(entry.timestamp * 1000).toLocaleString() }}</td>
+                    <td>{{ (entry.micros / 1000).toFixed(2) }} ms</td>
+                    <td><code>{{ entry.command }}</code></td>
+                  </tr>
+                  <tr v-if="!slowlog.length"><td colspan="4" class="redis-muted">No slow log entries.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+        </section>
+
+        <section v-if="activeWorkTab === 'monitor'" class="redis-tabbody" :class="{ 'is-disabled': !redisConnected }">
+          <div class="redis-empty__title">Pub/Sub Monitor</div>
+          <div class="redis-empty__sub">Subscribe to a channel to tail published messages in real time. Use <code>*</code> or a glob (e.g. <code>events:*</code>) to pattern-subscribe.</div>
+          <div class="redis-console__row">
+            <input
+              v-model="monitorChannel"
+              class="base-input redis-console__input"
+              :disabled="monitoring || !redisUsable"
+              placeholder="channel or pattern e.g. events:*"
+              @keydown.enter="startMonitor"
+            />
+            <button v-if="!monitoring" class="base-btn base-btn--primary base-btn--sm" :disabled="!redisUsable" @click="startMonitor">Subscribe</button>
+            <button v-else class="base-btn base-btn--danger base-btn--sm" @click="stopMonitor">Stop</button>
+          </div>
+          <div v-if="monitorError" class="redis-monitor-error">{{ monitorError }}</div>
+          <div v-if="monitoring" class="redis-monitor-status"><span class="redis-monitor-dot" /> Listening on "{{ monitorChannel }}" · {{ monitorMessages.length }} messages</div>
+
+          <div class="redis-table-wrap redis-monitor-wrap">
+            <table class="redis-data-table">
+              <thead>
+                <tr><th>Time</th><th>Channel</th><th>Payload</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="(msg, i) in monitorMessages" :key="i" class="redis-data-row" @click="openRowJson({ key: msg.channel, value: msg.payload })">
+                  <td>{{ new Date(msg.ts).toLocaleTimeString() }}</td>
+                  <td>{{ msg.channel }}</td>
+                  <td><code>{{ msg.payload }}</code></td>
+                </tr>
+                <tr v-if="!monitorMessages.length"><td colspan="3" class="redis-muted">{{ monitoring ? 'Waiting for messages…' : 'Not subscribed.' }}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
       </main>
     </template>
+
+    <div v-if="jsonModalOpen" class="redis-modal" @click.self="closeJsonModal">
+      <div class="redis-modal__panel">
+        <div class="redis-modal__head">
+          <div class="redis-modal__title">{{ jsonModalRow?.key }}</div>
+          <div class="redis-detail__actions">
+            <button class="base-btn base-btn--ghost base-btn--sm" @click="copyText(modalPretty)">Copy</button>
+            <button class="base-btn base-btn--ghost base-btn--sm" @click="closeJsonModal">Close</button>
+          </div>
+        </div>
+        <div v-if="modalLaravelJob" class="redis-job-card">
+          <div class="redis-job-card__title">Laravel Job</div>
+          <div class="redis-job-grid">
+            <div v-if="modalLaravelJob.displayName"><span>Job</span><strong>{{ modalLaravelJob.displayName }}</strong></div>
+            <div v-if="modalLaravelJob.uuid"><span>UUID</span><strong>{{ modalLaravelJob.uuid }}</strong></div>
+            <div v-if="modalLaravelJob.commandName"><span>Command</span><strong>{{ modalLaravelJob.commandName }}</strong></div>
+            <div v-if="modalLaravelJob.queue"><span>Queue</span><strong>{{ modalLaravelJob.queue }}</strong></div>
+            <div><span>Attempts</span><strong>{{ modalLaravelJob.attempts }}{{ modalLaravelJob.maxTries ? ` / ${modalLaravelJob.maxTries}` : '' }}</strong></div>
+            <div v-if="modalLaravelJob.timeout"><span>Timeout</span><strong>{{ modalLaravelJob.timeout }}s</strong></div>
+          </div>
+        </div>
+        <pre class="redis-value redis-modal__body">{{ modalPretty }}</pre>
+      </div>
+    </div>
+
+    <div v-if="ttlEditOpen" class="redis-modal" @click.self="ttlEditOpen = false">
+      <div class="redis-modal__panel redis-modal__panel--sm">
+        <div class="redis-modal__head">
+          <div class="redis-modal__title">Set TTL — {{ value?.key }}</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">TTL Seconds (0 = no expiry / persist)</label>
+          <input v-model.number="ttlEditValue" class="base-input" type="number" min="0" @keydown.enter="saveTtl" />
+        </div>
+        <div class="redis-editor__actions">
+          <button class="base-btn base-btn--ghost base-btn--sm" @click="ttlEditOpen = false">Cancel</button>
+          <button class="base-btn base-btn--primary base-btn--sm" :disabled="savingTtl || !redisUsable" @click="saveTtl">{{ savingTtl ? 'Saving…' : 'Save TTL' }}</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -792,8 +1170,9 @@ function quoteCommandArg(value: string) {
 .redis-workbench {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
-  height: 100%;
-  min-height: calc(100vh - 76px);
+  height: calc(100vh - 76px);
+  min-height: 0;
+  overflow: hidden;
   background: var(--bg-body);
   border-top: 1px solid var(--border);
 }
@@ -960,6 +1339,8 @@ function quoteCommandArg(value: string) {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   background: var(--bg-body);
 }
 
@@ -1050,6 +1431,9 @@ function quoteCommandArg(value: string) {
 }
 
 .redis-tabbody {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
   min-height: 0;
   padding: 14px;
   overflow: auto;
@@ -1093,6 +1477,7 @@ function quoteCommandArg(value: string) {
 }
 
 .redis-table-wrap {
+  flex: 1;
   min-height: 0;
   margin-top: 12px;
   border: 1px solid var(--border);
@@ -1389,6 +1774,222 @@ html[data-theme='light'] .redis-data-table tbody tr:nth-child(even) td {
 .redis-script-editor {
   margin-top: 14px;
   min-height: 220px;
+}
+
+.redis-row-filter {
+  margin-left: auto;
+  width: 200px;
+  height: 26px;
+  font-size: 11.5px;
+}
+
+.redis-data-row {
+  cursor: pointer;
+}
+
+.redis-data-table__action {
+  width: 36px;
+  text-align: center;
+}
+
+.redis-row-copy {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.redis-data-row:hover .redis-row-copy {
+  opacity: 1;
+}
+
+.redis-row-copy:hover {
+  color: var(--brand);
+}
+
+.redis-rows-more {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+  margin-top: 10px;
+}
+
+.redis-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.redis-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-surface);
+}
+
+.redis-stat__label {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.redis-stat__value {
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.redis-section-head {
+  margin-top: 18px;
+}
+
+.redis-keyspace-strip {
+  margin: 0;
+}
+
+.redis-slowlog-wrap,
+.redis-monitor-wrap {
+  flex: none;
+  max-height: 320px;
+  margin-top: 10px;
+}
+
+.redis-monitor-wrap {
+  flex: 1;
+}
+
+.redis-monitor-error {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-surface));
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.redis-monitor-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.redis-monitor-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #21834a;
+  box-shadow: 0 0 0 0 rgba(33, 131, 74, 0.5);
+  animation: redis-pulse 1.6s infinite;
+}
+
+@keyframes redis-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(33, 131, 74, 0.5); }
+  70% { box-shadow: 0 0 0 6px rgba(33, 131, 74, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(33, 131, 74, 0); }
+}
+
+.redis-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.redis-modal__panel {
+  display: flex;
+  flex-direction: column;
+  width: min(760px, 100%);
+  max-height: 86vh;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md, 10px);
+  background: var(--bg-surface);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.3);
+}
+
+.redis-modal__panel--sm {
+  width: min(420px, 100%);
+}
+
+.redis-modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.redis-modal__title {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.redis-modal__body {
+  flex: 1;
+  min-height: 120px;
+  max-height: none;
+}
+
+.redis-job-card {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-body);
+}
+
+.redis-job-card__title {
+  margin-bottom: 8px;
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.redis-job-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px 16px;
+}
+
+.redis-job-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.redis-job-grid span {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.redis-job-grid strong {
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 900px) {

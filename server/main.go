@@ -328,6 +328,14 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.RedisGenerateScript())(w, r)
 			case sub == "redis" && len(parts) >= 3 && parts[2] == "script" && r.Method == http.MethodPost:
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.RedisExecuteScript())(w, r)
+				case sub == "redis" && len(parts) >= 3 && parts[2] == "ttl" && r.Method == http.MethodPost:
+					requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.RedisSetTTL())(w, r)
+				case sub == "redis" && len(parts) >= 3 && parts[2] == "info" && r.Method == http.MethodGet:
+					requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.RedisInfo())(w, r)
+				case sub == "redis" && len(parts) >= 3 && parts[2] == "slowlog" && r.Method == http.MethodGet:
+					requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.RedisSlowlog())(w, r)
+				case sub == "redis" && len(parts) >= 3 && parts[2] == "monitor" && r.Method == http.MethodGet:
+					requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.RedisMonitor())(w, r)
 			case sub == "memcache" && len(parts) >= 3 && parts[2] == "ping" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.MemcachePing())(w, r)
 			case sub == "memcache" && len(parts) >= 3 && parts[2] == "stats" && r.Method == http.MethodGet:

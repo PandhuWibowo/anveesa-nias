@@ -18,6 +18,26 @@ export interface RedisValueResponse {
   length?: number
   value: unknown
   truncated: boolean
+  memory_bytes?: number
+}
+
+export interface RedisInfoResponse {
+  sections: Record<string, Record<string, string>>
+  keyspace: Record<string, number>
+}
+
+export interface RedisSlowlogEntry {
+  id: number
+  timestamp: number
+  micros: number
+  command: string
+  client?: string
+}
+
+export interface RedisMonitorMessage {
+  channel: string
+  payload: string
+  ts: number
 }
 
 export type RedisWritableType = 'string' | 'hash' | 'list' | 'set' | 'zset' | 'stream' | 'json'
@@ -57,9 +77,9 @@ export function useRedis() {
     return data
   }
 
-  async function fetchValue(connId: number, key: string, db?: number) {
+  async function fetchValue(connId: number, key: string, db?: number, limit?: number) {
     const { data } = await axios.get<RedisValueResponse>(`/api/connections/${connId}/redis/key`, {
-      params: { key, db },
+      params: { key, db, limit },
     })
     return data
   }
@@ -103,5 +123,77 @@ export function useRedis() {
     return data.results
   }
 
-  return { ping, fetchKeys, fetchValue, saveKey, deleteKey, renameKey, moveKey, runCommand, generateScript, executeScript }
+  async function setTtl(connId: number, key: string, ttl: number, db?: number) {
+    await axios.post(`/api/connections/${connId}/redis/ttl`, { key, ttl, db })
+  }
+
+  async function fetchInfo(connId: number, db?: number) {
+    const { data } = await axios.get<RedisInfoResponse>(`/api/connections/${connId}/redis/info`, { params: { db } })
+    return data
+  }
+
+  async function fetchSlowlog(connId: number, db?: number, count = 50) {
+    const { data } = await axios.get<{ entries: RedisSlowlogEntry[] }>(`/api/connections/${connId}/redis/slowlog`, {
+      params: { db, count },
+    })
+    return data.entries
+  }
+
+  // Opens an SSE stream of pub/sub messages. Returns a stop() function.
+  function monitor(
+    connId: number,
+    channel: string,
+    db: number | undefined,
+    onMessage: (msg: RedisMonitorMessage) => void,
+    onError?: (err: string) => void,
+  ) {
+    const controller = new AbortController()
+    const token = localStorage.getItem('nias-token') || ''
+    const params = new URLSearchParams({ channel })
+    if (db != null) params.set('db', String(db))
+    ;(async () => {
+      try {
+        const resp = await fetch(`/api/connections/${connId}/redis/monitor?${params.toString()}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          signal: controller.signal,
+        })
+        if (!resp.ok || !resp.body) {
+          onError?.(`Failed to subscribe (${resp.status})`)
+          return
+        }
+        const reader = resp.body.getReader()
+        const dec = new TextDecoder()
+        let buf = ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buf += dec.decode(value, { stream: true })
+          const parts = buf.split('\n\n')
+          buf = parts.pop() ?? ''
+          for (const part of parts) {
+            const lines = part.split('\n')
+            const isError = lines.some((l) => l.startsWith('event: error'))
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue
+              const raw = line.slice(6)
+              if (isError) {
+                onError?.(raw)
+                continue
+              }
+              try {
+                onMessage(JSON.parse(raw) as RedisMonitorMessage)
+              } catch {
+                /* ignore malformed frame */
+              }
+            }
+          }
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) onError?.(err instanceof Error ? err.message : 'Monitor stream failed')
+      }
+    })()
+    return () => controller.abort()
+  }
+
+  return { ping, fetchKeys, fetchValue, saveKey, deleteKey, renameKey, moveKey, runCommand, generateScript, executeScript, setTtl, fetchInfo, fetchSlowlog, monitor }
 }
