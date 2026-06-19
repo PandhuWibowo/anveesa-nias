@@ -26,6 +26,16 @@ export interface LaravelQueueJob {
   raw: string
 }
 
+export interface LaravelActiveJob extends LaravelQueueJob {
+  deadline_at?: string
+  expires_in_seconds: number
+  stale: boolean
+  horizon_status?: string
+  horizon_name?: string
+  reserved_at?: string
+  running_for_seconds?: number
+}
+
 export interface LaravelFailedJob {
   id: number
   uuid?: string
@@ -125,12 +135,23 @@ export function useLaravelQueue() {
     return data
   }
 
+  async function fetchActiveJobs(connId: number, params: { db?: number; prefix?: string; limit?: number }) {
+    const { data } = await axios.get<{ jobs: LaravelActiveJob[]; horizon: boolean; total: number }>(`/api/connections/${connId}/laravel-queue/active-jobs`, {
+      params,
+    })
+    return data
+  }
+
   async function deleteJob(connId: number, payload: { queue: string; prefix?: string; db?: number; state: LaravelQueueJob['state']; raw: string }) {
     await axios.post(`/api/connections/${connId}/laravel-queue/delete`, payload)
   }
 
   async function requeueJob(connId: number, payload: { queue: string; prefix?: string; db?: number; state: LaravelQueueJob['state']; raw: string }) {
     await axios.post(`/api/connections/${connId}/laravel-queue/requeue`, payload)
+  }
+
+  async function releaseStaleJob(connId: number, payload: { queue: string; prefix?: string; db?: number; raw: string }) {
+    await axios.post(`/api/connections/${connId}/laravel-queue/release-stale`, payload)
   }
 
   async function clearQueue(connId: number, payload: { queue: string; prefix?: string; db?: number; state?: 'all' | LaravelQueueJob['state'] | 'notify' }) {
@@ -218,6 +239,8 @@ export function useLaravelQueue() {
   return {
     fetchQueues,
     fetchJobs,
+    fetchActiveJobs,
+    releaseStaleJob,
     deleteJob,
     requeueJob,
     clearQueue,

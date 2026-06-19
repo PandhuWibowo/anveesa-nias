@@ -9,7 +9,7 @@ function debounce<T extends (...args: unknown[]) => void>(fn: T, ms: number): T 
   }) as T
 }
 import { useConnections } from '@/composables/useConnections'
-import { useLaravelQueue, type LaravelFailedJob, type LaravelHorizonSummary, type LaravelQueueAuditItem, type LaravelQueueFeatureFlags, type LaravelQueueJob, type LaravelQueueQuarantineItem, type LaravelQueueRules, type LaravelQueueSummary } from '@/composables/useLaravelQueue'
+import { useLaravelQueue, type LaravelActiveJob, type LaravelFailedJob, type LaravelHorizonSummary, type LaravelQueueAuditItem, type LaravelQueueFeatureFlags, type LaravelQueueJob, type LaravelQueueQuarantineItem, type LaravelQueueRules, type LaravelQueueSummary } from '@/composables/useLaravelQueue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 
@@ -20,6 +20,8 @@ const { connections, fetchConnections } = useConnections()
 const {
   fetchQueues,
   fetchJobs,
+  fetchActiveJobs,
+  releaseStaleJob,
   deleteJob,
   requeueJob,
   clearQueue,
@@ -49,11 +51,14 @@ const prefix = ref('queues')
 const queues = ref<LaravelQueueSummary[]>([])
 const selectedQueue = ref('default')
 const jobs = ref<LaravelQueueJob[]>([])
+const activeJobs = ref<LaravelActiveJob[]>([])
+const activeHorizon = ref(false)
+const loadingActive = ref(false)
 const failedJobs = ref<LaravelFailedJob[]>([])
 const horizon = ref<LaravelHorizonSummary | null>(null)
 const selectedJobId = ref('')
 const selectedFailedJobId = ref<number | null>(null)
-const activeState = ref<'all' | 'ready' | 'delayed' | 'reserved' | 'failed'>('all')
+const activeState = ref<'all' | 'ready' | 'delayed' | 'reserved' | 'active' | 'failed'>('all')
 const detailTab = ref<'summary' | 'main' | 'payload' | 'command' | 'exception'>('summary')
 const insightTab = ref<'health' | 'timeline' | 'groups' | 'patterns' | 'quarantine' | 'controls' | 'settings' | 'audit'>('health')
 const sidebarCollapsed = ref(false)
@@ -160,7 +165,26 @@ const filteredJobs = computed(() => {
     ].some(value => String(value || '').toLowerCase().includes(query))
   })
 })
-const selectedJob = computed(() => jobs.value.find(job => job.id === selectedJobId.value) ?? filteredJobs.value[0] ?? null)
+const filteredActiveJobs = computed(() => {
+  const query = search.value.trim().toLowerCase()
+  return activeJobs.value.filter((job) => {
+    if (!query) return true
+    return [
+      job.uuid,
+      job.display_name,
+      job.command_name,
+      job.job,
+      job.queue,
+      job.raw,
+    ].some(value => String(value || '').toLowerCase().includes(query))
+  })
+})
+const staleActiveCount = computed(() => activeJobs.value.filter(job => job.stale).length)
+const selectedJob = computed(() => {
+  const pool = activeState.value === 'active' ? activeJobs.value : jobs.value
+  const visible = activeState.value === 'active' ? filteredActiveJobs.value : filteredJobs.value
+  return pool.find(job => job.id === selectedJobId.value) ?? visible[0] ?? null
+})
 const filteredFailedJobs = computed(() => {
   const query = search.value.trim().toLowerCase()
   return failedJobs.value.filter((job) => {
@@ -351,6 +375,7 @@ watch(() => props.activeConnId, async () => {
   selectedFailedJobIds.value = new Set()
   queues.value = []
   jobs.value = []
+  activeJobs.value = []
   failedJobs.value = []
   if (isRedis.value) {
     await loadOpsSettings()
@@ -429,6 +454,75 @@ async function loadJobs() {
   } finally {
     loadingJobs.value = false
   }
+}
+
+async function loadActiveJobs() {
+  if (!activeConn.value || !isRedis.value) return
+  loadingActive.value = true
+  try {
+    const data = await fetchActiveJobs(activeConn.value.id, {
+      db: selectedDb.value,
+      prefix: prefix.value,
+      limit: 200,
+    })
+    activeJobs.value = data.jobs
+    activeHorizon.value = data.horizon
+    if (!activeJobs.value.some(job => job.id === selectedJobId.value)) {
+      selectedJobId.value = filteredActiveJobs.value[0]?.id ?? ''
+    }
+  } catch (err) {
+    toast.error(errorMessage(err, 'Failed to load active jobs'))
+  } finally {
+    loadingActive.value = false
+  }
+}
+
+function formatExpires(job: LaravelActiveJob) {
+  if (!job.score) return '-'
+  const seconds = Math.abs(job.expires_in_seconds)
+  const label = seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : `${Math.floor(seconds / 3600)}h`
+  return job.stale ? `overdue ${label}` : `${label} left`
+}
+
+function formatRunningFor(job: LaravelActiveJob) {
+  if (!job.running_for_seconds || job.running_for_seconds < 0) return ''
+  const seconds = job.running_for_seconds
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
+  return `${Math.floor(seconds / 3600)}h`
+}
+
+async function releaseStale(job: LaravelActiveJob) {
+  if (!activeConn.value) return
+  const name = job.display_name || job.command_name || job.job || job.id
+  const ok = await confirmAction('retry', `Release stale job "${name}" back to "${job.queue}"? It will be requeued for reprocessing.`, 'Release Stale Job')
+  if (!ok) return
+  try {
+    await releaseStaleJob(activeConn.value.id, { queue: job.queue, prefix: prefix.value, db: selectedDb.value, raw: job.raw })
+    toast.success('Stale job released back to the queue')
+    await Promise.all([loadActiveJobs(), loadQueues()])
+  } catch (err) {
+    toast.error(errorMessage(err, 'Failed to release stale job'))
+  }
+}
+
+async function releaseAllStale() {
+  if (!activeConn.value) return
+  const stale = activeJobs.value.filter(job => job.stale)
+  if (!stale.length) return
+  const ok = await confirmAction('retry', `Release ${stale.length} stale job${stale.length === 1 ? '' : 's'} back to their queues for reprocessing?`, 'Release All Stale Jobs')
+  if (!ok) return
+  let released = 0
+  for (const job of stale) {
+    try {
+      await releaseStaleJob(activeConn.value.id, { queue: job.queue, prefix: prefix.value, db: selectedDb.value, raw: job.raw })
+      released += 1
+    } catch {
+      // Skip jobs that a worker may have just finished or re-reserved.
+    }
+  }
+  toast.success(`Released ${released} of ${stale.length} stale job${stale.length === 1 ? '' : 's'}`)
+  await Promise.all([loadActiveJobs(), loadQueues()])
 }
 
 async function loadHorizon() {
@@ -1029,7 +1123,7 @@ async function exportVisibleJobs() {
     prefix: prefix.value,
     queue: selectedQueue.value,
     state: activeState.value,
-    jobs: activeState.value === 'failed' ? filteredFailedJobs.value : filteredJobs.value,
+    jobs: activeState.value === 'failed' ? filteredFailedJobs.value : activeState.value === 'active' ? filteredActiveJobs.value : filteredJobs.value,
   }
   await exportJson(`laravel-queue-${selectedQueue.value}-${activeState.value}.json`, payload)
 }
@@ -1321,6 +1415,7 @@ async function bulkSendAlerts() {
 async function refreshCurrentView() {
   await loadQueues()
   await loadHorizon()
+  if (activeState.value === 'active') await loadActiveJobs()
   if (activeState.value === 'failed' && failedConnId.value) await loadFailedJobs()
 }
 
@@ -1786,11 +1881,15 @@ function errorMessage(err: unknown, fallback: string) {
             <button class="lq-tab" :class="{ active: activeState === 'ready' }" @click="activeState = 'ready'">Ready <span>{{ stateCount('ready') }}</span></button>
             <button class="lq-tab" :class="{ active: activeState === 'delayed' }" @click="activeState = 'delayed'">Delayed <span>{{ stateCount('delayed') }}</span></button>
             <button class="lq-tab" :class="{ active: activeState === 'reserved' }" @click="activeState = 'reserved'">Reserved <span>{{ stateCount('reserved') }}</span></button>
+            <button class="lq-tab" :class="{ active: activeState === 'active' }" @click="activeState = 'active'; loadActiveJobs()">
+              Active <span>{{ activeJobs.length }}</span>
+              <span v-if="staleActiveCount" class="lq-tab-stale">{{ staleActiveCount }} stale</span>
+            </button>
           </template>
           <button class="lq-tab" :class="{ active: activeState === 'failed' }" @click="activeState = 'failed'; loadFailedJobs()">Failed <span>{{ failedJobs.length }}</span></button>
         </div>
 
-        <div v-if="isRedis && activeState !== 'failed' && selectedJobIds.size" class="lq-bulkbar">
+        <div v-if="isRedis && activeState !== 'failed' && activeState !== 'active' && selectedJobIds.size" class="lq-bulkbar">
           <span>{{ selectedJobIds.size }} selected</span>
           <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!canAction('retry')" @click="bulkRequeueJobs">Requeue selected</button>
           <button class="base-btn base-btn--danger base-btn--sm" :disabled="!canAction('delete')" @click="bulkDeleteJobs">Delete selected</button>
@@ -1808,13 +1907,60 @@ function errorMessage(err: unknown, fallback: string) {
         </div>
 
         <div class="lq-exportbar">
-          <button class="base-btn base-btn--ghost base-btn--sm" :disabled="activeState === 'failed' ? !filteredFailedJobs.length : !filteredJobs.length" @click="exportVisibleJobs">
+          <button class="base-btn base-btn--ghost base-btn--sm" :disabled="activeState === 'failed' ? !filteredFailedJobs.length : activeState === 'active' ? !filteredActiveJobs.length : !filteredJobs.length" @click="exportVisibleJobs">
             Export visible JSON
           </button>
         </div>
 
         <div class="lq-content">
-          <section v-if="isRedis && activeState !== 'failed'" class="lq-jobs">
+          <section v-if="isRedis && activeState === 'active'" class="lq-jobs">
+            <div class="lq-active-bar">
+              <span>{{ filteredActiveJobs.length }} in-flight job{{ filteredActiveJobs.length === 1 ? '' : 's' }} across all queues</span>
+              <span v-if="staleActiveCount" class="lq-state lq-state--stuck">{{ staleActiveCount }} stale (deadline passed)</span>
+              <span v-if="activeHorizon" class="lq-health">Horizon detected</span>
+              <div class="lq-active-actions">
+                <button v-if="staleActiveCount" class="base-btn base-btn--danger base-btn--sm" :disabled="!canAction('retry')" @click="releaseAllStale">Release all stale</button>
+                <button class="base-btn base-btn--ghost base-btn--sm" :disabled="loadingActive" @click="loadActiveJobs">Refresh</button>
+              </div>
+            </div>
+            <table class="lq-table">
+              <thead>
+                <tr>
+                  <th>Queue</th>
+                  <th>Job</th>
+                  <th>Attempts</th>
+                  <th>Running for / Deadline</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="job in filteredActiveJobs"
+                  :key="job.id"
+                  :class="{ 'is-active': selectedJob?.id === job.id, 'is-stuck': job.stale }"
+                  @click="selectedJobId = job.id"
+                >
+                  <td>{{ job.queue }}</td>
+                  <td>
+                    <div class="lq-job-name">{{ job.horizon_name || job.display_name || job.command_name || job.job || 'Laravel job' }}</div>
+                    <div class="lq-job-sub">{{ job.uuid || job.id }}</div>
+                  </td>
+                  <td>{{ job.attempts }}</td>
+                  <td>
+                    <span :class="{ 'lq-state lq-state--stuck': job.stale }">{{ formatExpires(job) }}</span>
+                    <div v-if="formatRunningFor(job)" class="lq-job-sub">running {{ formatRunningFor(job) }}<span v-if="job.horizon_status"> · {{ job.horizon_status }}</span></div>
+                    <div v-else class="lq-job-sub">{{ formatDate(job.deadline_at) }}</div>
+                  </td>
+                  <td @click.stop>
+                    <button v-if="job.stale" class="base-btn base-btn--ghost base-btn--sm" :disabled="!canAction('retry')" @click="releaseStale(job)">Release</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-if="!loadingActive && filteredActiveJobs.length === 0" class="lq-empty-inline">No jobs are currently being processed.</div>
+          </section>
+
+          <section v-else-if="isRedis && activeState !== 'failed'" class="lq-jobs">
             <table class="lq-table">
               <thead>
                 <tr>
@@ -2913,6 +3059,34 @@ function errorMessage(err: unknown, fallback: string) {
 .lq-tab span {
   color: var(--brand);
   font-weight: 700;
+}
+
+.lq-tab-stale {
+  margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff !important;
+  background: var(--danger, #dc2626);
+}
+
+.lq-active-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+}
+
+.lq-active-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
 }
 
 .lq-content {

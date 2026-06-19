@@ -184,6 +184,202 @@ func LaravelQueueJobs() http.HandlerFunc {
 	}
 }
 
+type laravelActiveJob struct {
+	laravelQueueJob
+	DeadlineAt    string `json:"deadline_at,omitempty"`
+	ExpiresIn     int64  `json:"expires_in_seconds"`
+	Stale         bool   `json:"stale"`
+	HorizonStatus string `json:"horizon_status,omitempty"`
+	HorizonName   string `json:"horizon_name,omitempty"`
+	ReservedAt    string `json:"reserved_at,omitempty"`
+	RunningFor    int64  `json:"running_for_seconds,omitempty"`
+}
+
+type laravelActiveJobsResponse struct {
+	Jobs    []laravelActiveJob `json:"jobs"`
+	Horizon bool               `json:"horizon"`
+	Total   int                `json:"total"`
+}
+
+// LaravelQueueActiveJobs aggregates the reserved (in-flight) jobs across every
+// discovered queue. A reserved entry's ZSET score is the worker's deadline
+// (reserved_at + retry_after), so we surface expires_in_seconds and flag jobs
+// whose deadline has already passed as stale — those are typically held by a
+// worker that died mid-job and were never released.
+func LaravelQueueActiveJobs() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		connID, err := connectionIDFromPath(r.URL.Path)
+		if err != nil {
+			http.Error(w, `{"error":"invalid connection id"}`, http.StatusBadRequest)
+			return
+		}
+		client, connName, err := openRedisClient(connID, redisDBFromRequest(r))
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+
+		prefix := laravelQueuePrefix(r)
+		limit := queryInt(r, "limit", 200, 1, 1000)
+
+		keys, err := scanRedisKeys(r.Context(), client, prefix+":*", 1000)
+		if err != nil {
+			http.Error(w, jsonError("redis scan failed: "+err.Error()), http.StatusBadGateway)
+			return
+		}
+		names := map[string]bool{}
+		for _, key := range keys {
+			if name := laravelQueueNameFromKey(prefix, key); name != "" {
+				names[name] = true
+			}
+		}
+		if len(names) == 0 {
+			names["default"] = true
+		}
+
+		now := time.Now().Unix()
+		active := make([]laravelActiveJob, 0)
+		for name := range names {
+			raw, err := client.command(r.Context(), "ZRANGE", laravelQueueKey(prefix, name, "reserved"), "0", strconv.Itoa(limit-1), "WITHSCORES")
+			if err != nil {
+				continue
+			}
+			for _, pair := range zsetPairs(raw) {
+				score, _ := strconv.ParseInt(pair["score"], 10, 64)
+				item := laravelActiveJob{laravelQueueJob: parseLaravelQueueJob(pair["member"], name, "reserved", score)}
+				if score > 0 {
+					item.DeadlineAt = time.Unix(score, 0).Format(time.RFC3339)
+					item.ExpiresIn = score - now
+					item.Stale = score <= now
+				}
+				active = append(active, item)
+			}
+		}
+		// Stale (overdue) jobs first, then those closest to their deadline.
+		sort.Slice(active, func(i, j int) bool {
+			if active[i].Stale != active[j].Stale {
+				return active[i].Stale
+			}
+			return active[i].Score < active[j].Score
+		})
+		if len(active) > limit {
+			active = active[:limit]
+		}
+
+		horizon := false
+		if hkeys, herr := scanRedisKeys(r.Context(), client, "horizon:*", 1); herr == nil {
+			horizon = len(hkeys) > 0
+		}
+		// Horizon stores a per-job hash at horizon:<uuid> with the true status,
+		// display name, and reserved_at timestamp. Enrich each active job when
+		// available; absence (wrong prefix / non-Horizon) just leaves the
+		// score-derived fields in place.
+		if horizon {
+			for i := range active {
+				if active[i].UUID == "" {
+					continue
+				}
+				raw, herr := client.command(r.Context(), "HGETALL", "horizon:"+active[i].UUID)
+				if herr != nil {
+					continue
+				}
+				fields := stringPairsToMap(raw)
+				if len(fields) == 0 {
+					continue
+				}
+				active[i].HorizonStatus = fields["status"]
+				active[i].HorizonName = fields["name"]
+				if ra := fields["reserved_at"]; ra != "" {
+					if f, perr := strconv.ParseFloat(ra, 64); perr == nil && f > 0 {
+						active[i].ReservedAt = time.Unix(int64(f), 0).Format(time.RFC3339)
+						active[i].RunningFor = now - int64(f)
+					}
+				}
+			}
+		}
+
+		writeRedisAudit(r, "laravel_queue_active", connID, connName, prefix, "")
+		json.NewEncoder(w).Encode(laravelActiveJobsResponse{Jobs: active, Horizon: horizon, Total: len(active)})
+	}
+}
+
+// LaravelQueueReleaseStale removes a stale reserved job (one whose retry
+// deadline has already passed, meaning the worker that held it almost certainly
+// died) and pushes it back onto the ready list for reprocessing. It refuses to
+// release a job still within its deadline: that job may genuinely be running,
+// and releasing it would let a second worker process it concurrently.
+func LaravelQueueReleaseStale() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		connID, err := connectionIDFromPath(r.URL.Path)
+		if err != nil {
+			http.Error(w, `{"error":"invalid connection id"}`, http.StatusBadRequest)
+			return
+		}
+		var payload laravelQueueActionRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+			return
+		}
+		payload.Queue = strings.TrimSpace(payload.Queue)
+		if payload.Queue == "" {
+			payload.Queue = "default"
+		}
+		payload.Prefix = strings.Trim(strings.TrimSpace(payload.Prefix), ":")
+		if payload.Prefix == "" {
+			payload.Prefix = "queues"
+		}
+		if strings.TrimSpace(payload.Raw) == "" {
+			http.Error(w, `{"error":"job payload is required"}`, http.StatusBadRequest)
+			return
+		}
+		if err := enforceLaravelQueueAction(connID, "retry"); err != nil {
+			writeLaravelQueueAudit(r, connID, 0, "release_stale", payload.Queue, payload.Queue, "", 0, false, "blocked", err.Error(), nil)
+			http.Error(w, jsonError(err.Error()), http.StatusForbidden)
+			return
+		}
+
+		client, connName, err := openRedisClient(connID, payload.DB)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+
+		reservedKey := laravelQueueKey(payload.Prefix, payload.Queue, "reserved")
+		scoreRaw, err := client.command(r.Context(), "ZSCORE", reservedKey, payload.Raw)
+		if err != nil {
+			http.Error(w, jsonError("redis zscore failed: "+err.Error()), http.StatusBadGateway)
+			return
+		}
+		scoreStr, ok := scoreRaw.(string)
+		if !ok || scoreStr == "" {
+			http.Error(w, `{"error":"job is no longer reserved"}`, http.StatusConflict)
+			return
+		}
+		score, _ := strconv.ParseFloat(scoreStr, 64)
+		if int64(score) > time.Now().Unix() {
+			http.Error(w, `{"error":"job is still within its retry deadline; releasing a running job risks duplicate processing"}`, http.StatusConflict)
+			return
+		}
+
+		if _, err := client.command(r.Context(), "ZREM", reservedKey, payload.Raw); err != nil {
+			writeLaravelQueueAudit(r, connID, 0, "release_stale", payload.Queue, payload.Queue, "", 0, false, "failed", err.Error(), nil)
+			http.Error(w, jsonError("redis zrem failed: "+err.Error()), http.StatusBadGateway)
+			return
+		}
+		if _, err := client.command(r.Context(), "LPUSH", laravelQueueKey(payload.Prefix, payload.Queue, ""), payload.Raw); err != nil {
+			writeRedisAudit(r, "laravel_queue_release_stale", connID, connName, payload.Queue, err.Error())
+			writeLaravelQueueAudit(r, connID, 0, "release_stale", payload.Queue, payload.Queue, "", 0, false, "failed", err.Error(), nil)
+			http.Error(w, jsonError("redis lpush failed: "+err.Error()), http.StatusBadGateway)
+			return
+		}
+		writeRedisAudit(r, "laravel_queue_release_stale", connID, connName, payload.Queue, "")
+		writeLaravelQueueAudit(r, connID, 0, "release_stale", payload.Queue, payload.Queue, "", 0, false, "success", "", nil)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Stale job released back to queue"})
+	}
+}
+
 func LaravelQueueAction() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

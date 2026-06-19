@@ -348,6 +348,10 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueQueues())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "jobs" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueJobs())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "active-jobs" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueActiveJobs())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "release-stale" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.LaravelQueueReleaseStale())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "failed-jobs" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueFailedJobs())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "horizon" && r.Method == http.MethodGet:
