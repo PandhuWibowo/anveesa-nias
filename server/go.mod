@@ -9,7 +9,7 @@ require (
 	github.com/lib/pq v1.12.3
 	github.com/mattn/go-sqlite3 v1.14.32
 	github.com/pquerna/otp v1.5.0
-	github.com/segmentio/kafka-go v0.4.49
+	github.com/segmentio/kafka-go v0.4.51
 	go.mongodb.org/mongo-driver/v2 v2.6.0
 	golang.org/x/crypto v0.51.0
 )
