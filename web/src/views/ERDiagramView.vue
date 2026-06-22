@@ -191,8 +191,12 @@ function tableHeight(t: ERTable) {
   return compactMode.value ? HEADER_H + 40 : HEADER_H + Math.min(t.columns.length, 20) * ROW_H + 10
 }
 
-// Fruchterman–Reingold force layout: connected tables attract, all repel,
-// then a separation pass guarantees no two cards overlap. Runs once per load.
+// Hybrid layout. Single-purpose "leaf" tables (one FK, to a hub) are pulled out
+// of the force sim and packed in a tidy grid beside their parent so their lines
+// stay short and local. The force sim then runs on just the core graph (hubs +
+// tables with ≥2 relationships) with center gravity to keep it compact. Isolated
+// tables are parked below. A final light separation resolves cluster overlaps
+// without disturbing the packed grids. Runs once per load.
 function computeLayout() {
   if (!erData.value) return
   const tables = erData.value.tables
@@ -205,77 +209,164 @@ function computeLayout() {
   }
 
   const idx = new Map(tables.map((t, i) => [t.name, i]))
-  const edges: [number, number][] = []
+
+  // Deduped neighbor sets + degree (self-refs ignored).
+  const nbrs: Set<number>[] = tables.map(() => new Set<number>())
   for (const fk of erData.value.foreign_keys) {
     const a = idx.get(fk.table_name), b = idx.get(fk.ref_table_name)
-    if (a != null && b != null && a !== b) edges.push([a, b])
+    if (a == null || b == null || a === b) continue
+    nbrs[a].add(b); nbrs[b].add(a)
+  }
+  const degree = nbrs.map((s) => s.size)
+
+  // Leaf = degree-1 table whose sole neighbor is a hub (degree ≥ 2). These get
+  // packed beside the parent rather than scattered by the force sim.
+  const isLeaf = new Array<boolean>(n).fill(false)
+  const leafParent = new Array<number>(n).fill(-1)
+  for (let i = 0; i < n; i++) {
+    if (degree[i] === 1) {
+      const p = [...nbrs[i]][0]
+      if (degree[p] >= 2) { isLeaf[i] = true; leafParent[i] = p }
+    }
   }
 
-  // Seed on a spiral so the sim starts from a spread-out, deterministic state.
-  const pos = tables.map((_, i) => {
-    const ang = i * 2.399963   // golden angle
-    const r = 60 * Math.sqrt(i + 1)
-    return { x: Math.cos(ang) * r, y: Math.sin(ang) * r }
-  })
+  const pos = tables.map(() => ({ x: 0, y: 0 }))
+  const core: number[] = []
+  for (let i = 0; i < n; i++) if (!isLeaf[i] && degree[i] > 0) core.push(i)
 
-  const k = Math.sqrt((n * (TABLE_W + GAP_X) * (TABLE_W + GAP_X)) / n) * 1.1 // ideal edge length
-  const iterations = n > 220 ? 160 : 300
-  let temp = k * 1.5
-  const disp = pos.map(() => ({ x: 0, y: 0 }))
+  // ── Force layout on the core only ──────────────────────────────
+  const cn = core.length
+  if (cn > 0) {
+    const cpos = core.map((_, i) => {
+      const ang = i * 2.399963   // golden angle
+      const r = 60 * Math.sqrt(i + 1)
+      return { x: Math.cos(ang) * r, y: Math.sin(ang) * r }
+    })
+    const cidx = new Map(core.map((g, i) => [g, i]))
+    const cedges: [number, number][] = []
+    for (const i of core) for (const j of nbrs[i]) {
+      if (cidx.has(j) && j > i) cedges.push([cidx.get(i)!, cidx.get(j)!])
+    }
 
-  for (let it = 0; it < iterations; it++) {
-    for (let i = 0; i < n; i++) { disp[i].x = 0; disp[i].y = 0 }
-    // Repulsion between every pair.
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const dx = pos[i].x - pos[j].x
-        const dy = pos[i].y - pos[j].y
+    const k = (TABLE_W + GAP_X) * 1.1 // ideal edge length
+    const iterations = cn > 220 ? 200 : 320
+    let temp = k * 1.5
+    const disp = cpos.map(() => ({ x: 0, y: 0 }))
+
+    for (let it = 0; it < iterations; it++) {
+      for (let i = 0; i < cn; i++) { disp[i].x = 0; disp[i].y = 0 }
+      // Repulsion between every core pair.
+      for (let i = 0; i < cn; i++) {
+        for (let j = i + 1; j < cn; j++) {
+          const dx = cpos[i].x - cpos[j].x
+          const dy = cpos[i].y - cpos[j].y
+          const dist = Math.hypot(dx, dy) || 0.01
+          const rep = (k * k) / dist
+          const ux = dx / dist, uy = dy / dist
+          disp[i].x += ux * rep; disp[i].y += uy * rep
+          disp[j].x -= ux * rep; disp[j].y -= uy * rep
+        }
+      }
+      // Attraction along core FK edges.
+      for (const [a, b] of cedges) {
+        const dx = cpos[a].x - cpos[b].x
+        const dy = cpos[a].y - cpos[b].y
         const dist = Math.hypot(dx, dy) || 0.01
-        const rep = (k * k) / dist
+        const att = (dist * dist) / k
         const ux = dx / dist, uy = dy / dist
-        disp[i].x += ux * rep; disp[i].y += uy * rep
-        disp[j].x -= ux * rep; disp[j].y -= uy * rep
+        disp[a].x -= ux * att; disp[a].y -= uy * att
+        disp[b].x += ux * att; disp[b].y += uy * att
+      }
+      // Mild center gravity keeps the core from sprawling.
+      for (let i = 0; i < cn; i++) { disp[i].x -= cpos[i].x * 0.012; disp[i].y -= cpos[i].y * 0.012 }
+      // Apply, capped by temperature; cool down.
+      for (let i = 0; i < cn; i++) {
+        const d = Math.hypot(disp[i].x, disp[i].y) || 0.01
+        cpos[i].x += (disp[i].x / d) * Math.min(d, temp)
+        cpos[i].y += (disp[i].y / d) * Math.min(d, temp)
+      }
+      temp = Math.max(temp * 0.965, k * 0.05)
+    }
+
+    // Overlap separation among core cards (full gaps for readability).
+    const ch = core.map((g) => heights[g])
+    for (let pass = 0; pass < 90; pass++) {
+      let moved = false
+      for (let i = 0; i < cn; i++) {
+        for (let j = i + 1; j < cn; j++) {
+          const dx = cpos[j].x - cpos[i].x
+          const dy = cpos[j].y - cpos[i].y
+          const px = (TABLE_W + GAP_X) - Math.abs(dx)
+          const py = (ch[i] + ch[j]) / 2 + GAP_Y - Math.abs(dy)
+          if (px > 0 && py > 0) {
+            moved = true
+            if (px < py) { const s = (dx < 0 ? -1 : 1) * px / 2; cpos[i].x -= s; cpos[j].x += s }
+            else         { const s = (dy < 0 ? -1 : 1) * py / 2; cpos[i].y -= s; cpos[j].y += s }
+          }
+        }
+      }
+      if (!moved) break
+    }
+    core.forEach((g, i) => { pos[g] = cpos[i] })
+  }
+
+  // ── Pack leaves in a grid beside their parent, on its outward side ──
+  let ccx = 0, ccy = 0
+  if (cn) { for (const g of core) { ccx += pos[g].x; ccy += pos[g].y } ccx /= cn; ccy /= cn }
+
+  const cellW = TABLE_W + GAP_X * 0.5
+  const leavesByParent = new Map<number, number[]>()
+  for (let i = 0; i < n; i++) if (isLeaf[i]) {
+    const arr = leavesByParent.get(leafParent[i]) ?? []
+    arr.push(i); leavesByParent.set(leafParent[i], arr)
+  }
+  for (const [p, leaves] of leavesByParent) {
+    const side = pos[p].x >= ccx ? 1 : -1   // pack away from the graph centre
+    const rows = Math.max(1, Math.round(Math.sqrt(leaves.length)))
+    const cols = Math.ceil(leaves.length / rows)
+    for (let c = 0; c < cols; c++) {
+      for (let r = 0; r < rows; r++) {
+        const li = c * rows + r
+        if (li >= leaves.length) break
+        const leaf = leaves[li]
+        const cellH = heights[leaf] + GAP_Y * 0.5
+        pos[leaf].x = pos[p].x + side * cellW * (c + 1)
+        pos[leaf].y = pos[p].y + (r - (rows - 1) / 2) * cellH
       }
     }
-    // Attraction along FK edges.
-    for (const [a, b] of edges) {
-      const dx = pos[a].x - pos[b].x
-      const dy = pos[a].y - pos[b].y
-      const dist = Math.hypot(dx, dy) || 0.01
-      const att = (dist * dist) / k
-      const ux = dx / dist, uy = dy / dist
-      disp[a].x -= ux * att; disp[a].y -= uy * att
-      disp[b].x += ux * att; disp[b].y += uy * att
-    }
-    // Apply, capped by temperature; cool down.
-    for (let i = 0; i < n; i++) {
-      const d = Math.hypot(disp[i].x, disp[i].y) || 0.01
-      pos[i].x += (disp[i].x / d) * Math.min(d, temp)
-      pos[i].y += (disp[i].y / d) * Math.min(d, temp)
-    }
-    temp = Math.max(temp * 0.965, k * 0.05)
   }
 
-  // Overlap separation: positions above are card centers.
-  for (let pass = 0; pass < 90; pass++) {
+  // ── Park isolated tables in a grid below everything ────────────
+  const iso: number[] = []
+  for (let i = 0; i < n; i++) if (degree[i] === 0) iso.push(i)
+  if (iso.length) {
+    let maxY = -Infinity, minXc = Infinity
+    for (let i = 0; i < n; i++) {
+      if (degree[i] === 0) continue
+      maxY = Math.max(maxY, pos[i].y); minXc = Math.min(minXc, pos[i].x)
+    }
+    if (!isFinite(maxY)) { maxY = 0; minXc = 0 }
+    const perRow = Math.max(1, Math.ceil(Math.sqrt(iso.length)))
+    iso.forEach((g, i) => {
+      pos[g].x = minXc + (i % perRow) * cellW
+      pos[g].y = maxY + 220 + Math.floor(i / perRow) * (heights[g] + GAP_Y * 0.5)
+    })
+  }
+
+  // ── Final light global separation. Gaps here are smaller than the packing
+  //    cells, so tidy grids stay put — only cross-cluster overlaps move. ──
+  for (let pass = 0; pass < 40; pass++) {
     let moved = false
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
         const dx = pos[j].x - pos[i].x
         const dy = pos[j].y - pos[i].y
-        const minX = TABLE_W + GAP_X
-        const minY = (heights[i] + heights[j]) / 2 + GAP_Y
-        const px = minX - Math.abs(dx)
-        const py = minY - Math.abs(dy)
+        const px = (TABLE_W + GAP_X * 0.4) - Math.abs(dx)
+        const py = (heights[i] + heights[j]) / 2 + GAP_Y * 0.4 - Math.abs(dy)
         if (px > 0 && py > 0) {
           moved = true
-          if (px < py) {
-            const s = (dx < 0 ? -1 : 1) * px / 2
-            pos[i].x -= s; pos[j].x += s
-          } else {
-            const s = (dy < 0 ? -1 : 1) * py / 2
-            pos[i].y -= s; pos[j].y += s
-          }
+          if (px < py) { const s = (dx < 0 ? -1 : 1) * px / 2; pos[i].x -= s; pos[j].x += s }
+          else         { const s = (dy < 0 ? -1 : 1) * py / 2; pos[i].y -= s; pos[j].y += s }
         }
       }
     }
@@ -305,29 +396,79 @@ const worldH = computed(() =>
 
 // ── FK arrows ─────────────────────────────────────────────────────
 interface Arrow { path: string; key: string }
+
+// Which edge of each table a relationship leaves from: ['R'|'L', 'R'|'L'].
+// Connect the facing edges; for horizontally-overlapping tables, leave from
+// whichever side keeps both anchors on the same flank.
+function edgeSides(a: LayoutTable, b: LayoutTable): ['L' | 'R', 'L' | 'R'] {
+  if (a.x + a.width <= b.x) return ['R', 'L']
+  if (b.x + b.width <= a.x) return ['L', 'R']
+  return a.x + a.width / 2 <= b.x + b.width / 2 ? ['R', 'R'] : ['L', 'L']
+}
+
 const arrows = computed<Arrow[]>(() => {
   if (!erData.value || !visibleLayout.value.length) return []
   const dp = dragPos.value
   const lmap = new Map(visibleLayout.value.map((t) =>
     [t.name, dp && t.name === dp.name ? { ...t, x: dp.x, y: dp.y } : t] as [string, LayoutTable],
   ))
-  return erData.value.foreign_keys.flatMap((fk) => {
-    const src = lmap.get(fk.table_name)
-    const dst = lmap.get(fk.ref_table_name)
-    if (!src || !dst || src === dst) return []
 
-    const srcIdx = src.columns.findIndex((c) => c.name === fk.column_name)
-    const dstIdx = dst.columns.findIndex((c) => c.name === fk.ref_column_name)
-    const srcY = compactMode.value ? src.y + HEADER_H / 2 : src.y + HEADER_H + (Math.max(0, srcIdx) + 0.5) * ROW_H
-    const dstY = compactMode.value ? dst.y + HEADER_H / 2 : dst.y + HEADER_H + (Math.max(0, dstIdx) + 0.5) * ROW_H
+  const fks = erData.value.foreign_keys.filter((fk) => {
+    const s = lmap.get(fk.table_name), d = lmap.get(fk.ref_table_name)
+    return s && d && s !== d
+  })
 
-    let x1: number, x2: number
-    if (src.x + src.width <= dst.x)      { x1 = src.x + src.width; x2 = dst.x }
-    else if (dst.x + dst.width <= src.x) { x1 = src.x;             x2 = dst.x + dst.width }
-    else                                  { x1 = src.x + src.width; x2 = dst.x }
+  // Compact mode has no per-column anchor, so the many relationships touching a
+  // hub table would otherwise all converge on one point. Fan them out along the
+  // card edge, ordering each side's endpoints by the partner's center-Y so lines
+  // to tables above/below take the top/bottom slots — this cuts crossings sharply.
+  const cy = (t: LayoutTable) => t.y + t.height / 2
+  const anchorY = new Map<string, number>()
+  if (compactMode.value) {
+    const groups = new Map<string, { key: string; otherY: number }[]>()
+    const add = (name: string, side: string, key: string, otherY: number) => {
+      const g = `${name} ${side}`
+      const arr = groups.get(g) ?? []
+      arr.push({ key, otherY }); groups.set(g, arr)
+    }
+    for (const fk of fks) {
+      const s = lmap.get(fk.table_name)!, d = lmap.get(fk.ref_table_name)!
+      const [ss, ds] = edgeSides(s, d)
+      add(fk.table_name,     ss, fk.constraint_name, cy(d))
+      add(fk.ref_table_name, ds, fk.constraint_name, cy(s))
+    }
+    for (const [g, arr] of groups) {
+      const t = lmap.get(g.slice(0, g.indexOf(' ')))!
+      arr.sort((a, b) => a.otherY - b.otherY)
+      const top = t.y + 12, span = Math.max(0, t.height - 24)
+      for (let i = 0; i < arr.length; i++) {
+        const y = arr.length === 1 ? cy(t) : top + (span * i) / (arr.length - 1)
+        anchorY.set(`${g} ${arr[i].key}`, y)
+      }
+    }
+  }
 
-    const dx = Math.max(40, Math.abs(x2 - x1) * 0.45)
-    return [{ key: fk.constraint_name, path: `M ${x1} ${srcY} C ${x1 + dx} ${srcY}, ${x2 - dx} ${dstY}, ${x2} ${dstY}` }]
+  return fks.map((fk) => {
+    const src = lmap.get(fk.table_name)!, dst = lmap.get(fk.ref_table_name)!
+    const [ss, ds] = edgeSides(src, dst)
+    const x1   = ss === 'R' ? src.x + src.width : src.x
+    const x2   = ds === 'R' ? dst.x + dst.width : dst.x
+    const dir1 = ss === 'R' ? 1 : -1   // control points extend *outward* from the
+    const dir2 = ds === 'R' ? 1 : -1   // edge, so the curve never loops back on itself
+
+    let srcY: number, dstY: number
+    if (compactMode.value) {
+      srcY = anchorY.get(`${fk.table_name} ${ss} ${fk.constraint_name}`) ?? cy(src)
+      dstY = anchorY.get(`${fk.ref_table_name} ${ds} ${fk.constraint_name}`) ?? cy(dst)
+    } else {
+      const srcIdx = src.columns.findIndex((c) => c.name === fk.column_name)
+      const dstIdx = dst.columns.findIndex((c) => c.name === fk.ref_column_name)
+      srcY = src.y + HEADER_H + (Math.max(0, srcIdx) + 0.5) * ROW_H
+      dstY = dst.y + HEADER_H + (Math.max(0, dstIdx) + 0.5) * ROW_H
+    }
+
+    const dx = Math.min(160, Math.max(40, Math.abs(x2 - x1) * 0.4))
+    return { key: fk.constraint_name, path: `M ${x1} ${srcY} C ${x1 + dir1 * dx} ${srcY}, ${x2 + dir2 * dx} ${dstY}, ${x2} ${dstY}` }
   })
 })
 
