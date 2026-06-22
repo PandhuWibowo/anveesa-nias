@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
 
@@ -29,9 +29,16 @@ const pathTo        = ref('')
 const compactMode   = ref(true)
 const sidepanelOpen = ref(true)
 
+// ── Focus / neighborhood navigation ───────────────────────────────
+const focusTableName = ref('')   // '' = overview (all tables)
+const focusDepth     = ref(1)    // FK hops shown from the focus table
+const hoverTableName = ref('')   // transient highlight on hover
+const FOCUS_THRESHOLD = 50       // above this many tables, auto-focus on load
+
 watch(activeConn, (c) => { if (c?.database) selectedDb.value = c.database }, { immediate: true })
 watch([() => activeConn.value, selectedDb], ([conn, db]) => { if (conn && db) fetchER(conn.id!, db) }, { immediate: true })
-watch(compactMode, () => { computeLayout() })
+watch(compactMode, () => { computeLayout(); refit() })
+watch([focusTableName, focusDepth], () => { refit() })
 
 async function fetchER(connId: number, db: string, refresh = false) {
   loading.value = true; error.value = ''; erData.value = null
@@ -40,19 +47,67 @@ async function fetchER(connId: number, db: string, refresh = false) {
     const path = enc ? `/api/connections/${connId}/er/${enc}` : `/api/connections/${connId}/er`
     const { data } = await axios.get<ERData>(path, { params: refresh ? { refresh: 1 } : undefined })
     erData.value = data
-    selectedTableName.value = data.tables[0]?.name ?? ''
     computeLayout()
+    // Default view: focus the busiest table on large schemas, else show all.
+    if (data.tables.length > FOCUS_THRESHOLD) {
+      focusTableName.value = pickBusiestTable()
+      focusDepth.value = 1
+      selectedTableName.value = focusTableName.value
+    } else {
+      focusTableName.value = ''
+      selectedTableName.value = data.tables[0]?.name ?? ''
+    }
+    refit()
   } catch (e: unknown) {
     error.value = (e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Failed to load ER diagram'
   } finally { loading.value = false }
 }
 
-// ── Layout ────────────────────────────────────────────────────────
+// ── Graph helpers ─────────────────────────────────────────────────
+const adjacency = computed(() => {
+  const m = new Map<string, Set<string>>()
+  if (!erData.value) return m
+  for (const t of erData.value.tables) m.set(t.name, new Set())
+  for (const fk of erData.value.foreign_keys) {
+    if (fk.table_name === fk.ref_table_name) continue
+    m.get(fk.table_name)?.add(fk.ref_table_name)
+    m.get(fk.ref_table_name)?.add(fk.table_name)
+  }
+  return m
+})
+
+function pickBusiestTable(): string {
+  let best = erData.value?.tables[0]?.name ?? '', bestD = -1
+  for (const [name, nb] of adjacency.value) {
+    if (nb.size > bestD) { bestD = nb.size; best = name }
+  }
+  return best
+}
+
+// Set of tables within `focusDepth` FK hops of the focus table (null = show all).
+const focusSet = computed<Set<string> | null>(() => {
+  if (!focusTableName.value) return null
+  const adj = adjacency.value
+  const result = new Set<string>([focusTableName.value])
+  let frontier = [focusTableName.value]
+  for (let d = 0; d < focusDepth.value; d++) {
+    const next: string[] = []
+    for (const n of frontier) {
+      for (const nb of adj.get(n) ?? []) {
+        if (!result.has(nb)) { result.add(nb); next.push(nb) }
+      }
+    }
+    frontier = next
+  }
+  return result
+})
+
+// ── Layout (force-directed) ───────────────────────────────────────
 const TABLE_W  = 240
 const ROW_H    = 24
 const HEADER_H = 40
-const GAP_X    = 80
-const GAP_Y    = 60
+const GAP_X    = 70
+const GAP_Y    = 50
 
 const layout = ref<LayoutTable[]>([])
 
@@ -64,7 +119,13 @@ const filteredTableNames = computed(() => {
     : erData.value.tables.map((t) => t.name)
 })
 
-const visibleLayout = computed(() => layout.value.filter((t) => filteredTableNames.value.includes(t.name)))
+// Visible = passes text filter AND (no focus OR inside focus neighborhood)
+const visibleNames = computed(() => {
+  const fs = focusSet.value
+  return new Set(filteredTableNames.value.filter((n) => !fs || fs.has(n)))
+})
+
+const visibleLayout = computed(() => layout.value.filter((t) => visibleNames.value.has(t.name)))
 const selectedTable = computed(() => erData.value?.tables.find((t) => t.name === selectedTableName.value) ?? null)
 const selectedTableRelCount = computed(() => {
   if (!erData.value || !selectedTable.value) return 0
@@ -97,36 +158,138 @@ const joinPath = computed((): FK[] => {
   return path
 })
 
-const highlightedTableNames = computed(() => {
+// Tables to emphasize: hover neighborhood takes priority, else the join path + selected.
+const hoverNeighbors = computed(() => {
+  const s = new Set<string>()
+  if (hoverTableName.value) {
+    s.add(hoverTableName.value)
+    for (const nb of adjacency.value.get(hoverTableName.value) ?? []) s.add(nb)
+  }
+  return s
+})
+
+const emphasized = computed(() => {
+  if (hoverTableName.value) return hoverNeighbors.value
   const s = new Set<string>()
   if (selectedTableName.value) s.add(selectedTableName.value)
   for (const e of joinPath.value) { s.add(e.table_name); s.add(e.ref_table_name) }
   return s
 })
-const highlightedArrowKeys = computed(() => new Set(joinPath.value.map((e) => e.constraint_name)))
+
+const emphasizedArrowKeys = computed(() => {
+  if (hoverTableName.value && erData.value) {
+    const keys = new Set<string>()
+    for (const fk of erData.value.foreign_keys) {
+      if (fk.table_name === hoverTableName.value || fk.ref_table_name === hoverTableName.value) keys.add(fk.constraint_name)
+    }
+    return keys
+  }
+  return new Set(joinPath.value.map((e) => e.constraint_name))
+})
 
 function tableHeight(t: ERTable) {
   return compactMode.value ? HEADER_H + 40 : HEADER_H + Math.min(t.columns.length, 20) * ROW_H + 10
 }
 
+// Fruchterman–Reingold force layout: connected tables attract, all repel,
+// then a separation pass guarantees no two cards overlap. Runs once per load.
 function computeLayout() {
   if (!erData.value) return
   const tables = erData.value.tables
-  const COLS   = Math.max(1, Math.ceil(Math.sqrt(tables.length * 1.6)))
+  const n = tables.length
   const heights = tables.map((t) => tableHeight(t))
-  const rowMaxH: number[] = []
-  tables.forEach((_, i) => {
-    const row = Math.floor(i / COLS)
-    rowMaxH[row] = Math.max(rowMaxH[row] ?? 0, heights[i])
-  })
-  const rowY: number[] = [40]
-  for (let r = 1; r < rowMaxH.length; r++) {
-    rowY[r] = rowY[r - 1] + rowMaxH[r - 1] + GAP_Y
+  if (n === 0) { layout.value = []; return }
+  if (n === 1) {
+    layout.value = [{ ...tables[0], x: 40, y: 40, width: TABLE_W, height: heights[0] }]
+    return
   }
+
+  const idx = new Map(tables.map((t, i) => [t.name, i]))
+  const edges: [number, number][] = []
+  for (const fk of erData.value.foreign_keys) {
+    const a = idx.get(fk.table_name), b = idx.get(fk.ref_table_name)
+    if (a != null && b != null && a !== b) edges.push([a, b])
+  }
+
+  // Seed on a spiral so the sim starts from a spread-out, deterministic state.
+  const pos = tables.map((_, i) => {
+    const ang = i * 2.399963   // golden angle
+    const r = 60 * Math.sqrt(i + 1)
+    return { x: Math.cos(ang) * r, y: Math.sin(ang) * r }
+  })
+
+  const k = Math.sqrt((n * (TABLE_W + GAP_X) * (TABLE_W + GAP_X)) / n) * 1.1 // ideal edge length
+  const iterations = n > 220 ? 160 : 300
+  let temp = k * 1.5
+  const disp = pos.map(() => ({ x: 0, y: 0 }))
+
+  for (let it = 0; it < iterations; it++) {
+    for (let i = 0; i < n; i++) { disp[i].x = 0; disp[i].y = 0 }
+    // Repulsion between every pair.
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const dx = pos[i].x - pos[j].x
+        const dy = pos[i].y - pos[j].y
+        const dist = Math.hypot(dx, dy) || 0.01
+        const rep = (k * k) / dist
+        const ux = dx / dist, uy = dy / dist
+        disp[i].x += ux * rep; disp[i].y += uy * rep
+        disp[j].x -= ux * rep; disp[j].y -= uy * rep
+      }
+    }
+    // Attraction along FK edges.
+    for (const [a, b] of edges) {
+      const dx = pos[a].x - pos[b].x
+      const dy = pos[a].y - pos[b].y
+      const dist = Math.hypot(dx, dy) || 0.01
+      const att = (dist * dist) / k
+      const ux = dx / dist, uy = dy / dist
+      disp[a].x -= ux * att; disp[a].y -= uy * att
+      disp[b].x += ux * att; disp[b].y += uy * att
+    }
+    // Apply, capped by temperature; cool down.
+    for (let i = 0; i < n; i++) {
+      const d = Math.hypot(disp[i].x, disp[i].y) || 0.01
+      pos[i].x += (disp[i].x / d) * Math.min(d, temp)
+      pos[i].y += (disp[i].y / d) * Math.min(d, temp)
+    }
+    temp = Math.max(temp * 0.965, k * 0.05)
+  }
+
+  // Overlap separation: positions above are card centers.
+  for (let pass = 0; pass < 90; pass++) {
+    let moved = false
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const dx = pos[j].x - pos[i].x
+        const dy = pos[j].y - pos[i].y
+        const minX = TABLE_W + GAP_X
+        const minY = (heights[i] + heights[j]) / 2 + GAP_Y
+        const px = minX - Math.abs(dx)
+        const py = minY - Math.abs(dy)
+        if (px > 0 && py > 0) {
+          moved = true
+          if (px < py) {
+            const s = (dx < 0 ? -1 : 1) * px / 2
+            pos[i].x -= s; pos[j].x += s
+          } else {
+            const s = (dy < 0 ? -1 : 1) * py / 2
+            pos[i].y -= s; pos[j].y += s
+          }
+        }
+      }
+    }
+    if (!moved) break
+  }
+
+  // Convert centers → top-left and normalize to a positive origin.
+  const xs = pos.map((p) => p.x - TABLE_W / 2)
+  const ys = pos.map((p, i) => p.y - heights[i] / 2)
+  const minX = Math.min(...xs), minY = Math.min(...ys)
   layout.value = tables.map((t, i) => ({
     ...t,
-    x:      (i % COLS) * (TABLE_W + GAP_X) + 40,
-    y:      rowY[Math.floor(i / COLS)],
+    x: xs[i] - minX + 40,
+    y: ys[i] - minY + 40,
     width:  TABLE_W,
     height: heights[i],
   }))
@@ -134,10 +297,10 @@ function computeLayout() {
 
 // ── World bounds for SVG arrow layer ─────────────────────────────
 const worldW = computed(() =>
-  visibleLayout.value.length ? Math.max(...visibleLayout.value.map((t) => t.x + t.width)) + 120 : 2000,
+  visibleLayout.value.length ? Math.max(...visibleLayout.value.map((t) => t.x + t.width)) + 200 : 2000,
 )
 const worldH = computed(() =>
-  visibleLayout.value.length ? Math.max(...visibleLayout.value.map((t) => t.y + t.height)) + 120 : 2000,
+  visibleLayout.value.length ? Math.max(...visibleLayout.value.map((t) => t.y + t.height)) + 200 : 2000,
 )
 
 // ── FK arrows ─────────────────────────────────────────────────────
@@ -252,10 +415,37 @@ function onMouseup() {
   isPanning.value = false
 }
 
-function resetView() { panX.value = 0; panY.value = 0; scale.value = 1 }
-function selectTable(name: string) { selectedTableName.value = name }
+function selectTable(name: string) {
+  selectedTableName.value = name
+  // Clicking a table explores its neighborhood.
+  focusTableName.value = name
+}
+
+function showOverview() { focusTableName.value = '' }
 
 const zoomPct = computed(() => `${Math.round(scale.value * 100)}%`)
+
+// ── Fit-to-screen ─────────────────────────────────────────────────
+function fitView() {
+  const tbls = visibleLayout.value
+  if (!tbls.length || !canvasEl.value) return
+  const minX = Math.min(...tbls.map((t) => t.x))
+  const minY = Math.min(...tbls.map((t) => t.y))
+  const maxX = Math.max(...tbls.map((t) => t.x + t.width))
+  const maxY = Math.max(...tbls.map((t) => t.y + t.height))
+  const { width, height } = canvasEl.value.getBoundingClientRect()
+  const pad = 64
+  const bw = Math.max(1, maxX - minX), bh = Math.max(1, maxY - minY)
+  const s = Math.min(3, Math.max(0.08, Math.min((width - pad * 2) / bw, (height - pad * 2) / bh)))
+  scale.value = s
+  panX.value = (width  - bw * s) / 2 - minX * s
+  panY.value = (height - bh * s) / 2 - minY * s
+}
+
+// Refit after layout/DOM settles.
+function refit() {
+  nextTick(() => requestAnimationFrame(() => fitView()))
+}
 
 // ── Touch support ─────────────────────────────────────────────────
 function _pinchDistance(a: Touch, b: Touch) {
@@ -338,11 +528,11 @@ const viewportTables = computed(() => {
   )
 })
 
-// Only draw arrows where at least one endpoint is in viewport (or highlighted)
+// Only draw arrows where at least one endpoint is in viewport (or emphasized)
 const visibleArrows = computed(() => {
   const vis = new Set(viewportTables.value.map((t) => t.name))
   return arrows.value.filter((a) => {
-    if (highlightedArrowKeys.value.has(a.key)) return true
+    if (emphasizedArrowKeys.value.has(a.key)) return true
     const fk = fkByKey.value.get(a.key)
     return fk ? vis.has(fk.table_name) || vis.has(fk.ref_table_name) : false
   })
@@ -377,13 +567,25 @@ onBeforeUnmount(() => {
             {{ activeConn.name }}
           </span>
         </template>
+
+        <!-- Focus chip -->
+        <span v-if="focusTableName" class="er-focus-chip">
+          <span class="er-focus-chip__label">Focus</span>
+          <span class="er-focus-chip__name" :title="focusTableName">{{ focusTableName }}</span>
+          <span class="er-depth">
+            <button v-for="d in [1, 2, 3]" :key="d" :class="{ active: focusDepth === d }" @click="focusDepth = d">{{ d }}</button>
+          </span>
+          <button class="er-focus-chip__close" title="Show all tables" @click="showOverview">✕</button>
+        </span>
       </div>
+
       <div class="er-toolbar__right">
         <input v-model="tableFilter" class="er-filter-input" placeholder="Filter tables…" />
         <label class="er-toggle">
           <input v-model="compactMode" type="checkbox" />
           Compact
         </label>
+        <button v-if="focusTableName" class="base-btn base-btn--ghost base-btn--sm" @click="showOverview">Overview</button>
         <button class="base-btn base-btn--ghost base-btn--sm" @click="sidepanelOpen = !sidepanelOpen">
           {{ sidepanelOpen ? 'Hide Panel' : 'Show Panel' }}
         </button>
@@ -395,7 +597,7 @@ onBeforeUnmount(() => {
         >
           <option :value="activeConn?.database">{{ activeConn?.database }}</option>
         </select>
-        <button class="base-btn base-btn--ghost base-btn--sm" @click="resetView">Reset view</button>
+        <button class="base-btn base-btn--ghost base-btn--sm" @click="fitView">Fit</button>
         <button
           class="base-btn base-btn--ghost base-btn--sm"
           @click="activeConn && fetchER(activeConn.id!, selectedDb, true)"
@@ -466,10 +668,10 @@ onBeforeUnmount(() => {
               :d="a.path"
               fill="none"
               stroke="var(--brand)"
-              :stroke-width="highlightedArrowKeys.has(a.key) ? 2.5 : 1.5"
-              stroke-dasharray="6 3"
-              :opacity="highlightedArrowKeys.size ? (highlightedArrowKeys.has(a.key) ? 0.9 : 0.1) : 0.4"
-              :marker-end="highlightedArrowKeys.has(a.key) ? 'url(#arr)' : 'url(#arr-dim)'"
+              :stroke-width="emphasizedArrowKeys.has(a.key) ? 2.5 : 1.25"
+              :stroke-dasharray="emphasizedArrowKeys.has(a.key) ? 'none' : '6 3'"
+              :opacity="emphasizedArrowKeys.size ? (emphasizedArrowKeys.has(a.key) ? 0.95 : 0.05) : 0.22"
+              :marker-end="emphasizedArrowKeys.has(a.key) ? 'url(#arr)' : 'url(#arr-dim)'"
             />
           </svg>
 
@@ -481,11 +683,14 @@ onBeforeUnmount(() => {
             class="erd-table"
             :class="{
               'erd-table--selected': selectedTableName === t.name,
-              'erd-table--dimmed':   highlightedTableNames.size > 0 && !highlightedTableNames.has(t.name),
+              'erd-table--focus':    focusTableName === t.name,
+              'erd-table--dimmed':   emphasized.size > 0 && !emphasized.has(t.name),
               'erd-table--compact':  compactMode,
             }"
             :style="{ left: `${t.x}px`, top: `${t.y}px`, width: `${t.width}px` }"
             @click.stop="selectTable(t.name)"
+            @mouseenter="hoverTableName = t.name"
+            @mouseleave="hoverTableName = ''"
           >
             <!-- Header / drag handle -->
             <div
@@ -556,7 +761,7 @@ onBeforeUnmount(() => {
 
         <section class="er-panel">
           <div class="er-panel__title">Table Details</div>
-          <div class="er-panel__sub">Click a table in the diagram to inspect its shape.</div>
+          <div class="er-panel__sub">Click a table in the diagram to focus & inspect it.</div>
           <template v-if="selectedTable">
             <div class="er-detail-head">
               <strong>{{ selectedTable.name }}</strong>
@@ -592,8 +797,8 @@ onBeforeUnmount(() => {
       <span class="er-legend__item">
         <span style="color:#f2c97d;font-size:12px">🔑</span> Primary key
       </span>
-      <span class="er-legend__hint">Drag header to move · Scroll to zoom · Drag canvas to pan</span>
-      <span class="er-legend__stat">{{ erData.tables.length }} tables · {{ erData.foreign_keys.length }} FK · {{ viewportTables.length }} visible</span>
+      <span class="er-legend__hint">Click a table to explore its neighbours · Drag header to move · Scroll to zoom</span>
+      <span class="er-legend__stat">{{ erData.tables.length }} tables · {{ erData.foreign_keys.length }} FK · {{ visibleLayout.length }} shown</span>
     </div>
   </div>
 </template>
@@ -623,15 +828,41 @@ onBeforeUnmount(() => {
   background: var(--bg-surface); border-bottom: 1px solid var(--border);
   gap: 12px;
 }
-.er-toolbar__left  { display: flex; align-items: center; gap: 12px; }
+.er-toolbar__left  { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .er-toolbar__right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.er-toolbar__title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.er-toolbar__conn  { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-secondary); }
+.er-toolbar__title { font-size: 13px; font-weight: 600; color: var(--text-primary); flex-shrink: 0; }
+.er-toolbar__conn  { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-secondary); flex-shrink: 0; }
 .er-driver-badge   {
   font-size: 10px; font-weight: 600; text-transform: uppercase;
   background: var(--brand-dim); color: var(--brand);
   padding: 1px 6px; border-radius: 4px;
 }
+
+/* Focus chip */
+.er-focus-chip {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  background: var(--brand-dim); border: 1px solid color-mix(in srgb, var(--brand) 35%, transparent);
+  border-radius: 999px; padding: 2px 4px 2px 10px; height: 26px;
+}
+.er-focus-chip__label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--brand); flex-shrink: 0; }
+.er-focus-chip__name {
+  font-size: 12px; font-weight: 600; color: var(--text-primary);
+  max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.er-depth { display: flex; gap: 2px; background: var(--bg-body); border-radius: 999px; padding: 2px; }
+.er-depth button {
+  border: none; background: transparent; cursor: pointer;
+  width: 18px; height: 18px; border-radius: 50%;
+  font-size: 11px; color: var(--text-muted); line-height: 1;
+}
+.er-depth button.active { background: var(--brand); color: #fff; font-weight: 700; }
+.er-focus-chip__close {
+  border: none; background: transparent; cursor: pointer;
+  width: 20px; height: 20px; border-radius: 50%;
+  font-size: 11px; color: var(--text-muted);
+}
+.er-focus-chip__close:hover { background: var(--bg-body); color: var(--text-primary); }
+
 .er-db-select, .er-filter-input {
   background: var(--bg-elevated); color: var(--text-primary);
   border: 1px solid var(--border); border-radius: var(--r);
@@ -692,7 +923,12 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 20%, transparent), 0 4px 20px rgba(0,0,0,0.14);
 }
 
-.erd-table--dimmed { opacity: 0.25; }
+.erd-table--focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 28%, transparent), 0 6px 24px rgba(0,0,0,0.18);
+}
+
+.erd-table--dimmed { opacity: 0.22; }
 
 .erd-table:hover:not(.erd-table--dimmed) {
   box-shadow: 0 4px 16px rgba(0,0,0,0.14), 0 2px 6px rgba(0,0,0,0.08);
