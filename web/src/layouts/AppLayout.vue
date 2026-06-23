@@ -3,7 +3,6 @@ import { ref, watch, onMounted } from 'vue'
 import TopNav from '@/components/layout/TopNav.vue'
 import ToastContainer from '@/components/ui/ToastContainer.vue'
 import ConfirmModal from '@/components/ui/ConfirmModal.vue'
-import StatusBar from '@/components/layout/StatusBar.vue'
 import { useConnections } from '@/composables/useConnections'
 
 const LS_KEY = 'activeConnId'
@@ -41,8 +40,6 @@ function handleConnSelect(id: number) {
     <main class="main-area">
       <router-view :activeConnId="activeConnId" @set-conn="handleConnSelect" />
     </main>
-
-    <StatusBar :activeConnId="activeConnId" />
 
     <ToastContainer />
     <ConfirmModal />

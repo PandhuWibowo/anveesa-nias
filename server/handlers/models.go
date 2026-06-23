@@ -161,6 +161,10 @@ const (
 	PermDataImport      = "data.import"
 	PermDBUsersManage   = "dbusers.manage"
 	PermSettingsAlerts  = "settings.alerts"
+	// Infrastructure
+	PermDockerView   = "docker.view"
+	PermDockerManage = "docker.manage"
+	PermDockerExec   = "docker.exec"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -224,6 +228,10 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermDataImport, Label: "Import Data", Group: "Data"},
 	{Key: PermDBUsersManage, Label: "Manage Database Users & Grants", Group: "Administration"},
 	{Key: PermSettingsAlerts, Label: "Manage Alert Settings", Group: "Administration"},
+	// Infrastructure
+	{Key: PermDockerView, Label: "View Docker Hosts & Containers", Group: "Infrastructure"},
+	{Key: PermDockerManage, Label: "Manage Docker Hosts & Container Lifecycle", Group: "Infrastructure"},
+	{Key: PermDockerExec, Label: "Run Commands Inside Containers (high-risk)", Group: "Infrastructure"},
 }
 
 // PermissionDef describes a single permission for the UI.

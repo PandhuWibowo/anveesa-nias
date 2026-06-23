@@ -148,6 +148,14 @@ const allMenuGroups: MenuGroup[] = [
     ],
   },
   {
+    id: 'infrastructure',
+    label: 'Infrastructure',
+    icon: 'docker',
+    items: [
+      { name: 'docker', label: 'Docker', desc: 'Browse and control containers and images across your servers over SSH', icon: 'docker', permissionsAny: ['docker.view', 'docker.manage'] },
+    ],
+  },
+  {
     id: 'admin',
     label: 'Admin',
     icon: 'settings',
@@ -247,6 +255,7 @@ const ICON_PATHS: Record<string, string> = {
   uptime: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/><path d="M12 22v-2"/><path d="M12 4V2"/><path d="M4.93 4.93l1.41 1.41"/><path d="M17.66 17.66l1.41 1.41"/>',
   layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
   notification: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+  docker: '<rect x="3" y="10" width="3" height="3"/><rect x="7" y="10" width="3" height="3"/><rect x="11" y="10" width="3" height="3"/><rect x="7" y="6" width="3" height="3"/><rect x="11" y="6" width="3" height="3"/><path d="M3 13h13c2.5 0 4-1 4.5-3 1 .3 2 .2 2.5-.3-.3 1.8-1.7 3.3-3.5 3.3H3z"/>',
 }
 
 function iconPath(icon: string): string {

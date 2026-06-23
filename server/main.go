@@ -775,6 +775,97 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 
+	// ── Infrastructure: Docker ────────────────────────────────────
+	mux.HandleFunc("/api/docker/hosts", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermDockerView, handlers.PermDockerManage)(handlers.ListDockerHosts())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermDockerManage)(handlers.CreateDockerHost())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/docker/hosts/", func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/docker/hosts/"), "/")
+		parts := strings.Split(rest, "/")
+		view := requireAny(handlers.PermDockerView, handlers.PermDockerManage)
+		manage := requireAny(handlers.PermDockerManage)
+		exec := requireAny(handlers.PermDockerExec)
+		switch {
+		// /api/docker/hosts/test  — validate unsaved credentials
+		case len(parts) == 1 && parts[0] == "test" && r.Method == http.MethodPost:
+			manage(handlers.TestDockerHost())(w, r)
+		// /api/docker/hosts/{id}
+		case len(parts) == 1 && r.Method == http.MethodPut:
+			manage(handlers.UpdateDockerHost())(w, r)
+		case len(parts) == 1 && r.Method == http.MethodDelete:
+			manage(handlers.DeleteDockerHost())(w, r)
+		// /api/docker/hosts/{id}/ping
+		case len(parts) == 2 && parts[1] == "ping" && r.Method == http.MethodGet:
+			view(handlers.DockerPing())(w, r)
+		// /api/docker/hosts/{id}/containers
+		case len(parts) == 2 && parts[1] == "containers" && r.Method == http.MethodGet:
+			view(handlers.DockerContainers())(w, r)
+		// /api/docker/hosts/{id}/containers  (create + run)
+		case len(parts) == 2 && parts[1] == "containers" && r.Method == http.MethodPost:
+			manage(handlers.DockerContainerRun())(w, r)
+		// /api/docker/hosts/{id}/images
+		case len(parts) == 2 && parts[1] == "images" && r.Method == http.MethodGet:
+			view(handlers.DockerImages())(w, r)
+		// /api/docker/hosts/{id}/volumes
+		case len(parts) == 2 && parts[1] == "volumes" && r.Method == http.MethodGet:
+			view(handlers.DockerVolumes())(w, r)
+		case len(parts) == 3 && parts[1] == "volumes" && parts[2] == "remove" && r.Method == http.MethodPost:
+			manage(handlers.DockerVolumeRemove())(w, r)
+		// /api/docker/hosts/{id}/networks
+		case len(parts) == 2 && parts[1] == "networks" && r.Method == http.MethodGet:
+			view(handlers.DockerNetworks())(w, r)
+		case len(parts) == 3 && parts[1] == "networks" && parts[2] == "remove" && r.Method == http.MethodPost:
+			manage(handlers.DockerNetworkRemove())(w, r)
+		// /api/docker/hosts/{id}/prune/{volumes|networks}
+		case len(parts) == 3 && parts[1] == "prune" && parts[2] == "volumes" && r.Method == http.MethodPost:
+			manage(handlers.DockerVolumesPrune())(w, r)
+		case len(parts) == 3 && parts[1] == "prune" && parts[2] == "networks" && r.Method == http.MethodPost:
+			manage(handlers.DockerNetworksPrune())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/terminal  (WebSocket; self-authed)
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "terminal" && r.Method == http.MethodGet:
+			handlers.DockerContainerTerminal()(w, r)
+		// /api/docker/hosts/{id}/images/pull
+		case len(parts) == 3 && parts[1] == "images" && parts[2] == "pull" && r.Method == http.MethodPost:
+			manage(handlers.DockerImagePull())(w, r)
+		// /api/docker/hosts/{id}/images/remove
+		case len(parts) == 3 && parts[1] == "images" && parts[2] == "remove" && r.Method == http.MethodPost:
+			manage(handlers.DockerImageRemove())(w, r)
+		// /api/docker/hosts/{id}/prune/containers
+		case len(parts) == 3 && parts[1] == "prune" && parts[2] == "containers" && r.Method == http.MethodPost:
+			manage(handlers.DockerContainersPrune())(w, r)
+		// /api/docker/hosts/{id}/prune/images
+		case len(parts) == 3 && parts[1] == "prune" && parts[2] == "images" && r.Method == http.MethodPost:
+			manage(handlers.DockerImagesPrune())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}  (remove)
+		case len(parts) == 3 && parts[1] == "containers" && r.Method == http.MethodDelete:
+			manage(handlers.DockerContainerRemove())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/inspect
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "inspect" && r.Method == http.MethodGet:
+			view(handlers.DockerContainerInspect())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/logs
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "logs" && r.Method == http.MethodGet:
+			view(handlers.DockerContainerLogs())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/stats
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "stats" && r.Method == http.MethodGet:
+			view(handlers.DockerContainerStats())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/exec  (separate docker.exec gate)
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "exec" && r.Method == http.MethodPost:
+			exec(handlers.DockerContainerExec())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/{start|stop|restart}
+		case len(parts) == 4 && parts[1] == "containers" && r.Method == http.MethodPost:
+			manage(handlers.DockerContainerAction())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
 	// ── Admin: users ──────────────────────────────────────────────
 	mux.HandleFunc("/api/admin/users", requireAny(handlers.PermUsersManage, handlers.PermWorkflowsManage)(handlers.ListUsers()))
 	mux.HandleFunc("/api/admin/users/", func(w http.ResponseWriter, r *http.Request) {

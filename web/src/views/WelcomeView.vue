@@ -40,7 +40,7 @@ const driverCounts = computed(() => {
           <p class="wv-sub">
             {{ connections.length
               ? 'Choose a connection from the sidebar, or add a new one below.'
-              : 'A fast database studio. Connect to PostgreSQL, MySQL or SQL Server.' }}
+              : 'A powerful internal developer platform. Connect to PostgreSQL, MySQL or SQL Server.' }}
           </p>
           <div class="wv-actions">
             <button class="base-btn base-btn--primary" @click="router.push({ name: 'connections' })">

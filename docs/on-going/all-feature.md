@@ -1,6 +1,6 @@
 # All Features — Anveesa Nias
 
-Dokumen ini merangkum seluruh fitur yang tersedia di Anveesa Nias, database studio open-source untuk tim.
+Dokumen ini merangkum seluruh fitur yang tersedia di Anveesa Nias, internal developer platform open-source untuk tim.
 
 ---
 

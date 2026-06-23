@@ -19,6 +19,7 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: apiProxyTarget,
           changeOrigin: true,
+          ws: true,
           configure: (proxy) => {
             proxy.on('error', () => {})
           },

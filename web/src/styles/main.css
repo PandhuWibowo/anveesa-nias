@@ -610,7 +610,6 @@ body {
   display: flex;
   flex-direction: column;
   background: var(--bg-body);
-  padding-bottom: 24px; /* keep content above fixed status bar */
 }
 
 /* Route views must fill the main area without clamping their overflow strategy */

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Anveesa Nias is an open-source database studio. A Go HTTP API (`server/`) serves a Vue 3 + Vite frontend (`web/`). The app connects to user databases (PostgreSQL, MySQL, SQLite, SQL Server) and also uses its own internal database (postgres or mysql only — sqlite mentioned in docs is not supported by the current config validator) to store users, connections, audit logs, etc.
+Anveesa Nias is an open-source internal developer platform (IDP). A Go HTTP API (`server/`) serves a Vue 3 + Vite frontend (`web/`). The app connects to user databases (PostgreSQL, MySQL, SQLite, SQL Server) and also uses its own internal database (postgres or mysql only — sqlite mentioned in docs is not supported by the current config validator) to store users, connections, audit logs, etc.
 
 ## Commands
 

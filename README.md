@@ -1,6 +1,6 @@
 # Anveesa Nias
 
-Anveesa Nias is an open-source database studio for teams that need to explore data, run SQL, manage saved queries, build analytics dashboards, and audit database activity from a web UI.
+Anveesa Nias is an open-source internal developer platform for teams that need to explore data, run SQL, manage saved queries, build analytics dashboards, and audit database activity from a web UI.
 
 It is built with a Go HTTP API and a Vue 3 + Vite frontend.
 

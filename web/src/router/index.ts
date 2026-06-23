@@ -229,6 +229,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['kafka.view'] },
         },
         {
+          path: 'docker',
+          name: 'docker',
+          component: () => import('@/views/DockerView.vue'),
+          meta: { requiredPermissionsAny: ['docker.view', 'docker.manage'] },
+        },
+        {
           path: 'connections',
           name: 'connections',
           component: () => import('@/views/ConnectionsView.vue'),

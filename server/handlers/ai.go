@@ -170,7 +170,7 @@ func SaveAISettings() http.HandlerFunc {
 }
 
 // Safety system prompt to prevent prompt injection attacks
-const aiSafetyPrompt = `You are a helpful AI assistant for Anveesa Nias, an open-source database studio built with a Go HTTP API and a Vue 3 + Vite frontend.
+const aiSafetyPrompt = `You are a helpful AI assistant for Anveesa Nias, an open-source internal developer platform built with a Go HTTP API and a Vue 3 + Vite frontend.
 
 About this project:
 - Multi-database support: PostgreSQL, MySQL, SQLite, SQL Server
