@@ -928,7 +928,9 @@ func NginxStatus() http.HandlerFunc {
 
 // ── Logs ──────────────────────────────────────────────────────────────────
 
-// NginxLogList lists log files under the log directory.
+// NginxLogList lists log files under the log directory. Like the config views
+// it is sudo-aware: /var/log/nginx is often 750 root:adm and not even listable
+// by a non-root SSH user, so under sudo it shells out to `find` instead of SFTP.
 func NginxLogList() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -942,23 +944,50 @@ func NginxLogList() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
 		}
-		client, cleanup, err := sftpSession(id)
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-			return
-		}
-		defer cleanup()
-		infos, err := client.ReadDir(dir)
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-			return
-		}
-		files := make([]nginxFileEntry, 0, len(infos))
-		for _, fi := range infos {
-			if fi.IsDir() {
-				continue
+		files := make([]nginxFileEntry, 0, 16)
+		if nginxUseSudo(r) {
+			h, e := loadDockerHost(id)
+			if e != nil {
+				http.Error(w, jsonError("host not found"), http.StatusBadRequest)
+				return
 			}
-			files = append(files, nginxFileEntry{Path: fi.Name(), Size: fi.Size()})
+			out, e := runHostPrivileged(h, true, []string{
+				"find", dir, "-maxdepth", "1", "-type", "f", "-printf", "%f\t%s\n",
+			}, "")
+			if e != nil {
+				http.Error(w, jsonError(strings.TrimSpace(out)), http.StatusBadGateway)
+				return
+			}
+			for _, l := range strings.Split(out, "\n") {
+				l = strings.TrimRight(l, "\r")
+				if l == "" {
+					continue
+				}
+				name, szStr, ok := strings.Cut(l, "\t")
+				if !ok {
+					continue
+				}
+				sz, _ := strconv.ParseInt(strings.TrimSpace(szStr), 10, 64)
+				files = append(files, nginxFileEntry{Path: name, Size: sz})
+			}
+		} else {
+			client, cleanup, e := sftpSession(id)
+			if e != nil {
+				http.Error(w, jsonError(e.Error()), http.StatusBadGateway)
+				return
+			}
+			defer cleanup()
+			infos, e := client.ReadDir(dir)
+			if e != nil {
+				http.Error(w, jsonError(e.Error()), http.StatusBadGateway)
+				return
+			}
+			for _, fi := range infos {
+				if fi.IsDir() {
+					continue
+				}
+				files = append(files, nginxFileEntry{Path: fi.Name(), Size: fi.Size()})
+			}
 		}
 		sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 		json.NewEncoder(w).Encode(map[string]interface{}{"root": dir, "files": files})

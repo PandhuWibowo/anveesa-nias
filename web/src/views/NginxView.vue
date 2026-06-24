@@ -626,6 +626,11 @@ async function loadLogList() {
       await openLog(def.path)
     }
   } catch (e: any) {
+    if (!useSudo.value && isPermDenied(e)) {
+      useSudo.value = true
+      toast.info('Permission denied — retrying with sudo')
+      return loadLogList()
+    }
     toast.error(e?.response?.data?.error || 'Failed to list logs')
     logFiles.value = []
   }
