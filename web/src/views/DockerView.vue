@@ -164,6 +164,12 @@ const topoPan = ref({ x: 40, y: 20 })
 const topoZoom = ref(1)
 let topoDragging = false
 let topoDragStart = { x: 0, y: 0, px: 0, py: 0 }
+const topoCanvasEl = ref<HTMLElement | null>(null)
+const selectedNodeId = ref<string | null>(null)
+const topoCustomPos = ref<Record<string, { x: number; y: number }>>({})
+let draggingNodeId: string | null = null
+let nodeDragOffset = { x: 0, y: 0 }
+let nodeMoved = false
 
 // Expanded network rows (connected containers)
 const netExpanded = ref<Record<string, boolean>>({})
@@ -1140,12 +1146,8 @@ function topoNodeClass(n: TopoNode) {
   return 'dk-tnode--exited'
 }
 
-async function openTopology() {
+async function refreshTopology() {
   if (activeHostId.value === null) return
-  showTopology.value = true
-  topoLoading.value = true
-  topoPan.value = { x: 40, y: 20 }
-  topoZoom.value = 1
   try {
     const { data } = await axios.get<{ nodes: TopoNode[]; edges: TopoEdge[] }>(
       `/api/docker/hosts/${activeHostId.value}/topology`,
@@ -1154,10 +1156,56 @@ async function openTopology() {
     topoEdges.value = data.edges || []
   } catch (e: any) {
     toast.error(e?.response?.data?.error || 'Failed to load topology')
-    showTopology.value = false
-  } finally {
-    topoLoading.value = false
+    if (!topoNodes.value.length) showTopology.value = false
   }
+}
+
+async function openTopology() {
+  if (activeHostId.value === null) return
+  showTopology.value = true
+  topoLoading.value = true
+  topoPan.value = { x: 40, y: 20 }
+  topoZoom.value = 1
+  topoCustomPos.value = {}
+  selectedNodeId.value = null
+  await refreshTopology()
+  topoLoading.value = false
+}
+
+// Convert a client coordinate into graph-space (accounting for pan/zoom).
+function topoToGraph(clientX: number, clientY: number) {
+  const rect = topoCanvasEl.value?.getBoundingClientRect()
+  const left = rect?.left ?? 0
+  const top = rect?.top ?? 0
+  return { x: (clientX - left - topoPan.value.x) / topoZoom.value, y: (clientY - top - topoPan.value.y) / topoZoom.value }
+}
+
+function startNodeDrag(nd: { x: number; y: number; node: TopoNode }, e: MouseEvent) {
+  draggingNodeId = nd.node.id
+  nodeMoved = false
+  const g = topoToGraph(e.clientX, e.clientY)
+  nodeDragOffset = { x: g.x - nd.x, y: g.y - nd.y }
+}
+
+const selectedNode = computed(() => topoNodes.value.find((n) => n.id === selectedNodeId.value) || null)
+const selectedTopoContainer = computed(() => {
+  const n = selectedNode.value
+  if (!n || n.type !== 'container') return null
+  const cid = n.id.replace(/^c:/, '')
+  return containers.value.find((c) => c.id === cid) || null
+})
+
+function topoOpen(fn: (c: DockerContainer) => void) {
+  const c = selectedTopoContainer.value
+  if (!c) return
+  showTopology.value = false
+  fn(c)
+}
+async function topoContainerAction(action: 'start' | 'stop' | 'restart') {
+  const c = selectedTopoContainer.value
+  if (!c) return
+  await containerAction(c, action)
+  await refreshTopology()
 }
 
 const TOPO = { cw: 210, ch: 62, nw: 150, nh: 42, vw: 190, vh: 38, gap: 14, colNet: 40, colCon: 380, colVol: 760 }
@@ -1195,6 +1243,14 @@ const topoLayout = computed(() => {
     y += TOPO.vh + TOPO.gap
   }
 
+  // Apply any manual (dragged) overrides.
+  for (const [id, p] of Object.entries(topoCustomPos.value)) {
+    if (pos[id]) {
+      pos[id].x = p.x
+      pos[id].y = p.y
+    }
+  }
+
   const edges = topoEdges.value
     .map((e) => {
       const a = pos[e.from]
@@ -1230,14 +1286,31 @@ function topoWheel(e: WheelEvent) {
   topoZoom.value = Math.min(2.5, Math.max(0.3, topoZoom.value * delta))
 }
 function topoMouseDown(e: MouseEvent) {
+  // Background drag = pan; deselect on a plain background click.
   topoDragging = true
   topoDragStart = { x: e.clientX, y: e.clientY, px: topoPan.value.x, py: topoPan.value.y }
 }
 function topoMouseMove(e: MouseEvent) {
+  if (draggingNodeId) {
+    nodeMoved = true
+    const g = topoToGraph(e.clientX, e.clientY)
+    topoCustomPos.value = { ...topoCustomPos.value, [draggingNodeId]: { x: g.x - nodeDragOffset.x, y: g.y - nodeDragOffset.y } }
+    return
+  }
   if (!topoDragging) return
   topoPan.value = { x: topoDragStart.px + (e.clientX - topoDragStart.x), y: topoDragStart.py + (e.clientY - topoDragStart.y) }
 }
-function topoMouseUp() {
+function topoMouseUp(e: MouseEvent) {
+  if (draggingNodeId) {
+    if (!nodeMoved) selectedNodeId.value = draggingNodeId // click (no drag) = select
+    draggingNodeId = null
+    topoDragging = false
+    return
+  }
+  // Plain background click (no pan movement) deselects.
+  if (topoDragging && Math.abs(e.clientX - topoDragStart.x) < 3 && Math.abs(e.clientY - topoDragStart.y) < 3) {
+    selectedNodeId.value = null
+  }
   topoDragging = false
 }
 function topoZoomBy(f: number) {
@@ -2282,6 +2355,7 @@ onMounted(loadHosts)
           </div>
         </div>
         <div
+          ref="topoCanvasEl"
           class="dk-topo-canvas"
           @wheel="topoWheel"
           @mousedown="topoMouseDown"
@@ -2301,8 +2375,14 @@ onMounted(loadHosts)
                 :class="ed.type === 'volume' ? 'dk-edge--vol' : 'dk-edge--net'"
                 fill="none"
               />
-              <g v-for="nd in topoLayout.nodes" :key="nd.node.id" :transform="`translate(${nd.x},${nd.y})`">
-                <rect :width="nd.w" :height="nd.h" rx="8" class="dk-tnode" :class="topoNodeClass(nd.node)" />
+              <g
+                v-for="nd in topoLayout.nodes"
+                :key="nd.node.id"
+                :transform="`translate(${nd.x},${nd.y})`"
+                class="dk-tnode-g"
+                @mousedown.stop="startNodeDrag(nd, $event)"
+              >
+                <rect :width="nd.w" :height="nd.h" rx="8" class="dk-tnode" :class="[topoNodeClass(nd.node), { 'dk-tnode--sel': nd.node.id === selectedNodeId }]" />
                 <text x="12" y="20" class="dk-tnode-label">{{ truncate(nd.node.label, nd.node.type === 'container' ? 24 : 18) }}</text>
                 <text v-if="nd.node.type === 'container'" x="12" y="37" class="dk-tnode-sub">{{ truncate(nd.node.image, 26) }}</text>
                 <text v-if="nd.node.type === 'container' && nd.node.ports && nd.node.ports.length" x="12" y="53" class="dk-tnode-ports">{{ truncate(nd.node.ports.join('  '), 28) }}</text>
@@ -2311,6 +2391,36 @@ onMounted(loadHosts)
               </g>
             </g>
           </svg>
+
+          <!-- Selection panel -->
+          <div v-if="selectedNode" class="dk-topo-panel" @mousedown.stop @wheel.stop>
+            <div class="dk-topo-panel-head">
+              <span class="dk-name">{{ selectedNode.label }}</span>
+              <button class="dk-icon-btn" @click="selectedNodeId = null">×</button>
+            </div>
+            <div class="dk-topo-panel-body">
+              <div class="dk-kv"><span>Type</span><span style="text-transform: capitalize">{{ selectedNode.type }}</span></div>
+              <template v-if="selectedNode.type === 'container'">
+                <div class="dk-kv"><span>State</span><span><span class="badge" :class="stateBadge(selectedNode.state || '')">{{ selectedNode.state }}</span></span></div>
+                <div class="dk-kv"><span>Image</span><span class="dk-mono">{{ selectedNode.image }}</span></div>
+                <div class="dk-kv" v-if="selectedNode.project"><span>Project</span><span>{{ selectedNode.project }}</span></div>
+                <div class="dk-kv" v-if="selectedNode.ports && selectedNode.ports.length"><span>Ports</span><span class="dk-mono">{{ selectedNode.ports.join(', ') }}</span></div>
+                <div v-if="!selectedTopoContainer" class="dk-muted">Container not in current list (refresh).</div>
+                <div v-else class="dk-topo-actions">
+                  <button class="base-btn base-btn--xs" @click="topoOpen(openInspect)">Details</button>
+                  <button class="base-btn base-btn--xs" @click="topoOpen(openLogs)">Logs</button>
+                  <button v-if="canExec && selectedNode.state === 'running'" class="base-btn base-btn--xs" @click="topoOpen(openTerminal)">Terminal</button>
+                  <button v-if="selectedNode.state === 'running'" class="base-btn base-btn--xs" @click="topoOpen(openFiles)">Files</button>
+                  <button v-if="canManage && selectedNode.state !== 'running'" class="base-btn base-btn--xs base-btn--primary" @click="topoContainerAction('start')">Start</button>
+                  <button v-if="canManage && selectedNode.state === 'running'" class="base-btn base-btn--xs" @click="topoContainerAction('restart')">Restart</button>
+                  <button v-if="canManage && selectedNode.state === 'running'" class="base-btn base-btn--xs base-btn--danger" @click="topoContainerAction('stop')">Stop</button>
+                </div>
+              </template>
+              <template v-else>
+                <div class="dk-kv"><span>Driver</span><span>{{ selectedNode.driver }}</span></div>
+              </template>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -2509,9 +2619,17 @@ onMounted(loadHosts)
 .dk-lg--con { background: var(--success); }
 .dk-lg--vol { background: #f59e0b; }
 .dk-topo-head .dk-term-head-actions { margin-left: auto; }
-.dk-topo-canvas { flex: 1; min-height: 0; overflow: hidden; cursor: grab; background:
+.dk-topo-canvas { position: relative; flex: 1; min-height: 0; overflow: hidden; cursor: grab; background:
   radial-gradient(circle, rgba(255,255,255,0.04) 1px, transparent 1px); background-size: 22px 22px; background-color: var(--bg-body); }
 .dk-topo-canvas:active { cursor: grabbing; }
+.dk-tnode-g { cursor: pointer; }
+.dk-tnode--sel { stroke-width: 3; }
+
+.dk-topo-panel { position: absolute; top: 14px; right: 14px; width: 270px; max-height: calc(100% - 28px); overflow-y: auto; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); cursor: default; }
+.dk-topo-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.dk-topo-panel-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+.dk-topo-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.dk-topo-actions .base-btn { margin: 0; }
 .dk-topo-msg { padding: 40px; text-align: center; color: var(--text-muted); }
 .dk-topo-svg { display: block; user-select: none; }
 
