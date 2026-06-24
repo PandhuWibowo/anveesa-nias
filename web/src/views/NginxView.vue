@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
@@ -74,6 +74,24 @@ const following = ref(false)
 const logViewEl = ref<HTMLElement | null>(null)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
+// Config backups (revert)
+interface NginxBackup {
+  path: string
+  name: string
+  time: number
+}
+const backups = ref<NginxBackup[]>([])
+
+// Log search
+const logQuery = ref('')
+const searching = ref(false)
+const searchActive = ref(false)
+const LEVELS = ['error', 'warn', 'crit', 'alert', 'notice']
+
+// Settings persistence — suppress the auto-save watch while applying loaded values
+let suppressSave = false
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+
 // A permission/sudo error means the SSH user lacks direct access — the fix is
 // to elevate. We flip `useSudo` on and retry once, transparently.
 function isPermDenied(e: any): boolean {
@@ -117,22 +135,62 @@ async function onHostChange() {
   origContent.value = ''
   activeLog.value = ''
   logLines.value = []
-  await detect()
+  logQuery.value = ''
+  searchActive.value = false
+  suppressSave = true
+  const hadSaved = await loadSettings()
+  // Detection still runs (for version/active + layout), but it only overrides
+  // the paths/binary when the user hasn't saved their own for this host.
+  await detect(!hadSaved)
+  suppressSave = false
   await loadCurrentTab()
 }
 
-// Probe the host for binary, paths, and sites layout.
-async function detect() {
+// Load remembered per-host settings. Returns true when settings existed.
+async function loadSettings(): Promise<boolean> {
+  if (hostId.value === null) return false
+  try {
+    const { data } = await axios.get(`${base.value}/settings`)
+    if (!data.exists) return false
+    useSudo.value = !!data.use_sudo
+    if (data.bin) bin.value = data.bin
+    if (data.config_root) configRoot.value = data.config_root
+    if (data.log_dir) logDir.value = data.log_dir
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function saveSettings() {
+  if (hostId.value === null) return
+  try {
+    await axios.put(`${base.value}/settings`, {
+      use_sudo: useSudo.value,
+      config_root: configRoot.value,
+      log_dir: logDir.value,
+      bin: bin.value,
+    })
+  } catch {
+    /* non-fatal — settings are a convenience */
+  }
+}
+
+// Probe the host for binary, paths, and sites layout. When applyPaths is false
+// the saved/overridden paths are kept; only version/active/layout refresh.
+async function detect(applyPaths = true) {
   if (hostId.value === null) return
   detecting.value = true
   try {
     const { data } = await axios.get<NginxInfo>(`${base.value}/info`)
-    bin.value = data.bin || 'nginx'
-    configRoot.value = data.config_root || '/etc/nginx'
-    logDir.value = data.log_root || '/var/log/nginx'
-    sitesLayout.value = data.sites_layout || ''
     version.value = data.version || ''
     active.value = data.active || ''
+    sitesLayout.value = data.sites_layout || ''
+    if (applyPaths) {
+      bin.value = data.bin || 'nginx'
+      configRoot.value = data.config_root || '/etc/nginx'
+      logDir.value = data.log_root || '/var/log/nginx'
+    }
   } catch (e: any) {
     toast.error(e?.response?.data?.error || 'Detection failed — using defaults')
   } finally {
@@ -140,12 +198,19 @@ async function detect() {
   }
 }
 
-// Re-scan after the user edits paths manually.
+// Re-scan after the user edits paths manually (always re-applies detected paths).
 async function rescan() {
-  await detect()
+  await detect(true)
   await loadCurrentTab()
   toast.success('Rescanned host')
 }
+
+// Persist settings (debounced) whenever the user changes binary, paths, or sudo.
+watch([bin, configRoot, logDir, useSudo], () => {
+  if (suppressSave || hostId.value === null) return
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = setTimeout(saveSettings, 600)
+})
 
 async function loadCurrentTab() {
   if (tab.value === 'config') await loadTree()
@@ -176,17 +241,30 @@ async function testConfig() {
   }
 }
 
-async function reload() {
+async function reload(force = false) {
   if (hostId.value === null) return
-  const ok = await confirm('Reload nginx on this host? Active connections are preserved.', 'Reload')
-  if (!ok) return
+  if (!force) {
+    const ok = await confirm('Reload nginx on this host? Active connections are preserved.', 'Reload')
+    if (!ok) return
+  }
   busy.value = true
   try {
-    const { data } = await axios.post(`${base.value}/reload`, null, { params: { bin: bin.value, sudo: sudoParam.value } })
+    const { data } = await axios.post(`${base.value}/reload`, null, {
+      params: { bin: bin.value, sudo: sudoParam.value, force: force ? '1' : undefined },
+    })
+    // The backend validates with `nginx -t` first and refuses a broken config.
+    if (data.ok === false && data.stage === 'test') {
+      cmdOk.value = false
+      cmdOutput.value = data.output || 'Config test failed — reload aborted.'
+      busy.value = false
+      const go = await confirm('Config test FAILED. Reloading may break nginx. Reload anyway?', 'Reload anyway')
+      if (go) await reload(true)
+      return
+    }
     cmdOk.value = true
     cmdOutput.value = data.output?.trim() || 'Reloaded.'
     toast.success(`${bin.value} reloaded`)
-    await detect()
+    await detect(false)
   } catch (e: any) {
     cmdOk.value = false
     cmdOutput.value = e?.response?.data?.error || 'reload failed'
@@ -221,10 +299,12 @@ async function openFile(p: string) {
   if (dirty.value && !(await confirm('Discard unsaved changes?', 'Discard'))) return
   loadingFile.value = true
   activeFile.value = p
+  backups.value = []
   try {
     const { data } = await axios.get(`${base.value}/config/file`, { params: { ...cfgParams.value, path: p } })
     fileContent.value = data.content || ''
     origContent.value = fileContent.value
+    loadBackups(p)
   } catch (e: any) {
     if (!useSudo.value && isPermDenied(e)) {
       useSudo.value = true
@@ -240,6 +320,36 @@ async function openFile(p: string) {
   }
 }
 
+// loadBackups lists the *.bak.<unix> snapshots saved for the open file.
+async function loadBackups(p: string) {
+  try {
+    const { data } = await axios.get<{ backups: NginxBackup[] }>(`${base.value}/config/backups`, {
+      params: { ...cfgParams.value, path: p },
+    })
+    backups.value = data.backups || []
+  } catch {
+    backups.value = []
+  }
+}
+
+// loadBackup pulls an older snapshot into the editor (marking it dirty) so the
+// user can review and Save to restore. activeFile stays the original target.
+async function revertTo(backupPath: string) {
+  if (!backupPath) return
+  if (dirty.value && !(await confirm('Discard unsaved changes and load this backup?', 'Load backup'))) return
+  try {
+    const { data } = await axios.get(`${base.value}/config/file`, { params: { ...cfgParams.value, path: backupPath } })
+    fileContent.value = data.content || ''
+    toast.info('Backup loaded — review and Save to restore')
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to load backup')
+  }
+}
+
+function backupLabel(b: NginxBackup): string {
+  return b.time ? new Date(b.time * 1000).toLocaleString() : b.name
+}
+
 async function saveFile() {
   if (!activeFile.value) return
   busy.value = true
@@ -252,6 +362,7 @@ async function saveFile() {
     })
     origContent.value = fileContent.value
     toast.success('Saved — run Test config before reloading')
+    loadBackups(activeFile.value)
   } catch (e: any) {
     toast.error(e?.response?.data?.error || 'Save failed')
   } finally {
@@ -336,7 +447,47 @@ async function openLog(file: string) {
   stopFollow()
   activeLog.value = file
   logLines.value = []
-  await fetchTail(file, 300)
+  if (searchActive.value && logQuery.value.trim()) await runSearch()
+  else await fetchTail(file, 300)
+}
+
+// ── Log search ──────────────────────────────────────────────────
+async function runSearch(): Promise<boolean> {
+  const q = logQuery.value.trim()
+  if (!q || !activeLog.value) return false
+  stopFollow()
+  searching.value = true
+  searchActive.value = true
+  try {
+    const { data } = await axios.get(`${base.value}/logs/search`, {
+      params: { ...logParams.value, file: activeLog.value, q, lines: 1000 },
+    })
+    logLines.value = (data.output || '').split('\n').filter((l: string) => l.length)
+    if (!logLines.value.length) logLines.value = [`(no matches for "${q}")`]
+    return true
+  } catch (e: any) {
+    if (!useSudo.value && isPermDenied(e)) {
+      useSudo.value = true
+      toast.info('Permission denied — retrying with sudo')
+      searching.value = false
+      return runSearch()
+    }
+    toast.error(e?.response?.data?.error || 'Search failed')
+    return false
+  } finally {
+    searching.value = false
+  }
+}
+
+function setLevel(level: string) {
+  logQuery.value = `[${level}]`
+  runSearch()
+}
+
+function clearSearch() {
+  logQuery.value = ''
+  searchActive.value = false
+  if (activeLog.value) fetchTail(activeLog.value, 300)
 }
 
 // Live-tail by polling the snapshot endpoint. SSE is avoided on purpose: it
@@ -394,7 +545,7 @@ onBeforeUnmount(stopFollow)
               <option v-for="h in hosts" :key="h.id" :value="h.id">{{ h.name }} ({{ h.ssh_host }})</option>
             </select>
             <button v-if="hostId !== null && canReload" class="base-btn base-btn--sm" :disabled="busy" @click="testConfig">Test config</button>
-            <button v-if="hostId !== null && canReload" class="base-btn base-btn--primary base-btn--sm" :disabled="busy" @click="reload">Reload</button>
+            <button v-if="hostId !== null && canReload" class="base-btn base-btn--primary base-btn--sm" :disabled="busy" @click="reload()">Reload</button>
           </div>
         </section>
 
@@ -463,6 +614,16 @@ onBeforeUnmount(stopFollow)
                   <span class="ng-editor-path">{{ activeFile }}</span>
                   <span v-if="dirty" class="ng-dirty">● unsaved</span>
                   <div class="dk-spacer"></div>
+                  <select
+                    v-if="backups.length"
+                    class="base-input base-input--sm ng-baksel"
+                    :value="''"
+                    title="Load a previous backup into the editor"
+                    @change="revertTo(($event.target as HTMLSelectElement).value); ($event.target as HTMLSelectElement).value = ''"
+                  >
+                    <option value="" disabled>↩ Backups ({{ backups.length }})</option>
+                    <option v-for="b in backups" :key="b.path" :value="b.path">{{ backupLabel(b) }}</option>
+                  </select>
                   <button
                     v-if="canManage"
                     class="base-btn base-btn--primary base-btn--sm"
@@ -534,7 +695,22 @@ onBeforeUnmount(stopFollow)
               >{{ following ? '■ Stop' : '▶ Follow' }}</button>
               <div class="dk-spacer"></div>
               <span class="ng-logmeta">
-                {{ logLines.length }} lines{{ following ? ' · live (polling)' : isCompressed ? ' · archive' : '' }}
+                {{ logLines.length }} lines{{ searchActive ? ' · search' : following ? ' · live (polling)' : isCompressed ? ' · archive' : '' }}
+              </span>
+            </div>
+            <div class="ng-searchbar">
+              <input
+                v-model="logQuery"
+                class="base-input ng-searchinput"
+                placeholder="Search this log (grep, case-insensitive)…"
+                @keyup.enter="runSearch"
+              />
+              <button class="base-btn base-btn--sm base-btn--primary" :disabled="!logQuery.trim() || searching" @click="runSearch">
+                {{ searching ? 'Searching…' : 'Search' }}
+              </button>
+              <button v-if="searchActive" class="base-btn base-btn--sm" @click="clearSearch">Clear</button>
+              <span class="ng-levels">
+                <button v-for="lvl in LEVELS" :key="lvl" class="ng-level" @click="setLevel(lvl)">{{ lvl }}</button>
               </span>
             </div>
             <pre ref="logViewEl" class="ng-logview">{{ logLines.join('\n') || 'No log output.' }}</pre>
@@ -607,4 +783,12 @@ onBeforeUnmount(stopFollow)
 .ng-logsel { min-width: 240px; }
 .ng-logmeta { font-size: 12px; color: var(--text-muted); font-family: var(--mono); }
 .ng-logview { margin: 0; max-height: 62vh; overflow: auto; background: var(--bg-base, #0b0e14); color: var(--text-secondary); font-family: var(--mono); font-size: 12px; line-height: 1.5; padding: 12px; border-radius: var(--r-md); border: 1px solid var(--border); white-space: pre; }
+
+.ng-searchbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ng-searchinput { flex: 1 1 280px; font-family: var(--mono); font-size: 12px; }
+.ng-levels { display: flex; gap: 4px; }
+.ng-level { background: var(--bg-hover); border: 1px solid var(--border); color: var(--text-secondary); font-size: 11px; padding: 3px 8px; border-radius: 99px; cursor: pointer; font-family: var(--mono); }
+.ng-level:hover { background: var(--brand-dim); color: var(--brand); border-color: var(--brand); }
+.ng-baksel { min-width: 150px; max-width: 220px; }
+.base-input--sm { padding: 4px 8px; font-size: 12px; }
 </style>

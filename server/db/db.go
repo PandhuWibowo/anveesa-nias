@@ -1120,6 +1120,16 @@ func migrate() error {
 			owner_id     INTEGER,
 			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+
+		// Per-host nginx UI settings — remembers sudo/paths/binary per docker host
+		`CREATE TABLE IF NOT EXISTS nginx_host_settings (
+			host_id     INTEGER PRIMARY KEY,
+			use_sudo    INTEGER NOT NULL DEFAULT 0,
+			config_root TEXT NOT NULL DEFAULT '',
+			log_dir     TEXT NOT NULL DEFAULT '',
+			bin         TEXT NOT NULL DEFAULT 'nginx',
+			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
 	}
 	for _, s := range stmts {
 		convertedSQL := convertSQL(s)

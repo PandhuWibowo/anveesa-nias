@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	appdb "github.com/anveesa/nias/db"
 	"github.com/pkg/sftp"
@@ -276,6 +277,80 @@ func NginxInfo() http.HandlerFunc {
 	}
 }
 
+// ── Per-host saved settings ───────────────────────────────────────────────
+
+// NginxGetSettings returns the remembered settings for a host (or exists:false).
+func NginxGetSettings() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := nginxHostID(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		var useSudo int
+		var configRoot, logDir, bin string
+		err = appdb.DB.QueryRow(appdb.ConvertQuery(
+			`SELECT use_sudo, config_root, log_dir, bin FROM nginx_host_settings WHERE host_id = ?`), id).
+			Scan(&useSudo, &configRoot, &logDir, &bin)
+		if err != nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{"exists": false})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"exists": true, "use_sudo": useSudo != 0,
+			"config_root": configRoot, "log_dir": logDir, "bin": bin,
+		})
+	}
+}
+
+// NginxSaveSettings upserts the host's settings. Gated by nginx.view (anyone
+// who can use the page can remember their own paths/sudo preference).
+func NginxSaveSettings() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := nginxHostID(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			UseSudo    bool   `json:"use_sudo"`
+			ConfigRoot string `json:"config_root"`
+			LogDir     string `json:"log_dir"`
+			Bin        string `json:"bin"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		sudoInt := 0
+		if body.UseSudo {
+			sudoInt = 1
+		}
+		bin := "nginx"
+		if body.Bin == "openresty" {
+			bin = "openresty"
+		}
+		// Driver-agnostic upsert: UPDATE, then INSERT if nothing was updated.
+		res, err := appdb.DB.Exec(appdb.ConvertQuery(
+			`UPDATE nginx_host_settings SET use_sudo=?, config_root=?, log_dir=?, bin=?,
+			        updated_at=CURRENT_TIMESTAMP WHERE host_id=?`),
+			sudoInt, body.ConfigRoot, body.LogDir, bin, id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
+			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			if _, err := appdb.DB.Exec(appdb.ConvertQuery(
+				`INSERT INTO nginx_host_settings (host_id, use_sudo, config_root, log_dir, bin)
+				 VALUES (?, ?, ?, ?, ?)`),
+				id, sudoInt, body.ConfigRoot, body.LogDir, bin); err != nil {
+				http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
+				return
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	}
+}
+
 // ── Config browsing & editing ─────────────────────────────────────────────
 
 // NginxConfigTree returns a flat list of every file under the config root.
@@ -404,7 +479,21 @@ func NginxConfigRead() http.HandlerFunc {
 	}
 }
 
-// NginxConfigWrite saves new contents to a config file. Gated by nginx.manage.
+// nginxBackup copies an existing config file to "<file>.bak.<unix>" before it
+// is overwritten. Returns the backup path (empty when the file is new).
+func nginxBackup(h *DockerHost, sudo bool, full string) (string, error) {
+	if _, err := runHostPrivileged(h, sudo, []string{"test", "-e", full}, ""); err != nil {
+		return "", nil // nothing to back up — new file
+	}
+	bak := full + ".bak." + strconv.FormatInt(time.Now().Unix(), 10)
+	if out, err := runHostPrivileged(h, sudo, []string{"cp", "-p", "--", full, bak}, ""); err != nil {
+		return "", fmt.Errorf("%s", strings.TrimSpace(out))
+	}
+	return bak, nil
+}
+
+// NginxConfigWrite saves new contents to a config file, backing up the previous
+// version first. Gated by nginx.manage.
 func NginxConfigWrite() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -437,15 +526,19 @@ func NginxConfigWrite() http.HandlerFunc {
 			http.Error(w, jsonError("file too large"), http.StatusBadRequest)
 			return
 		}
+		h, err := loadDockerHost(id)
+		if err != nil {
+			http.Error(w, jsonError("host not found"), http.StatusBadRequest)
+			return
+		}
+		backup, err := nginxBackup(h, body.Sudo, full)
+		if err != nil {
+			http.Error(w, jsonError("backup failed: "+err.Error()), http.StatusBadGateway)
+			return
+		}
 		if body.Sudo {
-			h, e := loadDockerHost(id)
-			if e != nil {
-				http.Error(w, jsonError("host not found"), http.StatusBadRequest)
-				return
-			}
 			// `tee` writes stdin to the (root-owned) file and echoes it back.
-			out, e := runHostPrivileged(h, true, []string{"tee", full}, body.Content)
-			if e != nil {
+			if out, e := runHostPrivileged(h, true, []string{"tee", full}, body.Content); e != nil {
 				http.Error(w, jsonError(strings.TrimSpace(out)+": "+e.Error()), http.StatusBadGateway)
 				return
 			}
@@ -468,7 +561,69 @@ func NginxConfigWrite() http.HandlerFunc {
 			}
 			f.Close()
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "backup": backup})
+	}
+}
+
+// NginxConfigBackups lists the "*.bak.<unix>" snapshots for a config file,
+// newest first.
+func NginxConfigBackups() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := nginxHostID(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		root, err := nginxConfigRoot(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		full, err := nginxSafeJoin(root, r.URL.Query().Get("path"))
+		if err != nil || full == root {
+			http.Error(w, jsonError("invalid path"), http.StatusBadRequest)
+			return
+		}
+		sudo := nginxUseSudo(r)
+		dir, base := path.Dir(full), path.Base(full)
+
+		var h *DockerHost
+		var client *sftp.Client
+		if sudo {
+			if h, err = loadDockerHost(id); err != nil {
+				http.Error(w, jsonError("host not found"), http.StatusBadRequest)
+				return
+			}
+		} else {
+			var cleanup func()
+			if client, cleanup, err = sftpSession(id); err != nil {
+				http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+				return
+			}
+			defer cleanup()
+		}
+		ents, err := nginxReadDir(h, client, sudo, dir)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		prefix := base + ".bak."
+		type backup struct {
+			Path string `json:"path"`
+			Name string `json:"name"`
+			Time int64  `json:"time"`
+		}
+		backups := make([]backup, 0, 8)
+		for _, en := range ents {
+			if en.isDir || !strings.HasPrefix(en.name, prefix) {
+				continue
+			}
+			ts, _ := strconv.ParseInt(strings.TrimPrefix(en.name, prefix), 10, 64)
+			backups = append(backups, backup{Path: dir + "/" + en.name, Name: en.name, Time: ts})
+		}
+		sort.Slice(backups, func(i, j int) bool { return backups[i].Time > backups[j].Time })
+		json.NewEncoder(w).Encode(map[string]interface{}{"backups": backups})
 	}
 }
 
@@ -713,7 +868,9 @@ func NginxTest() http.HandlerFunc {
 	}
 }
 
-// NginxReload reloads nginx, falling back to systemctl. Gated by nginx.reload.
+// NginxReload reloads nginx, falling back to systemctl. It validates the config
+// with `<bin> -t` first and refuses to reload a broken config unless ?force=1.
+// Gated by nginx.reload.
 func NginxReload() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -724,6 +881,19 @@ func NginxReload() http.HandlerFunc {
 		}
 		sudo := nginxUseSudo(r)
 		bin := nginxBin(r)
+		force := r.URL.Query().Get("force") == "1"
+
+		if !force {
+			testOut, testErr := runHostPrivileged(h, sudo, []string{bin, "-t"}, "")
+			if testErr != nil {
+				// Config is invalid — abort and report (200 so the UI can offer Force).
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"ok": false, "stage": "test", "output": testOut,
+				})
+				return
+			}
+		}
+
 		out, err := runHostPrivileged(h, sudo, []string{bin, "-s", "reload"}, "")
 		if err != nil {
 			out2, err2 := runHostPrivileged(h, sudo, []string{"systemctl", "reload", bin}, "")
@@ -841,6 +1011,69 @@ func NginxLogTail() http.HandlerFunc {
 			lines = n
 		}
 		out, err := runHostPrivileged(h, nginxUseSudo(r), []string{"sh", "-c", nginxTailScript(full, lines)}, "")
+		if err != nil {
+			http.Error(w, jsonError(strings.TrimSpace(out)+": "+err.Error()), http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"output": out})
+	}
+}
+
+// nginxSearchScript greps a log (decompressing rotated logs first) for a fixed,
+// case-insensitive string, numbering matched lines and capping the result.
+func nginxSearchScript(full, pattern string, n int) string {
+	q := "'" + strings.ReplaceAll(full, "'", `'\''`) + "'"
+	p := "'" + strings.ReplaceAll(pattern, "'", `'\''`) + "'"
+	lines := strconv.Itoa(n)
+	grep := "grep -F -i -n -e " + p
+	lower := strings.ToLower(full)
+	var decomp string
+	switch {
+	case strings.HasSuffix(lower, ".gz") || strings.HasSuffix(lower, ".tgz"):
+		decomp = "zcat"
+	case strings.HasSuffix(lower, ".bz2"):
+		decomp = "bzcat"
+	case strings.HasSuffix(lower, ".xz"):
+		decomp = "xzcat"
+	case strings.HasSuffix(lower, ".zst"):
+		decomp = "zstdcat"
+	}
+	if decomp != "" {
+		// `| grep` masks grep's exit-1-on-no-match, so empty result isn't an error.
+		return decomp + " -- " + q + " | " + grep + " | tail -n " + lines
+	}
+	return grep + " -- " + q + " | tail -n " + lines
+}
+
+// NginxLogSearch greps a log file (server-side, gz-aware) for a pattern.
+func NginxLogSearch() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		h, err := nginxRunHost(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		dir, err := nginxLogDir(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		full, err := nginxSafeJoin(dir, r.URL.Query().Get("file"))
+		if err != nil || full == dir {
+			http.Error(w, jsonError("invalid file"), http.StatusBadRequest)
+			return
+		}
+		q := strings.TrimSpace(r.URL.Query().Get("q"))
+		if q == "" {
+			http.Error(w, jsonError("search query required"), http.StatusBadRequest)
+			return
+		}
+		lines := 500
+		if n, e := strconv.Atoi(r.URL.Query().Get("lines")); e == nil && n > 0 && n <= 2000 {
+			lines = n
+		}
+		out, err := runHostPrivileged(h, nginxUseSudo(r), []string{"sh", "-c", nginxSearchScript(full, q, lines)}, "")
 		if err != nil {
 			http.Error(w, jsonError(strings.TrimSpace(out)+": "+err.Error()), http.StatusBadGateway)
 			return

@@ -976,12 +976,18 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			handlers.NginxLogStream()(w, r)
 		case len(parts) == 2 && parts[1] == "info" && r.Method == http.MethodGet:
 			view(handlers.NginxInfo())(w, r)
+		case len(parts) == 2 && parts[1] == "settings" && r.Method == http.MethodGet:
+			view(handlers.NginxGetSettings())(w, r)
+		case len(parts) == 2 && parts[1] == "settings" && r.Method == http.MethodPut:
+			view(handlers.NginxSaveSettings())(w, r)
 		case len(parts) == 3 && parts[1] == "config" && parts[2] == "tree" && r.Method == http.MethodGet:
 			view(handlers.NginxConfigTree())(w, r)
 		case len(parts) == 3 && parts[1] == "config" && parts[2] == "file" && r.Method == http.MethodGet:
 			view(handlers.NginxConfigRead())(w, r)
 		case len(parts) == 3 && parts[1] == "config" && parts[2] == "file" && r.Method == http.MethodPost:
 			manage(handlers.NginxConfigWrite())(w, r)
+		case len(parts) == 3 && parts[1] == "config" && parts[2] == "backups" && r.Method == http.MethodGet:
+			view(handlers.NginxConfigBackups())(w, r)
 		case len(parts) == 2 && parts[1] == "sites" && r.Method == http.MethodGet:
 			view(handlers.NginxSites())(w, r)
 		case len(parts) == 3 && parts[1] == "sites" && parts[2] == "toggle" && r.Method == http.MethodPost:
@@ -996,6 +1002,8 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			view(handlers.NginxLogList())(w, r)
 		case len(parts) == 3 && parts[1] == "logs" && parts[2] == "tail" && r.Method == http.MethodGet:
 			view(handlers.NginxLogTail())(w, r)
+		case len(parts) == 3 && parts[1] == "logs" && parts[2] == "search" && r.Method == http.MethodGet:
+			view(handlers.NginxLogSearch())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
