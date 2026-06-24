@@ -198,6 +198,34 @@ const composeForm = ref({ name: '', yaml: '' })
 const showEvents = ref(false)
 const events = ref<{ type: string; action: string; name: string; time: number }[]>([])
 
+// Container internals (top / changes), shown in inspect
+const topData = ref<{ titles: string[]; processes: string[][] } | null>(null)
+const changesData = ref<{ Path: string; Kind: number }[]>([])
+
+// Commit modal
+const showCommit = ref(false)
+const commitCid = ref('')
+const commitForm = ref({ repo: '', tag: 'snapshot', comment: '' })
+
+// Image history modal
+const showHistory = ref(false)
+const historyImage = ref('')
+const historyData = ref<{ Id: string; Created: number; CreatedBy: string; Size: number; Comment: string }[]>([])
+
+// Network connect
+const netConnectSel = ref<Record<string, string>>({})
+
+// Bulk selection
+const selectedCids = ref<Set<string>>(new Set())
+
+// Network / volume detail slide-overs
+const showNetInspect = ref(false)
+const netInspectName = ref('')
+const netInspectData = ref<any>(null)
+const showVolInspect = ref(false)
+const volInspectName = ref('')
+const volInspectData = ref<any>(null)
+
 // ── Rename modal ────────────────────────────────────────────────
 const showRename = ref(false)
 const renameCid = ref('')
@@ -254,7 +282,6 @@ const logsLoading = ref(false)
 const logsTail = ref('200')
 const logsTimestamps = ref(false)
 const logsSearch = ref('')
-let logsTimer: ReturnType<typeof setInterval> | undefined
 
 // ── Inspect / exec slide-over ───────────────────────────────────
 const inspectOpen = ref(false)
@@ -330,6 +357,7 @@ async function loadHosts() {
 
 async function selectHost(id: number) {
   if (activeHostId.value === id) return
+  closeAllStatStreams()
   activeHostId.value = id
   statsMap.value = {}
   expanded.value = {}
@@ -398,32 +426,77 @@ async function containerAction(
   }
 }
 
-async function toggleStats(c: DockerContainer) {
-  const open = !expanded.value[c.id]
-  expanded.value = { ...expanded.value, [c.id]: open }
-  if (open && !statsMap.value[c.id]) {
-    try {
-      const { data } = await axios.get<ContainerStats>(
-        `/api/docker/hosts/${activeHostId.value}/containers/${c.id}/stats`,
-      )
-      statsMap.value = { ...statsMap.value, [c.id]: data }
-    } catch (e: any) {
-      toast.error(e?.response?.data?.error || 'Failed to load stats')
-    }
-  }
+// Build an authenticated WebSocket URL (token via query — browsers can't set headers).
+function wsUrl(path: string, params: Record<string, string | number> = {}) {
+  const token = localStorage.getItem('nias-token') || ''
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const qs = new URLSearchParams({ ...(params as Record<string, string>), token }).toString()
+  return `${proto}//${location.host}${path}?${qs}`
 }
 
-async function fetchLogs() {
-  if (!logsCid.value) return
-  try {
-    const { data } = await axios.get<string>(
-      `/api/docker/hosts/${activeHostId.value}/containers/${logsCid.value}/logs`,
-      { params: { tail: logsTail.value, timestamps: logsTimestamps.value ? 1 : 0 }, responseType: 'text' },
-    )
-    logsText.value = data || '(no log output)'
-  } catch (e: any) {
-    logsText.value = e?.response?.data || 'Failed to load logs'
-  } finally {
+// ── Live stats streaming (per expanded container) ───────────────
+const statsSockets = new Map<string, WebSocket>()
+function closeStatStream(cid: string) {
+  const ws = statsSockets.get(cid)
+  if (ws) {
+    ws.onclose = null
+    ws.close()
+    statsSockets.delete(cid)
+  }
+}
+function closeAllStatStreams() {
+  for (const cid of [...statsSockets.keys()]) closeStatStream(cid)
+}
+function connectStatStream(cid: string) {
+  closeStatStream(cid)
+  const ws = new WebSocket(wsUrl(`/api/docker/hosts/${activeHostId.value}/containers/${cid}/statstream`))
+  statsSockets.set(cid, ws)
+  ws.onmessage = (ev) => {
+    try {
+      statsMap.value = { ...statsMap.value, [cid]: JSON.parse(ev.data as string) }
+    } catch {}
+  }
+}
+function toggleStats(c: DockerContainer) {
+  const open = !expanded.value[c.id]
+  expanded.value = { ...expanded.value, [c.id]: open }
+  if (open) connectStatStream(c.id)
+  else closeStatStream(c.id)
+}
+
+// ── Live log streaming ──────────────────────────────────────────
+let logsSocket: WebSocket | null = null
+function closeLogStream() {
+  if (logsSocket) {
+    logsSocket.onclose = null
+    logsSocket.close()
+    logsSocket = null
+  }
+}
+function connectLogStream() {
+  closeLogStream()
+  logsText.value = ''
+  logsLoading.value = true
+  const ws = new WebSocket(
+    wsUrl(`/api/docker/hosts/${activeHostId.value}/containers/${logsCid.value}/logstream`, {
+      tail: logsTail.value,
+      timestamps: logsTimestamps.value ? 1 : 0,
+    }),
+  )
+  ws.binaryType = 'arraybuffer'
+  logsSocket = ws
+  const dec = new TextDecoder()
+  ws.onmessage = (ev) => {
+    logsLoading.value = false
+    const chunk = typeof ev.data === 'string' ? ev.data : dec.decode(new Uint8Array(ev.data as ArrayBuffer))
+    let t = logsText.value + chunk
+    if (t.length > 1_000_000) t = t.slice(t.length - 800_000) // cap memory on long follows
+    logsText.value = t
+  }
+  ws.onclose = () => {
+    logsLoading.value = false
+  }
+  ws.onerror = () => {
     logsLoading.value = false
   }
 }
@@ -446,25 +519,17 @@ function downloadLogs() {
   URL.revokeObjectURL(a.href)
 }
 
-async function openLogs(c: DockerContainer) {
+function openLogs(c: DockerContainer) {
   logsTitle.value = containerName(c)
   logsCid.value = c.id
-  logsText.value = ''
-  logsLoading.value = true
   showLogs.value = true
-  await fetchLogs()
-  // Poll while the modal is open for a near-live tail.
-  if (logsTimer) clearInterval(logsTimer)
-  logsTimer = setInterval(fetchLogs, 2500)
+  connectLogStream()
 }
 
 function closeLogs() {
   showLogs.value = false
   logsCid.value = ''
-  if (logsTimer) {
-    clearInterval(logsTimer)
-    logsTimer = undefined
-  }
+  closeLogStream()
 }
 
 // ── Inspect / exec ──────────────────────────────────────────────
@@ -478,6 +543,7 @@ async function openInspect(c: DockerContainer) {
   execCmd.value = ''
   execOutput.value = ''
   execExit.value = null
+  loadInternals(c)
   try {
     const { data } = await axios.get(`/api/docker/hosts/${activeHostId.value}/containers/${c.id}/inspect`)
     inspectData.value = data
@@ -835,7 +901,7 @@ async function downloadFile(entry: { name: string }) {
     a.click()
     URL.revokeObjectURL(a.href)
   } catch (e: any) {
-    toast.error('Download failed')
+    toast.error(await blobError(e, 'Download failed'))
   }
 }
 async function uploadFile(ev: Event) {
@@ -857,6 +923,25 @@ async function uploadFile(ev: Event) {
 }
 
 // ── Image save / load ───────────────────────────────────────────
+// Extract a readable error from a blob/JSON axios error (blob responses hide it).
+async function blobError(e: any, fallback: string): Promise<string> {
+  const data = e?.response?.data
+  if (data instanceof Blob) {
+    try {
+      const text = await data.text()
+      try {
+        return JSON.parse(text).error || text || fallback
+      } catch {
+        return text || fallback
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  if (e?.response?.status) return `${fallback} (HTTP ${e.response.status})`
+  return e?.message || fallback
+}
+
 async function saveImage(img: DockerImage) {
   try {
     const { data } = await axios.get(`/api/docker/hosts/${activeHostId.value}/images/save`, {
@@ -869,7 +954,7 @@ async function saveImage(img: DockerImage) {
     a.click()
     URL.revokeObjectURL(a.href)
   } catch (e: any) {
-    toast.error('Export failed')
+    toast.error(await blobError(e, 'Export failed'))
   }
 }
 async function loadImageFile(ev: Event) {
@@ -950,6 +1035,184 @@ async function loadEvents() {
 function toggleEvents() {
   showEvents.value = !showEvents.value
   if (showEvents.value && activeHostId.value !== null) loadEvents()
+}
+
+// ── Container internals (top / changes / commit) ────────────────
+function loadInternals(c: DockerContainer) {
+  topData.value = null
+  changesData.value = []
+  if (c.state !== 'running') return
+  axios
+    .get<{ Titles: string[]; Processes: string[][] }>(`/api/docker/hosts/${activeHostId.value}/containers/${c.id}/top`)
+    .then((r) => {
+      topData.value = { titles: r.data.Titles || [], processes: r.data.Processes || [] }
+    })
+    .catch(() => {})
+  axios
+    .get<{ Path: string; Kind: number }[]>(`/api/docker/hosts/${activeHostId.value}/containers/${c.id}/changes`)
+    .then((r) => {
+      changesData.value = r.data || []
+    })
+    .catch(() => {})
+}
+function changeKind(kind: number) {
+  return kind === 1 ? 'added' : kind === 2 ? 'deleted' : 'modified'
+}
+function openCommitInspect() {
+  commitCid.value = inspectCid.value
+  commitForm.value = { repo: inspectName.value.replace(/[^a-z0-9_.-]/gi, '-').toLowerCase(), tag: 'snapshot', comment: '' }
+  showCommit.value = true
+}
+async function submitCommit() {
+  if (!commitForm.value.repo.trim()) {
+    toast.error('Repository is required')
+    return
+  }
+  try {
+    await axios.post(`/api/docker/hosts/${activeHostId.value}/containers/${commitCid.value}/commit`, commitForm.value)
+    toast.success('Snapshotted to image')
+    showCommit.value = false
+    await loadImages()
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Commit failed')
+  }
+}
+
+// ── Image history ───────────────────────────────────────────────
+async function openHistory(img: DockerImage) {
+  historyImage.value = img.repoTags?.[0] || shortId(img.id)
+  historyData.value = []
+  showHistory.value = true
+  try {
+    const { data } = await axios.get<typeof historyData.value>(`/api/docker/hosts/${activeHostId.value}/images/history`, {
+      params: { ref: img.id },
+    })
+    historyData.value = data || []
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to load history')
+  }
+}
+function cleanLayerCmd(cmd: string) {
+  return (cmd || '').replace(/^\/bin\/sh -c #\(nop\)\s*/, '').replace(/^\/bin\/sh -c /, 'RUN ').trim() || '(empty layer)'
+}
+
+// ── Network connect / disconnect ────────────────────────────────
+async function connectNet(n: DockerNetwork) {
+  const cname = netConnectSel.value[n.id]
+  if (!cname) return
+  try {
+    await axios.post(`/api/docker/hosts/${activeHostId.value}/networks/connect`, { network: n.id, container: cname })
+    toast.success('Container connected')
+    await loadNetworks()
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Connect failed')
+  }
+}
+async function disconnectNet(n: DockerNetwork, cname: string) {
+  try {
+    await axios.post(`/api/docker/hosts/${activeHostId.value}/networks/disconnect`, { network: n.id, container: cname })
+    toast.success('Container disconnected')
+    await loadNetworks()
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Disconnect failed')
+  }
+}
+
+// ── Network / volume inspect ────────────────────────────────────
+function objEntries(o: Record<string, string> | undefined): [string, string][] {
+  return o ? Object.entries(o) : []
+}
+async function openNetInspect(n: DockerNetwork) {
+  netInspectName.value = n.name
+  netInspectData.value = null
+  showNetInspect.value = true
+  try {
+    const { data } = await axios.get(`/api/docker/hosts/${activeHostId.value}/networks/inspect`, { params: { id: n.id } })
+    netInspectData.value = data
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to inspect network')
+    showNetInspect.value = false
+  }
+}
+const netInspView = computed(() => {
+  const d = netInspectData.value
+  if (!d) return null
+  const containers = d.Containers || {}
+  return {
+    id: d.Id || '',
+    driver: d.Driver || '',
+    scope: d.Scope || '',
+    internal: !!d.Internal,
+    attachable: !!d.Attachable,
+    ingress: !!d.Ingress,
+    ipv6: !!d.EnableIPv6,
+    created: d.Created || '',
+    ipam: (d.IPAM?.Config || []).map((c: any) => ({ subnet: c.Subnet || '', gateway: c.Gateway || '', range: c.IPRange || '' })),
+    options: objEntries(d.Options),
+    labels: objEntries(d.Labels),
+    containers: Object.keys(containers).map((cid) => ({
+      name: containers[cid]?.Name || cid.slice(0, 12),
+      ipv4: containers[cid]?.IPv4Address || '',
+      ipv6: containers[cid]?.IPv6Address || '',
+      mac: containers[cid]?.MacAddress || '',
+    })),
+  }
+})
+async function openVolInspect(v: DockerVolume) {
+  volInspectName.value = v.name
+  volInspectData.value = null
+  showVolInspect.value = true
+  try {
+    const { data } = await axios.get(`/api/docker/hosts/${activeHostId.value}/volumes/inspect`, { params: { name: v.name } })
+    volInspectData.value = data
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to inspect volume')
+    showVolInspect.value = false
+  }
+}
+const volInspView = computed(() => {
+  const wrap = volInspectData.value
+  if (!wrap) return null
+  const d = wrap.volume || {}
+  return {
+    driver: d.Driver || '',
+    scope: d.Scope || '',
+    mountpoint: d.Mountpoint || '',
+    createdAt: d.CreatedAt || '',
+    options: objEntries(d.Options),
+    labels: objEntries(d.Labels),
+    status: objEntries(d.Status),
+    size: d.UsageData?.Size,
+    refCount: d.UsageData?.RefCount,
+    usedBy: (wrap.used_by || []) as { container: string; state: string; destination: string; rw: boolean }[],
+  }
+})
+
+// ── Bulk selection ──────────────────────────────────────────────
+function toggleSelect(id: string) {
+  const s = new Set(selectedCids.value)
+  s.has(id) ? s.delete(id) : s.add(id)
+  selectedCids.value = s
+}
+async function batchAction(action: 'start' | 'stop' | 'restart' | 'remove') {
+  const cids = [...selectedCids.value]
+  if (!cids.length) return
+  if (action === 'remove') {
+    const ok = await confirm(`Remove ${cids.length} selected container(s)? This cannot be undone.`, 'Bulk remove')
+    if (!ok) return
+  }
+  let failed = 0
+  for (const id of cids) {
+    try {
+      if (action === 'remove') await axios.delete(`/api/docker/hosts/${activeHostId.value}/containers/${id}`)
+      else await axios.post(`/api/docker/hosts/${activeHostId.value}/containers/${id}/${action}`)
+    } catch {
+      failed++
+    }
+  }
+  toast.success(`${action} — ${cids.length - failed} ok${failed ? `, ${failed} failed` : ''}`)
+  selectedCids.value = new Set()
+  await loadContainers()
 }
 
 // ── Interactive terminal ────────────────────────────────────────
@@ -1523,7 +1786,8 @@ watch(autoRefresh, (on) => {
 
 onBeforeUnmount(() => {
   if (refreshTimer) clearInterval(refreshTimer)
-  if (logsTimer) clearInterval(logsTimer)
+  closeLogStream()
+  closeAllStatStreams()
   disposeTerminal()
 })
 
@@ -1679,9 +1943,20 @@ onMounted(loadHosts)
           <!-- Per-tab actions -->
           <div v-if="!loading && !connError" class="dk-toolbar">
             <template v-if="tab === 'containers'">
-              <label class="dk-autorefresh"><input type="checkbox" v-model="groupByCompose" /> Group by Compose</label>
-              <button class="base-btn base-btn--sm" @click="toggleEvents">{{ showEvents ? 'Hide events' : 'Events' }}</button>
-              <div class="dk-spacer"></div>
+              <template v-if="selectedCids.size">
+                <span class="dk-name">{{ selectedCids.size }} selected</span>
+                <button v-if="canManage" class="base-btn base-btn--xs base-btn--primary" @click="batchAction('start')">Start</button>
+                <button v-if="canManage" class="base-btn base-btn--xs" @click="batchAction('restart')">Restart</button>
+                <button v-if="canManage" class="base-btn base-btn--xs" @click="batchAction('stop')">Stop</button>
+                <button v-if="canManage" class="base-btn base-btn--xs base-btn--danger" @click="batchAction('remove')">Remove</button>
+                <button class="base-btn base-btn--xs" @click="selectedCids = new Set()">Clear</button>
+                <div class="dk-spacer"></div>
+              </template>
+              <template v-else>
+                <label class="dk-autorefresh"><input type="checkbox" v-model="groupByCompose" /> Group by Compose</label>
+                <button class="base-btn base-btn--sm" @click="toggleEvents">{{ showEvents ? 'Hide events' : 'Events' }}</button>
+                <div class="dk-spacer"></div>
+              </template>
               <button v-if="canManage" class="base-btn base-btn--sm" :disabled="pruning" @click="pruneContainers">Prune stopped</button>
               <button v-if="canManage" class="base-btn base-btn--sm" @click="openCompose">Deploy stack</button>
               <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="openRun">+ Run container</button>
@@ -1743,7 +2018,8 @@ onMounted(loadHosts)
                   </tr>
                   <template v-for="c in group.containers" :key="c.id">
                   <tr>
-                    <td>
+                    <td class="dk-first-cell">
+                      <input type="checkbox" :checked="selectedCids.has(c.id)" @change="toggleSelect(c.id)" />
                       <button class="dk-icon-btn" title="Stats" @click="toggleStats(c)">
                         {{ expanded[c.id] ? '▾' : '▸' }}
                       </button>
@@ -1864,6 +2140,7 @@ onMounted(loadHosts)
                   <td>{{ formatBytes(img.size) }}</td>
                   <td class="dk-status">{{ formatRelative(img.created) }}</td>
                   <td class="dk-actions-col">
+                    <button class="base-btn base-btn--xs" @click="openHistory(img)">Layers</button>
                     <button class="base-btn base-btn--xs" @click="saveImage(img)">Export</button>
                     <button v-if="canManage" class="base-btn base-btn--xs base-btn--danger" @click="removeImage(img)">Remove</button>
                   </td>
@@ -1899,6 +2176,7 @@ onMounted(loadHosts)
                   </td>
                   <td class="dk-mono dk-id">{{ v.mountpoint }}</td>
                   <td class="dk-actions-col">
+                    <button class="base-btn base-btn--xs" @click="openVolInspect(v)">Details</button>
                     <button v-if="canManage" class="base-btn base-btn--xs base-btn--danger" @click="removeVolume(v)">Remove</button>
                   </td>
                 </tr>
@@ -1928,9 +2206,8 @@ onMounted(loadHosts)
                   <tr>
                     <td>
                       <button
-                        v-if="n.connected && n.connected.length"
                         class="dk-icon-btn"
-                        title="Connected containers"
+                        title="Connected containers / connect"
                         @click="netExpanded = { ...netExpanded, [n.id]: !netExpanded[n.id] }"
                       >{{ netExpanded[n.id] ? '▾' : '▸' }}</button>
                     </td>
@@ -1940,6 +2217,7 @@ onMounted(loadHosts)
                     <td class="dk-mono">{{ n.subnet || '—' }}</td>
                     <td class="dk-status">{{ n.containers }}</td>
                     <td class="dk-actions-col">
+                      <button class="base-btn base-btn--xs" @click="openNetInspect(n)">Details</button>
                       <button
                         v-if="canManage && !['bridge', 'host', 'none'].includes(n.name)"
                         class="base-btn base-btn--xs base-btn--danger"
@@ -1951,10 +2229,19 @@ onMounted(loadHosts)
                     <td></td>
                     <td colspan="6">
                       <div class="dk-netconns">
+                        <span v-if="!n.connected || !n.connected.length" class="dk-muted">No containers connected.</span>
                         <span v-for="c in n.connected" :key="c.name" class="dk-netconn">
                           <span class="dk-name">{{ c.name }}</span>
                           <span class="dk-mono dk-muted">{{ c.ipv4 || '—' }}</span>
+                          <button v-if="canManage" class="dk-chip-x" title="Disconnect" @click="disconnectNet(n, c.name)">×</button>
                         </span>
+                      </div>
+                      <div v-if="canManage" class="dk-net-connect">
+                        <select v-model="netConnectSel[n.id]" class="base-input dk-net-sel">
+                          <option value="">attach a container…</option>
+                          <option v-for="c in containers" :key="c.id" :value="containerName(c)">{{ containerName(c) }}</option>
+                        </select>
+                        <button class="base-btn base-btn--xs" :disabled="!netConnectSel[n.id]" @click="connectNet(n)">Connect</button>
                       </div>
                     </td>
                   </tr>
@@ -2032,17 +2319,17 @@ onMounted(loadHosts)
       <div class="dk-modal dk-modal--wide page-card">
         <div class="dk-modal-title">
           Logs — {{ logsTitle }}
-          <span class="dk-live-dot" title="Live tail — refreshes every 2.5s"></span>
+          <span class="dk-live-dot" title="Live — streaming over WebSocket"></span>
         </div>
         <div class="dk-logs-bar">
-          <select v-model="logsTail" class="base-input dk-logs-tail" @change="fetchLogs">
+          <select v-model="logsTail" class="base-input dk-logs-tail" @change="connectLogStream">
             <option value="100">100 lines</option>
             <option value="200">200 lines</option>
             <option value="500">500 lines</option>
             <option value="1000">1000 lines</option>
             <option value="all">all</option>
           </select>
-          <label class="dk-autorefresh"><input type="checkbox" v-model="logsTimestamps" @change="fetchLogs" /> Timestamps</label>
+          <label class="dk-autorefresh"><input type="checkbox" v-model="logsTimestamps" @change="connectLogStream" /> Timestamps</label>
           <input v-model="logsSearch" class="base-input dk-logs-search" type="search" placeholder="Filter lines…" />
           <div class="dk-spacer"></div>
           <button class="base-btn base-btn--sm" @click="downloadLogs">Download</button>
@@ -2142,6 +2429,30 @@ onMounted(loadHosts)
             <div class="dk-kv" v-if="inspView.sizeRootFs != null"><span>Virtual size</span><span class="dk-mono">{{ formatBytes(inspView.sizeRootFs) }}</span></div>
             <div class="dk-kv" v-if="inspView.startedAt"><span>Started</span><span class="dk-mono">{{ inspView.startedAt }}</span></div>
             <div class="dk-kv" v-if="inspView.status !== 'running'"><span>Exit code</span><span class="dk-mono">{{ inspView.exitCode }}</span></div>
+            <button v-if="canManage" class="base-btn base-btn--xs" style="margin-top: 8px; align-self: flex-start" @click="openCommitInspect">📸 Snapshot to image</button>
+          </section>
+
+          <section v-if="topData && topData.processes.length" class="dk-detail">
+            <h4>Processes ({{ topData.processes.length }})</h4>
+            <div class="dk-top">
+              <table class="dk-top-table">
+                <thead><tr><th v-for="t in topData.titles" :key="t">{{ t }}</th></tr></thead>
+                <tbody>
+                  <tr v-for="(p, i) in topData.processes" :key="i"><td v-for="(cell, j) in p" :key="j">{{ cell }}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section v-if="changesData.length" class="dk-detail">
+            <h4>Filesystem changes ({{ changesData.length }})</h4>
+            <div class="dk-changes">
+              <div v-for="(ch, i) in changesData.slice(0, 200)" :key="i" class="dk-change" :class="`dk-change--${changeKind(ch.Kind)}`">
+                <span class="dk-change-k">{{ changeKind(ch.Kind)[0].toUpperCase() }}</span>
+                <span class="dk-mono">{{ ch.Path }}</span>
+              </div>
+              <div v-if="changesData.length > 200" class="dk-muted">…{{ changesData.length - 200 }} more</div>
+            </div>
           </section>
 
           <section v-if="inspView.networks.length" class="dk-detail">
@@ -2334,6 +2645,155 @@ onMounted(loadHosts)
           <button class="base-btn base-btn--primary base-btn--sm" :disabled="composing" @click="submitCompose">{{ composing ? 'Deploying…' : 'Deploy' }}</button>
         </div>
       </div>
+    </div>
+
+    <!-- Commit (snapshot) modal -->
+    <div v-if="showCommit" class="dk-modal-backdrop" @click.self="showCommit = false">
+      <div class="dk-modal page-card">
+        <div class="dk-modal-title">📸 Snapshot container → image</div>
+        <div class="dk-form">
+          <div class="dk-form-row">
+            <label class="dk-grow">Repository<input v-model="commitForm.repo" class="base-input" placeholder="myapp" /></label>
+            <label class="dk-grow">Tag<input v-model="commitForm.tag" class="base-input" placeholder="snapshot" /></label>
+          </div>
+          <label>Comment (optional)<input v-model="commitForm.comment" class="base-input" placeholder="debugging snapshot" /></label>
+        </div>
+        <div class="dk-modal-actions">
+          <div class="dk-spacer"></div>
+          <button class="base-btn base-btn--sm" @click="showCommit = false">Cancel</button>
+          <button class="base-btn base-btn--primary base-btn--sm" @click="submitCommit">Snapshot</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Image history / layers modal -->
+    <div v-if="showHistory" class="dk-modal-backdrop" @click.self="showHistory = false">
+      <div class="dk-modal dk-modal--wide page-card">
+        <div class="dk-modal-title">Layers — {{ historyImage }}</div>
+        <div class="dk-table-wrap" style="max-height: 60vh; overflow-y: auto">
+          <table class="dk-table">
+            <thead><tr><th>Layer command</th><th>Size</th><th>Age</th></tr></thead>
+            <tbody>
+              <tr v-if="!historyData.length"><td colspan="3" class="dk-empty-row">Loading…</td></tr>
+              <tr v-for="(l, i) in historyData" :key="i">
+                <td class="dk-mono" style="font-size: 11px; max-width: 560px; word-break: break-all">{{ cleanLayerCmd(l.CreatedBy) }}</td>
+                <td class="dk-status">{{ formatBytes(l.Size) }}</td>
+                <td class="dk-status">{{ formatRelative(l.Created) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="dk-modal-actions">
+          <div class="dk-spacer"></div>
+          <button class="base-btn base-btn--sm" @click="showHistory = false">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Network detail slide-over -->
+    <div v-if="showNetInspect" class="dk-slide-backdrop" @click.self="showNetInspect = false">
+      <aside class="dk-slide">
+        <div class="dk-slide-head">
+          <div>
+            <div class="dk-slide-title">{{ netInspectName }}</div>
+            <div class="dk-id">network</div>
+          </div>
+          <button class="dk-icon-btn dk-slide-close" @click="showNetInspect = false">×</button>
+        </div>
+        <div v-if="!netInspView" class="dk-loading">Loading…</div>
+        <div v-else class="dk-slide-body">
+          <section class="dk-detail">
+            <h4>Overview</h4>
+            <div class="dk-kv"><span>Driver</span><span>{{ netInspView.driver }}</span></div>
+            <div class="dk-kv"><span>Scope</span><span>{{ netInspView.scope }}</span></div>
+            <div class="dk-kv"><span>ID</span><span class="dk-mono">{{ netInspView.id.slice(0, 20) }}</span></div>
+            <div class="dk-kv"><span>Flags</span><span>
+              <span v-if="netInspView.internal" class="dk-tag">internal</span>
+              <span v-if="netInspView.attachable" class="dk-tag">attachable</span>
+              <span v-if="netInspView.ingress" class="dk-tag">ingress</span>
+              <span v-if="netInspView.ipv6" class="dk-tag">ipv6</span>
+              <span v-if="!netInspView.internal && !netInspView.attachable && !netInspView.ingress && !netInspView.ipv6" class="dk-muted">—</span>
+            </span></div>
+            <div class="dk-kv" v-if="netInspView.created"><span>Created</span><span class="dk-mono">{{ netInspView.created }}</span></div>
+          </section>
+          <section v-if="netInspView.ipam.length" class="dk-detail">
+            <h4>IPAM</h4>
+            <div v-for="(c, i) in netInspView.ipam" :key="i" class="dk-net">
+              <div class="dk-kv"><span>Subnet</span><span class="dk-mono">{{ c.subnet || '—' }}</span></div>
+              <div class="dk-kv"><span>Gateway</span><span class="dk-mono">{{ c.gateway || '—' }}</span></div>
+              <div class="dk-kv" v-if="c.range"><span>IP range</span><span class="dk-mono">{{ c.range }}</span></div>
+            </div>
+          </section>
+          <section v-if="netInspView.containers.length" class="dk-detail">
+            <h4>Connected containers ({{ netInspView.containers.length }})</h4>
+            <div v-for="c in netInspView.containers" :key="c.name" class="dk-net">
+              <div class="dk-net-name">{{ c.name }}</div>
+              <div class="dk-kv"><span>IPv4</span><span class="dk-mono">{{ c.ipv4 || '—' }}</span></div>
+              <div class="dk-kv" v-if="c.ipv6"><span>IPv6</span><span class="dk-mono">{{ c.ipv6 }}</span></div>
+              <div class="dk-kv"><span>MAC</span><span class="dk-mono">{{ c.mac || '—' }}</span></div>
+            </div>
+          </section>
+          <section v-if="netInspView.options.length" class="dk-detail">
+            <h4>Options</h4>
+            <div v-for="[k, v] in netInspView.options" :key="k" class="dk-kvrow"><span class="dk-kvk">{{ k }}</span><span class="dk-kvv">{{ v }}</span></div>
+          </section>
+          <section v-if="netInspView.labels.length" class="dk-detail">
+            <h4>Labels</h4>
+            <div v-for="[k, v] in netInspView.labels" :key="k" class="dk-kvrow"><span class="dk-kvk">{{ k }}</span><span class="dk-kvv">{{ v }}</span></div>
+          </section>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Volume detail slide-over -->
+    <div v-if="showVolInspect" class="dk-slide-backdrop" @click.self="showVolInspect = false">
+      <aside class="dk-slide">
+        <div class="dk-slide-head">
+          <div>
+            <div class="dk-slide-title">{{ volInspectName }}</div>
+            <div class="dk-id">volume</div>
+          </div>
+          <button class="dk-icon-btn dk-slide-close" @click="showVolInspect = false">×</button>
+        </div>
+        <div v-if="!volInspView" class="dk-loading">Loading…</div>
+        <div v-else class="dk-slide-body">
+          <section class="dk-detail">
+            <h4>Overview</h4>
+            <div class="dk-kv"><span>Driver</span><span>{{ volInspView.driver }}</span></div>
+            <div class="dk-kv"><span>Scope</span><span>{{ volInspView.scope }}</span></div>
+            <div class="dk-kv" v-if="volInspView.size != null"><span>Size</span><span class="dk-mono">{{ volInspView.size >= 0 ? formatBytes(volInspView.size) : '—' }}</span></div>
+            <div class="dk-kv" v-if="volInspView.refCount != null"><span>Ref count</span><span>{{ volInspView.refCount >= 0 ? volInspView.refCount : '—' }}</span></div>
+            <div class="dk-kv" v-if="volInspView.createdAt"><span>Created</span><span class="dk-mono">{{ volInspView.createdAt }}</span></div>
+          </section>
+          <section class="dk-detail">
+            <h4>Mountpoint</h4>
+            <pre class="dk-env">{{ volInspView.mountpoint || '—' }}</pre>
+          </section>
+          <section v-if="volInspView.usedBy.length" class="dk-detail">
+            <h4>Used by ({{ volInspView.usedBy.length }})</h4>
+            <div v-for="(u, i) in volInspView.usedBy" :key="i" class="dk-mount">
+              <span :class="['dk-dot', u.state === 'running' ? 'dk-dot--ok' : '']"></span>
+              <span class="dk-name">{{ u.container }}</span>
+              <span class="dk-arrow">→</span>
+              <span class="dk-mono">{{ u.destination }}</span>
+              <span class="dk-tag">{{ u.rw ? 'rw' : 'ro' }}</span>
+            </div>
+          </section>
+          <section v-else class="dk-detail"><p class="dk-muted">Not mounted by any container.</p></section>
+          <section v-if="volInspView.options.length" class="dk-detail">
+            <h4>Options</h4>
+            <div v-for="[k, v] in volInspView.options" :key="k" class="dk-kvrow"><span class="dk-kvk">{{ k }}</span><span class="dk-kvv">{{ v }}</span></div>
+          </section>
+          <section v-if="volInspView.status.length" class="dk-detail">
+            <h4>Status</h4>
+            <div v-for="[k, v] in volInspView.status" :key="k" class="dk-kvrow"><span class="dk-kvk">{{ k }}</span><span class="dk-kvv">{{ v }}</span></div>
+          </section>
+          <section v-if="volInspView.labels.length" class="dk-detail">
+            <h4>Labels</h4>
+            <div v-for="[k, v] in volInspView.labels" :key="k" class="dk-kvrow"><span class="dk-kvk">{{ k }}</span><span class="dk-kvv">{{ v }}</span></div>
+          </section>
+        </div>
+      </aside>
     </div>
 
     <!-- Topology map -->
@@ -2536,6 +2996,10 @@ onMounted(loadHosts)
 .dk-kv > span:first-child { width: 86px; flex-shrink: 0; color: var(--text-muted); }
 .dk-kv > span:last-child { color: var(--text-secondary); word-break: break-all; }
 .dk-mono { font-family: var(--mono); font-size: 11px; }
+.dk-kvrow { display: flex; flex-direction: column; gap: 1px; padding: 5px 0; border-bottom: 1px dashed var(--border); }
+.dk-kvrow:last-child { border-bottom: none; }
+.dk-kvk { font-family: var(--mono); font-size: 10px; color: var(--text-muted); word-break: break-all; }
+.dk-kvv { font-family: var(--mono); font-size: 11px; color: var(--text-primary); word-break: break-all; }
 .dk-net { margin-bottom: 10px; }
 .dk-net-name { font-size: 12px; font-weight: 500; color: var(--text-primary); margin-bottom: 4px; }
 .dk-mount { display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 3px 0; flex-wrap: wrap; }
@@ -2573,6 +3037,21 @@ onMounted(loadHosts)
 .dk-unused { color: var(--warning); }
 .dk-netconns { display: flex; flex-wrap: wrap; gap: 14px; padding: 4px 0; }
 .dk-netconn { display: inline-flex; gap: 6px; align-items: baseline; font-size: 12px; }
+
+/* Container internals */
+.dk-first-cell { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.dk-top { overflow-x: auto; }
+.dk-top-table { width: 100%; border-collapse: collapse; font-size: 11px; font-family: var(--mono); }
+.dk-top-table th { text-align: left; padding: 3px 8px; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+.dk-top-table td { padding: 3px 8px; color: var(--text-secondary); white-space: nowrap; }
+.dk-changes { max-height: 200px; overflow-y: auto; font-size: 11px; }
+.dk-change { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.dk-change-k { width: 16px; height: 16px; border-radius: 3px; display: inline-flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 700; color: #fff; flex-shrink: 0; }
+.dk-change--added .dk-change-k { background: var(--success); }
+.dk-change--deleted .dk-change-k { background: var(--danger); }
+.dk-change--modified .dk-change-k { background: var(--warning); }
+.dk-net-connect { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.dk-net-sel { max-width: 220px; font-size: 12px; }
 
 /* Events */
 .dk-events { padding: 12px 16px; }

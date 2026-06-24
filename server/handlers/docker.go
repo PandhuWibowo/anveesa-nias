@@ -754,84 +754,14 @@ func DockerContainerStats() http.HandlerFunc {
 		}
 		defer d.Close()
 
-		var raw struct {
-			CPUStats struct {
-				CPUUsage struct {
-					TotalUsage uint64 `json:"total_usage"`
-				} `json:"cpu_usage"`
-				SystemUsage uint64 `json:"system_cpu_usage"`
-				OnlineCPUs  uint64 `json:"online_cpus"`
-			} `json:"cpu_stats"`
-			PreCPUStats struct {
-				CPUUsage struct {
-					TotalUsage uint64 `json:"total_usage"`
-				} `json:"cpu_usage"`
-				SystemUsage uint64 `json:"system_cpu_usage"`
-			} `json:"precpu_stats"`
-			MemoryStats struct {
-				Usage uint64 `json:"usage"`
-				Limit uint64 `json:"limit"`
-			} `json:"memory_stats"`
-			Networks map[string]struct {
-				RxBytes uint64 `json:"rx_bytes"`
-				TxBytes uint64 `json:"tx_bytes"`
-			} `json:"networks"`
-			BlkioStats struct {
-				IoServiceBytesRecursive []struct {
-					Op    string `json:"op"`
-					Value uint64 `json:"value"`
-				} `json:"io_service_bytes_recursive"`
-			} `json:"blkio_stats"`
-			PidsStats struct {
-				Current uint64 `json:"current"`
-			} `json:"pids_stats"`
-		}
+		var raw dockerRawStats
 		q := url.Values{}
 		q.Set("stream", "false")
 		if err := d.getJSON("/containers/"+url.PathEscape(cid)+"/stats", q, &raw); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
 		}
-
-		cpuPercent := 0.0
-		cpuDelta := float64(raw.CPUStats.CPUUsage.TotalUsage) - float64(raw.PreCPUStats.CPUUsage.TotalUsage)
-		sysDelta := float64(raw.CPUStats.SystemUsage) - float64(raw.PreCPUStats.SystemUsage)
-		cpus := raw.CPUStats.OnlineCPUs
-		if cpus == 0 {
-			cpus = 1
-		}
-		if cpuDelta > 0 && sysDelta > 0 {
-			cpuPercent = (cpuDelta / sysDelta) * float64(cpus) * 100.0
-		}
-		memPercent := 0.0
-		if raw.MemoryStats.Limit > 0 {
-			memPercent = float64(raw.MemoryStats.Usage) / float64(raw.MemoryStats.Limit) * 100.0
-		}
-		var netRx, netTx uint64
-		for _, n := range raw.Networks {
-			netRx += n.RxBytes
-			netTx += n.TxBytes
-		}
-		var blkRead, blkWrite uint64
-		for _, b := range raw.BlkioStats.IoServiceBytesRecursive {
-			switch strings.ToLower(b.Op) {
-			case "read":
-				blkRead += b.Value
-			case "write":
-				blkWrite += b.Value
-			}
-		}
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"cpu_percent": cpuPercent,
-			"mem_usage":   raw.MemoryStats.Usage,
-			"mem_limit":   raw.MemoryStats.Limit,
-			"mem_percent": memPercent,
-			"net_rx":      netRx,
-			"net_tx":      netTx,
-			"blk_read":    blkRead,
-			"blk_write":   blkWrite,
-			"pids":        raw.PidsStats.Current,
-		})
+		json.NewEncoder(w).Encode(computeDockerStats(raw))
 	}
 }
 
@@ -1827,6 +1757,260 @@ func DockerContainerTerminal() http.HandlerFunc {
 	}
 }
 
+// ── Live streaming (WebSocket) ────────────────────────────────────────────
+
+// dockerWSAuthorized validates the WS token and a docker.view/manage permission.
+func dockerWSAuthorized(r *http.Request) bool {
+	if len(jwtSecret) == 0 {
+		return true // auth disabled
+	}
+	uid, err := dockerWSUserID(r)
+	if err != nil {
+		return false
+	}
+	return appdb.HasUserAppPermission(uid, PermDockerView) || appdb.HasUserAppPermission(uid, PermDockerManage)
+}
+
+// DockerLogsStream streams a container's logs (tail + follow) over a WebSocket.
+func DockerLogsStream() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !dockerWSAuthorized(r) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		id, cid, err := dockerHostAndContainer(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		h, err := loadDockerHost(id)
+		if err != nil {
+			http.Error(w, jsonError("host not found"), http.StatusNotFound)
+			return
+		}
+		d, err := dialDocker(h)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+		tail := r.URL.Query().Get("tail")
+		if tail != "all" {
+			if _, e := strconv.Atoi(tail); e != nil {
+				tail = "200"
+			}
+		}
+		timestamps := "0"
+		if r.URL.Query().Get("timestamps") == "1" {
+			timestamps = "1"
+		}
+		tty := dockerContainerHasTTY(d, cid)
+		q := url.Values{}
+		q.Set("stdout", "1")
+		q.Set("stderr", "1")
+		q.Set("follow", "1")
+		q.Set("tail", tail)
+		q.Set("timestamps", timestamps)
+		req, _ := http.NewRequest(http.MethodGet, "http://docker/containers/"+url.PathEscape(cid)+"/logs?"+q.Encode(), nil)
+		resp, err := d.stream.Do(req)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer ws.Close(websocket.StatusNormalClosure, "")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			for {
+				if _, _, e := ws.Read(ctx); e != nil {
+					cancel()
+					return
+				}
+			}
+		}()
+
+		if tty {
+			buf := make([]byte, 4096)
+			for {
+				n, e := resp.Body.Read(buf)
+				if n > 0 {
+					if ws.Write(ctx, websocket.MessageBinary, buf[:n]) != nil {
+						return
+					}
+				}
+				if e != nil {
+					return
+				}
+			}
+		}
+		header := make([]byte, 8)
+		for {
+			if _, e := io.ReadFull(resp.Body, header); e != nil {
+				return
+			}
+			size := binary.BigEndian.Uint32(header[4:8])
+			if size == 0 {
+				continue
+			}
+			payload := make([]byte, size)
+			n, e := io.ReadFull(resp.Body, payload)
+			if n > 0 {
+				if ws.Write(ctx, websocket.MessageBinary, payload[:n]) != nil {
+					return
+				}
+			}
+			if e != nil {
+				return
+			}
+		}
+	}
+}
+
+type dockerRawStats struct {
+	CPUStats struct {
+		CPUUsage struct {
+			TotalUsage uint64 `json:"total_usage"`
+		} `json:"cpu_usage"`
+		SystemUsage uint64 `json:"system_cpu_usage"`
+		OnlineCPUs  uint64 `json:"online_cpus"`
+	} `json:"cpu_stats"`
+	PreCPUStats struct {
+		CPUUsage struct {
+			TotalUsage uint64 `json:"total_usage"`
+		} `json:"cpu_usage"`
+		SystemUsage uint64 `json:"system_cpu_usage"`
+	} `json:"precpu_stats"`
+	MemoryStats struct {
+		Usage uint64 `json:"usage"`
+		Limit uint64 `json:"limit"`
+	} `json:"memory_stats"`
+	Networks map[string]struct {
+		RxBytes uint64 `json:"rx_bytes"`
+		TxBytes uint64 `json:"tx_bytes"`
+	} `json:"networks"`
+	BlkioStats struct {
+		IoServiceBytesRecursive []struct {
+			Op    string `json:"op"`
+			Value uint64 `json:"value"`
+		} `json:"io_service_bytes_recursive"`
+	} `json:"blkio_stats"`
+	PidsStats struct {
+		Current uint64 `json:"current"`
+	} `json:"pids_stats"`
+}
+
+func computeDockerStats(raw dockerRawStats) map[string]interface{} {
+	cpuPercent := 0.0
+	cpuDelta := float64(raw.CPUStats.CPUUsage.TotalUsage) - float64(raw.PreCPUStats.CPUUsage.TotalUsage)
+	sysDelta := float64(raw.CPUStats.SystemUsage) - float64(raw.PreCPUStats.SystemUsage)
+	cpus := raw.CPUStats.OnlineCPUs
+	if cpus == 0 {
+		cpus = 1
+	}
+	if cpuDelta > 0 && sysDelta > 0 {
+		cpuPercent = (cpuDelta / sysDelta) * float64(cpus) * 100.0
+	}
+	memPercent := 0.0
+	if raw.MemoryStats.Limit > 0 {
+		memPercent = float64(raw.MemoryStats.Usage) / float64(raw.MemoryStats.Limit) * 100.0
+	}
+	var netRx, netTx uint64
+	for _, n := range raw.Networks {
+		netRx += n.RxBytes
+		netTx += n.TxBytes
+	}
+	var blkRead, blkWrite uint64
+	for _, b := range raw.BlkioStats.IoServiceBytesRecursive {
+		switch strings.ToLower(b.Op) {
+		case "read":
+			blkRead += b.Value
+		case "write":
+			blkWrite += b.Value
+		}
+	}
+	return map[string]interface{}{
+		"cpu_percent": cpuPercent,
+		"mem_usage":   raw.MemoryStats.Usage,
+		"mem_limit":   raw.MemoryStats.Limit,
+		"mem_percent": memPercent,
+		"net_rx":      netRx,
+		"net_tx":      netTx,
+		"blk_read":    blkRead,
+		"blk_write":   blkWrite,
+		"pids":        raw.PidsStats.Current,
+	}
+}
+
+// DockerStatsStream streams live computed stats over a WebSocket.
+func DockerStatsStream() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !dockerWSAuthorized(r) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		id, cid, err := dockerHostAndContainer(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		h, err := loadDockerHost(id)
+		if err != nil {
+			http.Error(w, jsonError("host not found"), http.StatusNotFound)
+			return
+		}
+		d, err := dialDocker(h)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+		req, _ := http.NewRequest(http.MethodGet, "http://docker/containers/"+url.PathEscape(cid)+"/stats?stream=true", nil)
+		resp, err := d.stream.Do(req)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer ws.Close(websocket.StatusNormalClosure, "")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			for {
+				if _, _, e := ws.Read(ctx); e != nil {
+					cancel()
+					return
+				}
+			}
+		}()
+
+		dec := json.NewDecoder(resp.Body)
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			var raw dockerRawStats
+			if err := dec.Decode(&raw); err != nil {
+				return
+			}
+			payload, _ := json.Marshal(computeDockerStats(raw))
+			if ws.Write(ctx, websocket.MessageText, payload) != nil {
+				return
+			}
+		}
+	}
+}
+
 // ── Volumes ───────────────────────────────────────────────────────────────
 
 type dockerVolume struct {
@@ -1935,6 +2119,78 @@ func DockerVolumeCreate() http.HandlerFunc {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	}
+}
+
+// DockerVolumeInspect returns a volume's inspect plus which containers mount it.
+func DockerVolumeInspect() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := dockerHostIDFromPath(r)
+		if err != nil {
+			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
+			return
+		}
+		name := strings.TrimSpace(r.URL.Query().Get("name"))
+		if name == "" {
+			http.Error(w, `{"error":"volume name is required"}`, http.StatusBadRequest)
+			return
+		}
+		d, err := connectHostByID(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+		resp, err := d.do(http.MethodGet, "/volumes/"+url.PathEscape(name), nil)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			http.Error(w, jsonError(dockerErrBody(resp)), http.StatusBadGateway)
+			return
+		}
+		rawVol, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+
+		// Cross-reference: which containers mount this volume.
+		type usedByEntry struct {
+			Container   string `json:"container"`
+			State       string `json:"state"`
+			Destination string `json:"destination"`
+			RW          bool   `json:"rw"`
+		}
+		usedBy := []usedByEntry{}
+		var conts []struct {
+			Names  []string `json:"Names"`
+			State  string   `json:"State"`
+			Mounts []struct {
+				Type        string `json:"Type"`
+				Name        string `json:"Name"`
+				Destination string `json:"Destination"`
+				RW          bool   `json:"RW"`
+			} `json:"Mounts"`
+		}
+		cq := url.Values{}
+		cq.Set("all", "1")
+		if d.getJSON("/containers/json", cq, &conts) == nil {
+			for _, c := range conts {
+				cname := ""
+				if len(c.Names) > 0 {
+					cname = strings.TrimPrefix(c.Names[0], "/")
+				}
+				for _, m := range c.Mounts {
+					if m.Type == "volume" && m.Name == name {
+						usedBy = append(usedBy, usedByEntry{Container: cname, State: c.State, Destination: m.Destination, RW: m.RW})
+					}
+				}
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"volume":  json.RawMessage(rawVol),
+			"used_by": usedBy,
+		})
 	}
 }
 
@@ -2096,6 +2352,40 @@ func DockerNetworkCreate() http.HandlerFunc {
 	}
 }
 
+// DockerNetworkInspect proxies the full inspect JSON for a network.
+func DockerNetworkInspect() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := dockerHostIDFromPath(r)
+		if err != nil {
+			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
+			return
+		}
+		nid := strings.TrimSpace(r.URL.Query().Get("id"))
+		if !dockerIDPattern.MatchString(nid) {
+			http.Error(w, `{"error":"invalid network id"}`, http.StatusBadRequest)
+			return
+		}
+		d, err := connectHostByID(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+		resp, err := d.do(http.MethodGet, "/networks/"+nid, nil)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			http.Error(w, jsonError(dockerErrBody(resp)), http.StatusBadGateway)
+			return
+		}
+		io.Copy(w, io.LimitReader(resp.Body, 1<<20))
+	}
+}
+
 func DockerNetworkRemove() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -2224,6 +2514,188 @@ func DockerSystemDF() http.HandlerFunc {
 			"build_cache": cache,
 		})
 	}
+}
+
+// ── Container internals ───────────────────────────────────────────────────
+
+// proxyContainerGet proxies a GET subresource of a container as JSON.
+func proxyContainerGet(w http.ResponseWriter, r *http.Request, sub string, q url.Values) {
+	w.Header().Set("Content-Type", "application/json")
+	id, cid, err := dockerHostAndContainer(r)
+	if err != nil {
+		http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+		return
+	}
+	d, err := connectHostByID(id)
+	if err != nil {
+		http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+		return
+	}
+	defer d.Close()
+	resp, err := d.do(http.MethodGet, "/containers/"+url.PathEscape(cid)+sub, q)
+	if err != nil {
+		http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		http.Error(w, jsonError(dockerErrBody(resp)), http.StatusBadGateway)
+		return
+	}
+	io.Copy(w, io.LimitReader(resp.Body, 1<<20))
+}
+
+// DockerContainerTop lists processes running inside a container (`docker top`).
+func DockerContainerTop() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := url.Values{}
+		q.Set("ps_args", "-ef")
+		proxyContainerGet(w, r, "/top", q)
+	}
+}
+
+// DockerContainerChanges returns filesystem changes vs the image (`docker diff`).
+func DockerContainerChanges() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		proxyContainerGet(w, r, "/changes", nil)
+	}
+}
+
+// DockerContainerCommit snapshots a container into a new image (`docker commit`).
+func DockerContainerCommit() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, cid, err := dockerHostAndContainer(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Repo    string `json:"repo"`
+			Tag     string `json:"tag"`
+			Comment string `json:"comment"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if strings.TrimSpace(body.Repo) == "" {
+			http.Error(w, `{"error":"repository is required (e.g. myapp)"}`, http.StatusBadRequest)
+			return
+		}
+		d, err := connectHostByID(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+		q := url.Values{}
+		q.Set("container", cid)
+		q.Set("repo", strings.TrimSpace(body.Repo))
+		if strings.TrimSpace(body.Tag) != "" {
+			q.Set("tag", strings.TrimSpace(body.Tag))
+		}
+		if strings.TrimSpace(body.Comment) != "" {
+			q.Set("comment", body.Comment)
+		}
+		resp, err := d.doBody(http.MethodPost, "/commit", q, map[string]interface{}{}, false)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			http.Error(w, jsonError(dockerErrBody(resp)), http.StatusBadGateway)
+			return
+		}
+		var out struct {
+			Id string `json:"Id"`
+		}
+		json.NewDecoder(resp.Body).Decode(&out)
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "id": out.Id})
+	}
+}
+
+// DockerImageHistory returns an image's layer history.
+func DockerImageHistory() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := dockerHostIDFromPath(r)
+		if err != nil {
+			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
+			return
+		}
+		ref := strings.TrimPrefix(strings.TrimSpace(r.URL.Query().Get("ref")), "sha256:")
+		if !dockerIDPattern.MatchString(ref) {
+			http.Error(w, `{"error":"invalid image ref — use the image ID"}`, http.StatusBadRequest)
+			return
+		}
+		d, err := connectHostByID(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+		resp, err := d.do(http.MethodGet, "/images/"+ref+"/history", nil)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			http.Error(w, jsonError(dockerErrBody(resp)), http.StatusBadGateway)
+			return
+		}
+		io.Copy(w, io.LimitReader(resp.Body, 1<<20))
+	}
+}
+
+// ── Network connect / disconnect ──────────────────────────────────────────
+
+func dockerNetworkAttach(w http.ResponseWriter, r *http.Request, action string) {
+	w.Header().Set("Content-Type", "application/json")
+	id, err := dockerHostIDFromPath(r)
+	if err != nil {
+		http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		Network   string `json:"network"`
+		Container string `json:"container"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+	if !dockerIDPattern.MatchString(strings.TrimSpace(body.Network)) || !dockerIDPattern.MatchString(strings.TrimSpace(body.Container)) {
+		http.Error(w, `{"error":"network and container ids are required"}`, http.StatusBadRequest)
+		return
+	}
+	d, err := connectHostByID(id)
+	if err != nil {
+		http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+		return
+	}
+	defer d.Close()
+	payload := map[string]interface{}{"Container": body.Container}
+	if action == "disconnect" {
+		payload["Force"] = true
+	}
+	resp, err := d.doBody(http.MethodPost, "/networks/"+url.PathEscape(body.Network)+"/"+action, nil, payload, false)
+	if err != nil {
+		http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		http.Error(w, jsonError(dockerErrBody(resp)), http.StatusBadGateway)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+}
+
+// DockerNetworkConnect attaches a container to a network.
+func DockerNetworkConnect() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { dockerNetworkAttach(w, r, "connect") }
+}
+
+// DockerNetworkDisconnect detaches a container from a network.
+func DockerNetworkDisconnect() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { dockerNetworkAttach(w, r, "disconnect") }
 }
 
 // ── Compose stacks ────────────────────────────────────────────────────────

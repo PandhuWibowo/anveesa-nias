@@ -831,6 +831,8 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			view(handlers.DockerVolumes())(w, r)
 		case len(parts) == 2 && parts[1] == "volumes" && r.Method == http.MethodPost:
 			manage(handlers.DockerVolumeCreate())(w, r)
+		case len(parts) == 3 && parts[1] == "volumes" && parts[2] == "inspect" && r.Method == http.MethodGet:
+			view(handlers.DockerVolumeInspect())(w, r)
 		case len(parts) == 3 && parts[1] == "volumes" && parts[2] == "remove" && r.Method == http.MethodPost:
 			manage(handlers.DockerVolumeRemove())(w, r)
 		// /api/docker/hosts/{id}/networks
@@ -838,8 +840,14 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			view(handlers.DockerNetworks())(w, r)
 		case len(parts) == 2 && parts[1] == "networks" && r.Method == http.MethodPost:
 			manage(handlers.DockerNetworkCreate())(w, r)
+		case len(parts) == 3 && parts[1] == "networks" && parts[2] == "inspect" && r.Method == http.MethodGet:
+			view(handlers.DockerNetworkInspect())(w, r)
 		case len(parts) == 3 && parts[1] == "networks" && parts[2] == "remove" && r.Method == http.MethodPost:
 			manage(handlers.DockerNetworkRemove())(w, r)
+		case len(parts) == 3 && parts[1] == "networks" && parts[2] == "connect" && r.Method == http.MethodPost:
+			manage(handlers.DockerNetworkConnect())(w, r)
+		case len(parts) == 3 && parts[1] == "networks" && parts[2] == "disconnect" && r.Method == http.MethodPost:
+			manage(handlers.DockerNetworkDisconnect())(w, r)
 		// /api/docker/hosts/{id}/prune/{volumes|networks}
 		case len(parts) == 3 && parts[1] == "prune" && parts[2] == "volumes" && r.Method == http.MethodPost:
 			manage(handlers.DockerVolumesPrune())(w, r)
@@ -857,6 +865,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		// /api/docker/hosts/{id}/images/save  (export)
 		case len(parts) == 3 && parts[1] == "images" && parts[2] == "save" && r.Method == http.MethodGet:
 			view(handlers.DockerImageSave())(w, r)
+		// /api/docker/hosts/{id}/images/history?ref=
+		case len(parts) == 3 && parts[1] == "images" && parts[2] == "history" && r.Method == http.MethodGet:
+			view(handlers.DockerImageHistory())(w, r)
 		// /api/docker/hosts/{id}/images/load  (import)
 		case len(parts) == 3 && parts[1] == "images" && parts[2] == "load" && r.Method == http.MethodPost:
 			manage(handlers.DockerImageLoad())(w, r)
@@ -896,6 +907,21 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		// /api/docker/hosts/{id}/containers/{cid}/stats
 		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "stats" && r.Method == http.MethodGet:
 			view(handlers.DockerContainerStats())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/logstream  (WebSocket; self-authed)
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "logstream" && r.Method == http.MethodGet:
+			handlers.DockerLogsStream()(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/statstream  (WebSocket; self-authed)
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "statstream" && r.Method == http.MethodGet:
+			handlers.DockerStatsStream()(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/top
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "top" && r.Method == http.MethodGet:
+			view(handlers.DockerContainerTop())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/changes
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "changes" && r.Method == http.MethodGet:
+			view(handlers.DockerContainerChanges())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/commit
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "commit" && r.Method == http.MethodPost:
+			manage(handlers.DockerContainerCommit())(w, r)
 		// /api/docker/hosts/{id}/containers/{cid}/exec  (separate docker.exec gate)
 		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "exec" && r.Method == http.MethodPost:
 			exec(handlers.DockerContainerExec())(w, r)
