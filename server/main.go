@@ -961,49 +961,6 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 
-	// ── Infrastructure: Marketplace ───────────────────────────────
-	{
-		mView := requireAny(handlers.PermMarketplaceView, handlers.PermMarketplaceManage)
-		mManage := requireAny(handlers.PermMarketplaceManage)
-		mux.HandleFunc("/api/marketplace/catalog", mView(handlers.MarketplaceCatalog()))
-		mux.HandleFunc("/api/marketplace/install", mManage(handlers.MarketplaceInstall()))
-		mux.HandleFunc("/api/marketplace/uninstall", mManage(handlers.MarketplaceUninstall()))
-		mux.HandleFunc("/api/marketplace/installs", mView(handlers.MarketplaceInstalls()))
-		mux.HandleFunc("/api/marketplace/catalogs", func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			case http.MethodGet:
-				mView(handlers.MarketplaceCatalogs())(w, r)
-			case http.MethodPost:
-				mManage(handlers.CreateMarketplaceCatalog())(w, r)
-			default:
-				http.NotFound(w, r)
-			}
-		})
-		mux.HandleFunc("/api/marketplace/catalogs/", mManage(handlers.DeleteMarketplaceCatalog()))
-		mux.HandleFunc("/api/marketplace/custom-apps", func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			case http.MethodGet:
-				mView(handlers.MarketplaceCustomApps())(w, r)
-			case http.MethodPost:
-				mManage(handlers.CreateMarketplaceCustomApp())(w, r)
-			default:
-				http.NotFound(w, r)
-			}
-		})
-		mux.HandleFunc("/api/marketplace/custom-apps/", mManage(handlers.DeleteMarketplaceCustomApp()))
-		mux.HandleFunc("/api/marketplace/tiles", func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			case http.MethodGet:
-				mView(handlers.MarketplaceTiles())(w, r)
-			case http.MethodPost:
-				mManage(handlers.CreateMarketplaceTile())(w, r)
-			default:
-				http.NotFound(w, r)
-			}
-		})
-		mux.HandleFunc("/api/marketplace/tiles/", mManage(handlers.DeleteMarketplaceTile()))
-	}
-
 	// ── Admin: users ──────────────────────────────────────────────
 	mux.HandleFunc("/api/admin/users", requireAny(handlers.PermUsersManage, handlers.PermWorkflowsManage)(handlers.ListUsers()))
 	mux.HandleFunc("/api/admin/users/", func(w http.ResponseWriter, r *http.Request) {

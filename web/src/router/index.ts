@@ -241,12 +241,6 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['sftp.access', 'sftp.manage'] },
         },
         {
-          path: 'marketplace',
-          name: 'marketplace',
-          component: () => import('@/views/MarketplaceView.vue'),
-          meta: { requiredPermissionsAny: ['marketplace.view', 'marketplace.manage'] },
-        },
-        {
           path: 'connections',
           name: 'connections',
           component: () => import('@/views/ConnectionsView.vue'),
