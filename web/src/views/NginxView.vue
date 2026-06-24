@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
@@ -71,7 +71,15 @@ const logFiles = ref<NginxFile[]>([])
 const activeLog = ref('')
 const logLines = ref<string[]>([])
 const following = ref(false)
-let es: EventSource | null = null
+const logViewEl = ref<HTMLElement | null>(null)
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+// A permission/sudo error means the SSH user lacks direct access — the fix is
+// to elevate. We flip `useSudo` on and retry once, transparently.
+function isPermDenied(e: any): boolean {
+  const msg = (e?.response?.data?.error || e?.message || '').toString().toLowerCase()
+  return msg.includes('permission denied') || msg.includes('not permitted') || msg.includes('sudo')
+}
 
 const base = computed(() => `/api/nginx/hosts/${hostId.value}`)
 const sudoParam = computed(() => (useSudo.value ? '1' : undefined))
@@ -193,6 +201,12 @@ async function loadTree() {
     const { data } = await axios.get<{ files: NginxFile[] }>(`${base.value}/config/tree`, { params: cfgParams.value })
     files.value = data.files || []
   } catch (e: any) {
+    if (!useSudo.value && isPermDenied(e)) {
+      useSudo.value = true
+      toast.info('Permission denied — retrying with sudo')
+      loadingTree.value = false
+      return loadTree()
+    }
     toast.error(e?.response?.data?.error || 'Failed to list config')
     files.value = []
   } finally {
@@ -209,6 +223,12 @@ async function openFile(p: string) {
     fileContent.value = data.content || ''
     origContent.value = fileContent.value
   } catch (e: any) {
+    if (!useSudo.value && isPermDenied(e)) {
+      useSudo.value = true
+      toast.info('Permission denied — retrying with sudo')
+      loadingFile.value = false
+      return openFile(p)
+    }
     toast.error(e?.response?.data?.error || 'Failed to read file')
     fileContent.value = ''
     origContent.value = ''
@@ -289,51 +309,53 @@ async function loadLogList() {
   }
 }
 
+// fetchTail loads the last N lines. Returns false on an unrecovered error.
+async function fetchTail(file: string, lines: number): Promise<boolean> {
+  try {
+    const { data } = await axios.get(`${base.value}/logs/tail`, { params: { ...logParams.value, file, lines } })
+    logLines.value = (data.output || '').split('\n').filter((l: string) => l.length)
+    nextTick(() => {
+      if (logViewEl.value) logViewEl.value.scrollTop = logViewEl.value.scrollHeight
+    })
+    return true
+  } catch (e: any) {
+    if (!useSudo.value && isPermDenied(e)) {
+      useSudo.value = true
+      toast.info('Permission denied — retrying with sudo')
+      return fetchTail(file, lines) // retry once, now elevated
+    }
+    toast.error(e?.response?.data?.error || 'Failed to tail log')
+    return false
+  }
+}
+
 async function openLog(file: string) {
   stopFollow()
   activeLog.value = file
   logLines.value = []
-  try {
-    const { data } = await axios.get(`${base.value}/logs/tail`, { params: { ...logParams.value, file, lines: 300 } })
-    logLines.value = (data.output || '').split('\n').filter((l: string) => l.length)
-  } catch (e: any) {
-    toast.error(e?.response?.data?.error || 'Failed to tail log')
-  }
+  await fetchTail(file, 300)
 }
 
+// Live-tail by polling the snapshot endpoint. SSE is avoided on purpose: it
+// doesn't survive reverse proxies / Cloudflare, which buffer streaming
+// responses. Short polls are plain requests that work everywhere and respect sudo.
 function toggleFollow() {
   if (following.value) {
     stopFollow()
     return
   }
   if (!activeLog.value) return
-  const token = localStorage.getItem('nias-token') || ''
-  const qs = new URLSearchParams({ dir: logDir.value, file: activeLog.value, token })
-  if (useSudo.value) qs.set('sudo', '1')
-  logLines.value = []
-  es = new EventSource(`${base.value}/logs/stream?${qs.toString()}`)
   following.value = true
-  es.onmessage = (ev) => {
-    try {
-      const { line } = JSON.parse(ev.data)
-      if (typeof line === 'string') {
-        logLines.value.push(line)
-        if (logLines.value.length > 2000) logLines.value.splice(0, logLines.value.length - 2000)
-      }
-    } catch {
-      /* ignore non-JSON keepalives */
-    }
-  }
-  es.onerror = () => {
-    stopFollow()
-    toast.error('Live tail disconnected')
-  }
+  pollTimer = setInterval(async () => {
+    const ok = await fetchTail(activeLog.value, 400)
+    if (!ok) stopFollow()
+  }, 2000)
 }
 
 function stopFollow() {
-  if (es) {
-    es.close()
-    es = null
+  if (pollTimer !== null) {
+    clearInterval(pollTimer)
+    pollTimer = null
   }
   following.value = false
 }
@@ -507,9 +529,9 @@ onBeforeUnmount(stopFollow)
                 @click="toggleFollow"
               >{{ following ? '■ Stop' : '▶ Follow' }}</button>
               <div class="dk-spacer"></div>
-              <span class="ng-logmeta">{{ logLines.length }} lines{{ following ? ' · live' : '' }}</span>
+              <span class="ng-logmeta">{{ logLines.length }} lines{{ following ? ' · live (polling)' : '' }}</span>
             </div>
-            <pre class="ng-logview">{{ logLines.join('\n') || 'No log output.' }}</pre>
+            <pre ref="logViewEl" class="ng-logview">{{ logLines.join('\n') || 'No log output.' }}</pre>
           </div>
         </template>
       </div>

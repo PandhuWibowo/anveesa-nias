@@ -887,9 +887,11 @@ func NginxLogStream() http.HandlerFunc {
 		w.Header().Set("X-Accel-Buffering", "no")
 		flushSSE(w)
 
-		// tail -F follows across rotation. Quote the path defensively.
+		// tail -F follows across rotation. Quote the path defensively. 2>&1 folds
+		// stderr into the stream so failures (e.g. "Permission denied", "sudo: a
+		// password is required") show up as log lines instead of a silent close.
 		quoted := "'" + strings.ReplaceAll(full, "'", `'\''`) + "'"
-		cmd := "tail -n 100 -F " + quoted
+		cmd := "tail -n 100 -F " + quoted + " 2>&1"
 		if nginxUseSudo(r) {
 			if h.SSHPassword != "" {
 				cmd = "sudo -S -p '' " + cmd
