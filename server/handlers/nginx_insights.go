@@ -254,6 +254,7 @@ func NginxCerts() http.HandlerFunc {
 			if c == nil {
 				c = &nginxCert{Path: p, Error: "no openssl output"}
 			}
+			c.Domains = []string{}
 			for d := range domainsByCert[p] {
 				c.Domains = append(c.Domains, d)
 			}
@@ -319,7 +320,7 @@ func NginxMap() http.HandlerFunc {
 		walkNginx(tree, func(n *nginxNode) {
 			switch {
 			case n.Name == "upstream" && len(n.Args) > 0:
-				up := nginxUpstreamInfo{Name: n.Args[0]}
+				up := nginxUpstreamInfo{Name: n.Args[0], Servers: []string{}}
 				for _, c := range n.Children {
 					if c.Name == "server" && len(c.Args) > 0 {
 						up.Servers = append(up.Servers, c.Args[0])
@@ -327,7 +328,7 @@ func NginxMap() http.HandlerFunc {
 				}
 				upstreams = append(upstreams, up)
 			case n.Name == "server" && len(n.Children) > 0:
-				s := nginxServerInfo{}
+				s := nginxServerInfo{Listen: []string{}, ProxyPass: []string{}}
 				for _, c := range n.Children {
 					switch c.Name {
 					case "listen":
@@ -344,7 +345,9 @@ func NginxMap() http.HandlerFunc {
 						}
 					}
 				}
-				s.ProxyPass = collectDirective(n, "proxy_pass")
+				if pp := collectDirective(n, "proxy_pass"); pp != nil {
+					s.ProxyPass = pp
+				}
 				servers = append(servers, s)
 			}
 		})

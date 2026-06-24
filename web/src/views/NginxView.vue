@@ -956,11 +956,11 @@ onBeforeUnmount(() => {
                   <tr v-else-if="!servers.length"><td colspan="4" class="ng-msg">No server blocks.</td></tr>
                   <tr v-for="(s, i) in servers" :key="i">
                     <td class="ng-sname">{{ s.names || '—' }}</td>
-                    <td class="ng-mono">{{ s.listen.join(', ') || '—' }}</td>
+                    <td class="ng-mono">{{ (s.listen || []).join(', ') || '—' }}</td>
                     <td class="ng-mono">
                       <span v-if="s.root">root: {{ s.root }}</span>
-                      <span v-for="p in s.proxy_pass" :key="p" class="ng-proxy">→ {{ p }}</span>
-                      <span v-if="!s.root && !s.proxy_pass.length">—</span>
+                      <span v-for="p in (s.proxy_pass || [])" :key="p" class="ng-proxy">→ {{ p }}</span>
+                      <span v-if="!s.root && !(s.proxy_pass || []).length">—</span>
                     </td>
                     <td class="ng-mono ng-cert">{{ s.cert ? s.cert.split('/').pop() : '—' }}</td>
                   </tr>
@@ -976,7 +976,7 @@ onBeforeUnmount(() => {
                   <tr v-else-if="!upstreams.length"><td colspan="2" class="ng-msg">No upstreams.</td></tr>
                   <tr v-for="u in upstreams" :key="u.name">
                     <td class="ng-sname">{{ u.name }}</td>
-                    <td class="ng-mono">{{ u.servers.join(', ') }}</td>
+                    <td class="ng-mono">{{ (u.servers || []).join(', ') }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -994,7 +994,7 @@ onBeforeUnmount(() => {
                 <tr v-if="loadingCerts"><td colspan="4" class="ng-msg">Reading certificates…</td></tr>
                 <tr v-else-if="!certs.length"><td colspan="4" class="ng-msg">No ssl_certificate directives found.</td></tr>
                 <tr v-for="(c, i) in certs" :key="i">
-                  <td class="ng-mono">{{ c.domains.length ? c.domains.join(', ') : (c.subject || '—') }}</td>
+                  <td class="ng-mono">{{ (c.domains || []).length ? c.domains.join(', ') : (c.subject || '—') }}</td>
                   <td class="ng-mono">{{ c.error ? '—' : c.not_after }}</td>
                   <td>
                     <span v-if="c.error" class="ng-pill ng-pill--warn">error</span>
