@@ -43,6 +43,7 @@ const tab = ref<'config' | 'sites' | 'logs'>('config')
 const bin = ref('nginx')
 const configRoot = ref('/etc/nginx')
 const logDir = ref('/var/log/nginx')
+const useSudo = ref(false)
 const sitesLayout = ref('') // 'symlink' | 'confd' | ''
 const version = ref('')
 const active = ref('')
@@ -73,9 +74,10 @@ const following = ref(false)
 let es: EventSource | null = null
 
 const base = computed(() => `/api/nginx/hosts/${hostId.value}`)
+const sudoParam = computed(() => (useSudo.value ? '1' : undefined))
 // Shared query params so every call respects the (possibly overridden) host settings.
-const cfgParams = computed(() => ({ root: configRoot.value, bin: bin.value }))
-const logParams = computed(() => ({ dir: logDir.value, bin: bin.value }))
+const cfgParams = computed(() => ({ root: configRoot.value, bin: bin.value, sudo: sudoParam.value }))
+const logParams = computed(() => ({ dir: logDir.value, bin: bin.value, sudo: sudoParam.value }))
 
 // ── Hosts ───────────────────────────────────────────────────────
 async function loadHosts() {
@@ -152,7 +154,7 @@ async function testConfig() {
   if (hostId.value === null) return
   busy.value = true
   try {
-    const { data } = await axios.post(`${base.value}/test`, null, { params: { bin: bin.value } })
+    const { data } = await axios.post(`${base.value}/test`, null, { params: { bin: bin.value, sudo: sudoParam.value } })
     cmdOk.value = !!data.ok
     cmdOutput.value = data.output || (data.ok ? 'Configuration OK' : 'Test failed')
   } catch (e: any) {
@@ -169,7 +171,7 @@ async function reload() {
   if (!ok) return
   busy.value = true
   try {
-    const { data } = await axios.post(`${base.value}/reload`, null, { params: { bin: bin.value } })
+    const { data } = await axios.post(`${base.value}/reload`, null, { params: { bin: bin.value, sudo: sudoParam.value } })
     cmdOk.value = true
     cmdOutput.value = data.output?.trim() || 'Reloaded.'
     toast.success(`${bin.value} reloaded`)
@@ -223,6 +225,7 @@ async function saveFile() {
       root: configRoot.value,
       path: activeFile.value,
       content: fileContent.value,
+      sudo: useSudo.value,
     })
     origContent.value = fileContent.value
     toast.success('Saved — run Test config before reloading')
@@ -239,7 +242,7 @@ async function loadSites() {
   loadingSites.value = true
   try {
     const { data } = await axios.get<{ layout: string; sites: NginxSite[] }>(`${base.value}/sites`, {
-      params: { root: configRoot.value, layout: sitesLayout.value },
+      params: { root: configRoot.value, layout: sitesLayout.value, sudo: sudoParam.value },
     })
     if (data.layout) sitesLayout.value = data.layout
     sites.value = data.sites || []
@@ -259,6 +262,7 @@ async function toggleSite(site: NginxSite) {
       name: site.name,
       layout: sitesLayout.value,
       enabled: !site.enabled,
+      sudo: useSudo.value,
     })
     toast.success(`${site.name} ${!site.enabled ? 'enabled' : 'disabled'} — reload to apply`)
     await loadSites()
@@ -305,6 +309,7 @@ function toggleFollow() {
   if (!activeLog.value) return
   const token = localStorage.getItem('nias-token') || ''
   const qs = new URLSearchParams({ dir: logDir.value, file: activeLog.value, token })
+  if (useSudo.value) qs.set('sudo', '1')
   logLines.value = []
   es = new EventSource(`${base.value}/logs/stream?${qs.toString()}`)
   following.value = true
@@ -392,6 +397,10 @@ onBeforeUnmount(stopFollow)
               <label>Log directory</label>
               <input v-model="logDir" class="base-input" spellcheck="false" />
             </div>
+            <label class="ng-sudo" title="Run privileged commands via sudo, using this host's SSH password (or NOPASSWD for key auth)">
+              <input type="checkbox" v-model="useSudo" @change="loadCurrentTab" />
+              Use sudo
+            </label>
             <button class="base-btn base-btn--sm" :disabled="detecting" @click="rescan">{{ detecting ? 'Scanning…' : 'Rescan' }}</button>
           </div>
 
@@ -520,6 +529,8 @@ onBeforeUnmount(stopFollow)
 .ng-set--grow { flex: 1 1 220px; }
 .ng-set label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); font-weight: 600; }
 .ng-set .base-input { width: 100%; font-family: var(--mono); font-size: 12px; }
+.ng-sudo { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); white-space: nowrap; cursor: pointer; padding-bottom: 6px; }
+.ng-sudo input { cursor: pointer; }
 
 .ng-statusbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ng-pill { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; text-transform: uppercase; letter-spacing: 0.03em; }

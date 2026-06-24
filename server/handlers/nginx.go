@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	appdb "github.com/anveesa/nias/db"
+	"github.com/pkg/sftp"
 )
 
 // Nginx management rides on the same SSH host records as Docker and SFTP
@@ -20,7 +21,12 @@ import (
 // nginx, and tails logs — all over SSH. Paths and the binary (nginx vs
 // openresty) are auto-detected per host and can be overridden by the caller,
 // so non-Debian layouts (conf.d/*.conf, openresty, custom prefixes) work too.
-// Local hosts (no SSH) are not supported.
+//
+// When the SSH user isn't root (the common case — e.g. reading 640 root:adm
+// logs or writing /etc/nginx), the caller can request `sudo`. Privileged
+// commands then run via `sudo -S`, feeding the host's stored SSH password as
+// the sudo password (they're usually the same); with key auth it uses `sudo -n`
+// (NOPASSWD). Local hosts (no SSH) are not supported.
 
 const (
 	defaultNginxConfigRoot = "/etc/nginx"
@@ -105,6 +111,27 @@ func nginxBin(r *http.Request) string {
 	return "nginx"
 }
 
+func nginxUseSudo(r *http.Request) bool {
+	v := strings.TrimSpace(r.URL.Query().Get("sudo"))
+	return v == "1" || v == "true"
+}
+
+// runHostPrivileged runs args on the host, optionally elevating with sudo. With
+// a password-auth host it uses `sudo -S` and feeds the SSH password on stdin
+// (the SSH password doubles as the sudo password — the common case); with key
+// auth it uses `sudo -n` (NOPASSWD). Any extra command stdin follows the
+// password line, which is exactly how `sudo -S` consumes it.
+func runHostPrivileged(h *DockerHost, sudo bool, args []string, stdin string) (string, error) {
+	if !sudo {
+		return runHostCommand(h, args, stdin)
+	}
+	if h.SSHPassword != "" {
+		full := append([]string{"sudo", "-S", "-p", ""}, args...)
+		return runHostCommand(h, full, h.SSHPassword+"\n"+stdin)
+	}
+	return runHostCommand(h, append([]string{"sudo", "-n"}, args...), stdin)
+}
+
 // nginxSafeJoin resolves a client-supplied path against root (POSIX semantics)
 // and rejects anything that escapes root.
 func nginxSafeJoin(root, rel string) (string, error) {
@@ -120,6 +147,46 @@ func nginxSafeJoin(root, rel string) (string, error) {
 		return "", fmt.Errorf("path escapes %s", root)
 	}
 	return p, nil
+}
+
+type nginxDirEnt struct {
+	name  string
+	isDir bool
+}
+
+// nginxReadDir lists one directory level. In sudo mode it shells out to `find`
+// (so root-only dirs are readable); otherwise it uses the open SFTP client.
+func nginxReadDir(h *DockerHost, client *sftp.Client, sudo bool, dir string) ([]nginxDirEnt, error) {
+	if sudo {
+		out, err := runHostPrivileged(h, true, []string{
+			"find", dir, "-mindepth", "1", "-maxdepth", "1", "-printf", "%y\t%f\n",
+		}, "")
+		if err != nil {
+			return nil, fmt.Errorf("%s", strings.TrimSpace(out))
+		}
+		var ents []nginxDirEnt
+		for _, l := range strings.Split(out, "\n") {
+			l = strings.TrimRight(l, "\r")
+			if l == "" {
+				continue
+			}
+			typ, name, ok := strings.Cut(l, "\t")
+			if !ok {
+				continue
+			}
+			ents = append(ents, nginxDirEnt{name: name, isDir: typ == "d"})
+		}
+		return ents, nil
+	}
+	infos, err := client.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	ents := make([]nginxDirEnt, 0, len(infos))
+	for _, fi := range infos {
+		ents = append(ents, nginxDirEnt{name: fi.Name(), isDir: fi.IsDir()})
+	}
+	return ents, nil
 }
 
 // ── Auto-detection ────────────────────────────────────────────────────────
@@ -225,25 +292,53 @@ func NginxConfigTree() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
 		}
-		client, cleanup, err := sftpSession(id)
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-			return
-		}
-		defer cleanup()
-
+		sudo := nginxUseSudo(r)
 		files := make([]nginxFileEntry, 0, 32)
-		walker := client.Walk(root)
-		for walker.Step() {
-			if walker.Err() != nil {
-				continue
+
+		if sudo {
+			h, e := loadDockerHost(id)
+			if e != nil {
+				http.Error(w, jsonError("host not found"), http.StatusBadRequest)
+				return
 			}
-			fi := walker.Stat()
-			if fi == nil || fi.IsDir() {
-				continue
+			out, e := runHostPrivileged(h, true, []string{
+				"find", root, "(", "-type", "f", "-o", "-type", "l", ")", "-printf", "%P\t%s\n",
+			}, "")
+			if e != nil {
+				http.Error(w, jsonError(strings.TrimSpace(out)), http.StatusBadGateway)
+				return
 			}
-			rel := strings.TrimPrefix(walker.Path(), root+"/")
-			files = append(files, nginxFileEntry{Path: rel, Size: fi.Size()})
+			for _, l := range strings.Split(out, "\n") {
+				l = strings.TrimRight(l, "\r")
+				if l == "" {
+					continue
+				}
+				rel, szStr, ok := strings.Cut(l, "\t")
+				if !ok {
+					continue
+				}
+				sz, _ := strconv.ParseInt(strings.TrimSpace(szStr), 10, 64)
+				files = append(files, nginxFileEntry{Path: rel, Size: sz})
+			}
+		} else {
+			client, cleanup, e := sftpSession(id)
+			if e != nil {
+				http.Error(w, jsonError(e.Error()), http.StatusBadGateway)
+				return
+			}
+			defer cleanup()
+			walker := client.Walk(root)
+			for walker.Step() {
+				if walker.Err() != nil {
+					continue
+				}
+				fi := walker.Stat()
+				if fi == nil || fi.IsDir() {
+					continue
+				}
+				rel := strings.TrimPrefix(walker.Path(), root+"/")
+				files = append(files, nginxFileEntry{Path: rel, Size: fi.Size()})
+			}
 		}
 		sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 		json.NewEncoder(w).Encode(map[string]interface{}{"root": root, "files": files})
@@ -269,24 +364,43 @@ func NginxConfigRead() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
 		}
-		client, cleanup, err := sftpSession(id)
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-			return
+		var content string
+		if nginxUseSudo(r) {
+			h, e := loadDockerHost(id)
+			if e != nil {
+				http.Error(w, jsonError("host not found"), http.StatusBadRequest)
+				return
+			}
+			out, e := runHostPrivileged(h, true, []string{"cat", full}, "")
+			if e != nil {
+				http.Error(w, jsonError(strings.TrimSpace(out)), http.StatusBadGateway)
+				return
+			}
+			if len(out) > nginxMaxFile {
+				out = out[:nginxMaxFile]
+			}
+			content = out
+		} else {
+			client, cleanup, e := sftpSession(id)
+			if e != nil {
+				http.Error(w, jsonError(e.Error()), http.StatusBadGateway)
+				return
+			}
+			defer cleanup()
+			f, e := client.Open(full)
+			if e != nil {
+				http.Error(w, jsonError(e.Error()), http.StatusNotFound)
+				return
+			}
+			defer f.Close()
+			b, e := io.ReadAll(io.LimitReader(f, nginxMaxFile))
+			if e != nil {
+				http.Error(w, jsonError(e.Error()), http.StatusBadGateway)
+				return
+			}
+			content = string(b)
 		}
-		defer cleanup()
-		f, err := client.Open(full)
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusNotFound)
-			return
-		}
-		defer f.Close()
-		b, err := io.ReadAll(io.LimitReader(f, nginxMaxFile))
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"path": full, "content": string(b)})
+		json.NewEncoder(w).Encode(map[string]interface{}{"path": full, "content": content})
 	}
 }
 
@@ -303,6 +417,7 @@ func NginxConfigWrite() http.HandlerFunc {
 			Root    string `json:"root"`
 			Path    string `json:"path"`
 			Content string `json:"content"`
+			Sudo    bool   `json:"sudo"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, jsonError("invalid body"), http.StatusBadRequest)
@@ -322,23 +437,37 @@ func NginxConfigWrite() http.HandlerFunc {
 			http.Error(w, jsonError("file too large"), http.StatusBadRequest)
 			return
 		}
-		client, cleanup, err := sftpSession(id)
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-			return
-		}
-		defer cleanup()
-		f, err := client.Create(full) // truncates
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-			return
-		}
-		if _, err := io.Copy(f, strings.NewReader(body.Content)); err != nil {
+		if body.Sudo {
+			h, e := loadDockerHost(id)
+			if e != nil {
+				http.Error(w, jsonError("host not found"), http.StatusBadRequest)
+				return
+			}
+			// `tee` writes stdin to the (root-owned) file and echoes it back.
+			out, e := runHostPrivileged(h, true, []string{"tee", full}, body.Content)
+			if e != nil {
+				http.Error(w, jsonError(strings.TrimSpace(out)+": "+e.Error()), http.StatusBadGateway)
+				return
+			}
+		} else {
+			client, cleanup, e := sftpSession(id)
+			if e != nil {
+				http.Error(w, jsonError(e.Error()), http.StatusBadGateway)
+				return
+			}
+			defer cleanup()
+			f, e := client.Create(full) // truncates
+			if e != nil {
+				http.Error(w, jsonError(e.Error()), http.StatusBadGateway)
+				return
+			}
+			if _, e := io.Copy(f, strings.NewReader(body.Content)); e != nil {
+				f.Close()
+				http.Error(w, jsonError(e.Error()), http.StatusBadGateway)
+				return
+			}
 			f.Close()
-			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-			return
 		}
-		f.Close()
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 	}
 }
@@ -383,19 +512,29 @@ func NginxSites() http.HandlerFunc {
 			return
 		}
 		layout := strings.TrimSpace(r.URL.Query().Get("layout"))
+		sudo := nginxUseSudo(r)
 
-		client, cleanup, err := sftpSession(id)
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-			return
+		// h is needed for sudo; client for the non-sudo path.
+		var h *DockerHost
+		var client *sftp.Client
+		if sudo {
+			if h, err = loadDockerHost(id); err != nil {
+				http.Error(w, jsonError("host not found"), http.StatusBadRequest)
+				return
+			}
+		} else {
+			var cleanup func()
+			if client, cleanup, err = sftpSession(id); err != nil {
+				http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+				return
+			}
+			defer cleanup()
 		}
-		defer cleanup()
 
-		// Auto-pick a layout if the caller didn't pin one.
 		if layout == "" {
-			if _, e := client.Stat(root + "/sites-available"); e == nil {
+			if _, e := nginxReadDir(h, client, sudo, root+"/sites-available"); e == nil {
 				layout = "symlink"
-			} else if _, e := client.Stat(root + "/conf.d"); e == nil {
+			} else {
 				layout = "confd"
 			}
 		}
@@ -404,40 +543,40 @@ func NginxSites() http.HandlerFunc {
 		switch layout {
 		case "symlink":
 			enabled := map[string]bool{}
-			if infos, e := client.ReadDir(root + "/sites-enabled"); e == nil {
-				for _, fi := range infos {
-					enabled[fi.Name()] = true
+			if ents, e := nginxReadDir(h, client, sudo, root+"/sites-enabled"); e == nil {
+				for _, en := range ents {
+					enabled[en.name] = true
 				}
 			}
-			available, e := client.ReadDir(root + "/sites-available")
+			available, e := nginxReadDir(h, client, sudo, root+"/sites-available")
 			if e != nil {
 				http.Error(w, jsonError("sites-available not found: "+e.Error()), http.StatusBadGateway)
 				return
 			}
-			for _, fi := range available {
-				if fi.IsDir() {
+			for _, en := range available {
+				if en.isDir {
 					continue
 				}
-				on := enabled[fi.Name()]
+				on := enabled[en.name]
 				state := "disabled"
 				if on {
 					state = "enabled"
 				}
-				sites = append(sites, nginxSite{Name: fi.Name(), Enabled: on, State: state, Toggleable: true})
+				sites = append(sites, nginxSite{Name: en.name, Enabled: on, State: state, Toggleable: true})
 			}
 		case "confd":
-			infos, e := client.ReadDir(root + "/conf.d")
+			ents, e := nginxReadDir(h, client, sudo, root+"/conf.d")
 			if e != nil {
 				http.Error(w, jsonError("conf.d not found: "+e.Error()), http.StatusBadGateway)
 				return
 			}
-			for _, fi := range infos {
-				if fi.IsDir() {
+			for _, en := range ents {
+				if en.isDir {
 					continue // e.g. conf.d/kibana — visible in the Config tab instead
 				}
-				state, target := classifyConfd(fi.Name())
+				state, target := classifyConfd(en.name)
 				sites = append(sites, nginxSite{
-					Name:       fi.Name(),
+					Name:       en.name,
 					Enabled:    state == "enabled",
 					State:      state,
 					Toggleable: state == "enabled" || (state == "disabled" && target != ""),
@@ -453,8 +592,7 @@ func NginxSites() http.HandlerFunc {
 }
 
 // NginxSiteToggle enables/disables a site for either layout. Gated by
-// nginx.manage. Uses SFTP rename/symlink with a no-clobber check so an existing
-// target is never overwritten.
+// nginx.manage. Never overwrites an existing target.
 func NginxSiteToggle() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -468,6 +606,7 @@ func NginxSiteToggle() http.HandlerFunc {
 			Name    string `json:"name"` // actual filename (conf.d) or site name (symlink)
 			Layout  string `json:"layout"`
 			Enabled bool   `json:"enabled"`
+			Sudo    bool   `json:"sudo"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 		if !nginxNamePattern.MatchString(body.Name) {
@@ -479,52 +618,80 @@ func NginxSiteToggle() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
 		}
-		client, cleanup, err := sftpSession(id)
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-			return
-		}
-		defer cleanup()
 
-		exists := func(p string) bool { _, e := client.Lstat(p); return e == nil }
-
+		// Resolve source/destination paths first.
+		var src, dest, link, target string
 		if body.Layout == "confd" {
-			src := root + "/conf.d/" + body.Name
-			var dest string
+			src = root + "/conf.d/" + body.Name
 			if body.Enabled {
-				state, target := classifyConfd(body.Name)
+				state, t := classifyConfd(body.Name)
 				if state == "enabled" {
-					json.NewEncoder(w).Encode(map[string]interface{}{"ok": true}) // already on
+					json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 					return
 				}
-				if target == "" {
+				if t == "" {
 					http.Error(w, jsonError("can't auto-enable "+body.Name+" — rename it to end in .conf manually"), http.StatusBadRequest)
 					return
 				}
-				dest = root + "/conf.d/" + target
+				dest = root + "/conf.d/" + t
 			} else {
 				dest = src + ".disabled"
 			}
+		} else { // symlink
+			link = root + "/sites-enabled/" + body.Name
+			target = root + "/sites-available/" + body.Name
+		}
+
+		if body.Sudo {
+			h, e := loadDockerHost(id)
+			if e != nil {
+				http.Error(w, jsonError("host not found"), http.StatusBadRequest)
+				return
+			}
+			var args []string
+			switch {
+			case body.Layout == "confd":
+				args = []string{"mv", "-n", src, dest} // -n: never clobber
+			case body.Enabled:
+				args = []string{"ln", "-sfn", target, link}
+			default:
+				args = []string{"rm", "-f", link}
+			}
+			if out, e := runHostPrivileged(h, true, args, ""); e != nil {
+				http.Error(w, jsonError(strings.TrimSpace(out)+": "+e.Error()), http.StatusBadGateway)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+			return
+		}
+
+		// Non-sudo: SFTP rename/symlink with an explicit no-clobber check.
+		client, cleanup, e := sftpSession(id)
+		if e != nil {
+			http.Error(w, jsonError(e.Error()), http.StatusBadGateway)
+			return
+		}
+		defer cleanup()
+		exists := func(p string) bool { _, er := client.Lstat(p); return er == nil }
+
+		if body.Layout == "confd" {
 			if exists(dest) {
 				http.Error(w, jsonError("target already exists: "+path.Base(dest)), http.StatusConflict)
 				return
 			}
-			if err := client.Rename(src, dest); err != nil {
-				http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			if er := client.Rename(src, dest); er != nil {
+				http.Error(w, jsonError(er.Error()), http.StatusBadGateway)
 				return
 			}
-		} else { // symlink layout
-			link := root + "/sites-enabled/" + body.Name
-			if body.Enabled {
-				_ = client.Remove(link) // clear any stale entry first
-				if err := client.Symlink(root+"/sites-available/"+body.Name, link); err != nil {
-					http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-					return
-				}
-			} else if err := client.Remove(link); err != nil {
-				http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+		} else if body.Enabled {
+			_ = client.Remove(link)
+			if er := client.Symlink(target, link); er != nil {
+				http.Error(w, jsonError(er.Error()), http.StatusBadGateway)
 				return
 			}
+		} else if er := client.Remove(link); er != nil {
+			http.Error(w, jsonError(er.Error()), http.StatusBadGateway)
+			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 	}
@@ -541,7 +708,7 @@ func NginxTest() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
 		}
-		out, err := runHostCommand(h, []string{nginxBin(r), "-t"}, "")
+		out, err := runHostPrivileged(h, nginxUseSudo(r), []string{nginxBin(r), "-t"}, "")
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": err == nil, "output": out})
 	}
 }
@@ -555,10 +722,11 @@ func NginxReload() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
 		}
+		sudo := nginxUseSudo(r)
 		bin := nginxBin(r)
-		out, err := runHostCommand(h, []string{bin, "-s", "reload"}, "")
+		out, err := runHostPrivileged(h, sudo, []string{bin, "-s", "reload"}, "")
 		if err != nil {
-			out2, err2 := runHostCommand(h, []string{"systemctl", "reload", bin}, "")
+			out2, err2 := runHostPrivileged(h, sudo, []string{"systemctl", "reload", bin}, "")
 			if err2 != nil {
 				http.Error(w, jsonError(strings.TrimSpace(out+out2)+": "+err2.Error()), http.StatusBadGateway)
 				return
@@ -650,7 +818,7 @@ func NginxLogTail() http.HandlerFunc {
 		if n, e := strconv.Atoi(r.URL.Query().Get("lines")); e == nil && n > 0 && n <= 5000 {
 			lines = n
 		}
-		out, err := runHostCommand(h, []string{"tail", "-n", strconv.Itoa(lines), full}, "")
+		out, err := runHostPrivileged(h, nginxUseSudo(r), []string{"tail", "-n", strconv.Itoa(lines), full}, "")
 		if err != nil {
 			http.Error(w, jsonError(strings.TrimSpace(out)+": "+err.Error()), http.StatusBadGateway)
 			return
@@ -720,7 +888,16 @@ func NginxLogStream() http.HandlerFunc {
 		flushSSE(w)
 
 		// tail -F follows across rotation. Quote the path defensively.
-		cmd := "tail -n 100 -F '" + strings.ReplaceAll(full, "'", `'\''`) + "'"
+		quoted := "'" + strings.ReplaceAll(full, "'", `'\''`) + "'"
+		cmd := "tail -n 100 -F " + quoted
+		if nginxUseSudo(r) {
+			if h.SSHPassword != "" {
+				cmd = "sudo -S -p '' " + cmd
+				sess.Stdin = strings.NewReader(h.SSHPassword + "\n")
+			} else {
+				cmd = "sudo -n " + cmd
+			}
+		}
 		if err := sess.Start(cmd); err != nil {
 			sendSSE(w, StreamError{err.Error()})
 			flushSSE(w)
