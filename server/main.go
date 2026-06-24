@@ -964,6 +964,13 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	// ── Infrastructure: Nginx ─────────────────────────────────────
 	// Rides on the same SSH hosts as Docker/SFTP (GET /api/docker/hosts
 	// supplies the host list to the frontend).
+	mux.HandleFunc("/api/nginx/fleet", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		requireAny(handlers.PermNginxView, handlers.PermNginxManage, handlers.PermNginxReload)(handlers.NginxFleet())(w, r)
+	})
 	mux.HandleFunc("/api/nginx/hosts/", func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/nginx/hosts/"), "/")
 		parts := strings.Split(rest, "/")

@@ -36,6 +36,20 @@ interface NginxStub {
   writing: number
   waiting: number
 }
+interface FleetHost {
+  id: number
+  name: string
+  ssh_host: string
+  reachable: boolean
+  version: string
+  active: string
+  test_ok: boolean
+  test_output: string
+  certs: number
+  soonest_days: number
+  expiring: number
+  error?: string
+}
 
 interface SshHost {
   id: number
@@ -146,6 +160,11 @@ const stubErr = ref('')
 let stubTimer: ReturnType<typeof setInterval> | null = null
 let lastStub: { requests: number; t: number } | null = null
 
+// Fleet (all hosts at once)
+const fleetMode = ref(false)
+const fleet = ref<FleetHost[]>([])
+const loadingFleet = ref(false)
+
 // A permission/sudo error means the SSH user lacks direct access — the fix is
 // to elevate. We flip `useSudo` on and retry once, transparently.
 function isPermDenied(e: any): boolean {
@@ -177,6 +196,35 @@ async function loadHosts() {
 }
 
 async function selectHost(id: number) {
+  hostId.value = id
+  await onHostChange()
+}
+
+// ── Fleet (all hosts) ───────────────────────────────────────────
+async function toggleFleet() {
+  fleetMode.value = !fleetMode.value
+  if (fleetMode.value) {
+    stopFollow()
+    stopStub()
+    await loadFleet()
+  }
+}
+
+async function loadFleet() {
+  loadingFleet.value = true
+  try {
+    const { data } = await axios.get<{ hosts: FleetHost[] }>('/api/nginx/fleet')
+    fleet.value = data.hosts || []
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to load fleet')
+    fleet.value = []
+  } finally {
+    loadingFleet.value = false
+  }
+}
+
+async function openFromFleet(id: number) {
+  fleetMode.value = false
   hostId.value = id
   await onHostChange()
 }
@@ -699,16 +747,19 @@ onBeforeUnmount(() => {
             <div class="page-subtitle">Edit configs, toggle sites, and follow access &amp; error logs across your servers over SSH.</div>
           </div>
           <div class="page-hero__actions">
+            <button v-if="hosts.length" class="base-btn base-btn--sm" :class="{ 'base-btn--primary': fleetMode }" @click="toggleFleet">
+              {{ fleetMode ? '← Back to host' : '▦ Fleet' }}
+            </button>
             <select
-              v-if="hosts.length"
+              v-if="hosts.length && !fleetMode"
               class="base-input ng-host"
               :value="hostId ?? ''"
               @change="selectHost(Number(($event.target as HTMLSelectElement).value))"
             >
               <option v-for="h in hosts" :key="h.id" :value="h.id">{{ h.name }} ({{ h.ssh_host }})</option>
             </select>
-            <button v-if="hostId !== null && canReload" class="base-btn base-btn--sm" :disabled="busy" @click="testConfig">Test config</button>
-            <button v-if="hostId !== null && canReload" class="base-btn base-btn--primary base-btn--sm" :disabled="busy" @click="reload()">Reload</button>
+            <button v-if="hostId !== null && canReload && !fleetMode" class="base-btn base-btn--sm" :disabled="busy" @click="testConfig">Test config</button>
+            <button v-if="hostId !== null && canReload && !fleetMode" class="base-btn base-btn--primary base-btn--sm" :disabled="busy" @click="reload()">Reload</button>
           </div>
         </section>
 
@@ -716,6 +767,48 @@ onBeforeUnmount(() => {
           <div class="ng-empty-icon">🌐</div>
           <h2>No SSH servers</h2>
           <p>Nginx management uses your remote SSH hosts. Add one under <b>Docker → Add host</b> (Remote host) first.</p>
+        </div>
+
+        <!-- FLEET: all hosts at once -->
+        <div v-else-if="fleetMode" class="page-card ng-sites">
+          <div class="ng-sites-head">
+            Fleet health <span class="ng-count">{{ fleet.length }}</span> · unhealthy first
+            <div class="dk-spacer"></div>
+            <button class="base-btn base-btn--sm" :disabled="loadingFleet" @click="loadFleet">{{ loadingFleet ? 'Probing…' : 'Refresh' }}</button>
+          </div>
+          <table class="ng-table">
+            <thead>
+              <tr><th>Host</th><th>Version</th><th>State</th><th>Config test</th><th>Cert expiry</th><th></th></tr>
+            </thead>
+            <tbody>
+              <tr v-if="loadingFleet"><td colspan="6" class="ng-msg">Probing all hosts over SSH…</td></tr>
+              <tr v-else-if="!fleet.length"><td colspan="6" class="ng-msg">No SSH hosts.</td></tr>
+              <tr v-for="f in fleet" :key="f.id">
+                <td>
+                  <div class="ng-sname">{{ f.name }}</div>
+                  <div class="ng-fleet-sub">{{ f.ssh_host }}</div>
+                </td>
+                <td class="ng-mono">{{ f.version || '—' }}</td>
+                <td>
+                  <span v-if="!f.reachable" class="ng-pill ng-pill--err2" :title="f.error">unreachable</span>
+                  <span v-else class="ng-pill" :class="f.active === 'active' ? 'ng-pill--ok' : 'ng-pill--warn'">{{ f.active || 'unknown' }}</span>
+                </td>
+                <td>
+                  <span v-if="!f.reachable" class="ng-pill ng-pill--off">—</span>
+                  <span v-else class="ng-pill" :class="f.test_ok ? 'ng-pill--ok' : 'ng-pill--err2'" :title="f.test_output">{{ f.test_ok ? 'passing' : 'FAILING' }}</span>
+                </td>
+                <td>
+                  <span v-if="!f.reachable || f.soonest_days < 0" class="ng-pill ng-pill--off">{{ f.reachable ? 'no certs' : '—' }}</span>
+                  <span v-else class="ng-pill" :class="f.soonest_days < 0 ? 'ng-pill--err2' : f.soonest_days < 14 ? 'ng-pill--warn' : f.soonest_days < 30 ? 'ng-pill--off' : 'ng-pill--ok'">
+                    {{ f.soonest_days < 0 ? 'EXPIRED' : f.soonest_days + 'd' }}<template v-if="f.expiring > 0"> · {{ f.expiring }} soon</template>
+                  </span>
+                </td>
+                <td class="ng-sact">
+                  <button class="base-btn base-btn--xs" @click="openFromFleet(f.id)">Open →</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
 
         <template v-else>
@@ -1054,6 +1147,7 @@ onBeforeUnmount(() => {
 .base-input--sm { padding: 4px 8px; font-size: 12px; }
 
 .ng-cm-wrap { flex: 1; min-height: 440px; }
+.ng-fleet-sub { font-family: var(--mono); font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
 /* Map */
 .ng-mapwrap { display: flex; flex-direction: column; gap: 14px; }
