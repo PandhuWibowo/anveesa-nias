@@ -214,6 +214,7 @@ let refreshTimer: ReturnType<typeof setInterval> | undefined
 
 // ── Terminal ────────────────────────────────────────────────────
 const showTerminal = ref(false)
+const termFullscreen = ref(false)
 const termTitle = ref('')
 const termEl = ref<HTMLElement | null>(null)
 let term: Terminal | null = null
@@ -615,7 +616,22 @@ async function pruneNetworks() {
 }
 
 // ── Interactive terminal ────────────────────────────────────────
+function refitTerminal() {
+  nextTick(() => {
+    if (fitAddon) fitAddon.fit()
+    if (term && termSocket?.readyState === WebSocket.OPEN) {
+      termSocket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+    }
+  })
+}
+
+function toggleTermFullscreen() {
+  termFullscreen.value = !termFullscreen.value
+  refitTerminal()
+}
+
 function disposeTerminal() {
+  window.removeEventListener('resize', refitTerminal)
   if (termSocket) {
     termSocket.onclose = null
     termSocket.close()
@@ -630,6 +646,7 @@ function disposeTerminal() {
 
 function closeTerminal() {
   showTerminal.value = false
+  termFullscreen.value = false
   disposeTerminal()
 }
 
@@ -649,6 +666,7 @@ async function openTerminal(c: DockerContainer) {
   term.loadAddon(fitAddon)
   term.open(termEl.value)
   fitAddon.fit()
+  window.addEventListener('resize', refitTerminal)
 
   const token = localStorage.getItem('nias-token') || ''
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -1011,7 +1029,7 @@ onMounted(loadHosts)
         <template v-else>
           <!-- Daemon status + tabs -->
           <div class="dk-bar">
-            <div class="dk-status">
+            <div class="dk-connstat">
               <template v-if="daemonInfo">
                 <span class="dk-dot dk-dot--ok"></span>
                 <span>Connected</span>
@@ -1529,10 +1547,15 @@ onMounted(loadHosts)
 
     <!-- Interactive terminal modal -->
     <div v-if="showTerminal" class="dk-modal-backdrop" @click.self="closeTerminal">
-      <div class="dk-term-modal">
+      <div class="dk-term-modal" :class="{ 'dk-term-modal--full': termFullscreen }">
         <div class="dk-term-head">
           <span class="dk-modal-title dk-term-title">Terminal — {{ termTitle }}</span>
-          <button class="dk-icon-btn dk-slide-close" @click="closeTerminal">×</button>
+          <div class="dk-term-head-actions">
+            <button class="dk-icon-btn" :title="termFullscreen ? 'Exit fullscreen' : 'Fullscreen'" @click="toggleTermFullscreen">
+              {{ termFullscreen ? '🗗' : '⛶' }}
+            </button>
+            <button class="dk-icon-btn dk-slide-close" @click="closeTerminal">×</button>
+          </div>
         </div>
         <div ref="termEl" class="dk-term"></div>
       </div>
@@ -1550,7 +1573,7 @@ onMounted(loadHosts)
 .dk-empty p { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; }
 
 .dk-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.dk-status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); }
+.dk-connstat { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); }
 .dk-meta { color: var(--text-muted); }
 .dk-err { color: var(--danger); }
 .dk-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
@@ -1667,7 +1690,9 @@ onMounted(loadHosts)
 
 /* Terminal modal */
 .dk-term-modal { width: 900px; max-width: 94vw; height: 560px; max-height: 86vh; background: #0d1117; border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); display: flex; flex-direction: column; overflow: hidden; }
+.dk-term-modal--full { width: 100vw; max-width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; border: none; }
 .dk-term-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--bg-elevated); border-bottom: 1px solid var(--border); }
+.dk-term-head-actions { display: flex; align-items: center; gap: 4px; }
 .dk-term-title { margin: 0; }
 .dk-term { flex: 1; min-height: 0; padding: 8px 10px; overflow: hidden; }
 .dk-term :deep(.xterm) { height: 100%; }
