@@ -2469,6 +2469,134 @@ func DockerEvents() http.HandlerFunc {
 	}
 }
 
+// ── Topology graph ────────────────────────────────────────────────────────
+
+type topoNode struct {
+	ID      string   `json:"id"`
+	Type    string   `json:"type"` // container | network | volume
+	Label   string   `json:"label"`
+	State   string   `json:"state,omitempty"`
+	Image   string   `json:"image,omitempty"`
+	Project string   `json:"project,omitempty"`
+	Driver  string   `json:"driver,omitempty"`
+	Ports   []string `json:"ports,omitempty"`
+}
+
+type topoEdge struct {
+	From  string `json:"from"`
+	To    string `json:"to"`
+	Type  string `json:"type"` // network | volume
+	Label string `json:"label,omitempty"`
+}
+
+// DockerTopology returns the container ↔ network ↔ volume graph for one host.
+func DockerTopology() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := dockerHostIDFromPath(r)
+		if err != nil {
+			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
+			return
+		}
+		d, err := connectHostByID(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+
+		var conts []struct {
+			Id     string            `json:"Id"`
+			Names  []string          `json:"Names"`
+			Image  string            `json:"Image"`
+			State  string            `json:"State"`
+			Labels map[string]string `json:"Labels"`
+			Ports  []struct {
+				PrivatePort int    `json:"PrivatePort"`
+				PublicPort  int    `json:"PublicPort"`
+				Type        string `json:"Type"`
+			} `json:"Ports"`
+			Mounts []struct {
+				Type        string `json:"Type"`
+				Name        string `json:"Name"`
+				Destination string `json:"Destination"`
+			} `json:"Mounts"`
+			NetworkSettings struct {
+				Networks map[string]struct {
+					NetworkID   string `json:"NetworkID"`
+					IPAddress   string `json:"IPAddress"`
+				} `json:"Networks"`
+			} `json:"NetworkSettings"`
+		}
+		cq := url.Values{}
+		cq.Set("all", "1")
+		if err := d.getJSON("/containers/json", cq, &conts); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		var nets []struct {
+			Name   string `json:"Name"`
+			Id     string `json:"Id"`
+			Driver string `json:"Driver"`
+		}
+		d.getJSON("/networks", nil, &nets)
+		var volsResp struct {
+			Volumes []struct {
+				Name   string `json:"Name"`
+				Driver string `json:"Driver"`
+			} `json:"Volumes"`
+		}
+		d.getJSON("/volumes", nil, &volsResp)
+
+		nodes := []topoNode{}
+		edges := []topoEdge{}
+		netUsed := map[string]bool{}
+		volUsed := map[string]bool{}
+
+		for _, c := range conts {
+			name := c.Id[:min(12, len(c.Id))]
+			if len(c.Names) > 0 {
+				name = strings.TrimPrefix(c.Names[0], "/")
+			}
+			ports := []string{}
+			for _, p := range c.Ports {
+				if p.PublicPort != 0 {
+					ports = append(ports, fmt.Sprintf("%d→%d/%s", p.PublicPort, p.PrivatePort, p.Type))
+				}
+			}
+			cid := "c:" + c.Id
+			nodes = append(nodes, topoNode{
+				ID: cid, Type: "container", Label: name, State: c.State, Image: c.Image,
+				Project: c.Labels["com.docker.compose.project"], Ports: ports,
+			})
+			for _, n := range c.NetworkSettings.Networks {
+				edges = append(edges, topoEdge{From: cid, To: "n:" + n.NetworkID, Type: "network", Label: n.IPAddress})
+				netUsed[n.NetworkID] = true
+			}
+			for _, m := range c.Mounts {
+				if m.Type == "volume" && m.Name != "" {
+					edges = append(edges, topoEdge{From: cid, To: "v:" + m.Name, Type: "volume", Label: m.Destination})
+					volUsed[m.Name] = true
+				}
+			}
+		}
+		for _, n := range nets {
+			// Skip empty networks unless they're a custom (non-default) one.
+			if !netUsed[n.Id] && (n.Name == "bridge" || n.Name == "host" || n.Name == "none") {
+				continue
+			}
+			nodes = append(nodes, topoNode{ID: "n:" + n.Id, Type: "network", Label: n.Name, Driver: n.Driver})
+		}
+		for _, v := range volsResp.Volumes {
+			if !volUsed[v.Name] {
+				continue // only show volumes actually attached to a container
+			}
+			nodes = append(nodes, topoNode{ID: "v:" + v.Name, Type: "volume", Label: v.Name, Driver: v.Driver})
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"nodes": nodes, "edges": edges})
+	}
+}
+
 // ── Multi-host overview ───────────────────────────────────────────────────
 
 type dockerHostSummary struct {

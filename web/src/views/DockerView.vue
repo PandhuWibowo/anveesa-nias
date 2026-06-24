@@ -73,6 +73,22 @@ interface DiskUsage {
   volumes: DfCategory
   build_cache: DfCategory
 }
+interface TopoNode {
+  id: string
+  type: 'container' | 'network' | 'volume'
+  label: string
+  state?: string
+  image?: string
+  project?: string
+  driver?: string
+  ports?: string[]
+}
+interface TopoEdge {
+  from: string
+  to: string
+  type: 'network' | 'volume'
+  label?: string
+}
 interface ContainerStats {
   cpu_percent: number
   mem_usage: number
@@ -138,6 +154,16 @@ const showOverview = ref(false)
 const showDf = ref(false)
 const dfLoading = ref(false)
 const diskUsage = ref<DiskUsage | null>(null)
+
+// ── Topology ────────────────────────────────────────────────────
+const showTopology = ref(false)
+const topoLoading = ref(false)
+const topoNodes = ref<TopoNode[]>([])
+const topoEdges = ref<TopoEdge[]>([])
+const topoPan = ref({ x: 40, y: 20 })
+const topoZoom = ref(1)
+let topoDragging = false
+let topoDragStart = { x: 0, y: 0, px: 0, py: 0 }
 
 // Expanded network rows (connected containers)
 const netExpanded = ref<Record<string, boolean>>({})
@@ -1101,6 +1127,127 @@ function toggleDf() {
   if (showDf.value && activeHostId.value !== null) loadDf()
 }
 
+// ── Topology graph ──────────────────────────────────────────────
+function truncate(s: string | undefined, n: number) {
+  if (!s) return ''
+  return s.length > n ? s.slice(0, n - 1) + '…' : s
+}
+function topoNodeClass(n: TopoNode) {
+  if (n.type === 'network') return 'dk-tnode--net'
+  if (n.type === 'volume') return 'dk-tnode--vol'
+  if (n.state === 'running') return 'dk-tnode--running'
+  if (n.state === 'paused' || n.state === 'created') return 'dk-tnode--paused'
+  return 'dk-tnode--exited'
+}
+
+async function openTopology() {
+  if (activeHostId.value === null) return
+  showTopology.value = true
+  topoLoading.value = true
+  topoPan.value = { x: 40, y: 20 }
+  topoZoom.value = 1
+  try {
+    const { data } = await axios.get<{ nodes: TopoNode[]; edges: TopoEdge[] }>(
+      `/api/docker/hosts/${activeHostId.value}/topology`,
+    )
+    topoNodes.value = data.nodes || []
+    topoEdges.value = data.edges || []
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to load topology')
+    showTopology.value = false
+  } finally {
+    topoLoading.value = false
+  }
+}
+
+const TOPO = { cw: 210, ch: 62, nw: 150, nh: 42, vw: 190, vh: 38, gap: 14, colNet: 40, colCon: 380, colVol: 760 }
+
+const topoLayout = computed(() => {
+  const pos: Record<string, { x: number; y: number; w: number; h: number; node: TopoNode }> = {}
+  const nets = topoNodes.value.filter((n) => n.type === 'network')
+  const vols = topoNodes.value.filter((n) => n.type === 'volume')
+  const cons = topoNodes.value
+    .filter((n) => n.type === 'container')
+    .slice()
+    .sort((a, b) => {
+      const pa = a.project || '~~'
+      const pb = b.project || '~~'
+      return pa === pb ? a.label.localeCompare(b.label) : pa.localeCompare(pb)
+    })
+
+  let y = 20
+  for (const n of nets) {
+    pos[n.id] = { x: TOPO.colNet, y, w: TOPO.nw, h: TOPO.nh, node: n }
+    y += TOPO.nh + TOPO.gap
+  }
+  y = 20
+  let lastProj: string | null = null
+  for (const c of cons) {
+    const proj = c.project || ''
+    if (lastProj !== null && proj !== lastProj) y += 12
+    lastProj = proj
+    pos[c.id] = { x: TOPO.colCon, y, w: TOPO.cw, h: TOPO.ch, node: c }
+    y += TOPO.ch + TOPO.gap
+  }
+  y = 20
+  for (const v of vols) {
+    pos[v.id] = { x: TOPO.colVol, y, w: TOPO.vw, h: TOPO.vh, node: v }
+    y += TOPO.vh + TOPO.gap
+  }
+
+  const edges = topoEdges.value
+    .map((e) => {
+      const a = pos[e.from]
+      const b = pos[e.to]
+      if (!a || !b) return null
+      let sx: number, sy: number, ex: number, ey: number
+      if (e.type === 'network') {
+        sx = a.x
+        sy = a.y + a.h / 2
+        ex = b.x + b.w
+        ey = b.y + b.h / 2
+      } else {
+        sx = a.x + a.w
+        sy = a.y + a.h / 2
+        ex = b.x
+        ey = b.y + b.h / 2
+      }
+      const mx = (sx + ex) / 2
+      return {
+        key: `${e.from}|${e.to}|${e.type}`,
+        type: e.type,
+        path: `M ${sx} ${sy} C ${mx} ${sy}, ${mx} ${ey}, ${ex} ${ey}`,
+      }
+    })
+    .filter((e): e is NonNullable<typeof e> => e !== null)
+
+  return { nodes: Object.values(pos), edges }
+})
+
+function topoWheel(e: WheelEvent) {
+  e.preventDefault()
+  const delta = e.deltaY < 0 ? 1.1 : 0.9
+  topoZoom.value = Math.min(2.5, Math.max(0.3, topoZoom.value * delta))
+}
+function topoMouseDown(e: MouseEvent) {
+  topoDragging = true
+  topoDragStart = { x: e.clientX, y: e.clientY, px: topoPan.value.x, py: topoPan.value.y }
+}
+function topoMouseMove(e: MouseEvent) {
+  if (!topoDragging) return
+  topoPan.value = { x: topoDragStart.px + (e.clientX - topoDragStart.x), y: topoDragStart.py + (e.clientY - topoDragStart.y) }
+}
+function topoMouseUp() {
+  topoDragging = false
+}
+function topoZoomBy(f: number) {
+  topoZoom.value = Math.min(2.5, Math.max(0.3, topoZoom.value * f))
+}
+function topoFit() {
+  topoPan.value = { x: 40, y: 20 }
+  topoZoom.value = 1
+}
+
 // ── Rename ──────────────────────────────────────────────────────
 function openRename(c: DockerContainer) {
   renameCid.value = c.id
@@ -1341,6 +1488,7 @@ onMounted(loadHosts)
             />
             <button v-if="hosts.length" class="base-btn base-btn--sm" @click="toggleOverview">{{ showOverview ? 'Hide overview' : 'Overview' }}</button>
             <button v-if="activeHost" class="base-btn base-btn--sm" @click="toggleDf">{{ showDf ? 'Hide usage' : 'Disk usage' }}</button>
+            <button v-if="activeHost" class="base-btn base-btn--primary base-btn--sm" @click="openTopology">🗺 Topology</button>
             <label v-if="activeHost" class="dk-autorefresh" title="Auto-refresh every 5s">
               <input type="checkbox" v-model="autoRefresh" /> Auto
             </label>
@@ -2115,6 +2263,58 @@ onMounted(loadHosts)
       </div>
     </div>
 
+    <!-- Topology map -->
+    <div v-if="showTopology" class="dk-topo-backdrop">
+      <div class="dk-topo">
+        <div class="dk-topo-head">
+          <span class="dk-modal-title dk-term-title">🗺 Topology — {{ activeHost?.name }}</span>
+          <div class="dk-topo-legend">
+            <span><i class="dk-lg dk-lg--net"></i> Network</span>
+            <span><i class="dk-lg dk-lg--con"></i> Container</span>
+            <span><i class="dk-lg dk-lg--vol"></i> Volume</span>
+          </div>
+          <div class="dk-term-head-actions">
+            <button class="dk-icon-btn dk-term-font" title="Zoom out" @click="topoZoomBy(0.9)">−</button>
+            <button class="dk-icon-btn dk-term-font" title="Zoom in" @click="topoZoomBy(1.1)">+</button>
+            <button class="dk-icon-btn dk-term-font" title="Reset" @click="topoFit">⊡</button>
+            <button class="dk-icon-btn" title="Refresh" @click="openTopology">⟳</button>
+            <button class="dk-icon-btn dk-slide-close" @click="showTopology = false">×</button>
+          </div>
+        </div>
+        <div
+          class="dk-topo-canvas"
+          @wheel="topoWheel"
+          @mousedown="topoMouseDown"
+          @mousemove="topoMouseMove"
+          @mouseup="topoMouseUp"
+          @mouseleave="topoMouseUp"
+        >
+          <div v-if="topoLoading" class="dk-topo-msg">Mapping topology…</div>
+          <div v-else-if="!topoNodes.length" class="dk-topo-msg">Nothing to map on this host.</div>
+          <svg v-else class="dk-topo-svg" width="100%" height="100%">
+            <g :transform="`translate(${topoPan.x},${topoPan.y}) scale(${topoZoom})`">
+              <path
+                v-for="ed in topoLayout.edges"
+                :key="ed.key"
+                :d="ed.path"
+                class="dk-edge"
+                :class="ed.type === 'volume' ? 'dk-edge--vol' : 'dk-edge--net'"
+                fill="none"
+              />
+              <g v-for="nd in topoLayout.nodes" :key="nd.node.id" :transform="`translate(${nd.x},${nd.y})`">
+                <rect :width="nd.w" :height="nd.h" rx="8" class="dk-tnode" :class="topoNodeClass(nd.node)" />
+                <text x="12" y="20" class="dk-tnode-label">{{ truncate(nd.node.label, nd.node.type === 'container' ? 24 : 18) }}</text>
+                <text v-if="nd.node.type === 'container'" x="12" y="37" class="dk-tnode-sub">{{ truncate(nd.node.image, 26) }}</text>
+                <text v-if="nd.node.type === 'container' && nd.node.ports && nd.node.ports.length" x="12" y="53" class="dk-tnode-ports">{{ truncate(nd.node.ports.join('  '), 28) }}</text>
+                <text v-if="nd.node.type !== 'container'" x="12" y="33" class="dk-tnode-sub">{{ nd.node.driver }}</text>
+                <text v-if="nd.node.type === 'container' && nd.node.project" :x="nd.w - 12" y="20" text-anchor="end" class="dk-tnode-proj">{{ truncate(nd.node.project, 12) }}</text>
+              </g>
+            </g>
+          </svg>
+        </div>
+      </div>
+    </div>
+
     <!-- Interactive terminal modal -->
     <div v-if="showTerminal" class="dk-modal-backdrop" @click.self="closeTerminal">
       <div class="dk-term-modal" :class="{ 'dk-term-modal--full': termFullscreen }">
@@ -2297,6 +2497,38 @@ onMounted(loadHosts)
 .dk-logs-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .dk-logs-tail { width: 110px; }
 .dk-logs-search { max-width: 200px; }
+
+/* Topology map */
+.dk-topo-backdrop { position: fixed; inset: 0; background: var(--bg-body); z-index: 1200; display: flex; }
+.dk-topo { flex: 1; background: var(--bg-surface); display: flex; flex-direction: column; overflow: hidden; }
+.dk-topo-head { display: flex; align-items: center; gap: 18px; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--bg-elevated); }
+.dk-topo-legend { display: flex; gap: 14px; font-size: 11px; color: var(--text-muted); }
+.dk-topo-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.dk-lg { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+.dk-lg--net { background: #6366f1; }
+.dk-lg--con { background: var(--success); }
+.dk-lg--vol { background: #f59e0b; }
+.dk-topo-head .dk-term-head-actions { margin-left: auto; }
+.dk-topo-canvas { flex: 1; min-height: 0; overflow: hidden; cursor: grab; background:
+  radial-gradient(circle, rgba(255,255,255,0.04) 1px, transparent 1px); background-size: 22px 22px; background-color: var(--bg-body); }
+.dk-topo-canvas:active { cursor: grabbing; }
+.dk-topo-msg { padding: 40px; text-align: center; color: var(--text-muted); }
+.dk-topo-svg { display: block; user-select: none; }
+
+.dk-edge { stroke-width: 1.5; opacity: 0.55; }
+.dk-edge--net { stroke: #6366f1; }
+.dk-edge--vol { stroke: #f59e0b; stroke-dasharray: 4 3; }
+
+.dk-tnode { fill: var(--bg-elevated); stroke: var(--border-2); stroke-width: 1.5; }
+.dk-tnode--running { stroke: var(--success); }
+.dk-tnode--exited { stroke: var(--danger); }
+.dk-tnode--paused { stroke: var(--warning); }
+.dk-tnode--net { fill: rgba(99, 102, 241, 0.12); stroke: #6366f1; }
+.dk-tnode--vol { fill: rgba(245, 158, 11, 0.1); stroke: #f59e0b; }
+.dk-tnode-label { font-size: 13px; font-weight: 600; fill: var(--text-primary); }
+.dk-tnode-sub { font-size: 11px; fill: var(--text-muted); font-family: var(--mono); }
+.dk-tnode-ports { font-size: 10px; fill: var(--brand); font-family: var(--mono); }
+.dk-tnode-proj { font-size: 9px; fill: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
 
 /* Terminal modal */
 .dk-term-modal { width: 900px; max-width: 94vw; height: 560px; max-height: 86vh; background: #0d1117; border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); display: flex; flex-direction: column; overflow: hidden; }

@@ -814,6 +814,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		// /api/docker/hosts/{id}/df  (disk usage)
 		case len(parts) == 2 && parts[1] == "df" && r.Method == http.MethodGet:
 			view(handlers.DockerSystemDF())(w, r)
+		// /api/docker/hosts/{id}/topology
+		case len(parts) == 2 && parts[1] == "topology" && r.Method == http.MethodGet:
+			view(handlers.DockerTopology())(w, r)
 		// /api/docker/hosts/{id}/containers
 		case len(parts) == 2 && parts[1] == "containers" && r.Method == http.MethodGet:
 			view(handlers.DockerContainers())(w, r)
