@@ -13,6 +13,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -967,57 +969,223 @@ func DockerContainerExec() http.HandlerFunc {
 			return
 		}
 		defer d.Close()
-
-		// Create the exec instance.
-		createBody := map[string]interface{}{
-			"AttachStdout": true,
-			"AttachStderr": true,
-			"Tty":          false,
-			"Cmd":          []string{"/bin/sh", "-c", body.Cmd},
-		}
-		var created struct {
-			Id string `json:"id"`
-		}
-		cResp, err := d.doBody(http.MethodPost, "/containers/"+url.PathEscape(cid)+"/exec", nil, createBody, false)
+		output, exitCode, err := execCommand(d, cid, []string{"/bin/sh", "-c", body.Cmd})
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
-		}
-		if cResp.StatusCode >= 400 {
-			msg := dockerErrBody(cResp)
-			cResp.Body.Close()
-			http.Error(w, jsonError(msg), http.StatusBadGateway)
-			return
-		}
-		json.NewDecoder(cResp.Body).Decode(&created)
-		cResp.Body.Close()
-		if created.Id == "" {
-			http.Error(w, jsonError("exec create returned no id"), http.StatusBadGateway)
-			return
-		}
-
-		// Start it and read the multiplexed output stream.
-		startBody := map[string]interface{}{"Detach": false, "Tty": false}
-		sResp, err := d.doBody(http.MethodPost, "/exec/"+url.PathEscape(created.Id)+"/start", nil, startBody, false)
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-			return
-		}
-		defer sResp.Body.Close()
-		if sResp.StatusCode >= 400 {
-			http.Error(w, jsonError(dockerErrBody(sResp)), http.StatusBadGateway)
-			return
-		}
-		output := demuxDockerLogs(io.LimitReader(sResp.Body, 1<<20))
-
-		exitCode := 0
-		var insp struct {
-			ExitCode int `json:"exitCode"`
-		}
-		if d.getJSON("/exec/"+url.PathEscape(created.Id)+"/json", nil, &insp) == nil {
-			exitCode = insp.ExitCode
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"output": output, "exit_code": exitCode})
+	}
+}
+
+// execCommand runs a command (argv form, no shell) inside a container and
+// returns its combined output and exit code.
+func execCommand(d *dockerConn, cid string, cmd []string) (string, int, error) {
+	createBody := map[string]interface{}{
+		"AttachStdout": true, "AttachStderr": true, "Tty": false, "Cmd": cmd,
+	}
+	var created struct {
+		Id string `json:"id"`
+	}
+	cResp, err := d.doBody(http.MethodPost, "/containers/"+url.PathEscape(cid)+"/exec", nil, createBody, false)
+	if err != nil {
+		return "", -1, err
+	}
+	if cResp.StatusCode >= 400 {
+		msg := dockerErrBody(cResp)
+		cResp.Body.Close()
+		return "", -1, fmt.Errorf("%s", msg)
+	}
+	json.NewDecoder(cResp.Body).Decode(&created)
+	cResp.Body.Close()
+	if created.Id == "" {
+		return "", -1, fmt.Errorf("exec create returned no id")
+	}
+	startBody := map[string]interface{}{"Detach": false, "Tty": false}
+	sResp, err := d.doBody(http.MethodPost, "/exec/"+url.PathEscape(created.Id)+"/start", nil, startBody, false)
+	if err != nil {
+		return "", -1, err
+	}
+	defer sResp.Body.Close()
+	if sResp.StatusCode >= 400 {
+		return "", -1, fmt.Errorf("%s", dockerErrBody(sResp))
+	}
+	output := demuxDockerLogs(io.LimitReader(sResp.Body, 1<<20))
+	exitCode := 0
+	var insp struct {
+		ExitCode int `json:"exitCode"`
+	}
+	if d.getJSON("/exec/"+url.PathEscape(created.Id)+"/json", nil, &insp) == nil {
+		exitCode = insp.ExitCode
+	}
+	return output, exitCode, nil
+}
+
+// ── Container file browser ────────────────────────────────────────────────
+
+type dockerFileEntry struct {
+	Name  string `json:"name"`
+	Size  int64  `json:"size"`
+	IsDir bool   `json:"isDir"`
+	Mode  string `json:"mode"`
+}
+
+func parseLsOutput(out string) []dockerFileEntry {
+	entries := []dockerFileEntry{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" || strings.HasPrefix(line, "total ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 9 || len(fields[0]) < 10 {
+			continue
+		}
+		mode := fields[0]
+		size, _ := strconv.ParseInt(fields[4], 10, 64)
+		name := strings.Join(fields[8:], " ")
+		if mode[0] == 'l' { // symlink "name -> target"
+			if i := strings.Index(name, " -> "); i >= 0 {
+				name = name[:i]
+			}
+		}
+		if name == "." || name == ".." {
+			continue
+		}
+		entries = append(entries, dockerFileEntry{Name: name, Size: size, IsDir: mode[0] == 'd', Mode: mode})
+	}
+	return entries
+}
+
+// DockerContainerLs lists a directory inside a running container (via a fixed
+// `ls -la` exec — argv form, so the path can't inject a shell command).
+func DockerContainerLs() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, cid, err := dockerHostAndContainer(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		path := r.URL.Query().Get("path")
+		if path == "" {
+			path = "/"
+		}
+		d, err := connectHostByID(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+		out, _, err := execCommand(d, cid, []string{"ls", "-la", "--", path})
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"path": path, "entries": parseLsOutput(out)})
+	}
+}
+
+// DockerContainerDownload streams a single file out of a container.
+func DockerContainerDownload() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, cid, err := dockerHostAndContainer(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		path := r.URL.Query().Get("path")
+		if strings.TrimSpace(path) == "" {
+			http.Error(w, jsonError("path is required"), http.StatusBadRequest)
+			return
+		}
+		d, err := connectHostByID(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+		q := url.Values{}
+		q.Set("path", path)
+		resp, err := d.do(http.MethodGet, "/containers/"+url.PathEscape(cid)+"/archive", q)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			http.Error(w, jsonError(dockerErrBody(resp)), http.StatusBadGateway)
+			return
+		}
+		tr := tar.NewReader(resp.Body)
+		hdr, err := tr.Next()
+		if err != nil {
+			http.Error(w, jsonError("empty archive"), http.StatusBadGateway)
+			return
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			http.Error(w, jsonError("path is not a regular file"), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(hdr.Name)+`"`)
+		io.Copy(w, tr)
+	}
+}
+
+// DockerContainerUpload copies an uploaded file into a container directory.
+func DockerContainerUpload() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, cid, err := dockerHostAndContainer(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		if err := r.ParseMultipartForm(64 << 20); err != nil {
+			http.Error(w, jsonError("invalid upload"), http.StatusBadRequest)
+			return
+		}
+		dest := r.FormValue("path")
+		if strings.TrimSpace(dest) == "" {
+			http.Error(w, jsonError("destination path is required"), http.StatusBadRequest)
+			return
+		}
+		file, hdr, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, jsonError("file is required"), http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+		content, _ := io.ReadAll(io.LimitReader(file, 100<<20))
+
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		tw.WriteHeader(&tar.Header{Name: filepath.Base(hdr.Filename), Mode: 0o644, Size: int64(len(content))})
+		tw.Write(content)
+		tw.Close()
+
+		d, err := connectHostByID(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+		q := url.Values{}
+		q.Set("path", dest)
+		req, _ := http.NewRequest(http.MethodPut, "http://docker/containers/"+url.PathEscape(cid)+"/archive?"+q.Encode(), &buf)
+		req.Header.Set("Content-Type", "application/x-tar")
+		resp, err := d.http.Do(req)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			http.Error(w, jsonError(dockerErrBody(resp)), http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 	}
 }
 
@@ -1730,6 +1898,46 @@ func DockerVolumes() http.HandlerFunc {
 	}
 }
 
+func DockerVolumeCreate() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := dockerHostIDFromPath(r)
+		if err != nil {
+			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Name   string `json:"name"`
+			Driver string `json:"driver"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
+			http.Error(w, `{"error":"volume name is required"}`, http.StatusBadRequest)
+			return
+		}
+		d, err := connectHostByID(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+		create := map[string]interface{}{"Name": strings.TrimSpace(body.Name)}
+		if strings.TrimSpace(body.Driver) != "" {
+			create["Driver"] = body.Driver
+		}
+		resp, err := d.doBody(http.MethodPost, "/volumes/create", nil, create, false)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			http.Error(w, jsonError(dockerErrBody(resp)), http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	}
+}
+
 func DockerVolumeRemove() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1844,6 +2052,47 @@ func DockerNetworks() http.HandlerFunc {
 			})
 		}
 		json.NewEncoder(w).Encode(out)
+	}
+}
+
+func DockerNetworkCreate() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := dockerHostIDFromPath(r)
+		if err != nil {
+			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Name   string `json:"name"`
+			Driver string `json:"driver"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
+			http.Error(w, `{"error":"network name is required"}`, http.StatusBadRequest)
+			return
+		}
+		driver := strings.TrimSpace(body.Driver)
+		if driver == "" {
+			driver = "bridge"
+		}
+		d, err := connectHostByID(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+		create := map[string]interface{}{"Name": strings.TrimSpace(body.Name), "Driver": driver}
+		resp, err := d.doBody(http.MethodPost, "/networks/create", nil, create, false)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			http.Error(w, jsonError(dockerErrBody(resp)), http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 	}
 }
 
@@ -1974,6 +2223,249 @@ func DockerSystemDF() http.HandlerFunc {
 			"volumes":     vol,
 			"build_cache": cache,
 		})
+	}
+}
+
+// ── Compose stacks ────────────────────────────────────────────────────────
+
+var composeNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
+// runHostCommand runs a command on the Docker host — locally if the host has
+// no SSH config, otherwise over SSH — optionally feeding stdin.
+func runHostCommand(h *DockerHost, args []string, stdin string) (string, error) {
+	if strings.TrimSpace(h.SSHHost) == "" {
+		cmd := exec.Command(args[0], args[1:]...)
+		if stdin != "" {
+			cmd.Stdin = strings.NewReader(stdin)
+		}
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	sc, err := sshClientForHost(h)
+	if err != nil {
+		return "", err
+	}
+	defer sc.Close()
+	sess, err := sc.NewSession()
+	if err != nil {
+		return "", err
+	}
+	defer sess.Close()
+	if stdin != "" {
+		sess.Stdin = strings.NewReader(stdin)
+	}
+	parts := make([]string, len(args))
+	for i, a := range args {
+		parts[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	out, err := sess.CombinedOutput(strings.Join(parts, " "))
+	return string(out), err
+}
+
+// DockerComposeUp deploys a compose stack (runs `docker compose up -d` with the
+// yaml piped via stdin).
+func DockerComposeUp() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := dockerHostIDFromPath(r)
+		if err != nil {
+			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Name string `json:"name"`
+			Yaml string `json:"yaml"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		name := strings.TrimSpace(body.Name)
+		if !composeNamePattern.MatchString(name) {
+			http.Error(w, `{"error":"invalid stack name — use lowercase letters, digits, - and _"}`, http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(body.Yaml) == "" {
+			http.Error(w, `{"error":"compose yaml is required"}`, http.StatusBadRequest)
+			return
+		}
+		h, err := loadDockerHost(id)
+		if err != nil {
+			http.Error(w, jsonError("host not found"), http.StatusNotFound)
+			return
+		}
+		out, runErr := runHostCommand(h, []string{"docker", "compose", "-p", name, "-f", "-", "up", "-d"}, body.Yaml)
+		result := map[string]interface{}{"output": out, "ok": runErr == nil}
+		if runErr != nil {
+			result["error"] = runErr.Error() + " — is the docker compose plugin installed on the host?"
+		}
+		json.NewEncoder(w).Encode(result)
+	}
+}
+
+// DockerComposeDown stops and removes a compose stack by project name.
+func DockerComposeDown() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := dockerHostIDFromPath(r)
+		if err != nil {
+			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Name string `json:"name"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		name := strings.TrimSpace(body.Name)
+		if !composeNamePattern.MatchString(name) {
+			http.Error(w, `{"error":"invalid stack name"}`, http.StatusBadRequest)
+			return
+		}
+		h, err := loadDockerHost(id)
+		if err != nil {
+			http.Error(w, jsonError("host not found"), http.StatusNotFound)
+			return
+		}
+		out, runErr := runHostCommand(h, []string{"docker", "compose", "-p", name, "down", "--remove-orphans"}, "")
+		result := map[string]interface{}{"output": out, "ok": runErr == nil}
+		if runErr != nil {
+			result["error"] = runErr.Error()
+		}
+		json.NewEncoder(w).Encode(result)
+	}
+}
+
+// ── Image save / load ─────────────────────────────────────────────────────
+
+// DockerImageSave streams an image out as a tar archive.
+func DockerImageSave() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := dockerHostIDFromPath(r)
+		if err != nil {
+			http.Error(w, jsonError("invalid host id"), http.StatusBadRequest)
+			return
+		}
+		ref := strings.TrimPrefix(strings.TrimSpace(r.URL.Query().Get("ref")), "sha256:")
+		if !dockerIDPattern.MatchString(ref) {
+			http.Error(w, jsonError("invalid image ref — use the image ID"), http.StatusBadRequest)
+			return
+		}
+		d, err := connectHostByID(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+		req, _ := http.NewRequest(http.MethodGet, "http://docker/images/"+ref+"/get", nil)
+		resp, err := d.stream.Do(req) // images can be large
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			http.Error(w, jsonError(dockerErrBody(resp)), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-tar")
+		w.Header().Set("Content-Disposition", `attachment; filename="image-`+ref[:min(12, len(ref))]+`.tar"`)
+		io.Copy(w, resp.Body)
+	}
+}
+
+// DockerImageLoad imports images from an uploaded tar archive.
+func DockerImageLoad() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := dockerHostIDFromPath(r)
+		if err != nil {
+			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
+			return
+		}
+		if err := r.ParseMultipartForm(8 << 20); err != nil {
+			http.Error(w, jsonError("invalid upload"), http.StatusBadRequest)
+			return
+		}
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, jsonError("file is required"), http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+		d, err := connectHostByID(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+		req, _ := http.NewRequest(http.MethodPost, "http://docker/images/load", file)
+		req.Header.Set("Content-Type", "application/x-tar")
+		resp, err := d.stream.Do(req)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			http.Error(w, jsonError(dockerErrBody(resp)), http.StatusBadGateway)
+			return
+		}
+		io.Copy(io.Discard, resp.Body)
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	}
+}
+
+// ── Events ────────────────────────────────────────────────────────────────
+
+// DockerEvents returns daemon events in the [since, now] window (non-blocking).
+func DockerEvents() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := dockerHostIDFromPath(r)
+		if err != nil {
+			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
+			return
+		}
+		now := time.Now().Unix()
+		since := r.URL.Query().Get("since")
+		if since == "" {
+			since = strconv.FormatInt(now-3600, 10)
+		}
+		d, err := connectHostByID(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+		q := url.Values{}
+		q.Set("since", since)
+		q.Set("until", strconv.FormatInt(now, 10)) // until set => returns and closes
+		resp, err := d.do(http.MethodGet, "/events", q)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		type evt struct {
+			Type   string `json:"type"`
+			Action string `json:"action"`
+			Name   string `json:"name"`
+			Time   int64  `json:"time"`
+		}
+		events := []evt{}
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			var ev struct {
+				Type  string `json:"Type"`
+				Action string `json:"Action"`
+				Actor struct {
+					Attributes map[string]string `json:"Attributes"`
+				} `json:"Actor"`
+				Time int64 `json:"time"`
+			}
+			if json.Unmarshal(scanner.Bytes(), &ev) == nil && ev.Type != "" {
+				events = append(events, evt{Type: ev.Type, Action: ev.Action, Name: ev.Actor.Attributes["name"], Time: ev.Time})
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"events": events, "until": now})
 	}
 }
 

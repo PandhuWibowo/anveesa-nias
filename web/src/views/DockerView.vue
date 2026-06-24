@@ -142,6 +142,30 @@ const diskUsage = ref<DiskUsage | null>(null)
 // Expanded network rows (connected containers)
 const netExpanded = ref<Record<string, boolean>>({})
 
+// Create volume / network
+const showCreateVol = ref(false)
+const createVolForm = ref({ name: '', driver: '' })
+const showCreateNet = ref(false)
+const createNetForm = ref({ name: '', driver: 'bridge' })
+
+// File browser
+const showFiles = ref(false)
+const filesCid = ref('')
+const filesName = ref('')
+const filesPath = ref('/')
+const fileEntries = ref<{ name: string; size: number; isDir: boolean; mode: string }[]>([])
+const filesLoading = ref(false)
+
+// Compose
+const showCompose = ref(false)
+const composing = ref(false)
+const composeOutput = ref('')
+const composeForm = ref({ name: '', yaml: '' })
+
+// Events
+const showEvents = ref(false)
+const events = ref<{ type: string; action: string; name: string; time: number }[]>([])
+
 // ── Rename modal ────────────────────────────────────────────────
 const showRename = ref(false)
 const renameCid = ref('')
@@ -701,6 +725,201 @@ async function pruneNetworks() {
   }
 }
 
+async function createVolume() {
+  if (!createVolForm.value.name.trim()) {
+    toast.error('Volume name is required')
+    return
+  }
+  try {
+    await axios.post(`/api/docker/hosts/${activeHostId.value}/volumes`, createVolForm.value)
+    toast.success('Volume created')
+    showCreateVol.value = false
+    await loadVolumes()
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to create volume')
+  }
+}
+
+async function createNetwork() {
+  if (!createNetForm.value.name.trim()) {
+    toast.error('Network name is required')
+    return
+  }
+  try {
+    await axios.post(`/api/docker/hosts/${activeHostId.value}/networks`, createNetForm.value)
+    toast.success('Network created')
+    showCreateNet.value = false
+    await loadNetworks()
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to create network')
+  }
+}
+
+// ── File browser ────────────────────────────────────────────────
+function joinPath(base: string, name: string) {
+  return base === '/' ? '/' + name : base + '/' + name
+}
+async function loadFiles(path: string) {
+  filesLoading.value = true
+  try {
+    const { data } = await axios.get<{ path: string; entries: typeof fileEntries.value }>(
+      `/api/docker/hosts/${activeHostId.value}/containers/${filesCid.value}/ls`,
+      { params: { path } },
+    )
+    filesPath.value = data.path
+    fileEntries.value = (data.entries || []).sort((a, b) =>
+      a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1,
+    )
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to list files (needs a running container with /bin/sh)')
+  } finally {
+    filesLoading.value = false
+  }
+}
+function openFiles(c: DockerContainer) {
+  filesCid.value = c.id
+  filesName.value = containerName(c)
+  filesPath.value = '/'
+  fileEntries.value = []
+  showFiles.value = true
+  loadFiles('/')
+}
+function fileNavigate(entry: { name: string; isDir: boolean }) {
+  if (entry.isDir) loadFiles(joinPath(filesPath.value, entry.name))
+}
+function filesUp() {
+  if (filesPath.value === '/') return
+  loadFiles(filesPath.value.replace(/\/[^/]+$/, '') || '/')
+}
+async function downloadFile(entry: { name: string }) {
+  try {
+    const { data } = await axios.get(
+      `/api/docker/hosts/${activeHostId.value}/containers/${filesCid.value}/download`,
+      { params: { path: joinPath(filesPath.value, entry.name) }, responseType: 'blob' },
+    )
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(data)
+    a.download = entry.name
+    a.click()
+    URL.revokeObjectURL(a.href)
+  } catch (e: any) {
+    toast.error('Download failed')
+  }
+}
+async function uploadFile(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  const fd = new FormData()
+  fd.append('file', file)
+  fd.append('path', filesPath.value)
+  try {
+    await axios.post(`/api/docker/hosts/${activeHostId.value}/containers/${filesCid.value}/upload`, fd)
+    toast.success(`Uploaded ${file.name}`)
+    loadFiles(filesPath.value)
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Upload failed')
+  } finally {
+    input.value = ''
+  }
+}
+
+// ── Image save / load ───────────────────────────────────────────
+async function saveImage(img: DockerImage) {
+  try {
+    const { data } = await axios.get(`/api/docker/hosts/${activeHostId.value}/images/save`, {
+      params: { ref: img.id },
+      responseType: 'blob',
+    })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(data)
+    a.download = `${(img.repoTags?.[0] || shortId(img.id)).replace(/[/:]/g, '_')}.tar`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  } catch (e: any) {
+    toast.error('Export failed')
+  }
+}
+async function loadImageFile(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  const fd = new FormData()
+  fd.append('file', file)
+  pulling.value = true
+  try {
+    await axios.post(`/api/docker/hosts/${activeHostId.value}/images/load`, fd)
+    toast.success('Image imported')
+    await loadImages()
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Import failed')
+  } finally {
+    pulling.value = false
+    input.value = ''
+  }
+}
+
+// ── Compose stacks ──────────────────────────────────────────────
+function openCompose() {
+  composeForm.value = { name: '', yaml: '' }
+  composeOutput.value = ''
+  showCompose.value = true
+}
+async function submitCompose() {
+  if (!composeForm.value.name.trim() || !composeForm.value.yaml.trim()) {
+    toast.error('Stack name and compose YAML are required')
+    return
+  }
+  composing.value = true
+  composeOutput.value = 'Deploying…\n'
+  try {
+    const { data } = await axios.post<{ ok: boolean; output: string; error: string }>(
+      `/api/docker/hosts/${activeHostId.value}/compose`,
+      { name: composeForm.value.name.trim(), yaml: composeForm.value.yaml },
+    )
+    composeOutput.value = data.output || '(no output)'
+    if (data.error) {
+      composeOutput.value += `\n\nERROR: ${data.error}`
+      toast.error('Deploy failed')
+    } else {
+      toast.success(`Stack "${composeForm.value.name.trim()}" deployed`)
+      await loadContainers()
+    }
+  } catch (e: any) {
+    composeOutput.value += `\n\nERROR: ${e?.response?.data?.error || 'request failed'}`
+    toast.error('Deploy failed')
+  } finally {
+    composing.value = false
+  }
+}
+async function removeStack(project: string) {
+  const ok = await confirm(`Bring down the compose stack "${project}" (stop + remove its containers and networks)?`, 'Remove stack')
+  if (!ok) return
+  try {
+    await axios.post(`/api/docker/hosts/${activeHostId.value}/compose/down`, { name: project })
+    toast.success(`Stack "${project}" removed`)
+    await loadContainers()
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to remove stack')
+  }
+}
+
+// ── Events ──────────────────────────────────────────────────────
+async function loadEvents() {
+  try {
+    const { data } = await axios.get<{ events: typeof events.value; until: number }>(
+      `/api/docker/hosts/${activeHostId.value}/events`,
+    )
+    events.value = (data.events || []).reverse()
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to load events')
+  }
+}
+function toggleEvents() {
+  showEvents.value = !showEvents.value
+  if (showEvents.value && activeHostId.value !== null) loadEvents()
+}
+
 // ── Interactive terminal ────────────────────────────────────────
 function refitTerminal() {
   nextTick(() => {
@@ -1178,6 +1397,21 @@ onMounted(loadHosts)
           </div>
         </div>
 
+        <!-- Events -->
+        <div v-if="showEvents && activeHost" class="page-card dk-events">
+          <div class="dk-events-head">
+            <span class="dk-df-type">Recent events (last hour)</span>
+            <button class="base-btn base-btn--xs" @click="loadEvents">Refresh</button>
+          </div>
+          <div v-if="!events.length" class="dk-muted">No events in the last hour.</div>
+          <div v-for="(ev, i) in events" :key="i" class="dk-event">
+            <span class="dk-event-time">{{ new Date(ev.time * 1000).toLocaleTimeString() }}</span>
+            <span class="badge badge--default dk-event-type">{{ ev.type }}</span>
+            <span class="dk-event-action">{{ ev.action }}</span>
+            <span class="dk-name">{{ ev.name }}</span>
+          </div>
+        </div>
+
         <!-- Empty state -->
         <div v-if="!hosts.length" class="page-card dk-empty">
           <div class="dk-empty-icon">🐳</div>
@@ -1225,8 +1459,10 @@ onMounted(loadHosts)
           <div v-if="!loading && !connError" class="dk-toolbar">
             <template v-if="tab === 'containers'">
               <label class="dk-autorefresh"><input type="checkbox" v-model="groupByCompose" /> Group by Compose</label>
+              <button class="base-btn base-btn--sm" @click="toggleEvents">{{ showEvents ? 'Hide events' : 'Events' }}</button>
               <div class="dk-spacer"></div>
               <button v-if="canManage" class="base-btn base-btn--sm" :disabled="pruning" @click="pruneContainers">Prune stopped</button>
+              <button v-if="canManage" class="base-btn base-btn--sm" @click="openCompose">Deploy stack</button>
               <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="openRun">+ Run container</button>
             </template>
             <template v-else-if="tab === 'images'">
@@ -1239,6 +1475,7 @@ onMounted(loadHosts)
               <button v-if="canManage" class="base-btn base-btn--sm" :disabled="pulling || !pullImage.trim()" @click="pullImageNow()">{{ pulling ? 'Pulling…' : 'Pull' }}</button>
               <button v-if="canManage" class="base-btn base-btn--sm" title="Pull from a private registry" @click="openPullAuth">🔒</button>
               <div class="dk-spacer"></div>
+              <label v-if="canManage" class="base-btn base-btn--sm dk-import-btn">{{ pulling ? 'Importing…' : 'Import' }}<input type="file" accept=".tar" hidden @change="loadImageFile" /></label>
               <button v-if="canManage" class="base-btn base-btn--sm" @click="openBuild">Build image</button>
               <button v-if="canManage" class="base-btn base-btn--sm" :disabled="pruning" @click="pruneImages">Prune dangling</button>
             </template>
@@ -1246,11 +1483,13 @@ onMounted(loadHosts)
               <span class="dk-muted">{{ volumes.length }} volume{{ volumes.length === 1 ? '' : 's' }}</span>
               <div class="dk-spacer"></div>
               <button v-if="canManage" class="base-btn base-btn--sm" :disabled="pruning" @click="pruneVolumes">Prune unused</button>
+              <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="createVolForm = { name: '', driver: '' }; showCreateVol = true">+ Create volume</button>
             </template>
             <template v-else>
               <span class="dk-muted">{{ networks.length }} network{{ networks.length === 1 ? '' : 's' }}</span>
               <div class="dk-spacer"></div>
               <button v-if="canManage" class="base-btn base-btn--sm" :disabled="pruning" @click="pruneNetworks">Prune unused</button>
+              <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="createNetForm = { name: '', driver: 'bridge' }; showCreateNet = true">+ Create network</button>
             </template>
           </div>
 
@@ -1276,7 +1515,10 @@ onMounted(loadHosts)
                 </tr>
                 <template v-for="group in containerGroups" :key="group.project || '_standalone'">
                   <tr v-if="groupByCompose && group.project" class="dk-group-row">
-                    <td colspan="7"><span class="dk-group-badge">compose</span> {{ group.project }}</td>
+                    <td colspan="7">
+                      <span class="dk-group-badge">compose</span> {{ group.project }}
+                      <button v-if="canManage" class="base-btn base-btn--xs base-btn--danger dk-stack-down" @click="removeStack(group.project)">Down</button>
+                    </td>
                   </tr>
                   <template v-for="c in group.containers" :key="c.id">
                   <tr>
@@ -1299,6 +1541,7 @@ onMounted(loadHosts)
                       <button class="base-btn base-btn--xs" @click="openInspect(c)">Details</button>
                       <button class="base-btn base-btn--xs" @click="openLogs(c)">Logs</button>
                       <button v-if="canExec && c.state === 'running'" class="base-btn base-btn--xs" @click="openTerminal(c)">Terminal</button>
+                      <button v-if="c.state === 'running'" class="base-btn base-btn--xs" @click="openFiles(c)">Files</button>
                       <template v-if="canManage">
                         <button
                           v-if="c.state !== 'running'"
@@ -1400,6 +1643,7 @@ onMounted(loadHosts)
                   <td>{{ formatBytes(img.size) }}</td>
                   <td class="dk-status">{{ formatRelative(img.created) }}</td>
                   <td class="dk-actions-col">
+                    <button class="base-btn base-btn--xs" @click="saveImage(img)">Export</button>
                     <button v-if="canManage" class="base-btn base-btn--xs base-btn--danger" @click="removeImage(img)">Remove</button>
                   </td>
                 </tr>
@@ -1783,6 +2027,94 @@ onMounted(loadHosts)
       </div>
     </div>
 
+    <!-- Create volume modal -->
+    <div v-if="showCreateVol" class="dk-modal-backdrop" @click.self="showCreateVol = false">
+      <div class="dk-modal page-card">
+        <div class="dk-modal-title">Create volume</div>
+        <div class="dk-form">
+          <label>Name<input v-model="createVolForm.name" class="base-input" placeholder="my-data" @keyup.enter="createVolume" /></label>
+          <label>Driver (optional)<input v-model="createVolForm.driver" class="base-input" placeholder="local" /></label>
+        </div>
+        <div class="dk-modal-actions">
+          <div class="dk-spacer"></div>
+          <button class="base-btn base-btn--sm" @click="showCreateVol = false">Cancel</button>
+          <button class="base-btn base-btn--primary base-btn--sm" @click="createVolume">Create</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Create network modal -->
+    <div v-if="showCreateNet" class="dk-modal-backdrop" @click.self="showCreateNet = false">
+      <div class="dk-modal page-card">
+        <div class="dk-modal-title">Create network</div>
+        <div class="dk-form">
+          <label>Name<input v-model="createNetForm.name" class="base-input" placeholder="my-net" @keyup.enter="createNetwork" /></label>
+          <label>
+            Driver
+            <select v-model="createNetForm.driver" class="base-input">
+              <option value="bridge">bridge</option>
+              <option value="overlay">overlay</option>
+              <option value="macvlan">macvlan</option>
+              <option value="ipvlan">ipvlan</option>
+            </select>
+          </label>
+        </div>
+        <div class="dk-modal-actions">
+          <div class="dk-spacer"></div>
+          <button class="base-btn base-btn--sm" @click="showCreateNet = false">Cancel</button>
+          <button class="base-btn base-btn--primary base-btn--sm" @click="createNetwork">Create</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- File browser modal -->
+    <div v-if="showFiles" class="dk-modal-backdrop" @click.self="showFiles = false">
+      <div class="dk-modal dk-modal--wide page-card">
+        <div class="dk-modal-title">Files — {{ filesName }}</div>
+        <div class="dk-files-bar">
+          <button class="base-btn base-btn--xs" :disabled="filesPath === '/'" @click="filesUp">↑ Up</button>
+          <span class="dk-mono dk-files-path">{{ filesPath }}</span>
+          <div class="dk-spacer"></div>
+          <label v-if="canManage" class="base-btn base-btn--xs dk-import-btn">Upload here<input type="file" hidden @change="uploadFile" /></label>
+        </div>
+        <div class="dk-files">
+          <div v-if="filesLoading" class="dk-muted">Loading…</div>
+          <div v-else-if="!fileEntries.length" class="dk-muted">Empty directory.</div>
+          <div v-for="e in fileEntries" :key="e.name" class="dk-file" :class="{ 'dk-file--dir': e.isDir }">
+            <span class="dk-file-name" @click="fileNavigate(e)">{{ e.isDir ? '📁' : '📄' }} {{ e.name }}</span>
+            <span class="dk-mono dk-muted dk-file-mode">{{ e.mode }}</span>
+            <span class="dk-muted dk-file-size">{{ e.isDir ? '' : formatBytes(e.size) }}</span>
+            <button v-if="!e.isDir" class="base-btn base-btn--xs" @click="downloadFile(e)">Download</button>
+          </div>
+        </div>
+        <div class="dk-modal-actions">
+          <div class="dk-spacer"></div>
+          <button class="base-btn base-btn--sm" @click="showFiles = false">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Compose deploy modal -->
+    <div v-if="showCompose" class="dk-modal-backdrop" @click.self="showCompose = false">
+      <div class="dk-modal dk-modal--wide page-card dk-run-modal">
+        <div class="dk-modal-title">Deploy compose stack</div>
+        <div class="dk-form">
+          <label>Stack name<input v-model="composeForm.name" class="base-input" placeholder="my-stack" /></label>
+          <label>
+            docker-compose.yml
+            <textarea v-model="composeForm.yaml" class="base-input dk-textarea dk-compose-yaml" rows="10" placeholder="services:&#10;  web:&#10;    image: nginx:alpine&#10;    ports:&#10;      - 8080:80"></textarea>
+            <span class="dk-field-hint">Runs <code>docker compose up -d</code> on the host. Requires the compose plugin there.</span>
+          </label>
+          <pre v-if="composeOutput" class="dk-logs dk-build-out">{{ composeOutput }}</pre>
+        </div>
+        <div class="dk-modal-actions">
+          <div class="dk-spacer"></div>
+          <button class="base-btn base-btn--sm" @click="showCompose = false">Close</button>
+          <button class="base-btn base-btn--primary base-btn--sm" :disabled="composing" @click="submitCompose">{{ composing ? 'Deploying…' : 'Deploy' }}</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Interactive terminal modal -->
     <div v-if="showTerminal" class="dk-modal-backdrop" @click.self="closeTerminal">
       <div class="dk-term-modal" :class="{ 'dk-term-modal--full': termFullscreen }">
@@ -1931,6 +2263,31 @@ onMounted(loadHosts)
 .dk-unused { color: var(--warning); }
 .dk-netconns { display: flex; flex-wrap: wrap; gap: 14px; padding: 4px 0; }
 .dk-netconn { display: inline-flex; gap: 6px; align-items: baseline; font-size: 12px; }
+
+/* Events */
+.dk-events { padding: 12px 16px; }
+.dk-events-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.dk-event { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 3px 0; border-bottom: 1px solid var(--border); }
+.dk-event:last-child { border-bottom: none; }
+.dk-event-time { font-family: var(--mono); color: var(--text-muted); width: 90px; flex-shrink: 0; }
+.dk-event-type { text-transform: capitalize; }
+.dk-event-action { color: var(--text-secondary); width: 90px; }
+
+/* Stack down + import */
+.dk-stack-down { margin-left: 10px; }
+.dk-import-btn { cursor: pointer; }
+
+/* File browser */
+.dk-files-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.dk-files-path { color: var(--text-secondary); }
+.dk-files { border: 1px solid var(--border); border-radius: var(--r-sm); max-height: 50vh; overflow-y: auto; padding: 4px; }
+.dk-file { display: flex; align-items: center; gap: 12px; padding: 4px 8px; border-radius: var(--r-xs); font-size: 12px; }
+.dk-file:hover { background: var(--bg-hover); }
+.dk-file-name { flex: 1; }
+.dk-file--dir .dk-file-name { cursor: pointer; color: var(--brand); }
+.dk-file-mode { font-size: 11px; }
+.dk-file-size { width: 70px; text-align: right; }
+.dk-compose-yaml { font-family: var(--mono); }
 
 /* Run modal + checkbox */
 .dk-run-modal { max-height: 88vh; overflow-y: auto; }

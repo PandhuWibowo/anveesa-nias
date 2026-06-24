@@ -826,11 +826,15 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		// /api/docker/hosts/{id}/volumes
 		case len(parts) == 2 && parts[1] == "volumes" && r.Method == http.MethodGet:
 			view(handlers.DockerVolumes())(w, r)
+		case len(parts) == 2 && parts[1] == "volumes" && r.Method == http.MethodPost:
+			manage(handlers.DockerVolumeCreate())(w, r)
 		case len(parts) == 3 && parts[1] == "volumes" && parts[2] == "remove" && r.Method == http.MethodPost:
 			manage(handlers.DockerVolumeRemove())(w, r)
 		// /api/docker/hosts/{id}/networks
 		case len(parts) == 2 && parts[1] == "networks" && r.Method == http.MethodGet:
 			view(handlers.DockerNetworks())(w, r)
+		case len(parts) == 2 && parts[1] == "networks" && r.Method == http.MethodPost:
+			manage(handlers.DockerNetworkCreate())(w, r)
 		case len(parts) == 3 && parts[1] == "networks" && parts[2] == "remove" && r.Method == http.MethodPost:
 			manage(handlers.DockerNetworkRemove())(w, r)
 		// /api/docker/hosts/{id}/prune/{volumes|networks}
@@ -847,6 +851,27 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		// /api/docker/hosts/{id}/images/build
 		case len(parts) == 3 && parts[1] == "images" && parts[2] == "build" && r.Method == http.MethodPost:
 			manage(handlers.DockerImageBuild())(w, r)
+		// /api/docker/hosts/{id}/images/save  (export)
+		case len(parts) == 3 && parts[1] == "images" && parts[2] == "save" && r.Method == http.MethodGet:
+			view(handlers.DockerImageSave())(w, r)
+		// /api/docker/hosts/{id}/images/load  (import)
+		case len(parts) == 3 && parts[1] == "images" && parts[2] == "load" && r.Method == http.MethodPost:
+			manage(handlers.DockerImageLoad())(w, r)
+		// /api/docker/hosts/{id}/compose  (up) and /compose/down
+		case len(parts) == 2 && parts[1] == "compose" && r.Method == http.MethodPost:
+			manage(handlers.DockerComposeUp())(w, r)
+		case len(parts) == 3 && parts[1] == "compose" && parts[2] == "down" && r.Method == http.MethodPost:
+			manage(handlers.DockerComposeDown())(w, r)
+		// /api/docker/hosts/{id}/events
+		case len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet:
+			view(handlers.DockerEvents())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/{ls|download|upload}
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "ls" && r.Method == http.MethodGet:
+			view(handlers.DockerContainerLs())(w, r)
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "download" && r.Method == http.MethodGet:
+			view(handlers.DockerContainerDownload())(w, r)
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "upload" && r.Method == http.MethodPost:
+			manage(handlers.DockerContainerUpload())(w, r)
 		// /api/docker/hosts/{id}/images/remove
 		case len(parts) == 3 && parts[1] == "images" && parts[2] == "remove" && r.Method == http.MethodPost:
 			manage(handlers.DockerImageRemove())(w, r)
