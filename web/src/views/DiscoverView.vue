@@ -400,6 +400,20 @@ function toggleApp(name: string) {
   run()
 }
 
+// Filter by an app name typed manually — works even if it wasn't auto-discovered
+// (e.g. outside the time range, or a brand-new app).
+function addManualApp() {
+  const v = appSearch.value.trim()
+  if (!v) return
+  if (!appFilter.value.has(v)) {
+    appFilter.value = new Set([...appFilter.value, v])
+  }
+  if (!appNames.value.includes(v)) appNames.value = [...appNames.value, v].sort((a, b) => a.localeCompare(b))
+  appSearch.value = ''
+  showAppMenu.value = false
+  run()
+}
+
 function onDocClick(e: MouseEvent) {
   if (showTimePicker.value && timeWrapEl.value && !timeWrapEl.value.contains(e.target as Node)) {
     showTimePicker.value = false
@@ -433,9 +447,9 @@ function resetAll() {
   currentPage.value = 1
 }
 
-function buildQuery(): any {
+function buildQuery(opts: { ignoreApp?: boolean; ignoreTime?: boolean } = {}): any {
   const clauses: any[] = []
-  const timeClause = buildTimeClause()
+  const timeClause = opts.ignoreTime ? null : buildTimeClause()
   if (timeClause) clauses.push({ range: { [timestampField.value]: timeClause } })
   if (searchText.value.trim())
     clauses.push({ query_string: { query: searchText.value.trim(), lenient: true } })
@@ -446,7 +460,7 @@ function buildQuery(): any {
       { term:         { environment: envFilter.value } },
       { match_phrase: { environment: envFilter.value } },
     ], minimum_should_match: 1 } })
-  if (appFilter.value.size) {
+  if (!opts.ignoreApp && appFilter.value.size) {
     const apps = [...appFilter.value]
     clauses.push({ bool: { should: apps.flatMap(a => [
       { term:         { 'app_name.keyword': a } },
@@ -490,11 +504,10 @@ function buildQuery(): any {
 // Same as buildQuery but without the appFilter clause — used for the app
 // aggregation so the dropdown always shows all available apps.
 function buildQueryWithoutApp(): any {
-  const saved = appFilter.value
-  appFilter.value = new Set()
-  const q = buildQuery()
-  appFilter.value = saved
-  return q
+  // App discovery ignores the app filter AND the time range, so the dropdown
+  // lists every app ever seen — not just those that logged in the current
+  // window (a newly-deployed or low-volume app would otherwise be hidden).
+  return buildQuery({ ignoreApp: true, ignoreTime: true })
 }
 
 // Convert a datetime-local string ("YYYY-MM-DDTHH:mm") — which the browser
@@ -1043,7 +1056,7 @@ function hitKey(hit: Hit, idx: number): string {
               </div>
             </div>
 
-            <div v-if="appNames.length" class="disc-filter-group">
+            <div v-if="activeConn" class="disc-filter-group">
               <span class="disc-filter-label">APP</span>
               <div class="disc-app-picker" ref="appMenuEl">
                 <button class="disc-app-trigger"
@@ -1056,13 +1069,17 @@ function hitKey(hit: Hit, idx: number): string {
                 </button>
                 <div v-if="showAppMenu" class="disc-app-menu">
                   <div class="disc-app-search-wrap">
-                    <input v-model="appSearch" class="disc-app-search" placeholder="Search apps…" @click.stop />
+                    <input v-model="appSearch" class="disc-app-search" placeholder="Search or type an app name…" @click.stop @keyup.enter="addManualApp" />
                   </div>
+                  <button
+                    v-if="appSearch.trim() && !visibleAppNames.some(a => a.toLowerCase() === appSearch.trim().toLowerCase())"
+                    class="disc-app-add"
+                    @click="addManualApp">
+                    + Filter by “{{ appSearch.trim() }}”
+                  </button>
                   <div class="disc-app-list">
                     <div v-if="appSearchLoading" class="disc-app-state">Searching…</div>
-                    <div v-else-if="!visibleAppNames.length" class="disc-app-state">
-                      {{ appSearch.trim() ? 'No apps match — try the main filter: app_name:"your-app"' : 'No apps in this time range' }}
-                    </div>
+                    <div v-else-if="!visibleAppNames.length && !appSearch.trim()" class="disc-app-state">No apps found.</div>
                     <label v-for="app in visibleAppNames"
                       :key="app" class="disc-app-item"
                       :class="{ selected: appFilter.has(app) }">
@@ -1491,6 +1508,12 @@ export { flatSource }
 }
 .disc-app-search:focus { border-color:var(--accent,#3b82f6); }
 .disc-app-state { padding:8px 12px; font-size:11.5px; color:var(--text-muted); }
+.disc-app-add {
+  display:block; width:calc(100% - 16px); margin:2px 8px 4px; text-align:left;
+  border:1px dashed var(--brand); border-radius:6px; background:var(--brand-dim);
+  color:var(--brand); font-size:12px; padding:6px 9px; cursor:pointer;
+}
+.disc-app-add:hover { background:var(--brand); color:var(--brand-fg); }
 .disc-app-list { max-height:220px; overflow-y:auto; padding:4px 0; }
 .disc-app-item {
   display:flex; align-items:center; gap:8px;
