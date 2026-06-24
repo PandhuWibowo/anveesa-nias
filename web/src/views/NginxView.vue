@@ -5,6 +5,7 @@ import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
 import NginxEditor from '@/components/nginx/NginxEditor.vue'
+import SearchSelect from '@/components/ui/SearchSelect.vue'
 
 type NginxTab = 'config' | 'sites' | 'logs' | 'map' | 'certs' | 'status'
 interface NginxCert {
@@ -180,6 +181,14 @@ const sudoParam = computed(() => (useSudo.value ? '1' : undefined))
 // Shared query params so every call respects the (possibly overridden) host settings.
 const cfgParams = computed(() => ({ root: configRoot.value, bin: bin.value, sudo: sudoParam.value }))
 const logParams = computed(() => ({ dir: logDir.value, bin: bin.value, sudo: sudoParam.value }))
+
+// Searchable-dropdown option lists
+const hostOptions = computed(() => hosts.value.map((h) => ({ value: h.id, label: `${h.name} (${h.ssh_host})` })))
+const binOptions = [
+  { value: 'nginx', label: 'nginx' },
+  { value: 'openresty', label: 'openresty' },
+]
+const logOptions = computed(() => logFiles.value.map((f) => ({ value: f.path, label: `${f.path} (${formatBytes(f.size)})` })))
 
 // ── Hosts ───────────────────────────────────────────────────────
 async function loadHosts() {
@@ -755,14 +764,14 @@ onBeforeUnmount(() => {
             <button v-if="hosts.length" class="base-btn base-btn--sm" :class="{ 'base-btn--primary': fleetMode }" @click="toggleFleet">
               {{ fleetMode ? '← Back to host' : '▦ Fleet' }}
             </button>
-            <select
+            <SearchSelect
               v-if="hosts.length && !fleetMode"
-              class="base-input ng-host"
-              :value="hostId ?? ''"
-              @change="selectHost(Number(($event.target as HTMLSelectElement).value))"
-            >
-              <option v-for="h in hosts" :key="h.id" :value="h.id">{{ h.name }} ({{ h.ssh_host }})</option>
-            </select>
+              class="ng-host"
+              :model-value="hostId"
+              :options="hostOptions"
+              placeholder="Select host…"
+              @update:model-value="selectHost(Number($event))"
+            />
             <button v-if="hostId !== null && canReload && !fleetMode" class="base-btn base-btn--sm" :disabled="busy" @click="testConfig">Test config</button>
             <button v-if="hostId !== null && canReload && !fleetMode" class="base-btn base-btn--primary base-btn--sm" :disabled="busy" @click="reload()">Reload</button>
           </div>
@@ -821,10 +830,7 @@ onBeforeUnmount(() => {
           <div class="page-card ng-settings">
             <div class="ng-set">
               <label>Binary</label>
-              <select v-model="bin" class="base-input">
-                <option value="nginx">nginx</option>
-                <option value="openresty">openresty</option>
-              </select>
+              <SearchSelect v-model="bin" :options="binOptions" class="ng-binsel" />
             </div>
             <div class="ng-set ng-set--grow">
               <label>Config root</label>
@@ -1030,9 +1036,13 @@ onBeforeUnmount(() => {
           <!-- LOGS -->
           <div v-else-if="tab === 'logs'" class="page-card ng-logs">
             <div class="ng-logbar">
-              <select class="base-input ng-logsel" :value="activeLog" @change="openLog(($event.target as HTMLSelectElement).value)">
-                <option v-for="f in logFiles" :key="f.path" :value="f.path">{{ f.path }} ({{ formatBytes(f.size) }})</option>
-              </select>
+              <SearchSelect
+                class="ng-logsel"
+                :model-value="activeLog"
+                :options="logOptions"
+                placeholder="Select a log…"
+                @update:model-value="openLog(String($event))"
+              />
               <button
                 class="base-btn base-btn--sm"
                 :class="following ? 'base-btn--danger' : 'base-btn--primary'"
@@ -1139,7 +1149,8 @@ onBeforeUnmount(() => {
 
 .ng-logs { display: flex; flex-direction: column; gap: 10px; }
 .ng-logbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.ng-logsel { min-width: 240px; }
+.ng-logsel { min-width: 240px; flex: 1 1 320px; max-width: 560px; }
+.ng-binsel { min-width: 130px; }
 .ng-logmeta { font-size: 12px; color: var(--text-muted); font-family: var(--mono); }
 .ng-logview { margin: 0; max-height: 62vh; overflow: auto; background: var(--bg-base, #0b0e14); color: var(--text-secondary); font-family: var(--mono); font-size: 12px; line-height: 1.5; padding: 12px; border-radius: var(--r-md); border: 1px solid var(--border); white-space: pre; }
 
