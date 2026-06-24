@@ -776,6 +776,13 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	})
 
 	// ── Infrastructure: Docker ────────────────────────────────────
+	mux.HandleFunc("/api/docker/overview", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			requireAny(handlers.PermDockerView, handlers.PermDockerManage)(handlers.DockerOverview())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
 	mux.HandleFunc("/api/docker/hosts", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -858,6 +865,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		// /api/docker/hosts/{id}/containers/{cid}/exec  (separate docker.exec gate)
 		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "exec" && r.Method == http.MethodPost:
 			exec(handlers.DockerContainerExec())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/rename
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "rename" && r.Method == http.MethodPost:
+			manage(handlers.DockerContainerRename())(w, r)
 		// /api/docker/hosts/{id}/containers/{cid}/{start|stop|restart}
 		case len(parts) == 4 && parts[1] == "containers" && r.Method == http.MethodPost:
 			manage(handlers.DockerContainerAction())(w, r)

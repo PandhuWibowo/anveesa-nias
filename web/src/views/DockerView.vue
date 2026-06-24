@@ -60,6 +60,22 @@ interface ContainerStats {
   mem_usage: number
   mem_limit: number
   mem_percent: number
+  net_rx: number
+  net_tx: number
+  blk_read: number
+  blk_write: number
+  pids: number
+}
+interface HostSummary {
+  host_id: number
+  name: string
+  ssh_host: string
+  reachable: boolean
+  running: number
+  total: number
+  images: number
+  version: string
+  error?: string
 }
 interface DaemonInfo {
   version?: string
@@ -94,6 +110,16 @@ const images = ref<DockerImage[]>([])
 const volumes = ref<DockerVolume[]>([])
 const networks = ref<DockerNetwork[]>([])
 const groupByCompose = ref(true)
+const search = ref('')
+
+// ── Multi-host overview ─────────────────────────────────────────
+const overview = ref<HostSummary[]>([])
+const showOverview = ref(false)
+
+// ── Rename modal ────────────────────────────────────────────────
+const showRename = ref(false)
+const renameCid = ref('')
+const renameValue = ref('')
 const loading = ref(false)
 const daemonInfo = ref<DaemonInfo | null>(null)
 const connError = ref('')
@@ -143,6 +169,9 @@ const logsText = ref('')
 const logsTitle = ref('')
 const logsCid = ref('')
 const logsLoading = ref(false)
+const logsTail = ref('200')
+const logsTimestamps = ref(false)
+const logsSearch = ref('')
 let logsTimer: ReturnType<typeof setInterval> | undefined
 
 // ── Inspect / exec slide-over ───────────────────────────────────
@@ -160,7 +189,19 @@ const execRunning = ref(false)
 // ── Run-container modal ─────────────────────────────────────────
 const showRunForm = ref(false)
 const runSaving = ref(false)
-const runForm = ref({ image: '', name: '', ports: '', env: '' })
+const runForm = ref({
+  image: '',
+  name: '',
+  ports: '',
+  env: '',
+  volumes: '',
+  cmd: '',
+  network: '',
+  restartPolicy: 'no',
+  memoryMb: 0,
+  cpus: 0,
+  autoPull: true,
+})
 
 // ── Images management ───────────────────────────────────────────
 const pullImage = ref('')
@@ -247,7 +288,10 @@ function switchTab(t: 'containers' | 'images' | 'volumes' | 'networks') {
 }
 
 // ── Container actions ───────────────────────────────────────────
-async function containerAction(c: DockerContainer, action: 'start' | 'stop' | 'restart') {
+async function containerAction(
+  c: DockerContainer,
+  action: 'start' | 'stop' | 'restart' | 'pause' | 'unpause',
+) {
   busyAction.value = `${c.id}:${action}`
   try {
     await axios.post(`/api/docker/hosts/${activeHostId.value}/containers/${c.id}/${action}`)
@@ -280,7 +324,7 @@ async function fetchLogs() {
   try {
     const { data } = await axios.get<string>(
       `/api/docker/hosts/${activeHostId.value}/containers/${logsCid.value}/logs`,
-      { params: { tail: 300 }, responseType: 'text' },
+      { params: { tail: logsTail.value, timestamps: logsTimestamps.value ? 1 : 0 }, responseType: 'text' },
     )
     logsText.value = data || '(no log output)'
   } catch (e: any) {
@@ -288,6 +332,24 @@ async function fetchLogs() {
   } finally {
     logsLoading.value = false
   }
+}
+
+const logsDisplay = computed(() => {
+  if (!logsSearch.value.trim()) return logsText.value
+  const q = logsSearch.value.toLowerCase()
+  return logsText.value
+    .split('\n')
+    .filter((l) => l.toLowerCase().includes(q))
+    .join('\n')
+})
+
+function downloadLogs() {
+  const blob = new Blob([logsText.value], { type: 'text/plain' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `${logsTitle.value || 'container'}.log`
+  a.click()
+  URL.revokeObjectURL(a.href)
 }
 
 async function openLogs(c: DockerContainer) {
@@ -367,7 +429,19 @@ async function removeContainer(c: DockerContainer) {
 }
 
 function openRun() {
-  runForm.value = { image: '', name: '', ports: '', env: '' }
+  runForm.value = {
+    image: '',
+    name: '',
+    ports: '',
+    env: '',
+    volumes: '',
+    cmd: '',
+    network: '',
+    restartPolicy: 'no',
+    memoryMb: 0,
+    cpus: 0,
+    autoPull: true,
+  }
   showRunForm.value = true
 }
 
@@ -390,6 +464,16 @@ async function submitRun() {
     .split('\n')
     .map((s) => s.trim())
     .filter(Boolean)
+  // volumes: "/data:/var/lib/data, /cfg:/etc/app:ro"
+  const vols = runForm.value.volumes
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((spec) => {
+      const parts = spec.split(':')
+      return { host: parts[0], container: parts[1] || '', ro: parts[2] === 'ro' }
+    })
+    .filter((v) => v.host && v.container)
   runSaving.value = true
   try {
     await axios.post(`/api/docker/hosts/${activeHostId.value}/containers`, {
@@ -397,6 +481,13 @@ async function submitRun() {
       name: runForm.value.name.trim(),
       ports,
       env,
+      volumes: vols,
+      cmd: runForm.value.cmd.trim(),
+      network: runForm.value.network.trim(),
+      restart_policy: runForm.value.restartPolicy,
+      memory: runForm.value.memoryMb > 0 ? Math.round(runForm.value.memoryMb * 1024 * 1024) : 0,
+      cpus: Number(runForm.value.cpus) || 0,
+      auto_pull: runForm.value.autoPull,
     })
     toast.success('Container started')
     showRunForm.value = false
@@ -589,11 +680,36 @@ async function openTerminal(c: DockerContainer) {
   term.onResize(sendResize)
 }
 
+// ── Search / filter ─────────────────────────────────────────────
+const filteredContainers = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return containers.value
+  return containers.value.filter(
+    (c) => containerName(c).toLowerCase().includes(q) || c.image.toLowerCase().includes(q),
+  )
+})
+const filteredImages = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return images.value
+  return images.value.filter((i) => (i.repoTags || []).join(' ').toLowerCase().includes(q))
+})
+const filteredVolumes = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return volumes.value
+  return volumes.value.filter((v) => v.name.toLowerCase().includes(q))
+})
+const filteredNetworks = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return networks.value
+  return networks.value.filter((n) => n.name.toLowerCase().includes(q))
+})
+
 // ── Compose grouping ────────────────────────────────────────────
 const containerGroups = computed(() => {
-  if (!groupByCompose.value) return [{ project: '', containers: containers.value }]
+  const list = filteredContainers.value
+  if (!groupByCompose.value) return [{ project: '', containers: list }]
   const groups: Record<string, DockerContainer[]> = {}
-  for (const c of containers.value) {
+  for (const c of list) {
     const project = c.labels?.['com.docker.compose.project'] || ''
     ;(groups[project] ||= []).push(c)
   }
@@ -602,6 +718,39 @@ const containerGroups = computed(() => {
     .sort((a, b) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)))
     .map((project) => ({ project, containers: groups[project] }))
 })
+
+// ── Multi-host overview ─────────────────────────────────────────
+async function loadOverview() {
+  try {
+    const { data } = await axios.get<HostSummary[]>('/api/docker/overview')
+    overview.value = data
+  } catch {
+    overview.value = []
+  }
+}
+function toggleOverview() {
+  showOverview.value = !showOverview.value
+  if (showOverview.value) loadOverview()
+}
+
+// ── Rename ──────────────────────────────────────────────────────
+function openRename(c: DockerContainer) {
+  renameCid.value = c.id
+  renameValue.value = containerName(c)
+  showRename.value = true
+}
+async function submitRename() {
+  const name = renameValue.value.trim()
+  if (!name) return
+  try {
+    await axios.post(`/api/docker/hosts/${activeHostId.value}/containers/${renameCid.value}/rename`, { name })
+    toast.success('Container renamed')
+    showRename.value = false
+    await loadContainers()
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to rename')
+  }
+}
 
 // ── Host CRUD ───────────────────────────────────────────────────
 function openAddHost() {
@@ -813,6 +962,14 @@ onMounted(loadHosts)
             >
               <option v-for="h in hosts" :key="h.id" :value="h.id">{{ hostLabel(h) }}</option>
             </select>
+            <input
+              v-if="activeHost"
+              v-model="search"
+              class="base-input dk-search"
+              type="search"
+              placeholder="Filter…"
+            />
+            <button v-if="hosts.length" class="base-btn base-btn--sm" @click="toggleOverview">{{ showOverview ? 'Hide overview' : 'Overview' }}</button>
             <label v-if="activeHost" class="dk-autorefresh" title="Auto-refresh every 5s">
               <input type="checkbox" v-model="autoRefresh" /> Auto
             </label>
@@ -821,6 +978,26 @@ onMounted(loadHosts)
             <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="openAddHost">+ Add host</button>
           </div>
         </section>
+
+        <!-- Multi-host overview -->
+        <div v-if="showOverview && hosts.length" class="page-card dk-overview">
+          <div class="dk-overview-grid">
+            <div v-for="h in overview" :key="h.host_id" class="dk-ov-card" @click="selectHost(h.host_id)">
+              <div class="dk-ov-head">
+                <span class="dk-dot" :class="h.reachable ? 'dk-dot--ok' : 'dk-dot--err'"></span>
+                <span class="dk-ov-name">{{ h.name }}</span>
+                <span class="dk-muted">{{ h.ssh_host || 'local' }}</span>
+              </div>
+              <div v-if="h.reachable" class="dk-ov-stats">
+                <span><b>{{ h.running }}</b>/{{ h.total }} running</span>
+                <span><b>{{ h.images }}</b> images</span>
+                <span class="dk-muted">v{{ h.version }}</span>
+              </div>
+              <div v-else class="dk-ov-err">{{ h.error || 'unreachable' }}</div>
+            </div>
+            <div v-if="!overview.length" class="dk-muted">Loading host summaries…</div>
+          </div>
+        </div>
 
         <!-- Empty state -->
         <div v-if="!hosts.length" class="page-card dk-empty">
@@ -913,8 +1090,8 @@ onMounted(loadHosts)
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="!containers.length && !connError">
-                  <td colspan="7" class="dk-empty-row">No containers on this host.</td>
+                <tr v-if="!filteredContainers.length && !connError">
+                  <td colspan="7" class="dk-empty-row">No containers{{ search ? ' match' : ' on this host' }}.</td>
                 </tr>
                 <template v-for="group in containerGroups" :key="group.project || '_standalone'">
                   <tr v-if="groupByCompose && group.project" class="dk-group-row">
@@ -956,10 +1133,23 @@ onMounted(loadHosts)
                         >Restart</button>
                         <button
                           v-if="c.state === 'running'"
+                          class="base-btn base-btn--xs"
+                          :disabled="busyAction === `${c.id}:pause`"
+                          @click="containerAction(c, 'pause')"
+                        >Pause</button>
+                        <button
+                          v-if="c.state === 'paused'"
+                          class="base-btn base-btn--xs base-btn--primary"
+                          :disabled="busyAction === `${c.id}:unpause`"
+                          @click="containerAction(c, 'unpause')"
+                        >Unpause</button>
+                        <button
+                          v-if="c.state === 'running' || c.state === 'paused'"
                           class="base-btn base-btn--xs base-btn--danger"
                           :disabled="busyAction === `${c.id}:stop`"
                           @click="containerAction(c, 'stop')"
                         >Stop</button>
+                        <button class="base-btn base-btn--xs" @click="openRename(c)">Rename</button>
                         <button
                           class="base-btn base-btn--xs base-btn--danger"
                           @click="removeContainer(c)"
@@ -981,6 +1171,18 @@ onMounted(loadHosts)
                             {{ formatBytes(statsMap[c.id].mem_usage) }} / {{ formatBytes(statsMap[c.id].mem_limit) }}
                             ({{ statsMap[c.id].mem_percent.toFixed(1) }}%)
                           </span>
+                        </div>
+                        <div class="dk-stat">
+                          <span class="dk-stat-label">Net I/O</span>
+                          <span class="dk-stat-val">↓ {{ formatBytes(statsMap[c.id].net_rx) }} · ↑ {{ formatBytes(statsMap[c.id].net_tx) }}</span>
+                        </div>
+                        <div class="dk-stat">
+                          <span class="dk-stat-label">Block I/O</span>
+                          <span class="dk-stat-val">R {{ formatBytes(statsMap[c.id].blk_read) }} · W {{ formatBytes(statsMap[c.id].blk_write) }}</span>
+                        </div>
+                        <div class="dk-stat">
+                          <span class="dk-stat-label">PIDs</span>
+                          <span class="dk-stat-val">{{ statsMap[c.id].pids }}</span>
                         </div>
                       </div>
                       <div v-else class="dk-muted">Loading stats…</div>
@@ -1005,10 +1207,10 @@ onMounted(loadHosts)
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="!images.length && !connError">
-                  <td colspan="5" class="dk-empty-row">No images on this host.</td>
+                <tr v-if="!filteredImages.length && !connError">
+                  <td colspan="5" class="dk-empty-row">No images{{ search ? ' match' : ' on this host' }}.</td>
                 </tr>
-                <tr v-for="img in images" :key="img.id">
+                <tr v-for="img in filteredImages" :key="img.id">
                   <td>
                     <span v-if="img.repoTags && img.repoTags.length" class="dk-name">{{ img.repoTags.join(', ') }}</span>
                     <span v-else class="dk-muted">&lt;none&gt;</span>
@@ -1036,10 +1238,10 @@ onMounted(loadHosts)
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="!volumes.length && !connError">
-                  <td colspan="4" class="dk-empty-row">No volumes on this host.</td>
+                <tr v-if="!filteredVolumes.length && !connError">
+                  <td colspan="4" class="dk-empty-row">No volumes{{ search ? ' match' : ' on this host' }}.</td>
                 </tr>
-                <tr v-for="v in volumes" :key="v.name">
+                <tr v-for="v in filteredVolumes" :key="v.name">
                   <td class="dk-name">{{ v.name }}</td>
                   <td class="dk-status">{{ v.driver }}</td>
                   <td class="dk-mono dk-id">{{ v.mountpoint }}</td>
@@ -1065,10 +1267,10 @@ onMounted(loadHosts)
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="!networks.length && !connError">
-                  <td colspan="6" class="dk-empty-row">No networks on this host.</td>
+                <tr v-if="!filteredNetworks.length && !connError">
+                  <td colspan="6" class="dk-empty-row">No networks{{ search ? ' match' : ' on this host' }}.</td>
                 </tr>
-                <tr v-for="n in networks" :key="n.id">
+                <tr v-for="n in filteredNetworks" :key="n.id">
                   <td class="dk-name">{{ n.name }}</td>
                   <td class="dk-status">{{ n.driver }}</td>
                   <td class="dk-status">{{ n.scope }}</td>
@@ -1157,7 +1359,20 @@ onMounted(loadHosts)
           Logs — {{ logsTitle }}
           <span class="dk-live-dot" title="Live tail — refreshes every 2.5s"></span>
         </div>
-        <pre class="dk-logs">{{ logsLoading ? 'Loading…' : logsText }}</pre>
+        <div class="dk-logs-bar">
+          <select v-model="logsTail" class="base-input dk-logs-tail" @change="fetchLogs">
+            <option value="100">100 lines</option>
+            <option value="200">200 lines</option>
+            <option value="500">500 lines</option>
+            <option value="1000">1000 lines</option>
+            <option value="all">all</option>
+          </select>
+          <label class="dk-autorefresh"><input type="checkbox" v-model="logsTimestamps" @change="fetchLogs" /> Timestamps</label>
+          <input v-model="logsSearch" class="base-input dk-logs-search" type="search" placeholder="Filter lines…" />
+          <div class="dk-spacer"></div>
+          <button class="base-btn base-btn--sm" @click="downloadLogs">Download</button>
+        </div>
+        <pre class="dk-logs">{{ logsLoading ? 'Loading…' : logsDisplay }}</pre>
         <div class="dk-modal-actions">
           <div class="dk-spacer"></div>
           <button class="base-btn base-btn--sm" @click="closeLogs">Close</button>
@@ -1167,21 +1382,55 @@ onMounted(loadHosts)
 
     <!-- Run container modal -->
     <div v-if="showRunForm" class="dk-modal-backdrop" @click.self="showRunForm = false">
-      <div class="dk-modal page-card">
+      <div class="dk-modal dk-modal--wide page-card dk-run-modal">
         <div class="dk-modal-title">Run a container</div>
         <div class="dk-form">
-          <label>Image<input v-model="runForm.image" class="base-input" placeholder="nginx:alpine" /></label>
-          <label>Name (optional)<input v-model="runForm.name" class="base-input" placeholder="my-nginx" /></label>
+          <div class="dk-form-row">
+            <label class="dk-grow">Image<input v-model="runForm.image" class="base-input" placeholder="nginx:alpine" /></label>
+            <label class="dk-grow">Name (optional)<input v-model="runForm.name" class="base-input" placeholder="my-nginx" /></label>
+          </div>
           <label>
             Ports (optional)
             <input v-model="runForm.ports" class="base-input" placeholder="8080:80, 5432:5432/tcp" />
             <span class="dk-field-hint">Comma-separated host:container, optional /proto.</span>
           </label>
           <label>
+            Volumes (optional)
+            <input v-model="runForm.volumes" class="base-input" placeholder="/data:/var/lib/data, /cfg:/etc/app:ro" />
+            <span class="dk-field-hint">Comma-separated host:container, optional :ro.</span>
+          </label>
+          <label>
+            Command (optional)
+            <input v-model="runForm.cmd" class="base-input dk-mono" placeholder="override CMD, e.g. sleep 3600" />
+          </label>
+          <label>
             Environment (optional)
-            <textarea v-model="runForm.env" class="base-input dk-textarea" rows="3" placeholder="KEY=value&#10;ANOTHER=value"></textarea>
+            <textarea v-model="runForm.env" class="base-input dk-textarea" rows="2" placeholder="KEY=value&#10;ANOTHER=value"></textarea>
             <span class="dk-field-hint">One KEY=value per line.</span>
           </label>
+          <div class="dk-form-row">
+            <label class="dk-grow">
+              Network
+              <select v-model="runForm.network" class="base-input">
+                <option value="">default (bridge)</option>
+                <option v-for="n in networks" :key="n.id" :value="n.name">{{ n.name }}</option>
+              </select>
+            </label>
+            <label class="dk-grow">
+              Restart policy
+              <select v-model="runForm.restartPolicy" class="base-input">
+                <option value="no">no</option>
+                <option value="on-failure">on-failure</option>
+                <option value="unless-stopped">unless-stopped</option>
+                <option value="always">always</option>
+              </select>
+            </label>
+          </div>
+          <div class="dk-form-row">
+            <label class="dk-grow">Memory limit (MB, 0 = none)<input v-model.number="runForm.memoryMb" class="base-input" type="number" min="0" /></label>
+            <label class="dk-grow">CPUs (0 = none)<input v-model.number="runForm.cpus" class="base-input" type="number" min="0" step="0.5" /></label>
+          </div>
+          <label class="dk-checkbox"><input type="checkbox" v-model="runForm.autoPull" /> Pull image automatically if not present</label>
         </div>
         <div class="dk-modal-actions">
           <div class="dk-spacer"></div>
@@ -1261,6 +1510,21 @@ onMounted(loadHosts)
           </section>
         </div>
       </aside>
+    </div>
+
+    <!-- Rename modal -->
+    <div v-if="showRename" class="dk-modal-backdrop" @click.self="showRename = false">
+      <div class="dk-modal page-card">
+        <div class="dk-modal-title">Rename container</div>
+        <div class="dk-form">
+          <label>New name<input v-model="renameValue" class="base-input" @keyup.enter="submitRename" /></label>
+        </div>
+        <div class="dk-modal-actions">
+          <div class="dk-spacer"></div>
+          <button class="base-btn base-btn--sm" @click="showRename = false">Cancel</button>
+          <button class="base-btn base-btn--primary base-btn--sm" :disabled="!renameValue.trim()" @click="submitRename">Rename</button>
+        </div>
+      </div>
     </div>
 
     <!-- Interactive terminal modal -->
@@ -1379,6 +1643,27 @@ onMounted(loadHosts)
 /* Compose group rows */
 .dk-group-row td { background: var(--bg-body); padding: 7px 12px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
 .dk-group-badge { font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; background: var(--brand-dim); color: var(--brand); padding: 1px 6px; border-radius: var(--r-xs); margin-right: 6px; }
+
+/* Search + overview */
+.dk-search { min-width: 150px; max-width: 200px; }
+.dk-overview { padding: 14px 16px; }
+.dk-overview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.dk-ov-card { border: 1px solid var(--border); border-radius: var(--r); padding: 10px 12px; cursor: pointer; transition: border-color var(--dur) var(--ease); }
+.dk-ov-card:hover { border-color: var(--brand); }
+.dk-ov-head { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 6px; }
+.dk-ov-name { font-weight: 600; color: var(--text-primary); }
+.dk-ov-stats { display: flex; gap: 12px; font-size: 12px; color: var(--text-secondary); flex-wrap: wrap; }
+.dk-ov-stats b { color: var(--text-primary); }
+.dk-ov-err { font-size: 11px; color: var(--danger); }
+
+/* Run modal + checkbox */
+.dk-run-modal { max-height: 88vh; overflow-y: auto; }
+.dk-checkbox { flex-direction: row !important; align-items: center; gap: 7px !important; cursor: pointer; }
+
+/* Logs controls */
+.dk-logs-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.dk-logs-tail { width: 110px; }
+.dk-logs-search { max-width: 200px; }
 
 /* Terminal modal */
 .dk-term-modal { width: 900px; max-width: 94vw; height: 560px; max-height: 86vh; background: #0d1117; border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); display: flex; flex-direction: column; overflow: hidden; }

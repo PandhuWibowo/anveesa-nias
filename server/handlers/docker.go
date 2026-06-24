@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	appdb "github.com/anveesa/nias/db"
@@ -81,7 +82,9 @@ type dockerImage struct {
 }
 
 var dockerIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
-var dockerAllowedActions = map[string]bool{"start": true, "stop": true, "restart": true}
+var dockerAllowedActions = map[string]bool{
+	"start": true, "stop": true, "restart": true, "pause": true, "unpause": true,
+}
 
 // ── Connection over SSH ───────────────────────────────────────────────────
 
@@ -638,8 +641,10 @@ func DockerContainerLogs() http.HandlerFunc {
 		if tail == "" {
 			tail = "200"
 		}
-		if _, err := strconv.Atoi(tail); err != nil {
-			tail = "200"
+		if tail != "all" {
+			if _, err := strconv.Atoi(tail); err != nil {
+				tail = "200"
+			}
 		}
 
 		d, err := connectHostByID(id)
@@ -652,11 +657,15 @@ func DockerContainerLogs() http.HandlerFunc {
 		// The multiplexed-frame format depends on whether the container has a TTY.
 		tty := dockerContainerHasTTY(d, cid)
 
+		timestamps := "0"
+		if r.URL.Query().Get("timestamps") == "1" {
+			timestamps = "1"
+		}
 		q := url.Values{}
 		q.Set("stdout", "1")
 		q.Set("stderr", "1")
 		q.Set("tail", tail)
-		q.Set("timestamps", "0")
+		q.Set("timestamps", timestamps)
 		resp, err := d.do(http.MethodGet, "/containers/"+url.PathEscape(cid)+"/logs", q)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
@@ -759,6 +768,19 @@ func DockerContainerStats() http.HandlerFunc {
 				Usage uint64 `json:"usage"`
 				Limit uint64 `json:"limit"`
 			} `json:"memory_stats"`
+			Networks map[string]struct {
+				RxBytes uint64 `json:"rx_bytes"`
+				TxBytes uint64 `json:"tx_bytes"`
+			} `json:"networks"`
+			BlkioStats struct {
+				IoServiceBytesRecursive []struct {
+					Op    string `json:"op"`
+					Value uint64 `json:"value"`
+				} `json:"io_service_bytes_recursive"`
+			} `json:"blkio_stats"`
+			PidsStats struct {
+				Current uint64 `json:"current"`
+			} `json:"pids_stats"`
 		}
 		q := url.Values{}
 		q.Set("stream", "false")
@@ -781,11 +803,30 @@ func DockerContainerStats() http.HandlerFunc {
 		if raw.MemoryStats.Limit > 0 {
 			memPercent = float64(raw.MemoryStats.Usage) / float64(raw.MemoryStats.Limit) * 100.0
 		}
+		var netRx, netTx uint64
+		for _, n := range raw.Networks {
+			netRx += n.RxBytes
+			netTx += n.TxBytes
+		}
+		var blkRead, blkWrite uint64
+		for _, b := range raw.BlkioStats.IoServiceBytesRecursive {
+			switch strings.ToLower(b.Op) {
+			case "read":
+				blkRead += b.Value
+			case "write":
+				blkWrite += b.Value
+			}
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"cpu_percent": cpuPercent,
 			"mem_usage":   raw.MemoryStats.Usage,
 			"mem_limit":   raw.MemoryStats.Limit,
 			"mem_percent": memPercent,
+			"net_rx":      netRx,
+			"net_tx":      netTx,
+			"blk_read":    blkRead,
+			"blk_write":   blkWrite,
+			"pids":        raw.PidsStats.Current,
 		})
 	}
 }
@@ -986,14 +1027,25 @@ func DockerContainerRun() http.HandlerFunc {
 			return
 		}
 		var req struct {
-			Image string   `json:"image"`
-			Name  string   `json:"name"`
-			Env   []string `json:"env"`
-			Ports []struct {
+			Image         string   `json:"image"`
+			Name          string   `json:"name"`
+			Env           []string `json:"env"`
+			Cmd           string   `json:"cmd"`
+			Network       string   `json:"network"`
+			RestartPolicy string   `json:"restart_policy"`
+			Memory        int64    `json:"memory"` // bytes
+			Cpus          float64  `json:"cpus"`
+			AutoPull      bool     `json:"auto_pull"`
+			Ports         []struct {
 				Host      string `json:"host"`
 				Container string `json:"container"`
 				Proto     string `json:"proto"`
 			} `json:"ports"`
+			Volumes []struct {
+				Host      string `json:"host"`
+				Container string `json:"container"`
+				RO        bool   `json:"ro"`
+			} `json:"volumes"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Image) == "" {
 			http.Error(w, `{"error":"image is required"}`, http.StatusBadRequest)
@@ -1022,11 +1074,43 @@ func DockerContainerRun() http.HandlerFunc {
 				bindings[key] = []map[string]string{{"HostPort": p.Host}}
 			}
 		}
+
+		hostConfig := map[string]interface{}{"PortBindings": bindings}
+		binds := []string{}
+		for _, v := range req.Volumes {
+			if strings.TrimSpace(v.Host) == "" || strings.TrimSpace(v.Container) == "" {
+				continue
+			}
+			b := v.Host + ":" + v.Container
+			if v.RO {
+				b += ":ro"
+			}
+			binds = append(binds, b)
+		}
+		if len(binds) > 0 {
+			hostConfig["Binds"] = binds
+		}
+		if rp := strings.TrimSpace(req.RestartPolicy); rp != "" && rp != "no" {
+			hostConfig["RestartPolicy"] = map[string]interface{}{"Name": rp}
+		}
+		if req.Memory > 0 {
+			hostConfig["Memory"] = req.Memory
+		}
+		if req.Cpus > 0 {
+			hostConfig["NanoCpus"] = int64(req.Cpus * 1e9)
+		}
+		if nm := strings.TrimSpace(req.Network); nm != "" {
+			hostConfig["NetworkMode"] = nm
+		}
+
 		createBody := map[string]interface{}{
 			"Image":        req.Image,
 			"Env":          req.Env,
 			"ExposedPorts": exposed,
-			"HostConfig":   map[string]interface{}{"PortBindings": bindings},
+			"HostConfig":   hostConfig,
+		}
+		if cmd := strings.TrimSpace(req.Cmd); cmd != "" {
+			createBody["Cmd"] = strings.Fields(cmd)
 		}
 		q := url.Values{}
 		if strings.TrimSpace(req.Name) != "" {
@@ -1040,11 +1124,24 @@ func DockerContainerRun() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
 		}
+		// Auto-pull the image if it's missing, then retry once.
+		if cResp.StatusCode == http.StatusNotFound && req.AutoPull {
+			cResp.Body.Close()
+			if perr := pullImageOn(d, req.Image); perr != nil {
+				http.Error(w, jsonError("pull failed: "+perr.Error()), http.StatusBadGateway)
+				return
+			}
+			cResp, err = d.doBody(http.MethodPost, "/containers/create", q, createBody, false)
+			if err != nil {
+				http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+				return
+			}
+		}
 		if cResp.StatusCode >= 400 {
 			msg := dockerErrBody(cResp)
 			cResp.Body.Close()
 			if cResp.StatusCode == http.StatusNotFound {
-				msg = "image not found on host — pull it first: " + msg
+				msg = "image not found on host — enable auto-pull or pull it first: " + msg
 			}
 			http.Error(w, jsonError(msg), http.StatusBadGateway)
 			return
@@ -1070,7 +1167,80 @@ func DockerContainerRun() http.HandlerFunc {
 	}
 }
 
+// DockerContainerRename renames a container.
+func DockerContainerRename() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, cid, err := dockerHostAndContainer(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
+			http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
+			return
+		}
+		d, err := connectHostByID(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+		q := url.Values{}
+		q.Set("name", strings.TrimSpace(body.Name))
+		resp, err := d.do(http.MethodPost, "/containers/"+url.PathEscape(cid)+"/rename", q)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			http.Error(w, jsonError(dockerErrBody(resp)), http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	}
+}
+
 // ── Image lifecycle ───────────────────────────────────────────────────────
+
+// pullImageOn pulls an image on an existing connection, blocking until done.
+func pullImageOn(d *dockerConn, img string) error {
+	name, tag := img, "latest"
+	// A ':' after the last '/' is a tag separator (not a registry port).
+	if i := strings.LastIndex(img, ":"); i > strings.LastIndex(img, "/") {
+		name, tag = img[:i], img[i+1:]
+	}
+	q := url.Values{}
+	q.Set("fromImage", name)
+	q.Set("tag", tag)
+	resp, err := d.doBody(http.MethodPost, "/images/create", q, nil, true) // no timeout
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("%s", dockerErrBody(resp))
+	}
+	// Drain the progress stream; surface any error line it reports.
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if bytes.Contains(line, []byte(`"errorDetail"`)) || bytes.Contains(line, []byte(`"error"`)) {
+			var e struct {
+				Error string `json:"error"`
+			}
+			if json.Unmarshal(line, &e) == nil && e.Error != "" {
+				return fmt.Errorf("%s", e.Error)
+			}
+		}
+	}
+	return nil
+}
 
 // DockerImagePull pulls an image, blocking until the pull completes.
 func DockerImagePull() http.HandlerFunc {
@@ -1089,48 +1259,14 @@ func DockerImagePull() http.HandlerFunc {
 			return
 		}
 		img := strings.TrimSpace(body.Image)
-		name, tag := img, "latest"
-		// A ':' after the last '/' is a tag separator (not a registry port).
-		if i := strings.LastIndex(img, ":"); i > strings.LastIndex(img, "/") {
-			name, tag = img[:i], img[i+1:]
-		}
 		d, err := connectHostByID(id)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
 		}
 		defer d.Close()
-
-		q := url.Values{}
-		q.Set("fromImage", name)
-		q.Set("tag", tag)
-		resp, err := d.doBody(http.MethodPost, "/images/create", q, nil, true) // no timeout
-		if err != nil {
+		if err := pullImageOn(d, img); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode >= 400 {
-			http.Error(w, jsonError(dockerErrBody(resp)), http.StatusBadGateway)
-			return
-		}
-		// Drain the progress stream; surface any error line it reports.
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-		var pullErr string
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if bytes.Contains(line, []byte(`"errorDetail"`)) || bytes.Contains(line, []byte(`"error"`)) {
-				var e struct {
-					Error string `json:"error"`
-				}
-				if json.Unmarshal(line, &e) == nil && e.Error != "" {
-					pullErr = e.Error
-				}
-			}
-		}
-		if pullErr != "" {
-			http.Error(w, jsonError(pullErr), http.StatusBadGateway)
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "image": img})
@@ -1580,5 +1716,96 @@ func DockerNetworkRemove() http.HandlerFunc {
 func DockerNetworksPrune() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		dockerPrune(w, r, "/networks/prune")
+	}
+}
+
+// ── Multi-host overview ───────────────────────────────────────────────────
+
+type dockerHostSummary struct {
+	HostID    int64  `json:"host_id"`
+	Name      string `json:"name"`
+	SSHHost   string `json:"ssh_host"`
+	Reachable bool   `json:"reachable"`
+	Running   int    `json:"running"`
+	Total     int    `json:"total"`
+	Images    int    `json:"images"`
+	Version   string `json:"version"`
+	Error     string `json:"error,omitempty"`
+}
+
+// DockerOverview aggregates container/image counts across every configured host.
+func DockerOverview() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		rows, err := appdb.DB.Query(appdb.ConvertQuery(
+			`SELECT id, name, ssh_host FROM docker_hosts ORDER BY name ASC`))
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
+			return
+		}
+		type hostRow struct {
+			id      int64
+			name    string
+			sshHost string
+		}
+		var hostRows []hostRow
+		for rows.Next() {
+			var hr hostRow
+			if err := rows.Scan(&hr.id, &hr.name, &hr.sshHost); err == nil {
+				hostRows = append(hostRows, hr)
+			}
+		}
+		rows.Close()
+
+		summaries := make([]dockerHostSummary, len(hostRows))
+		var wg sync.WaitGroup
+		for i, hr := range hostRows {
+			wg.Add(1)
+			go func(i int, hr hostRow) {
+				defer wg.Done()
+				s := dockerHostSummary{HostID: hr.id, Name: hr.name, SSHHost: hr.sshHost}
+				h, err := loadDockerHost(hr.id)
+				if err != nil {
+					s.Error = err.Error()
+					summaries[i] = s
+					return
+				}
+				d, err := dialDocker(h)
+				if err != nil {
+					s.Error = err.Error()
+					summaries[i] = s
+					return
+				}
+				defer d.Close()
+				var ver struct {
+					Version string `json:"version"`
+				}
+				if err := d.getJSON("/version", nil, &ver); err != nil {
+					s.Error = err.Error()
+					summaries[i] = s
+					return
+				}
+				s.Reachable = true
+				s.Version = ver.Version
+				cq := url.Values{}
+				cq.Set("all", "1")
+				var conts []dockerContainer
+				if d.getJSON("/containers/json", cq, &conts) == nil {
+					s.Total = len(conts)
+					for _, c := range conts {
+						if c.State == "running" {
+							s.Running++
+						}
+					}
+				}
+				var imgs []dockerImage
+				if d.getJSON("/images/json", nil, &imgs) == nil {
+					s.Images = len(imgs)
+				}
+				summaries[i] = s
+			}(i, hr)
+		}
+		wg.Wait()
+		json.NewEncoder(w).Encode(summaries)
 	}
 }
