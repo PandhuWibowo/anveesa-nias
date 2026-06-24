@@ -988,6 +988,14 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			manage(handlers.NginxConfigWrite())(w, r)
 		case len(parts) == 3 && parts[1] == "config" && parts[2] == "backups" && r.Method == http.MethodGet:
 			view(handlers.NginxConfigBackups())(w, r)
+		case len(parts) == 3 && parts[1] == "config" && parts[2] == "effective" && r.Method == http.MethodGet:
+			view(handlers.NginxEffectiveConfig())(w, r)
+		case len(parts) == 2 && parts[1] == "certs" && r.Method == http.MethodGet:
+			view(handlers.NginxCerts())(w, r)
+		case len(parts) == 2 && parts[1] == "map" && r.Method == http.MethodGet:
+			view(handlers.NginxMap())(w, r)
+		case len(parts) == 2 && parts[1] == "stub_status" && r.Method == http.MethodGet:
+			view(handlers.NginxStubStatus())(w, r)
 		case len(parts) == 2 && parts[1] == "sites" && r.Method == http.MethodGet:
 			view(handlers.NginxSites())(w, r)
 		case len(parts) == 3 && parts[1] == "sites" && parts[2] == "toggle" && r.Method == http.MethodPost:

@@ -4,6 +4,38 @@ import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
+import NginxEditor from '@/components/nginx/NginxEditor.vue'
+
+type NginxTab = 'config' | 'sites' | 'logs' | 'map' | 'certs' | 'status'
+interface NginxCert {
+  path: string
+  subject: string
+  not_after: string
+  days_left: number
+  expired: boolean
+  domains: string[]
+  error?: string
+}
+interface NginxServerInfo {
+  listen: string[]
+  names: string
+  root: string
+  cert: string
+  proxy_pass: string[]
+}
+interface NginxUpstreamInfo {
+  name: string
+  servers: string[]
+}
+interface NginxStub {
+  active: number
+  accepts: number
+  handled: number
+  requests: number
+  reading: number
+  writing: number
+  waiting: number
+}
 
 interface SshHost {
   id: number
@@ -37,7 +69,7 @@ const canReload = computed(() => hasAnyPermission(['nginx.reload']))
 
 const hosts = ref<SshHost[]>([])
 const hostId = ref<number | null>(null)
-const tab = ref<'config' | 'sites' | 'logs'>('config')
+const tab = ref<NginxTab>('config')
 
 // Per-host detected/overridable settings
 const bin = ref('nginx')
@@ -92,6 +124,28 @@ const LEVELS = ['error', 'warn', 'crit', 'alert', 'notice']
 let suppressSave = false
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 
+// Effective config (nginx -T)
+const showEffective = ref(false)
+const effectiveContent = ref('')
+const loadingEffective = ref(false)
+
+// Map (servers + upstreams)
+const servers = ref<NginxServerInfo[]>([])
+const upstreams = ref<NginxUpstreamInfo[]>([])
+const loadingMap = ref(false)
+
+// Certs
+const certs = ref<NginxCert[]>([])
+const loadingCerts = ref(false)
+
+// stub_status
+const stub = ref<NginxStub | null>(null)
+const stubUrl = ref('http://127.0.0.1/nginx_status')
+const stubReqRate = ref(0)
+const stubErr = ref('')
+let stubTimer: ReturnType<typeof setInterval> | null = null
+let lastStub: { requests: number; t: number } | null = null
+
 // A permission/sudo error means the SSH user lacks direct access — the fix is
 // to elevate. We flip `useSudo` on and retry once, transparently.
 function isPermDenied(e: any): boolean {
@@ -129,6 +183,7 @@ async function selectHost(id: number) {
 
 async function onHostChange() {
   stopFollow()
+  stopStub()
   cmdOutput.value = ''
   activeFile.value = ''
   fileContent.value = ''
@@ -215,14 +270,119 @@ watch([bin, configRoot, logDir, useSudo], () => {
 async function loadCurrentTab() {
   if (tab.value === 'config') await loadTree()
   else if (tab.value === 'sites') await loadSites()
-  else await loadLogList()
+  else if (tab.value === 'logs') await loadLogList()
+  else if (tab.value === 'map') await loadMap()
+  else if (tab.value === 'certs') await loadCerts()
+  else if (tab.value === 'status') startStub()
 }
 
-function switchTab(t: 'config' | 'sites' | 'logs') {
+function switchTab(t: NginxTab) {
   if (t === tab.value) return
   if (t !== 'logs') stopFollow()
+  if (t !== 'status') stopStub()
   tab.value = t
   loadCurrentTab()
+}
+
+// ── Effective config (nginx -T) ─────────────────────────────────
+async function openEffective() {
+  showEffective.value = true
+  loadingEffective.value = true
+  effectiveContent.value = ''
+  try {
+    const { data } = await axios.get(`${base.value}/config/effective`, { params: cfgParams.value })
+    effectiveContent.value = data.content || ''
+  } catch (e: any) {
+    if (!useSudo.value && isPermDenied(e)) {
+      useSudo.value = true
+      toast.info('Permission denied — retrying with sudo')
+      loadingEffective.value = false
+      return openEffective()
+    }
+    effectiveContent.value = `# Failed: ${e?.response?.data?.error || 'nginx -T error'}`
+  } finally {
+    loadingEffective.value = false
+  }
+}
+
+// ── Map (servers + upstreams) ───────────────────────────────────
+async function loadMap() {
+  loadingMap.value = true
+  try {
+    const { data } = await axios.get<{ servers: NginxServerInfo[]; upstreams: NginxUpstreamInfo[] }>(`${base.value}/map`, {
+      params: cfgParams.value,
+    })
+    servers.value = data.servers || []
+    upstreams.value = data.upstreams || []
+  } catch (e: any) {
+    if (!useSudo.value && isPermDenied(e)) {
+      useSudo.value = true
+      toast.info('Permission denied — retrying with sudo')
+      loadingMap.value = false
+      return loadMap()
+    }
+    toast.error(e?.response?.data?.error || 'Failed to parse config')
+    servers.value = []
+    upstreams.value = []
+  } finally {
+    loadingMap.value = false
+  }
+}
+
+// ── Certs ───────────────────────────────────────────────────────
+async function loadCerts() {
+  loadingCerts.value = true
+  try {
+    const { data } = await axios.get<{ certs: NginxCert[] }>(`${base.value}/certs`, { params: cfgParams.value })
+    certs.value = data.certs || []
+  } catch (e: any) {
+    if (!useSudo.value && isPermDenied(e)) {
+      useSudo.value = true
+      toast.info('Permission denied — retrying with sudo')
+      loadingCerts.value = false
+      return loadCerts()
+    }
+    toast.error(e?.response?.data?.error || 'Failed to read certs')
+    certs.value = []
+  } finally {
+    loadingCerts.value = false
+  }
+}
+
+// ── stub_status ─────────────────────────────────────────────────
+async function pollStub() {
+  try {
+    const { data } = await axios.get<NginxStub>(`${base.value}/stub_status`, {
+      params: { url: stubUrl.value, sudo: sudoParam.value },
+    })
+    stubErr.value = ''
+    const now = Date.now()
+    if (lastStub && data.requests >= lastStub.requests) {
+      const dt = (now - lastStub.t) / 1000
+      if (dt > 0) stubReqRate.value = Math.max(0, (data.requests - lastStub.requests) / dt)
+    }
+    lastStub = { requests: data.requests, t: now }
+    stub.value = data
+  } catch (e: any) {
+    stubErr.value = e?.response?.data?.error || 'stub_status unavailable'
+    stopStub()
+  }
+}
+
+function startStub() {
+  stub.value = null
+  lastStub = null
+  stubReqRate.value = 0
+  stubErr.value = ''
+  pollStub()
+  stubTimer = setInterval(pollStub, 2000)
+}
+
+function stopStub() {
+  if (stubTimer !== null) {
+    clearInterval(stubTimer)
+    stubTimer = null
+  }
 }
 
 // ── Test / reload ───────────────────────────────────────────────
@@ -522,7 +682,10 @@ function formatBytes(n: number): string {
 }
 
 onMounted(loadHosts)
-onBeforeUnmount(stopFollow)
+onBeforeUnmount(() => {
+  stopFollow()
+  stopStub()
+})
 </script>
 
 <template>
@@ -588,8 +751,11 @@ onBeforeUnmount(stopFollow)
 
           <div class="ng-tabs">
             <button class="ng-tab" :class="{ 'ng-tab--active': tab === 'config' }" @click="switchTab('config')">Config</button>
+            <button class="ng-tab" :class="{ 'ng-tab--active': tab === 'map' }" @click="switchTab('map')">Map</button>
             <button class="ng-tab" :class="{ 'ng-tab--active': tab === 'sites' }" @click="switchTab('sites')">Sites</button>
+            <button class="ng-tab" :class="{ 'ng-tab--active': tab === 'certs' }" @click="switchTab('certs')">Certs</button>
             <button class="ng-tab" :class="{ 'ng-tab--active': tab === 'logs' }" @click="switchTab('logs')">Logs</button>
+            <button class="ng-tab" :class="{ 'ng-tab--active': tab === 'status' }" @click="switchTab('status')">Status</button>
           </div>
 
           <!-- CONFIG -->
@@ -614,6 +780,7 @@ onBeforeUnmount(stopFollow)
                   <span class="ng-editor-path">{{ activeFile }}</span>
                   <span v-if="dirty" class="ng-dirty">● unsaved</span>
                   <div class="dk-spacer"></div>
+                  <button class="base-btn base-btn--sm" @click="openEffective">nginx -T</button>
                   <select
                     v-if="backups.length"
                     class="base-input base-input--sm ng-baksel"
@@ -631,13 +798,11 @@ onBeforeUnmount(stopFollow)
                     @click="saveFile"
                   >Save</button>
                 </div>
-                <textarea
+                <NginxEditor
                   v-model="fileContent"
-                  class="ng-textarea"
-                  spellcheck="false"
                   :readonly="!canManage || loadingFile"
-                  :placeholder="loadingFile ? 'Loading…' : ''"
-                ></textarea>
+                  class="ng-cm-wrap"
+                />
               </template>
             </div>
           </div>
@@ -680,8 +845,92 @@ onBeforeUnmount(stopFollow)
             </table>
           </div>
 
+          <!-- MAP -->
+          <div v-else-if="tab === 'map'" class="ng-mapwrap">
+            <div class="page-card ng-mapcard">
+              <div class="ng-mapcard-head">Servers <span class="ng-count">{{ servers.length }}</span></div>
+              <table class="ng-table">
+                <thead>
+                  <tr><th>server_name</th><th>listen</th><th>root / proxy_pass</th><th>cert</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-if="loadingMap"><td colspan="4" class="ng-msg">Parsing config…</td></tr>
+                  <tr v-else-if="!servers.length"><td colspan="4" class="ng-msg">No server blocks.</td></tr>
+                  <tr v-for="(s, i) in servers" :key="i">
+                    <td class="ng-sname">{{ s.names || '—' }}</td>
+                    <td class="ng-mono">{{ s.listen.join(', ') || '—' }}</td>
+                    <td class="ng-mono">
+                      <span v-if="s.root">root: {{ s.root }}</span>
+                      <span v-for="p in s.proxy_pass" :key="p" class="ng-proxy">→ {{ p }}</span>
+                      <span v-if="!s.root && !s.proxy_pass.length">—</span>
+                    </td>
+                    <td class="ng-mono ng-cert">{{ s.cert ? s.cert.split('/').pop() : '—' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="page-card ng-mapcard">
+              <div class="ng-mapcard-head">Upstreams <span class="ng-count">{{ upstreams.length }}</span></div>
+              <table class="ng-table">
+                <thead><tr><th>name</th><th>servers</th></tr></thead>
+                <tbody>
+                  <tr v-if="loadingMap"><td colspan="2" class="ng-msg">Parsing…</td></tr>
+                  <tr v-else-if="!upstreams.length"><td colspan="2" class="ng-msg">No upstreams.</td></tr>
+                  <tr v-for="u in upstreams" :key="u.name">
+                    <td class="ng-sname">{{ u.name }}</td>
+                    <td class="ng-mono">{{ u.servers.join(', ') }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- CERTS -->
+          <div v-else-if="tab === 'certs'" class="page-card ng-sites">
+            <div class="ng-sites-head">SSL certificates <span class="ng-count">{{ certs.length }}</span> · soonest expiry first</div>
+            <table class="ng-table">
+              <thead>
+                <tr><th>Domains</th><th>Expires</th><th>Days left</th><th>Certificate</th></tr>
+              </thead>
+              <tbody>
+                <tr v-if="loadingCerts"><td colspan="4" class="ng-msg">Reading certificates…</td></tr>
+                <tr v-else-if="!certs.length"><td colspan="4" class="ng-msg">No ssl_certificate directives found.</td></tr>
+                <tr v-for="(c, i) in certs" :key="i">
+                  <td class="ng-mono">{{ c.domains.length ? c.domains.join(', ') : (c.subject || '—') }}</td>
+                  <td class="ng-mono">{{ c.error ? '—' : c.not_after }}</td>
+                  <td>
+                    <span v-if="c.error" class="ng-pill ng-pill--warn">error</span>
+                    <span v-else class="ng-pill" :class="c.expired ? 'ng-pill--err2' : c.days_left < 14 ? 'ng-pill--warn' : c.days_left < 30 ? 'ng-pill--off' : 'ng-pill--ok'">
+                      {{ c.expired ? 'EXPIRED' : c.days_left + 'd' }}
+                    </span>
+                  </td>
+                  <td class="ng-mono ng-cert" :title="c.error || c.path">{{ c.path }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- STATUS -->
+          <div v-else-if="tab === 'status'" class="page-card ng-status">
+            <div class="ng-statusrow">
+              <input v-model="stubUrl" class="base-input ng-stuburl" spellcheck="false" @keyup.enter="startStub" />
+              <button class="base-btn base-btn--sm base-btn--primary" @click="startStub">Reconnect</button>
+              <span v-if="stubTimer" class="ng-logmeta">polling · 2s</span>
+            </div>
+            <div v-if="stubErr" class="ng-cmdout ng-cmdout--err">{{ stubErr }}</div>
+            <div v-else-if="!stub" class="ng-msg">Connecting to stub_status…</div>
+            <div v-else class="ng-metrics">
+              <div class="ng-metric"><div class="ng-metric-val">{{ stub.active }}</div><div class="ng-metric-lbl">Active conn.</div></div>
+              <div class="ng-metric"><div class="ng-metric-val">{{ stubReqRate.toFixed(1) }}</div><div class="ng-metric-lbl">req/s</div></div>
+              <div class="ng-metric"><div class="ng-metric-val">{{ stub.reading }}</div><div class="ng-metric-lbl">Reading</div></div>
+              <div class="ng-metric"><div class="ng-metric-val">{{ stub.writing }}</div><div class="ng-metric-lbl">Writing</div></div>
+              <div class="ng-metric"><div class="ng-metric-val">{{ stub.waiting }}</div><div class="ng-metric-lbl">Waiting</div></div>
+              <div class="ng-metric"><div class="ng-metric-val">{{ stub.requests.toLocaleString() }}</div><div class="ng-metric-lbl">Total requests</div></div>
+            </div>
+          </div>
+
           <!-- LOGS -->
-          <div v-else class="page-card ng-logs">
+          <div v-else-if="tab === 'logs'" class="page-card ng-logs">
             <div class="ng-logbar">
               <select class="base-input ng-logsel" :value="activeLog" @change="openLog(($event.target as HTMLSelectElement).value)">
                 <option v-for="f in logFiles" :key="f.path" :value="f.path">{{ f.path }} ({{ formatBytes(f.size) }})</option>
@@ -716,6 +965,18 @@ onBeforeUnmount(stopFollow)
             <pre ref="logViewEl" class="ng-logview">{{ logLines.join('\n') || 'No log output.' }}</pre>
           </div>
         </template>
+      </div>
+    </div>
+
+    <!-- Effective config (nginx -T) modal -->
+    <div v-if="showEffective" class="ng-modal-backdrop" @click.self="showEffective = false">
+      <div class="ng-modal page-card">
+        <div class="ng-modal-head">
+          <span>Effective config — <code>{{ bin }} -T</code> (merged across all includes)</span>
+          <button class="base-btn base-btn--sm" @click="showEffective = false">Close</button>
+        </div>
+        <div v-if="loadingEffective" class="ng-msg">Running {{ bin }} -T…</div>
+        <NginxEditor v-else v-model="effectiveContent" :readonly="true" class="ng-modal-editor" />
       </div>
     </div>
   </div>
@@ -791,4 +1052,34 @@ onBeforeUnmount(stopFollow)
 .ng-level:hover { background: var(--brand-dim); color: var(--brand); border-color: var(--brand); }
 .ng-baksel { min-width: 150px; max-width: 220px; }
 .base-input--sm { padding: 4px 8px; font-size: 12px; }
+
+.ng-cm-wrap { flex: 1; min-height: 440px; }
+
+/* Map */
+.ng-mapwrap { display: flex; flex-direction: column; gap: 14px; }
+.ng-mapcard { padding: 4px 6px; }
+.ng-mapcard-head { padding: 10px 12px; font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; }
+.ng-count { display: inline-block; background: var(--bg-hover); color: var(--text-muted); border-radius: 99px; padding: 1px 8px; font-size: 11px; margin-left: 4px; }
+.ng-mono { font-family: var(--mono); font-size: 12px; color: var(--text-secondary); word-break: break-all; }
+.ng-proxy { display: block; color: var(--brand); }
+.ng-cert { color: var(--text-muted); }
+
+/* Cert pill */
+.ng-pill--err2 { background: var(--danger); color: #fff; }
+
+/* Status */
+.ng-status { display: flex; flex-direction: column; gap: 14px; }
+.ng-statusrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ng-stuburl { min-width: 280px; font-family: var(--mono); font-size: 12px; }
+.ng-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+.ng-metric { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 18px 16px; text-align: center; }
+.ng-metric-val { font-size: 28px; font-weight: 700; color: var(--text-primary); font-family: var(--mono); }
+.ng-metric-lbl { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 4px; }
+
+/* Effective config modal */
+.ng-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 120; padding: 24px; }
+.ng-modal { width: 1000px; max-width: 96vw; height: 82vh; display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.ng-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--text-secondary); }
+.ng-modal-head code { font-family: var(--mono); color: var(--brand); }
+.ng-modal-editor { flex: 1; min-height: 0; }
 </style>
