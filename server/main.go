@@ -961,6 +961,46 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 
+	// ── Infrastructure: Nginx ─────────────────────────────────────
+	// Rides on the same SSH hosts as Docker/SFTP (GET /api/docker/hosts
+	// supplies the host list to the frontend).
+	mux.HandleFunc("/api/nginx/hosts/", func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/nginx/hosts/"), "/")
+		parts := strings.Split(rest, "/")
+		view := requireAny(handlers.PermNginxView, handlers.PermNginxManage, handlers.PermNginxReload)
+		manage := requireAny(handlers.PermNginxManage)
+		reload := requireAny(handlers.PermNginxReload)
+		switch {
+		// logs/stream self-authenticates via ?token= (browser EventSource)
+		case len(parts) == 3 && parts[1] == "logs" && parts[2] == "stream" && r.Method == http.MethodGet:
+			handlers.NginxLogStream()(w, r)
+		case len(parts) == 2 && parts[1] == "info" && r.Method == http.MethodGet:
+			view(handlers.NginxInfo())(w, r)
+		case len(parts) == 3 && parts[1] == "config" && parts[2] == "tree" && r.Method == http.MethodGet:
+			view(handlers.NginxConfigTree())(w, r)
+		case len(parts) == 3 && parts[1] == "config" && parts[2] == "file" && r.Method == http.MethodGet:
+			view(handlers.NginxConfigRead())(w, r)
+		case len(parts) == 3 && parts[1] == "config" && parts[2] == "file" && r.Method == http.MethodPost:
+			manage(handlers.NginxConfigWrite())(w, r)
+		case len(parts) == 2 && parts[1] == "sites" && r.Method == http.MethodGet:
+			view(handlers.NginxSites())(w, r)
+		case len(parts) == 3 && parts[1] == "sites" && parts[2] == "toggle" && r.Method == http.MethodPost:
+			manage(handlers.NginxSiteToggle())(w, r)
+		case len(parts) == 2 && parts[1] == "test" && r.Method == http.MethodPost:
+			reload(handlers.NginxTest())(w, r)
+		case len(parts) == 2 && parts[1] == "reload" && r.Method == http.MethodPost:
+			reload(handlers.NginxReload())(w, r)
+		case len(parts) == 2 && parts[1] == "status" && r.Method == http.MethodGet:
+			view(handlers.NginxStatus())(w, r)
+		case len(parts) == 2 && parts[1] == "logs" && r.Method == http.MethodGet:
+			view(handlers.NginxLogList())(w, r)
+		case len(parts) == 3 && parts[1] == "logs" && parts[2] == "tail" && r.Method == http.MethodGet:
+			view(handlers.NginxLogTail())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
 	// ── Admin: users ──────────────────────────────────────────────
 	mux.HandleFunc("/api/admin/users", requireAny(handlers.PermUsersManage, handlers.PermWorkflowsManage)(handlers.ListUsers()))
 	mux.HandleFunc("/api/admin/users/", func(w http.ResponseWriter, r *http.Request) {

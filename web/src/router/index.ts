@@ -241,6 +241,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['sftp.access', 'sftp.manage'] },
         },
         {
+          path: 'nginx',
+          name: 'nginx',
+          component: () => import('@/views/NginxView.vue'),
+          meta: { requiredPermissionsAny: ['nginx.view', 'nginx.manage', 'nginx.reload'] },
+        },
+        {
           path: 'connections',
           name: 'connections',
           component: () => import('@/views/ConnectionsView.vue'),

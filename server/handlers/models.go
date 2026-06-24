@@ -167,6 +167,9 @@ const (
 	PermDockerExec   = "docker.exec"
 	PermSftpAccess   = "sftp.access"
 	PermSftpManage   = "sftp.manage"
+	PermNginxView    = "nginx.view"
+	PermNginxManage  = "nginx.manage"
+	PermNginxReload  = "nginx.reload"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -236,6 +239,9 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermDockerExec, Label: "Run Commands Inside Containers (high-risk)", Group: "Infrastructure"},
 	{Key: PermSftpAccess, Label: "Browse & Download Files (SFTP)", Group: "Infrastructure"},
 	{Key: PermSftpManage, Label: "Upload, Rename & Delete Files (SFTP)", Group: "Infrastructure"},
+	{Key: PermNginxView, Label: "View Nginx Config & Logs", Group: "Infrastructure"},
+	{Key: PermNginxManage, Label: "Edit Nginx Config & Toggle Sites", Group: "Infrastructure"},
+	{Key: PermNginxReload, Label: "Test & Reload Nginx", Group: "Infrastructure"},
 }
 
 // PermissionDef describes a single permission for the UI.
