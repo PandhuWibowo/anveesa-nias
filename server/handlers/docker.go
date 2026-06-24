@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -893,7 +895,9 @@ func DockerContainerInspect() http.HandlerFunc {
 			return
 		}
 		defer d.Close()
-		resp, err := d.do(http.MethodGet, "/containers/"+url.PathEscape(cid)+"/json", nil)
+		q := url.Values{}
+		q.Set("size", "1") // include SizeRw / SizeRootFs
+		resp, err := d.do(http.MethodGet, "/containers/"+url.PathEscape(cid)+"/json", q)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
@@ -1127,7 +1131,7 @@ func DockerContainerRun() http.HandlerFunc {
 		// Auto-pull the image if it's missing, then retry once.
 		if cResp.StatusCode == http.StatusNotFound && req.AutoPull {
 			cResp.Body.Close()
-			if perr := pullImageOn(d, req.Image); perr != nil {
+			if perr := pullImageOn(d, req.Image, ""); perr != nil {
 				http.Error(w, jsonError("pull failed: "+perr.Error()), http.StatusBadGateway)
 				return
 			}
@@ -1207,17 +1211,42 @@ func DockerContainerRename() http.HandlerFunc {
 
 // ── Image lifecycle ───────────────────────────────────────────────────────
 
-// pullImageOn pulls an image on an existing connection, blocking until done.
-func pullImageOn(d *dockerConn, img string) error {
+// splitImageTag splits "repo/name:tag" into name and tag (default "latest").
+func splitImageTag(img string) (string, string) {
 	name, tag := img, "latest"
 	// A ':' after the last '/' is a tag separator (not a registry port).
 	if i := strings.LastIndex(img, ":"); i > strings.LastIndex(img, "/") {
 		name, tag = img[:i], img[i+1:]
 	}
-	q := url.Values{}
-	q.Set("fromImage", name)
-	q.Set("tag", tag)
-	resp, err := d.doBody(http.MethodPost, "/images/create", q, nil, true) // no timeout
+	return name, tag
+}
+
+// registryAuthHeader builds the base64 X-Registry-Auth value Docker expects.
+func registryAuthHeader(username, password, serverAddress string) string {
+	if username == "" && password == "" {
+		return ""
+	}
+	cfg := map[string]string{"username": username, "password": password}
+	if serverAddress != "" {
+		cfg["serveraddress"] = serverAddress
+	}
+	b, _ := json.Marshal(cfg)
+	return base64.URLEncoding.EncodeToString(b)
+}
+
+// pullImageOn pulls an image on an existing connection, blocking until done.
+// authHeader is an optional X-Registry-Auth value for private registries.
+func pullImageOn(d *dockerConn, img, authHeader string) error {
+	name, tag := splitImageTag(img)
+	u := "http://docker/images/create?fromImage=" + url.QueryEscape(name) + "&tag=" + url.QueryEscape(tag)
+	req, err := http.NewRequest(http.MethodPost, u, nil)
+	if err != nil {
+		return err
+	}
+	if authHeader != "" {
+		req.Header.Set("X-Registry-Auth", authHeader)
+	}
+	resp, err := d.stream.Do(req) // no timeout
 	if err != nil {
 		return err
 	}
@@ -1252,7 +1281,10 @@ func DockerImagePull() http.HandlerFunc {
 			return
 		}
 		var body struct {
-			Image string `json:"image"`
+			Image    string `json:"image"`
+			Username string `json:"username"`
+			Password string `json:"password"`
+			Registry string `json:"registry"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Image) == "" {
 			http.Error(w, `{"error":"image is required"}`, http.StatusBadRequest)
@@ -1265,11 +1297,105 @@ func DockerImagePull() http.HandlerFunc {
 			return
 		}
 		defer d.Close()
-		if err := pullImageOn(d, img); err != nil {
+		auth := registryAuthHeader(body.Username, body.Password, body.Registry)
+		if err := pullImageOn(d, img, auth); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "image": img})
+	}
+}
+
+// DockerImageBuild builds an image from a git remote URL or an inline
+// Dockerfile, returning the build log.
+func DockerImageBuild() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := dockerHostIDFromPath(r)
+		if err != nil {
+			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Tag        string `json:"tag"`
+			GitURL     string `json:"git_url"`
+			Dockerfile string `json:"dockerfile"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		tag := strings.TrimSpace(body.Tag)
+		gitURL := strings.TrimSpace(body.GitURL)
+		if tag == "" {
+			http.Error(w, `{"error":"image tag is required"}`, http.StatusBadRequest)
+			return
+		}
+		if gitURL == "" && strings.TrimSpace(body.Dockerfile) == "" {
+			http.Error(w, `{"error":"provide a git URL or a Dockerfile"}`, http.StatusBadRequest)
+			return
+		}
+		d, err := connectHostByID(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+
+		q := url.Values{}
+		q.Set("t", tag)
+		var reqBody io.Reader
+		contentType := ""
+		if gitURL != "" {
+			q.Set("remote", gitURL)
+		} else {
+			// Build context = a tar containing just the Dockerfile.
+			var buf bytes.Buffer
+			tw := tar.NewWriter(&buf)
+			content := []byte(body.Dockerfile)
+			tw.WriteHeader(&tar.Header{Name: "Dockerfile", Mode: 0o600, Size: int64(len(content))})
+			tw.Write(content)
+			tw.Close()
+			reqBody = &buf
+			contentType = "application/x-tar"
+		}
+		req, err := http.NewRequest(http.MethodPost, "http://docker/build?"+q.Encode(), reqBody)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		resp, err := d.stream.Do(req) // builds can take a long time
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			http.Error(w, jsonError(dockerErrBody(resp)), http.StatusBadGateway)
+			return
+		}
+
+		var out strings.Builder
+		var buildErr string
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			var line struct {
+				Stream string `json:"stream"`
+				Error  string `json:"error"`
+			}
+			if json.Unmarshal(scanner.Bytes(), &line) == nil {
+				out.WriteString(line.Stream)
+				if line.Error != "" {
+					buildErr = line.Error
+				}
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":     buildErr == "",
+			"output": out.String(),
+			"error":  buildErr,
+		})
 	}
 }
 
@@ -1541,6 +1667,8 @@ type dockerVolume struct {
 	Mountpoint string `json:"mountpoint"`
 	CreatedAt  string `json:"createdAt"`
 	Scope      string `json:"scope"`
+	Size       int64  `json:"size"`     // -1 = unknown
+	RefCount   int64  `json:"refCount"` // containers using it; -1 = unknown
 }
 
 func DockerVolumes() http.HandlerFunc {
@@ -1566,6 +1694,37 @@ func DockerVolumes() http.HandlerFunc {
 		}
 		if resp.Volumes == nil {
 			resp.Volumes = []dockerVolume{}
+		}
+		// Merge size + refcount from the disk-usage report.
+		usage := map[string]struct {
+			size int64
+			ref  int64
+		}{}
+		var df struct {
+			Volumes []struct {
+				Name      string `json:"Name"`
+				UsageData struct {
+					Size     int64 `json:"Size"`
+					RefCount int64 `json:"RefCount"`
+				} `json:"UsageData"`
+			} `json:"Volumes"`
+		}
+		if d.getJSON("/system/df", nil, &df) == nil {
+			for _, v := range df.Volumes {
+				usage[v.Name] = struct {
+					size int64
+					ref  int64
+				}{v.UsageData.Size, v.UsageData.RefCount}
+			}
+		}
+		for i := range resp.Volumes {
+			if u, ok := usage[resp.Volumes[i].Name]; ok {
+				resp.Volumes[i].Size = u.size
+				resp.Volumes[i].RefCount = u.ref
+			} else {
+				resp.Volumes[i].Size = -1
+				resp.Volumes[i].RefCount = -1
+			}
 		}
 		json.NewEncoder(w).Encode(resp.Volumes)
 	}
@@ -1621,13 +1780,19 @@ func DockerVolumesPrune() http.HandlerFunc {
 
 // ── Networks ──────────────────────────────────────────────────────────────
 
+type dockerNetConn struct {
+	Name string `json:"name"`
+	IPv4 string `json:"ipv4"`
+}
+
 type dockerNetwork struct {
-	Name       string `json:"name"`
-	ID         string `json:"id"`
-	Driver     string `json:"driver"`
-	Scope      string `json:"scope"`
-	Subnet     string `json:"subnet"`
-	Containers int    `json:"containers"`
+	Name       string          `json:"name"`
+	ID         string          `json:"id"`
+	Driver     string          `json:"driver"`
+	Scope      string          `json:"scope"`
+	Subnet     string          `json:"subnet"`
+	Containers int             `json:"containers"`
+	Connected  []dockerNetConn `json:"connected"`
 }
 
 func DockerNetworks() http.HandlerFunc {
@@ -1654,7 +1819,10 @@ func DockerNetworks() http.HandlerFunc {
 					Subnet string `json:"Subnet"`
 				} `json:"Config"`
 			} `json:"IPAM"`
-			Containers map[string]interface{} `json:"Containers"`
+			Containers map[string]struct {
+				Name        string `json:"Name"`
+				IPv4Address string `json:"IPv4Address"`
+			} `json:"Containers"`
 		}
 		if err := d.getJSON("/networks", nil, &raw); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
@@ -1666,9 +1834,13 @@ func DockerNetworks() http.HandlerFunc {
 			if len(n.IPAM.Config) > 0 {
 				subnet = n.IPAM.Config[0].Subnet
 			}
+			connected := []dockerNetConn{}
+			for _, c := range n.Containers {
+				connected = append(connected, dockerNetConn{Name: c.Name, IPv4: c.IPv4Address})
+			}
 			out = append(out, dockerNetwork{
 				Name: n.Name, ID: n.Id, Driver: n.Driver, Scope: n.Scope,
-				Subnet: subnet, Containers: len(n.Containers),
+				Subnet: subnet, Containers: len(n.Containers), Connected: connected,
 			})
 		}
 		json.NewEncoder(w).Encode(out)
@@ -1716,6 +1888,92 @@ func DockerNetworkRemove() http.HandlerFunc {
 func DockerNetworksPrune() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		dockerPrune(w, r, "/networks/prune")
+	}
+}
+
+// ── Disk usage ────────────────────────────────────────────────────────────
+
+type dfCategory struct {
+	Count       int   `json:"count"`
+	Size        int64 `json:"size"`
+	Reclaimable int64 `json:"reclaimable"`
+}
+
+// DockerSystemDF reports disk usage (like `docker system df`): total and
+// reclaimable bytes per resource type.
+func DockerSystemDF() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := dockerHostIDFromPath(r)
+		if err != nil {
+			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
+			return
+		}
+		d, err := connectHostByID(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer d.Close()
+		var raw struct {
+			Images []struct {
+				Size       int64 `json:"Size"`
+				Containers int   `json:"Containers"`
+			} `json:"Images"`
+			Containers []struct {
+				SizeRw int64  `json:"SizeRw"`
+				State  string `json:"State"`
+			} `json:"Containers"`
+			Volumes []struct {
+				UsageData struct {
+					Size     int64 `json:"Size"`
+					RefCount int64 `json:"RefCount"`
+				} `json:"UsageData"`
+			} `json:"Volumes"`
+			BuildCache []struct {
+				Size  int64 `json:"Size"`
+				InUse bool  `json:"InUse"`
+			} `json:"BuildCache"`
+		}
+		if err := d.getJSON("/system/df", nil, &raw); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		var img, con, vol, cache dfCategory
+		img.Count = len(raw.Images)
+		for _, i := range raw.Images {
+			img.Size += i.Size
+			if i.Containers == 0 {
+				img.Reclaimable += i.Size
+			}
+		}
+		con.Count = len(raw.Containers)
+		for _, c := range raw.Containers {
+			con.Size += c.SizeRw
+			if c.State != "running" {
+				con.Reclaimable += c.SizeRw
+			}
+		}
+		vol.Count = len(raw.Volumes)
+		for _, v := range raw.Volumes {
+			vol.Size += v.UsageData.Size
+			if v.UsageData.RefCount == 0 {
+				vol.Reclaimable += v.UsageData.Size
+			}
+		}
+		cache.Count = len(raw.BuildCache)
+		for _, b := range raw.BuildCache {
+			cache.Size += b.Size
+			if !b.InUse {
+				cache.Reclaimable += b.Size
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"images":      img,
+			"containers":  con,
+			"volumes":     vol,
+			"build_cache": cache,
+		})
 	}
 }
 

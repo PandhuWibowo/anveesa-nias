@@ -811,6 +811,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		// /api/docker/hosts/{id}/ping
 		case len(parts) == 2 && parts[1] == "ping" && r.Method == http.MethodGet:
 			view(handlers.DockerPing())(w, r)
+		// /api/docker/hosts/{id}/df  (disk usage)
+		case len(parts) == 2 && parts[1] == "df" && r.Method == http.MethodGet:
+			view(handlers.DockerSystemDF())(w, r)
 		// /api/docker/hosts/{id}/containers
 		case len(parts) == 2 && parts[1] == "containers" && r.Method == http.MethodGet:
 			view(handlers.DockerContainers())(w, r)
@@ -841,6 +844,9 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		// /api/docker/hosts/{id}/images/pull
 		case len(parts) == 3 && parts[1] == "images" && parts[2] == "pull" && r.Method == http.MethodPost:
 			manage(handlers.DockerImagePull())(w, r)
+		// /api/docker/hosts/{id}/images/build
+		case len(parts) == 3 && parts[1] == "images" && parts[2] == "build" && r.Method == http.MethodPost:
+			manage(handlers.DockerImageBuild())(w, r)
 		// /api/docker/hosts/{id}/images/remove
 		case len(parts) == 3 && parts[1] == "images" && parts[2] == "remove" && r.Method == http.MethodPost:
 			manage(handlers.DockerImageRemove())(w, r)

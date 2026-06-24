@@ -46,6 +46,12 @@ interface DockerVolume {
   mountpoint: string
   createdAt: string
   scope: string
+  size: number
+  refCount: number
+}
+interface NetConn {
+  name: string
+  ipv4: string
 }
 interface DockerNetwork {
   name: string
@@ -54,6 +60,18 @@ interface DockerNetwork {
   scope: string
   subnet: string
   containers: number
+  connected: NetConn[]
+}
+interface DfCategory {
+  count: number
+  size: number
+  reclaimable: number
+}
+interface DiskUsage {
+  images: DfCategory
+  containers: DfCategory
+  volumes: DfCategory
+  build_cache: DfCategory
 }
 interface ContainerStats {
   cpu_percent: number
@@ -115,6 +133,14 @@ const search = ref('')
 // ── Multi-host overview ─────────────────────────────────────────
 const overview = ref<HostSummary[]>([])
 const showOverview = ref(false)
+
+// ── Disk usage ──────────────────────────────────────────────────
+const showDf = ref(false)
+const dfLoading = ref(false)
+const diskUsage = ref<DiskUsage | null>(null)
+
+// Expanded network rows (connected containers)
+const netExpanded = ref<Record<string, boolean>>({})
 
 // ── Rename modal ────────────────────────────────────────────────
 const showRename = ref(false)
@@ -208,6 +234,16 @@ const pullImage = ref('')
 const pulling = ref(false)
 const pruning = ref(false)
 
+// Pull-with-auth (private registry) modal
+const showPullAuth = ref(false)
+const pullAuth = ref({ username: '', password: '', registry: '' })
+
+// Build modal
+const showBuild = ref(false)
+const building = ref(false)
+const buildOutput = ref('')
+const buildForm = ref({ tag: '', gitUrl: '', dockerfile: '' })
+
 // ── Auto-refresh ────────────────────────────────────────────────
 const autoRefresh = ref(false)
 let refreshTimer: ReturnType<typeof setInterval> | undefined
@@ -215,6 +251,7 @@ let refreshTimer: ReturnType<typeof setInterval> | undefined
 // ── Terminal ────────────────────────────────────────────────────
 const showTerminal = ref(false)
 const termFullscreen = ref(false)
+const termFontSize = ref(13)
 const termTitle = ref('')
 const termEl = ref<HTMLElement | null>(null)
 let term: Terminal | null = null
@@ -501,19 +538,68 @@ async function submitRun() {
 }
 
 // ── Image management ────────────────────────────────────────────
-async function pullImageNow() {
+async function pullImageNow(auth?: { username: string; password: string; registry: string }) {
   const img = pullImage.value.trim()
   if (!img) return
   pulling.value = true
   try {
-    await axios.post(`/api/docker/hosts/${activeHostId.value}/images/pull`, { image: img })
+    await axios.post(`/api/docker/hosts/${activeHostId.value}/images/pull`, { image: img, ...(auth || {}) })
     toast.success(`Pulled ${img}`)
     pullImage.value = ''
+    showPullAuth.value = false
     await loadImages()
   } catch (e: any) {
     toast.error(e?.response?.data?.error || 'Failed to pull image')
   } finally {
     pulling.value = false
+  }
+}
+
+function openPullAuth() {
+  if (!pullImage.value.trim()) {
+    toast.error('Enter an image name first')
+    return
+  }
+  pullAuth.value = { username: '', password: '', registry: '' }
+  showPullAuth.value = true
+}
+
+// ── Image build ─────────────────────────────────────────────────
+function openBuild() {
+  buildForm.value = { tag: '', gitUrl: '', dockerfile: '' }
+  buildOutput.value = ''
+  showBuild.value = true
+}
+
+async function submitBuild() {
+  if (!buildForm.value.tag.trim()) {
+    toast.error('Image tag is required')
+    return
+  }
+  if (!buildForm.value.gitUrl.trim() && !buildForm.value.dockerfile.trim()) {
+    toast.error('Provide a Git URL or a Dockerfile')
+    return
+  }
+  building.value = true
+  buildOutput.value = 'Building… (this can take a while)\n'
+  try {
+    const { data } = await axios.post<{ ok: boolean; output: string; error: string }>(
+      `/api/docker/hosts/${activeHostId.value}/images/build`,
+      { tag: buildForm.value.tag.trim(), git_url: buildForm.value.gitUrl.trim(), dockerfile: buildForm.value.dockerfile },
+    )
+    buildOutput.value = data.output || '(no output)'
+    if (data.error) {
+      buildOutput.value += `\n\nERROR: ${data.error}`
+      toast.error('Build failed')
+    } else {
+      toast.success(`Built ${buildForm.value.tag.trim()}`)
+      await loadImages()
+    }
+  } catch (e: any) {
+    buildOutput.value += `\n\nERROR: ${e?.response?.data?.error || 'build request failed'}`
+    toast.error(e?.response?.data?.error || 'Build failed')
+  } finally {
+    building.value = false
   }
 }
 
@@ -630,6 +716,12 @@ function toggleTermFullscreen() {
   refitTerminal()
 }
 
+function changeFont(delta: number) {
+  termFontSize.value = Math.min(22, Math.max(9, termFontSize.value + delta))
+  if (term) term.options.fontSize = termFontSize.value
+  refitTerminal()
+}
+
 function disposeTerminal() {
   window.removeEventListener('resize', refitTerminal)
   if (termSocket) {
@@ -658,7 +750,7 @@ async function openTerminal(c: DockerContainer) {
 
   term = new Terminal({
     cursorBlink: true,
-    fontSize: 13,
+    fontSize: termFontSize.value,
     fontFamily: "'JetBrains Mono', Menlo, monospace",
     theme: { background: '#0d1117' },
   })
@@ -667,6 +759,28 @@ async function openTerminal(c: DockerContainer) {
   term.open(termEl.value)
   fitAddon.fit()
   window.addEventListener('resize', refitTerminal)
+
+  // Copy (on selection), paste, and Esc-to-exit-fullscreen.
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown') return true
+    const mod = e.ctrlKey || e.metaKey
+    if (mod && e.key === 'c' && term?.hasSelection()) {
+      navigator.clipboard.writeText(term.getSelection())
+      return false
+    }
+    if (mod && e.key === 'v') {
+      navigator.clipboard.readText().then((t) => {
+        if (termSocket?.readyState === WebSocket.OPEN) termSocket.send(new TextEncoder().encode(t))
+      })
+      return false
+    }
+    if (e.key === 'Escape' && termFullscreen.value) {
+      termFullscreen.value = false
+      refitTerminal()
+      return false
+    }
+    return true
+  })
 
   const token = localStorage.getItem('nias-token') || ''
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -749,6 +863,23 @@ async function loadOverview() {
 function toggleOverview() {
   showOverview.value = !showOverview.value
   if (showOverview.value) loadOverview()
+}
+
+// ── Disk usage ──────────────────────────────────────────────────
+async function loadDf() {
+  dfLoading.value = true
+  try {
+    const { data } = await axios.get<DiskUsage>(`/api/docker/hosts/${activeHostId.value}/df`)
+    diskUsage.value = data
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to load disk usage')
+  } finally {
+    dfLoading.value = false
+  }
+}
+function toggleDf() {
+  showDf.value = !showDf.value
+  if (showDf.value && activeHostId.value !== null) loadDf()
 }
 
 // ── Rename ──────────────────────────────────────────────────────
@@ -916,6 +1047,8 @@ const inspView = computed(() => {
     hostname: d.Config?.Hostname || '',
     created: d.Created || '',
     restart: d.HostConfig?.RestartPolicy?.Name || 'no',
+    sizeRw: d.SizeRw,
+    sizeRootFs: d.SizeRootFs,
     status: d.State?.Status || '',
     startedAt: d.State?.StartedAt || '',
     exitCode: d.State?.ExitCode,
@@ -988,6 +1121,7 @@ onMounted(loadHosts)
               placeholder="Filter…"
             />
             <button v-if="hosts.length" class="base-btn base-btn--sm" @click="toggleOverview">{{ showOverview ? 'Hide overview' : 'Overview' }}</button>
+            <button v-if="activeHost" class="base-btn base-btn--sm" @click="toggleDf">{{ showDf ? 'Hide usage' : 'Disk usage' }}</button>
             <label v-if="activeHost" class="dk-autorefresh" title="Auto-refresh every 5s">
               <input type="checkbox" v-model="autoRefresh" /> Auto
             </label>
@@ -1014,6 +1148,33 @@ onMounted(loadHosts)
               <div v-else class="dk-ov-err">{{ h.error || 'unreachable' }}</div>
             </div>
             <div v-if="!overview.length" class="dk-muted">Loading host summaries…</div>
+          </div>
+        </div>
+
+        <!-- Disk usage -->
+        <div v-if="showDf && activeHost" class="page-card dk-df">
+          <div v-if="dfLoading" class="dk-muted">Calculating disk usage…</div>
+          <div v-else-if="diskUsage" class="dk-df-grid">
+            <div class="dk-df-card">
+              <div class="dk-df-type">Images <span class="dk-muted">×{{ diskUsage.images.count }}</span></div>
+              <div class="dk-df-size">{{ formatBytes(diskUsage.images.size) }}</div>
+              <div class="dk-df-recl">{{ formatBytes(diskUsage.images.reclaimable) }} reclaimable</div>
+            </div>
+            <div class="dk-df-card">
+              <div class="dk-df-type">Containers <span class="dk-muted">×{{ diskUsage.containers.count }}</span></div>
+              <div class="dk-df-size">{{ formatBytes(diskUsage.containers.size) }}</div>
+              <div class="dk-df-recl">{{ formatBytes(diskUsage.containers.reclaimable) }} reclaimable</div>
+            </div>
+            <div class="dk-df-card">
+              <div class="dk-df-type">Volumes <span class="dk-muted">×{{ diskUsage.volumes.count }}</span></div>
+              <div class="dk-df-size">{{ formatBytes(diskUsage.volumes.size) }}</div>
+              <div class="dk-df-recl">{{ formatBytes(diskUsage.volumes.reclaimable) }} reclaimable</div>
+            </div>
+            <div class="dk-df-card">
+              <div class="dk-df-type">Build cache <span class="dk-muted">×{{ diskUsage.build_cache.count }}</span></div>
+              <div class="dk-df-size">{{ formatBytes(diskUsage.build_cache.size) }}</div>
+              <div class="dk-df-recl">{{ formatBytes(diskUsage.build_cache.reclaimable) }} reclaimable</div>
+            </div>
           </div>
         </div>
 
@@ -1073,10 +1234,12 @@ onMounted(loadHosts)
                 v-model="pullImage"
                 class="base-input dk-pull-input"
                 placeholder="image to pull, e.g. nginx:alpine"
-                @keyup.enter="pullImageNow"
+                @keyup.enter="pullImageNow()"
               />
-              <button v-if="canManage" class="base-btn base-btn--sm" :disabled="pulling || !pullImage.trim()" @click="pullImageNow">{{ pulling ? 'Pulling…' : 'Pull' }}</button>
+              <button v-if="canManage" class="base-btn base-btn--sm" :disabled="pulling || !pullImage.trim()" @click="pullImageNow()">{{ pulling ? 'Pulling…' : 'Pull' }}</button>
+              <button v-if="canManage" class="base-btn base-btn--sm" title="Pull from a private registry" @click="openPullAuth">🔒</button>
               <div class="dk-spacer"></div>
+              <button v-if="canManage" class="base-btn base-btn--sm" @click="openBuild">Build image</button>
               <button v-if="canManage" class="base-btn base-btn--sm" :disabled="pruning" @click="pruneImages">Prune dangling</button>
             </template>
             <template v-else-if="tab === 'volumes'">
@@ -1251,17 +1414,24 @@ onMounted(loadHosts)
                 <tr>
                   <th>Name</th>
                   <th>Driver</th>
+                  <th>Size</th>
+                  <th>Used by</th>
                   <th>Mountpoint</th>
                   <th class="dk-actions-col">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-if="!filteredVolumes.length && !connError">
-                  <td colspan="4" class="dk-empty-row">No volumes{{ search ? ' match' : ' on this host' }}.</td>
+                  <td colspan="6" class="dk-empty-row">No volumes{{ search ? ' match' : ' on this host' }}.</td>
                 </tr>
                 <tr v-for="v in filteredVolumes" :key="v.name">
                   <td class="dk-name">{{ v.name }}</td>
                   <td class="dk-status">{{ v.driver }}</td>
+                  <td class="dk-status">{{ v.size >= 0 ? formatBytes(v.size) : '—' }}</td>
+                  <td class="dk-status">
+                    <span v-if="v.refCount < 0" class="dk-muted">—</span>
+                    <span v-else :class="{ 'dk-unused': v.refCount === 0 }">{{ v.refCount }} container{{ v.refCount === 1 ? '' : 's' }}</span>
+                  </td>
                   <td class="dk-mono dk-id">{{ v.mountpoint }}</td>
                   <td class="dk-actions-col">
                     <button v-if="canManage" class="base-btn base-btn--xs base-btn--danger" @click="removeVolume(v)">Remove</button>
@@ -1276,6 +1446,7 @@ onMounted(loadHosts)
             <table class="dk-table">
               <thead>
                 <tr>
+                  <th></th>
                   <th>Name</th>
                   <th>Driver</th>
                   <th>Scope</th>
@@ -1286,22 +1457,43 @@ onMounted(loadHosts)
               </thead>
               <tbody>
                 <tr v-if="!filteredNetworks.length && !connError">
-                  <td colspan="6" class="dk-empty-row">No networks{{ search ? ' match' : ' on this host' }}.</td>
+                  <td colspan="7" class="dk-empty-row">No networks{{ search ? ' match' : ' on this host' }}.</td>
                 </tr>
-                <tr v-for="n in filteredNetworks" :key="n.id">
-                  <td class="dk-name">{{ n.name }}</td>
-                  <td class="dk-status">{{ n.driver }}</td>
-                  <td class="dk-status">{{ n.scope }}</td>
-                  <td class="dk-mono">{{ n.subnet || '—' }}</td>
-                  <td class="dk-status">{{ n.containers }}</td>
-                  <td class="dk-actions-col">
-                    <button
-                      v-if="canManage && !['bridge', 'host', 'none'].includes(n.name)"
-                      class="base-btn base-btn--xs base-btn--danger"
-                      @click="removeNetwork(n)"
-                    >Remove</button>
-                  </td>
-                </tr>
+                <template v-for="n in filteredNetworks" :key="n.id">
+                  <tr>
+                    <td>
+                      <button
+                        v-if="n.connected && n.connected.length"
+                        class="dk-icon-btn"
+                        title="Connected containers"
+                        @click="netExpanded = { ...netExpanded, [n.id]: !netExpanded[n.id] }"
+                      >{{ netExpanded[n.id] ? '▾' : '▸' }}</button>
+                    </td>
+                    <td class="dk-name">{{ n.name }}</td>
+                    <td class="dk-status">{{ n.driver }}</td>
+                    <td class="dk-status">{{ n.scope }}</td>
+                    <td class="dk-mono">{{ n.subnet || '—' }}</td>
+                    <td class="dk-status">{{ n.containers }}</td>
+                    <td class="dk-actions-col">
+                      <button
+                        v-if="canManage && !['bridge', 'host', 'none'].includes(n.name)"
+                        class="base-btn base-btn--xs base-btn--danger"
+                        @click="removeNetwork(n)"
+                      >Remove</button>
+                    </td>
+                  </tr>
+                  <tr v-if="netExpanded[n.id]" class="dk-stats-row">
+                    <td></td>
+                    <td colspan="6">
+                      <div class="dk-netconns">
+                        <span v-for="c in n.connected" :key="c.name" class="dk-netconn">
+                          <span class="dk-name">{{ c.name }}</span>
+                          <span class="dk-mono dk-muted">{{ c.ipv4 || '—' }}</span>
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                </template>
               </tbody>
             </table>
           </div>
@@ -1481,6 +1673,8 @@ onMounted(loadHosts)
             <div class="dk-kv" v-if="inspView.workdir"><span>Workdir</span><span class="dk-mono">{{ inspView.workdir }}</span></div>
             <div class="dk-kv"><span>Hostname</span><span class="dk-mono">{{ inspView.hostname }}</span></div>
             <div class="dk-kv"><span>Restart</span><span>{{ inspView.restart }}</span></div>
+            <div class="dk-kv" v-if="inspView.sizeRw != null"><span>Writable layer</span><span class="dk-mono">{{ formatBytes(inspView.sizeRw) }}</span></div>
+            <div class="dk-kv" v-if="inspView.sizeRootFs != null"><span>Virtual size</span><span class="dk-mono">{{ formatBytes(inspView.sizeRootFs) }}</span></div>
             <div class="dk-kv" v-if="inspView.startedAt"><span>Started</span><span class="dk-mono">{{ inspView.startedAt }}</span></div>
             <div class="dk-kv" v-if="inspView.status !== 'running'"><span>Exit code</span><span class="dk-mono">{{ inspView.exitCode }}</span></div>
           </section>
@@ -1545,13 +1739,59 @@ onMounted(loadHosts)
       </div>
     </div>
 
+    <!-- Pull from private registry modal -->
+    <div v-if="showPullAuth" class="dk-modal-backdrop" @click.self="showPullAuth = false">
+      <div class="dk-modal page-card">
+        <div class="dk-modal-title">Pull private image</div>
+        <div class="dk-form">
+          <label>Image<input v-model="pullImage" class="base-input" placeholder="registry.example.com/team/app:1.0" /></label>
+          <label>Username<input v-model="pullAuth.username" class="base-input" autocomplete="off" /></label>
+          <label>Password / token<input v-model="pullAuth.password" class="base-input" type="password" autocomplete="off" /></label>
+          <label>Registry (optional)<input v-model="pullAuth.registry" class="base-input" placeholder="registry.example.com" /></label>
+        </div>
+        <div class="dk-modal-actions">
+          <div class="dk-spacer"></div>
+          <button class="base-btn base-btn--sm" @click="showPullAuth = false">Cancel</button>
+          <button class="base-btn base-btn--primary base-btn--sm" :disabled="pulling" @click="pullImageNow(pullAuth)">{{ pulling ? 'Pulling…' : 'Pull' }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Build image modal -->
+    <div v-if="showBuild" class="dk-modal-backdrop" @click.self="showBuild = false">
+      <div class="dk-modal dk-modal--wide page-card dk-run-modal">
+        <div class="dk-modal-title">Build image</div>
+        <div class="dk-form">
+          <label>Tag<input v-model="buildForm.tag" class="base-input" placeholder="myapp:latest" /></label>
+          <label>
+            Git URL (optional)
+            <input v-model="buildForm.gitUrl" class="base-input" placeholder="https://github.com/user/repo.git#main" />
+            <span class="dk-field-hint">Build context from a git repo. Leave blank to use the Dockerfile below.</span>
+          </label>
+          <label>
+            Dockerfile (optional)
+            <textarea v-model="buildForm.dockerfile" class="base-input dk-textarea" rows="5" placeholder="FROM alpine&#10;RUN echo hi"></textarea>
+            <span class="dk-field-hint">Used when no Git URL is given. No build context (COPY/ADD of local files won't work).</span>
+          </label>
+          <pre v-if="buildOutput" class="dk-logs dk-build-out">{{ buildOutput }}</pre>
+        </div>
+        <div class="dk-modal-actions">
+          <div class="dk-spacer"></div>
+          <button class="base-btn base-btn--sm" @click="showBuild = false">Close</button>
+          <button class="base-btn base-btn--primary base-btn--sm" :disabled="building" @click="submitBuild">{{ building ? 'Building…' : 'Build' }}</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Interactive terminal modal -->
     <div v-if="showTerminal" class="dk-modal-backdrop" @click.self="closeTerminal">
       <div class="dk-term-modal" :class="{ 'dk-term-modal--full': termFullscreen }">
         <div class="dk-term-head">
           <span class="dk-modal-title dk-term-title">Terminal — {{ termTitle }}</span>
           <div class="dk-term-head-actions">
-            <button class="dk-icon-btn" :title="termFullscreen ? 'Exit fullscreen' : 'Fullscreen'" @click="toggleTermFullscreen">
+            <button class="dk-icon-btn dk-term-font" title="Decrease font" @click="changeFont(-1)">A−</button>
+            <button class="dk-icon-btn dk-term-font" title="Increase font" @click="changeFont(1)">A+</button>
+            <button class="dk-icon-btn" :title="termFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'" @click="toggleTermFullscreen">
               {{ termFullscreen ? '🗗' : '⛶' }}
             </button>
             <button class="dk-icon-btn dk-slide-close" @click="closeTerminal">×</button>
@@ -1679,6 +1919,19 @@ onMounted(loadHosts)
 .dk-ov-stats b { color: var(--text-primary); }
 .dk-ov-err { font-size: 11px; color: var(--danger); }
 
+/* Disk usage */
+.dk-df { padding: 14px 16px; }
+.dk-df-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.dk-df-card { border: 1px solid var(--border); border-radius: var(--r); padding: 12px 14px; }
+.dk-df-type { font-size: 12px; color: var(--text-secondary); font-weight: 600; margin-bottom: 6px; }
+.dk-df-size { font-size: 20px; font-weight: 700; color: var(--text-primary); }
+.dk-df-recl { font-size: 11px; color: var(--warning); margin-top: 3px; }
+
+/* Volume / network detail */
+.dk-unused { color: var(--warning); }
+.dk-netconns { display: flex; flex-wrap: wrap; gap: 14px; padding: 4px 0; }
+.dk-netconn { display: inline-flex; gap: 6px; align-items: baseline; font-size: 12px; }
+
 /* Run modal + checkbox */
 .dk-run-modal { max-height: 88vh; overflow-y: auto; }
 .dk-checkbox { flex-direction: row !important; align-items: center; gap: 7px !important; cursor: pointer; }
@@ -1693,6 +1946,8 @@ onMounted(loadHosts)
 .dk-term-modal--full { width: 100vw; max-width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; border: none; }
 .dk-term-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--bg-elevated); border-bottom: 1px solid var(--border); }
 .dk-term-head-actions { display: flex; align-items: center; gap: 4px; }
+.dk-term-font { font-size: 12px; font-weight: 600; padding: 2px 5px; }
+.dk-build-out { margin-top: 6px; max-height: 280px; }
 .dk-term-title { margin: 0; }
 .dk-term { flex: 1; min-height: 0; padding: 8px 10px; overflow: hidden; }
 .dk-term :deep(.xterm) { height: 100%; }
