@@ -936,6 +936,31 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 
+	// ── Infrastructure: SFTP ──────────────────────────────────────
+	mux.HandleFunc("/api/sftp/hosts/", func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/sftp/hosts/"), "/")
+		parts := strings.Split(rest, "/")
+		access := requireAny(handlers.PermSftpAccess, handlers.PermSftpManage)
+		manage := requireAny(handlers.PermSftpManage)
+		switch {
+		case len(parts) == 2 && parts[1] == "list" && r.Method == http.MethodGet:
+			access(handlers.SftpList())(w, r)
+		// download self-authenticates via ?token= (browser-native streaming)
+		case len(parts) == 2 && parts[1] == "download" && r.Method == http.MethodGet:
+			handlers.SftpDownload()(w, r)
+		case len(parts) == 2 && parts[1] == "upload" && r.Method == http.MethodPost:
+			manage(handlers.SftpUpload())(w, r)
+		case len(parts) == 2 && parts[1] == "mkdir" && r.Method == http.MethodPost:
+			manage(handlers.SftpMkdir())(w, r)
+		case len(parts) == 2 && parts[1] == "delete" && r.Method == http.MethodPost:
+			manage(handlers.SftpDelete())(w, r)
+		case len(parts) == 2 && parts[1] == "rename" && r.Method == http.MethodPost:
+			manage(handlers.SftpRename())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
 	// ── Admin: users ──────────────────────────────────────────────
 	mux.HandleFunc("/api/admin/users", requireAny(handlers.PermUsersManage, handlers.PermWorkflowsManage)(handlers.ListUsers()))
 	mux.HandleFunc("/api/admin/users/", func(w http.ResponseWriter, r *http.Request) {

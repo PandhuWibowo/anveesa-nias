@@ -165,6 +165,8 @@ const (
 	PermDockerView   = "docker.view"
 	PermDockerManage = "docker.manage"
 	PermDockerExec   = "docker.exec"
+	PermSftpAccess   = "sftp.access"
+	PermSftpManage   = "sftp.manage"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -232,6 +234,8 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermDockerView, Label: "View Docker Hosts & Containers", Group: "Infrastructure"},
 	{Key: PermDockerManage, Label: "Manage Docker Hosts & Container Lifecycle", Group: "Infrastructure"},
 	{Key: PermDockerExec, Label: "Run Commands Inside Containers (high-risk)", Group: "Infrastructure"},
+	{Key: PermSftpAccess, Label: "Browse & Download Files (SFTP)", Group: "Infrastructure"},
+	{Key: PermSftpManage, Label: "Upload, Rename & Delete Files (SFTP)", Group: "Infrastructure"},
 }
 
 // PermissionDef describes a single permission for the UI.

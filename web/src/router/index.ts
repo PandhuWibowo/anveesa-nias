@@ -235,6 +235,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['docker.view', 'docker.manage'] },
         },
         {
+          path: 'sftp',
+          name: 'sftp',
+          component: () => import('@/views/SftpView.vue'),
+          meta: { requiredPermissionsAny: ['sftp.access', 'sftp.manage'] },
+        },
+        {
           path: 'connections',
           name: 'connections',
           component: () => import('@/views/ConnectionsView.vue'),

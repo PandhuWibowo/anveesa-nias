@@ -153,6 +153,7 @@ const allMenuGroups: MenuGroup[] = [
     icon: 'docker',
     items: [
       { name: 'docker', label: 'Docker', desc: 'Browse and control containers and images across your servers over SSH', icon: 'docker', permissionsAny: ['docker.view', 'docker.manage'] },
+      { name: 'sftp', label: 'SFTP', desc: 'Browse, upload, and download files on your servers over SSH', icon: 'sftp', permissionsAny: ['sftp.access', 'sftp.manage'] },
     ],
   },
   {
@@ -256,6 +257,7 @@ const ICON_PATHS: Record<string, string> = {
   layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
   notification: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
   docker: '<rect x="3" y="10" width="3" height="3"/><rect x="7" y="10" width="3" height="3"/><rect x="11" y="10" width="3" height="3"/><rect x="7" y="6" width="3" height="3"/><rect x="11" y="6" width="3" height="3"/><path d="M3 13h13c2.5 0 4-1 4.5-3 1 .3 2 .2 2.5-.3-.3 1.8-1.7 3.3-3.5 3.3H3z"/>',
+  sftp: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5"/><path d="M9.5 13.5 12 11l2.5 2.5"/>',
 }
 
 function iconPath(icon: string): string {
