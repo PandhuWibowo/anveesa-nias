@@ -795,7 +795,29 @@ func NginxLogList() http.HandlerFunc {
 	}
 }
 
-// NginxLogTail returns the last N lines of a log file (snapshot).
+// nginxTailScript builds a shell command that yields the last n lines of a log
+// file, transparently decompressing rotated logs (.gz/.bz2/.xz/.zst). `--`
+// guards against filenames starting with a dash; the path is single-quoted.
+func nginxTailScript(full string, n int) string {
+	q := "'" + strings.ReplaceAll(full, "'", `'\''`) + "'"
+	lines := strconv.Itoa(n)
+	lower := strings.ToLower(full)
+	switch {
+	case strings.HasSuffix(lower, ".gz") || strings.HasSuffix(lower, ".tgz"):
+		return "zcat -- " + q + " | tail -n " + lines
+	case strings.HasSuffix(lower, ".bz2"):
+		return "bzcat -- " + q + " | tail -n " + lines
+	case strings.HasSuffix(lower, ".xz"):
+		return "xzcat -- " + q + " | tail -n " + lines
+	case strings.HasSuffix(lower, ".zst"):
+		return "zstdcat -- " + q + " | tail -n " + lines
+	default:
+		return "tail -n " + lines + " -- " + q
+	}
+}
+
+// NginxLogTail returns the last N lines of a log file (snapshot). Compressed
+// rotated logs are decompressed on the fly.
 func NginxLogTail() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -818,7 +840,7 @@ func NginxLogTail() http.HandlerFunc {
 		if n, e := strconv.Atoi(r.URL.Query().Get("lines")); e == nil && n > 0 && n <= 5000 {
 			lines = n
 		}
-		out, err := runHostPrivileged(h, nginxUseSudo(r), []string{"tail", "-n", strconv.Itoa(lines), full}, "")
+		out, err := runHostPrivileged(h, nginxUseSudo(r), []string{"sh", "-c", nginxTailScript(full, lines)}, "")
 		if err != nil {
 			http.Error(w, jsonError(strings.TrimSpace(out)+": "+err.Error()), http.StatusBadGateway)
 			return

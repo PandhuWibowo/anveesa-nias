@@ -82,6 +82,9 @@ function isPermDenied(e: any): boolean {
 }
 
 const base = computed(() => `/api/nginx/hosts/${hostId.value}`)
+// Rotated/compressed logs are static archives — decompressed for snapshot view,
+// but there's nothing to "follow".
+const isCompressed = computed(() => /\.(gz|tgz|bz2|xz|zst)$/i.test(activeLog.value))
 const sudoParam = computed(() => (useSudo.value ? '1' : undefined))
 // Shared query params so every call respects the (possibly overridden) host settings.
 const cfgParams = computed(() => ({ root: configRoot.value, bin: bin.value, sudo: sudoParam.value }))
@@ -525,11 +528,14 @@ onBeforeUnmount(stopFollow)
               <button
                 class="base-btn base-btn--sm"
                 :class="following ? 'base-btn--danger' : 'base-btn--primary'"
-                :disabled="!activeLog"
+                :disabled="!activeLog || isCompressed"
+                :title="isCompressed ? 'Compressed archives are static — nothing to follow' : ''"
                 @click="toggleFollow"
               >{{ following ? '■ Stop' : '▶ Follow' }}</button>
               <div class="dk-spacer"></div>
-              <span class="ng-logmeta">{{ logLines.length }} lines{{ following ? ' · live (polling)' : '' }}</span>
+              <span class="ng-logmeta">
+                {{ logLines.length }} lines{{ following ? ' · live (polling)' : isCompressed ? ' · archive' : '' }}
+              </span>
             </div>
             <pre ref="logViewEl" class="ng-logview">{{ logLines.join('\n') || 'No log output.' }}</pre>
           </div>
