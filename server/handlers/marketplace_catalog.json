@@ -1,0 +1,124 @@
+{
+  "apps": [
+    {
+      "id": "uptime-kuma",
+      "name": "Uptime Kuma",
+      "category": "Monitoring",
+      "description": "Beautiful self-hosted uptime / status monitoring.",
+      "icon": "📈",
+      "website": "https://github.com/louislam/uptime-kuma",
+      "env": [{ "key": "PORT", "value": "3001", "description": "Host port" }],
+      "compose": "services:\n  uptime-kuma:\n    image: louislam/uptime-kuma:1\n    container_name: uptime-kuma\n    ports:\n      - \"${PORT}:3001\"\n    volumes:\n      - uptime-kuma:/app/data\n    restart: unless-stopped\nvolumes:\n  uptime-kuma:\n"
+    },
+    {
+      "id": "gitea",
+      "name": "Gitea",
+      "category": "Developer",
+      "description": "Lightweight self-hosted Git service.",
+      "icon": "🍵",
+      "website": "https://gitea.io",
+      "env": [
+        { "key": "PORT", "value": "3000", "description": "Web port" },
+        { "key": "SSH_PORT", "value": "2222", "description": "Git SSH port" }
+      ],
+      "compose": "services:\n  gitea:\n    image: gitea/gitea:latest\n    container_name: gitea\n    environment:\n      - USER_UID=1000\n      - USER_GID=1000\n    ports:\n      - \"${PORT}:3000\"\n      - \"${SSH_PORT}:22\"\n    volumes:\n      - gitea:/data\n    restart: unless-stopped\nvolumes:\n  gitea:\n"
+    },
+    {
+      "id": "n8n",
+      "name": "n8n",
+      "category": "Automation",
+      "description": "Workflow automation with a fair-code license.",
+      "icon": "🔗",
+      "website": "https://n8n.io",
+      "env": [{ "key": "PORT", "value": "5678", "description": "Host port" }],
+      "compose": "services:\n  n8n:\n    image: n8nio/n8n:latest\n    container_name: n8n\n    ports:\n      - \"${PORT}:5678\"\n    volumes:\n      - n8n:/home/node/.n8n\n    restart: unless-stopped\nvolumes:\n  n8n:\n"
+    },
+    {
+      "id": "vaultwarden",
+      "name": "Vaultwarden",
+      "category": "Security",
+      "description": "Lightweight Bitwarden-compatible password manager.",
+      "icon": "🔐",
+      "website": "https://github.com/dani-garcia/vaultwarden",
+      "env": [{ "key": "PORT", "value": "8200", "description": "Host port" }],
+      "compose": "services:\n  vaultwarden:\n    image: vaultwarden/server:latest\n    container_name: vaultwarden\n    ports:\n      - \"${PORT}:80\"\n    volumes:\n      - vaultwarden:/data\n    restart: unless-stopped\nvolumes:\n  vaultwarden:\n"
+    },
+    {
+      "id": "code-server",
+      "name": "code-server",
+      "category": "Developer",
+      "description": "VS Code in the browser, running on your server.",
+      "icon": "💻",
+      "website": "https://github.com/coder/code-server",
+      "env": [
+        { "key": "PORT", "value": "8443", "description": "Host port" },
+        { "key": "PASSWORD", "value": "changeme", "description": "Login password" }
+      ],
+      "compose": "services:\n  code-server:\n    image: codercom/code-server:latest\n    container_name: code-server\n    environment:\n      - PASSWORD=${PASSWORD}\n    ports:\n      - \"${PORT}:8080\"\n    volumes:\n      - code-server:/home/coder\n    restart: unless-stopped\nvolumes:\n  code-server:\n"
+    },
+    {
+      "id": "dozzle",
+      "name": "Dozzle",
+      "category": "Monitoring",
+      "description": "Real-time log viewer for Docker containers.",
+      "icon": "📜",
+      "website": "https://dozzle.dev",
+      "env": [{ "key": "PORT", "value": "8888", "description": "Host port" }],
+      "compose": "services:\n  dozzle:\n    image: amir20/dozzle:latest\n    container_name: dozzle\n    ports:\n      - \"${PORT}:8080\"\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n    restart: unless-stopped\n"
+    },
+    {
+      "id": "it-tools",
+      "name": "IT-Tools",
+      "category": "Developer",
+      "description": "Handy online tools for developers (encoders, generators…).",
+      "icon": "🧰",
+      "website": "https://it-tools.tech",
+      "env": [{ "key": "PORT", "value": "8980", "description": "Host port" }],
+      "compose": "services:\n  it-tools:\n    image: corentinth/it-tools:latest\n    container_name: it-tools\n    ports:\n      - \"${PORT}:80\"\n    restart: unless-stopped\n"
+    },
+    {
+      "id": "pgadmin",
+      "name": "pgAdmin",
+      "category": "Database",
+      "description": "Web UI to manage PostgreSQL databases.",
+      "icon": "🐘",
+      "website": "https://www.pgadmin.org",
+      "env": [
+        { "key": "PORT", "value": "5050", "description": "Host port" },
+        { "key": "EMAIL", "value": "admin@example.com", "description": "Login email" },
+        { "key": "PASSWORD", "value": "changeme", "description": "Login password" }
+      ],
+      "compose": "services:\n  pgadmin:\n    image: dpage/pgadmin4:latest\n    container_name: pgadmin\n    environment:\n      - PGADMIN_DEFAULT_EMAIL=${EMAIL}\n      - PGADMIN_DEFAULT_PASSWORD=${PASSWORD}\n    ports:\n      - \"${PORT}:80\"\n    volumes:\n      - pgadmin:/var/lib/pgadmin\n    restart: unless-stopped\nvolumes:\n  pgadmin:\n"
+    },
+    {
+      "id": "portainer",
+      "name": "Portainer",
+      "category": "DevOps",
+      "description": "Container management UI (the one you're replacing 😉).",
+      "icon": "🚢",
+      "website": "https://www.portainer.io",
+      "env": [{ "key": "PORT", "value": "9443", "description": "Host port" }],
+      "compose": "services:\n  portainer:\n    image: portainer/portainer-ce:latest\n    container_name: portainer\n    ports:\n      - \"${PORT}:9000\"\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n      - portainer:/data\n    restart: unless-stopped\nvolumes:\n  portainer:\n"
+    },
+    {
+      "id": "homepage",
+      "name": "Homepage",
+      "category": "Dashboard",
+      "description": "A modern, fully static start page / dashboard.",
+      "icon": "🏠",
+      "website": "https://gethomepage.dev",
+      "env": [{ "key": "PORT", "value": "3030", "description": "Host port" }],
+      "compose": "services:\n  homepage:\n    image: ghcr.io/gethomepage/homepage:latest\n    container_name: homepage\n    ports:\n      - \"${PORT}:3000\"\n    volumes:\n      - homepage:/app/config\n    restart: unless-stopped\nvolumes:\n  homepage:\n"
+    },
+    {
+      "id": "whoami",
+      "name": "whoami",
+      "category": "Utility",
+      "description": "Tiny test container that echoes request info. Great for a quick try.",
+      "icon": "👋",
+      "website": "https://github.com/traefik/whoami",
+      "env": [{ "key": "PORT", "value": "8088", "description": "Host port" }],
+      "compose": "services:\n  whoami:\n    image: traefik/whoami:latest\n    container_name: whoami\n    ports:\n      - \"${PORT}:80\"\n    restart: unless-stopped\n"
+    }
+  ]
+}

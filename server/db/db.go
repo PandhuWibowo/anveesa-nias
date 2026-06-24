@@ -913,10 +913,10 @@ func migrate() error {
 		// Seed system roles
 		`INSERT OR IGNORE INTO roles (name, description, permissions, is_system) VALUES
 			('admin', 'Full system access',
-			 '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage","docker.view","docker.manage","docker.exec","sftp.access","sftp.manage"]',
+			 '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage","docker.view","docker.manage","docker.exec","sftp.access","sftp.manage","marketplace.view","marketplace.manage","data.export","data.import","dbusers.manage","discover.view","observability.view","uptime.view","pipelines.view","pipelines.manage","pipelines.run","settings.alerts"]',
 			 1),
 			('poweruser', 'Non-admin full access for testing',
-			 '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage","docker.view","docker.manage","docker.exec","sftp.access","sftp.manage"]',
+			 '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage","docker.view","docker.manage","docker.exec","sftp.access","sftp.manage","marketplace.view","marketplace.manage","data.export","data.import","dbusers.manage","discover.view","observability.view","uptime.view","pipelines.view","pipelines.manage","pipelines.run","settings.alerts"]',
 			 1),
 			('user', 'Standard user access',
 			 '["connections.view","analytics.view","dashboards.manage","query.execute","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","er.view","redis.view","queues.view","mongodb.view","mongodb.export","cassandra.view","operations.view","watchers.manage","ai.use","security.self","notifications.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view"]',
@@ -929,8 +929,8 @@ func migrate() error {
 
 		// Set existing users to active
 		`UPDATE users SET is_active = 1 WHERE is_active IS NULL`,
-		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage","docker.view","docker.manage","docker.exec","sftp.access","sftp.manage"]' WHERE name = 'admin'`,
-		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage","docker.view","docker.manage","docker.exec","sftp.access","sftp.manage"]' WHERE name = 'poweruser'`,
+		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage","docker.view","docker.manage","docker.exec","sftp.access","sftp.manage","marketplace.view","marketplace.manage","data.export","data.import","dbusers.manage","discover.view","observability.view","uptime.view","pipelines.view","pipelines.manage","pipelines.run","settings.alerts"]' WHERE name = 'admin'`,
+		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage","docker.view","docker.manage","docker.exec","sftp.access","sftp.manage","marketplace.view","marketplace.manage","data.export","data.import","dbusers.manage","discover.view","observability.view","uptime.view","pipelines.view","pipelines.manage","pipelines.run","settings.alerts"]' WHERE name = 'poweruser'`,
 		`UPDATE roles SET permissions = '["connections.view","analytics.view","dashboards.manage","query.execute","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","er.view","redis.view","queues.view","mongodb.view","mongodb.export","cassandra.view","operations.view","watchers.manage","ai.use","security.self","notifications.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view"]' WHERE name = 'user'`,
 		`ALTER TABLE query_approval_request ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE query_approval ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
@@ -1106,6 +1106,43 @@ func migrate() error {
 		// Fix pipeline_run_logs.node_id FK to cascade SET NULL on node deletion
 		`ALTER TABLE pipeline_run_logs DROP CONSTRAINT IF EXISTS pipeline_run_logs_node_id_fkey`,
 		`ALTER TABLE pipeline_run_logs ADD CONSTRAINT pipeline_run_logs_node_id_fkey FOREIGN KEY (node_id) REFERENCES pipeline_nodes(id) ON DELETE SET NULL`,
+
+		// Marketplace: remote catalog sources, custom apps, launch tiles, install records
+		`CREATE TABLE IF NOT EXISTS marketplace_catalogs (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			name       TEXT NOT NULL,
+			url        TEXT NOT NULL,
+			enabled    INTEGER NOT NULL DEFAULT 1,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS marketplace_custom_apps (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			slug        TEXT NOT NULL,
+			name        TEXT NOT NULL,
+			category    TEXT DEFAULT 'Custom',
+			description TEXT DEFAULT '',
+			icon        TEXT DEFAULT '',
+			website     TEXT DEFAULT '',
+			compose     TEXT NOT NULL,
+			env_json    TEXT DEFAULT '[]',
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS marketplace_tiles (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			name       TEXT NOT NULL,
+			icon       TEXT DEFAULT '',
+			url        TEXT NOT NULL,
+			sort_order INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS marketplace_installs (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			app_id       TEXT NOT NULL,
+			app_name     TEXT NOT NULL,
+			host_id      INTEGER NOT NULL,
+			stack_name   TEXT NOT NULL,
+			installed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
 
 		// Docker hosts — reached over SSH; credentials AES-encrypted at rest
 		`CREATE TABLE IF NOT EXISTS docker_hosts (

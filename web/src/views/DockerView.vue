@@ -282,6 +282,7 @@ const logsLoading = ref(false)
 const logsTail = ref('200')
 const logsTimestamps = ref(false)
 const logsSearch = ref('')
+const logsPretty = ref(true)
 
 // ── Inspect / exec slide-over ───────────────────────────────────
 const inspectOpen = ref(false)
@@ -436,12 +437,22 @@ function wsUrl(path: string, params: Record<string, string | number> = {}) {
 
 // ── Live stats streaming (per expanded container) ───────────────
 const statsSockets = new Map<string, WebSocket>()
+const statsHistory = ref<Record<string, { cpu: number[]; mem: number[]; net: number[] }>>({})
+const statsPrevNet = new Map<string, number>()
+const STATS_POINTS = 60 // ~1 minute at 1 sample/sec
+
 function closeStatStream(cid: string) {
   const ws = statsSockets.get(cid)
   if (ws) {
     ws.onclose = null
     ws.close()
     statsSockets.delete(cid)
+  }
+  statsPrevNet.delete(cid)
+  if (statsHistory.value[cid]) {
+    const h = { ...statsHistory.value }
+    delete h[cid]
+    statsHistory.value = h
   }
 }
 function closeAllStatStreams() {
@@ -453,9 +464,38 @@ function connectStatStream(cid: string) {
   statsSockets.set(cid, ws)
   ws.onmessage = (ev) => {
     try {
-      statsMap.value = { ...statsMap.value, [cid]: JSON.parse(ev.data as string) }
+      const d = JSON.parse(ev.data as string)
+      statsMap.value = { ...statsMap.value, [cid]: d }
+      // Net rate (bytes/s) from cumulative counters.
+      const totalNet = (d.net_rx || 0) + (d.net_tx || 0)
+      const prev = statsPrevNet.get(cid)
+      const rate = prev != null ? Math.max(0, totalNet - prev) : 0
+      statsPrevNet.set(cid, totalNet)
+      const h = statsHistory.value[cid] || { cpu: [], mem: [], net: [] }
+      const push = (arr: number[], v: number) => {
+        arr.push(v)
+        if (arr.length > STATS_POINTS) arr.shift()
+      }
+      push(h.cpu, d.cpu_percent || 0)
+      push(h.mem, d.mem_percent || 0)
+      push(h.net, rate)
+      statsHistory.value = { ...statsHistory.value, [cid]: { cpu: [...h.cpu], mem: [...h.mem], net: [...h.net] } }
     } catch {}
   }
+}
+
+// SVG sparkline path builders (viewBox 0 0 W H).
+function sparkLine(values: number[], w = 120, h = 30, max?: number): string {
+  if (!values.length) return ''
+  const mx = max ?? Math.max(...values, 0.0001)
+  const step = values.length > 1 ? w / (values.length - 1) : 0
+  return values
+    .map((v, i) => `${i === 0 ? 'M' : 'L'} ${(i * step).toFixed(1)} ${(h - (Math.min(v, mx) / mx) * h).toFixed(1)}`)
+    .join(' ')
+}
+function sparkArea(values: number[], w = 120, h = 30, max?: number): string {
+  const line = sparkLine(values, w, h, max)
+  return line ? `${line} L ${w} ${h} L 0 ${h} Z` : ''
 }
 function toggleStats(c: DockerContainer) {
   const open = !expanded.value[c.id]
@@ -466,7 +506,22 @@ function toggleStats(c: DockerContainer) {
 
 // ── Live log streaming ──────────────────────────────────────────
 let logsSocket: WebSocket | null = null
+let logBuffer = ''
+let logFlushTimer: ReturnType<typeof setTimeout> | undefined
+function flushLogBuffer() {
+  logFlushTimer = undefined
+  if (!logBuffer) return
+  let t = logsText.value + logBuffer
+  logBuffer = ''
+  if (t.length > 1_000_000) t = t.slice(t.length - 800_000) // cap memory on long follows
+  logsText.value = t
+}
 function closeLogStream() {
+  if (logFlushTimer) {
+    clearTimeout(logFlushTimer)
+    logFlushTimer = undefined
+  }
+  logBuffer = ''
   if (logsSocket) {
     logsSocket.onclose = null
     logsSocket.close()
@@ -488,10 +543,9 @@ function connectLogStream() {
   const dec = new TextDecoder()
   ws.onmessage = (ev) => {
     logsLoading.value = false
-    const chunk = typeof ev.data === 'string' ? ev.data : dec.decode(new Uint8Array(ev.data as ArrayBuffer))
-    let t = logsText.value + chunk
-    if (t.length > 1_000_000) t = t.slice(t.length - 800_000) // cap memory on long follows
-    logsText.value = t
+    logBuffer += typeof ev.data === 'string' ? ev.data : dec.decode(new Uint8Array(ev.data as ArrayBuffer))
+    // Throttle reactive updates so parsing stays smooth on chatty streams.
+    if (!logFlushTimer) logFlushTimer = setTimeout(flushLogBuffer, 200)
   }
   ws.onclose = () => {
     logsLoading.value = false
@@ -501,6 +555,56 @@ function connectLogStream() {
   }
 }
 
+// ── Smart log parsing (levels, JSON, stack-trace grouping) ──────
+interface LogEntry { ts: string; level: string; text: string; json: string; cont: string[] }
+const logTsRe = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s+(.*)$/
+const logLevelRe = /\b(FATAL|PANIC|ERROR|ERR|WARN(?:ING)?|INFO|DEBUG|TRACE)\b/i
+const logContRe = /^(\s+|at\s|\.\.\.\s|Caused by|Traceback|\s*File ")/
+
+function normLevel(l: string): string {
+  const u = l.toUpperCase()
+  if (u === 'ERR') return 'ERROR'
+  if (u === 'WARNING') return 'WARN'
+  if (u === 'PANIC') return 'FATAL'
+  return u
+}
+const logEntries = computed<LogEntry[]>(() => {
+  const q = logsSearch.value.trim().toLowerCase()
+  const out: LogEntry[] = []
+  for (const raw of logsText.value.split('\n')) {
+    if (raw === '') continue
+    if (out.length && logContRe.test(raw) && !logTsRe.test(raw)) {
+      out[out.length - 1].cont.push(raw)
+      continue
+    }
+    let ts = ''
+    let body = raw
+    const m = raw.match(logTsRe)
+    if (m) {
+      ts = m[1]
+      body = m[2]
+    }
+    let level = ''
+    const lm = body.match(logLevelRe)
+    if (lm) level = normLevel(lm[1])
+    let json = ''
+    const trimmed = body.trim()
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      try {
+        json = JSON.stringify(JSON.parse(trimmed), null, 2)
+      } catch {
+        /* not JSON */
+      }
+    }
+    out.push({ ts, level, text: body, json, cont: [] })
+  }
+  if (!q) return out
+  return out.filter(
+    (e) => e.text.toLowerCase().includes(q) || e.cont.some((c) => c.toLowerCase().includes(q)),
+  )
+})
+
+// Raw text respecting the search filter (for the plain view + download).
 const logsDisplay = computed(() => {
   if (!logsSearch.value.trim()) return logsText.value
   const q = logsSearch.value.toLowerCase()
@@ -2106,7 +2210,30 @@ onMounted(loadHosts)
                           <span class="dk-stat-val">{{ statsMap[c.id].pids }}</span>
                         </div>
                       </div>
-                      <div v-else class="dk-muted">Loading stats…</div>
+                      <div v-if="statsMap[c.id] && statsHistory[c.id]" class="dk-sparks">
+                        <div class="dk-spark-card">
+                          <div class="dk-spark-head"><span>CPU</span><b>{{ statsMap[c.id].cpu_percent.toFixed(1) }}%</b></div>
+                          <svg class="dk-spark" viewBox="0 0 120 30" preserveAspectRatio="none">
+                            <path :d="sparkArea(statsHistory[c.id].cpu)" class="dk-spark-area dk-spark--cpu" />
+                            <path :d="sparkLine(statsHistory[c.id].cpu)" class="dk-spark-line dk-spark--cpu" />
+                          </svg>
+                        </div>
+                        <div class="dk-spark-card">
+                          <div class="dk-spark-head"><span>Memory</span><b>{{ statsMap[c.id].mem_percent.toFixed(1) }}%</b></div>
+                          <svg class="dk-spark" viewBox="0 0 120 30" preserveAspectRatio="none">
+                            <path :d="sparkArea(statsHistory[c.id].mem, 120, 30, 100)" class="dk-spark-area dk-spark--mem" />
+                            <path :d="sparkLine(statsHistory[c.id].mem, 120, 30, 100)" class="dk-spark-line dk-spark--mem" />
+                          </svg>
+                        </div>
+                        <div class="dk-spark-card">
+                          <div class="dk-spark-head"><span>Net rate</span><b>{{ formatBytes(statsHistory[c.id].net[statsHistory[c.id].net.length - 1] || 0) }}/s</b></div>
+                          <svg class="dk-spark" viewBox="0 0 120 30" preserveAspectRatio="none">
+                            <path :d="sparkArea(statsHistory[c.id].net)" class="dk-spark-area dk-spark--net" />
+                            <path :d="sparkLine(statsHistory[c.id].net)" class="dk-spark-line dk-spark--net" />
+                          </svg>
+                        </div>
+                      </div>
+                      <div v-if="!statsMap[c.id]" class="dk-muted">Loading stats…</div>
                     </td>
                   </tr>
                   </template>
@@ -2330,11 +2457,22 @@ onMounted(loadHosts)
             <option value="all">all</option>
           </select>
           <label class="dk-autorefresh"><input type="checkbox" v-model="logsTimestamps" @change="connectLogStream" /> Timestamps</label>
+          <label class="dk-autorefresh"><input type="checkbox" v-model="logsPretty" /> Pretty</label>
           <input v-model="logsSearch" class="base-input dk-logs-search" type="search" placeholder="Filter lines…" />
           <div class="dk-spacer"></div>
           <button class="base-btn base-btn--sm" @click="downloadLogs">Download</button>
         </div>
-        <pre class="dk-logs">{{ logsLoading ? 'Loading…' : logsDisplay }}</pre>
+        <pre v-if="!logsPretty" class="dk-logs">{{ logsLoading ? 'Loading…' : logsDisplay }}</pre>
+        <div v-else class="dk-logs dk-logs--pretty">
+          <div v-if="logsLoading" class="dk-muted">Loading…</div>
+          <div v-for="(e, i) in logEntries" :key="i" class="dk-logline" :class="e.level ? 'dk-logline--' + e.level.toLowerCase() : ''">
+            <span v-if="e.level" class="dk-loglevel">{{ e.level }}</span>
+            <span v-if="e.ts" class="dk-logts">{{ e.ts.slice(11, 23) }}</span>
+            <pre v-if="e.json" class="dk-logjson">{{ e.json }}</pre>
+            <span v-else class="dk-logtext">{{ e.text }}</span>
+            <pre v-if="e.cont.length" class="dk-logcont">{{ e.cont.join('\n') }}</pre>
+          </div>
+        </div>
         <div class="dk-modal-actions">
           <div class="dk-spacer"></div>
           <button class="base-btn base-btn--sm" @click="closeLogs">Close</button>
@@ -2944,6 +3082,16 @@ onMounted(loadHosts)
 
 .dk-stats-row td { background: var(--bg-body); }
 .dk-stats { display: flex; gap: 28px; }
+.dk-sparks { display: flex; gap: 16px; margin-top: 12px; flex-wrap: wrap; }
+.dk-spark-card { width: 150px; }
+.dk-spark-head { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); margin-bottom: 3px; }
+.dk-spark-head b { color: var(--text-primary); font-family: var(--mono); }
+.dk-spark { width: 100%; height: 30px; display: block; }
+.dk-spark-line { fill: none; stroke-width: 1.5; }
+.dk-spark-area { stroke: none; opacity: 0.15; }
+.dk-spark--cpu { stroke: var(--brand); fill: var(--brand); }
+.dk-spark--mem { stroke: #6366f1; fill: #6366f1; }
+.dk-spark--net { stroke: var(--warning); fill: var(--warning); }
 .dk-stat { display: flex; flex-direction: column; gap: 2px; }
 .dk-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
 .dk-stat-val { font-family: var(--mono); font-size: 13px; color: var(--text-primary); }
@@ -3086,6 +3234,23 @@ onMounted(loadHosts)
 .dk-logs-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .dk-logs-tail { width: 110px; }
 .dk-logs-search { max-width: 200px; }
+.dk-logs--pretty { font-family: var(--mono); font-size: 11px; line-height: 1.55; max-height: 60vh; overflow: auto; padding: 8px 10px; background: var(--bg-body); border: 1px solid var(--border); border-radius: var(--r-sm); white-space: normal; }
+.dk-logline { display: flex; align-items: baseline; gap: 8px; padding: 1px 6px; border-left: 2px solid transparent; flex-wrap: wrap; }
+.dk-logline:hover { background: var(--bg-hover); }
+.dk-loglevel { font-weight: 700; font-size: 9px; padding: 0 4px; border-radius: var(--r-xs); flex-shrink: 0; }
+.dk-logts { color: var(--text-muted); flex-shrink: 0; }
+.dk-logtext { color: var(--text-secondary); word-break: break-all; flex: 1; }
+.dk-logjson { color: var(--text-secondary); margin: 2px 0; white-space: pre-wrap; word-break: break-all; flex-basis: 100%; background: var(--bg-elevated); border-radius: var(--r-xs); padding: 4px 8px; }
+.dk-logcont { color: var(--text-muted); margin: 0; white-space: pre-wrap; word-break: break-all; flex-basis: 100%; padding-left: 12px; }
+.dk-logline--error { border-left-color: var(--danger); }
+.dk-logline--error .dk-loglevel { background: var(--danger-bg); color: var(--danger); }
+.dk-logline--error .dk-logtext { color: var(--danger); }
+.dk-logline--fatal { border-left-color: var(--danger); background: var(--danger-bg); }
+.dk-logline--fatal .dk-loglevel { background: var(--danger); color: #fff; }
+.dk-logline--warn { border-left-color: var(--warning); }
+.dk-logline--warn .dk-loglevel { background: var(--warning-bg); color: var(--warning); }
+.dk-logline--info .dk-loglevel { background: var(--success-bg); color: var(--success); }
+.dk-logline--debug .dk-loglevel, .dk-logline--trace .dk-loglevel { background: var(--bg-hover); color: var(--text-muted); }
 
 /* Topology map */
 .dk-topo-backdrop { position: fixed; inset: 0; background: var(--bg-body); z-index: 1200; display: flex; }
