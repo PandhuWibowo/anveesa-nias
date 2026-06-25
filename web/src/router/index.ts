@@ -229,10 +229,22 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['kafka.view'] },
         },
         {
+          path: 'docker-hosts',
+          name: 'docker-hosts',
+          component: () => import('@/views/DockerHostsView.vue'),
+          meta: { requiredPermissionsAny: ['docker.view', 'docker.manage'] },
+        },
+        {
           path: 'docker',
           name: 'docker',
           component: () => import('@/views/DockerView.vue'),
           meta: { requiredPermissionsAny: ['docker.view', 'docker.manage'] },
+        },
+        {
+          path: 'sftp-hosts',
+          name: 'sftp-hosts',
+          component: () => import('@/views/SftpHostsView.vue'),
+          meta: { requiredPermissionsAny: ['sftp.access', 'sftp.manage'] },
         },
         {
           path: 'sftp',

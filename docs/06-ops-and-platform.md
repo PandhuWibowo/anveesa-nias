@@ -105,3 +105,107 @@ Use cases:
 Notes:
 - Script behavior should be deterministic and reviewable.
 - Avoid scripts that depend on hidden local state.
+
+---
+
+## Nginx Management
+
+Route:
+- `/nginx`
+
+Purpose:
+- Manage nginx configuration, sites, logs, and TLS certificates on remote servers over SSH.
+
+Use cases:
+- Edit nginx config files directly from the browser.
+- Enable or disable virtual host sites.
+- Tail and search access/error logs in real time.
+- Inspect TLS certificate expiry across all servers.
+- Run `nginx -t` config tests and reload the service.
+- View the full fleet health of all nginx hosts at once.
+
+Connection workflow:
+1. Select a host from the searchable dropdown (hosts come from Docker → SSH hosts).
+2. The app pings the host via SSH and shows a status badge: **Connected** (green), **Unreachable** (red), or **Testing…** (grey blinking).
+3. Use **Connect** to re-test SSH reachability after a failure.
+4. Use **Disconnect** to stop log following and clear the active session without removing the host.
+
+Tabs:
+- **Config** — file tree + CodeMirror editor with backup/revert.
+- **Sites** — list sites with enable/disable toggle.
+- **Logs** — file selector, live follow, keyword search with level filter.
+- **Map** — visualise server blocks and upstream groups.
+- **Certs** — TLS certificate expiry summary per domain.
+- **Status** — nginx stub_status metrics with req/s rate.
+
+Notes:
+- Hosts must be added under Docker → Add host (Remote host) before they appear here.
+- `sudo` can be toggled per host for elevated nginx access.
+- Compressed log files (`.gz`, `.bz2`) can be read but not followed.
+
+Screenshot:
+- `docs/screenshots/nginx-page.png`
+
+---
+
+## Docker Hosts Management
+
+Route:
+- `/docker-hosts`
+
+Purpose:
+- Dedicated page for listing and managing all Docker SSH host connections.
+
+Use cases:
+- Add a new remote server as a Docker host.
+- Edit SSH credentials or socket path for an existing host.
+- Delete a host connection that is no longer needed.
+- Test SSH + Docker daemon connectivity for each host.
+- View reachability, running container count, image count, and Docker version for each host at a glance.
+
+Typical workflow:
+1. Open Docker Hosts.
+2. Click **Add host** to register a remote server.
+3. Enter SSH credentials (password or private key).
+4. Use **Test** to verify connectivity before saving.
+5. Click **Manage →** on any card to jump to the Docker page for that host.
+
+Notes:
+- Hosts added here are shared with the Nginx management page.
+- SSH credentials are AES-encrypted at rest using `NIAS_ENCRYPTION_KEY`.
+
+Screenshot:
+- `docs/screenshots/docker-hosts-page.png`
+
+---
+
+## Docker Management
+
+Route:
+- `/docker`
+
+Purpose:
+- Manage remote Docker hosts and their containers, images, volumes, networks, and compose stacks directly from the browser over SSH.
+
+Use cases:
+- View running and stopped containers across multiple VMs.
+- Start, stop, restart, or remove containers.
+- Pull or remove images.
+- Manage volumes and networks.
+- Run `docker compose up/down` for stacks.
+- Open an interactive terminal (exec) inside a running container.
+- Browse container logs.
+
+Typical workflow:
+1. Add a remote host under **Docker → Add host** with SSH credentials.
+2. Select the host from the host picker — the app tunnels into the Docker daemon socket over SSH.
+3. Navigate to Containers, Images, Volumes, Networks, or Compose tabs.
+4. Act on resources via the action buttons.
+
+Notes:
+- No Docker TCP port needs to be exposed on the remote VM — everything goes over the SSH socket tunnel.
+- SSH credentials are AES-encrypted at rest using `NIAS_ENCRYPTION_KEY`.
+- The same SSH host list is shared with the Nginx management page.
+
+Screenshot:
+- `docs/screenshots/docker-page.png`

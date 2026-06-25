@@ -199,6 +199,7 @@ async function loadHosts() {
     if (hostId.value === null && hosts.value.length) {
       hostId.value = hosts.value[0].id
       await onHostChange()
+      await pingHost()
     }
   } catch {
     toast.error('Failed to load hosts')

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
@@ -29,6 +30,8 @@ interface UploadJob {
   error: string
 }
 
+const router = useRouter()
+const route = useRoute()
 const toast = useToast()
 const { confirm } = useConfirm()
 const { hasAnyPermission } = useAuth()
@@ -76,7 +79,9 @@ async function loadHosts() {
     const { data } = await axios.get<SshHost[]>('/api/docker/hosts')
     hosts.value = data.filter((h) => h.ssh_host)
     if (hostId.value === null && hosts.value.length) {
-      hostId.value = hosts.value[0].id
+      const queryHost = route.query.host ? Number(route.query.host) : null
+      const preferred = queryHost ? hosts.value.find((h) => h.id === queryHost) : null
+      hostId.value = preferred ? preferred.id : hosts.value[0].id
       await loadDir('')
     }
   } catch (e: any) {
@@ -280,13 +285,15 @@ onMounted(loadHosts)
               <option v-for="h in hosts" :key="h.id" :value="h.id">{{ h.name }} ({{ h.ssh_host }})</option>
             </select>
             <button v-if="hostId !== null" class="base-btn base-btn--sm" :disabled="loading" @click="loadDir(cwd)">Refresh</button>
+            <button v-if="canManage" class="base-btn base-btn--sm" @click="router.push({ name: 'sftp-hosts' })">Manage hosts</button>
           </div>
         </section>
 
         <div v-if="!hosts.length" class="page-card sf-empty">
           <div class="sf-empty-icon">🗂️</div>
           <h2>No SSH servers</h2>
-          <p>SFTP uses your remote SSH hosts. Add one under <b>Docker → Add host</b> (Remote host) first.</p>
+          <p>SFTP uses your remote SSH hosts. Add one under <b>SFTP Hosts</b> first.</p>
+          <button v-if="canManage" class="base-btn base-btn--primary" @click="router.push({ name: 'sftp-hosts' })">Add your first host</button>
         </div>
 
         <template v-else>

@@ -11,6 +11,7 @@ Dokumen ini merangkum seluruh fitur yang tersedia di Anveesa Nias, internal deve
 - Support **SSH tunnel** untuk koneksi ke database di jaringan private
 - Folder/grup untuk mengorganisir koneksi
 - Test koneksi sebelum menyimpan
+- **Connection Templates** — simpan preset host/port/database sebagai bookmark tanpa kredensial; load template saat membuat koneksi baru untuk mengisi otomatis field infrastruktur
 
 ---
 
@@ -74,6 +75,10 @@ Dokumen ini merangkum seluruh fitur yang tersedia di Anveesa Nias, internal deve
 - **Redis** — browser dan operasi key-value Redis (terpisah dari cache internal)
 - **Kafka** — browse topic, produksi dan konsumsi pesan
 - **Laravel Queue** — monitor dan kelola job queue Laravel
+- **Docker Hosts** — halaman khusus untuk daftar dan manajemen SSH host (add, edit, delete, test koneksi, lihat status reachability dan jumlah container)
+- **SFTP Hosts** — halaman khusus untuk daftar dan manajemen SSH host untuk file browsing; card per host dengan status SSH, tombol "Browse files →" ke halaman SFTP
+- **Docker** — manajemen container, image, volume, network, compose via SSH tunnel ke Docker daemon remote; exec terminal langsung dari browser
+- **Nginx** — manajemen konfigurasi nginx via SSH: edit config, toggle sites, tail/search log, inspect TLS certs, fleet health view; status koneksi SSH (Connect / Disconnect) per host
 
 ---
 

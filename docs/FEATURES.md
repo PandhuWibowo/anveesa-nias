@@ -58,3 +58,7 @@ Current primary routes covered:
 - `/permissions?tab=users`
 - `/workflows`
 - `/security`
+- `/docker-hosts`
+- `/docker`
+- `/sftp-hosts`
+- `/nginx`

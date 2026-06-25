@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import axios from 'axios'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -128,6 +129,8 @@ interface HostForm {
   socket_path: string
 }
 
+const router = useRouter()
+const route = useRoute()
 const toast = useToast()
 const { confirm } = useConfirm()
 const { hasAnyPermission } = useAuth()
@@ -348,7 +351,9 @@ async function loadHosts() {
     const { data } = await axios.get<DockerHost[]>('/api/docker/hosts')
     hosts.value = data
     if (activeHostId.value === null && data.length) {
-      activeHostId.value = data[0].id
+      const queryHost = route.query.host ? Number(route.query.host) : null
+      const preferred = queryHost ? data.find((h) => h.id === queryHost) : null
+      activeHostId.value = preferred ? preferred.id : data[0].id
       await refresh()
     }
   } catch (e: any) {
@@ -1935,7 +1940,7 @@ onMounted(loadHosts)
             </label>
             <button v-if="activeHost" class="base-btn base-btn--sm" :disabled="loading" @click="refresh()">Refresh</button>
             <button v-if="activeHost && canManage" class="base-btn base-btn--sm" @click="openEditHost(activeHost)">Edit host</button>
-            <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="openAddHost">+ Add host</button>
+            <button v-if="canManage" class="base-btn base-btn--sm" @click="router.push({ name: 'docker-hosts' })">Manage hosts</button>
           </div>
         </section>
 
@@ -2006,7 +2011,7 @@ onMounted(loadHosts)
           <div class="dk-empty-icon">🐳</div>
           <h2>No Docker hosts yet</h2>
           <p>Connect a server by SSH to browse and control its containers.</p>
-          <button v-if="canManage" class="base-btn base-btn--primary" @click="openAddHost">Add your first host</button>
+          <button v-if="canManage" class="base-btn base-btn--primary" @click="router.push({ name: 'docker-hosts' })">Add your first host</button>
           <p v-else class="dk-muted">You don't have permission to add Docker hosts.</p>
         </div>
 
@@ -2377,14 +2382,6 @@ onMounted(loadHosts)
             </table>
           </div>
 
-          <!-- Host chips -->
-          <div class="dk-host-strip">
-            <span class="dk-muted">Hosts:</span>
-            <span v-for="h in hosts" :key="h.id" class="dk-chip" :class="{ 'dk-chip--active': h.id === activeHostId }">
-              <button class="dk-chip-name" @click="selectHost(h.id)">{{ h.name }}</button>
-              <button v-if="canManage" class="dk-chip-x" title="Delete host" @click="deleteHost(h)">×</button>
-            </span>
-          </div>
         </template>
       </div>
     </div>
