@@ -1151,6 +1151,21 @@ func migrate() error {
 			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_connection_templates_owner ON connection_templates(owner_id)`,
+
+		// Kubernetes clusters — connected via kubeconfig (AES-encrypted at rest).
+		// Works for Alibaba ACK, Huawei CCE, or any standard kubeconfig. The
+		// provider field is informational (labels/icons) and lets us layer
+		// cloud-API cluster discovery on later without a schema change.
+		`CREATE TABLE IF NOT EXISTS kube_clusters (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			name        TEXT NOT NULL,
+			provider    TEXT NOT NULL DEFAULT 'other',
+			kubeconfig  TEXT NOT NULL DEFAULT '',
+			context     TEXT NOT NULL DEFAULT '',
+			owner_id    INTEGER,
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_kube_clusters_owner ON kube_clusters(owner_id)`,
 	}
 	for _, s := range stmts {
 		convertedSQL := convertSQL(s)

@@ -156,6 +156,8 @@ const allMenuGroups: MenuGroup[] = [
       { name: 'docker', label: 'Docker', desc: 'Browse and control containers and images across your servers over SSH', icon: 'docker', permissionsAny: ['docker.view', 'docker.manage'] },
       { name: 'sftp', label: 'SFTP', desc: 'Browse, upload, and download files on your servers over SSH', icon: 'sftp', permissionsAny: ['sftp.access', 'sftp.manage'] },
       { name: 'nginx', label: 'Nginx', desc: 'Edit configs, toggle sites, and follow access & error logs across your servers over SSH', icon: 'nginx', permissionsAny: ['nginx.view', 'nginx.manage', 'nginx.reload'] },
+      { name: 'kube-clusters', label: 'K8s Clusters', desc: 'Manage Kubernetes cluster connections (Alibaba ACK, Huawei CCE) via kubeconfig', icon: 'kube', permissionsAny: ['kube.view', 'kube.manage'] },
+      { name: 'kubernetes', label: 'Kubernetes', desc: 'Browse nodes, workloads, services, events, and pod logs across your clusters', icon: 'kube', permissionsAny: ['kube.view', 'kube.manage'] },
     ],
   },
   {
@@ -261,6 +263,7 @@ const ICON_PATHS: Record<string, string> = {
   docker: '<rect x="3" y="10" width="3" height="3"/><rect x="7" y="10" width="3" height="3"/><rect x="11" y="10" width="3" height="3"/><rect x="7" y="6" width="3" height="3"/><rect x="11" y="6" width="3" height="3"/><path d="M3 13h13c2.5 0 4-1 4.5-3 1 .3 2 .2 2.5-.3-.3 1.8-1.7 3.3-3.5 3.3H3z"/>',
   sftp: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5"/><path d="M9.5 13.5 12 11l2.5 2.5"/>',
   nginx: '<path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M9 16V9l6 7V9"/>',
+  kube: '<path d="M12 2 3 7v10l9 5 9-5V7z"/><circle cx="12" cy="12" r="2.5"/><path d="M12 9.5V5.5"/><path d="m14.2 13.4 3.3 1.9"/><path d="m9.8 13.4-3.3 1.9"/>',
 }
 
 function iconPath(icon: string): string {

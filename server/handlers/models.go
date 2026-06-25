@@ -170,6 +170,8 @@ const (
 	PermNginxView    = "nginx.view"
 	PermNginxManage  = "nginx.manage"
 	PermNginxReload  = "nginx.reload"
+	PermKubeView     = "kube.view"
+	PermKubeManage   = "kube.manage"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -242,6 +244,8 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermNginxView, Label: "View Nginx Config & Logs", Group: "Infrastructure"},
 	{Key: PermNginxManage, Label: "Edit Nginx Config & Toggle Sites", Group: "Infrastructure"},
 	{Key: PermNginxReload, Label: "Test & Reload Nginx", Group: "Infrastructure"},
+	{Key: PermKubeView, Label: "View Kubernetes Clusters & Workloads", Group: "Infrastructure"},
+	{Key: PermKubeManage, Label: "Manage Kubernetes Cluster Connections", Group: "Infrastructure"},
 }
 
 // PermissionDef describes a single permission for the UI.

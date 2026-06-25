@@ -958,6 +958,62 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 
+	// ── Infrastructure: Kubernetes ────────────────────────────────
+	mux.HandleFunc("/api/kube/overview", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			requireAny(handlers.PermKubeView, handlers.PermKubeManage)(handlers.KubeOverview())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/kube/clusters", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermKubeView, handlers.PermKubeManage)(handlers.ListKubeClusters())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermKubeManage)(handlers.CreateKubeCluster())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/kube/clusters/", func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/kube/clusters/"), "/")
+		parts := strings.Split(rest, "/")
+		view := requireAny(handlers.PermKubeView, handlers.PermKubeManage)
+		manage := requireAny(handlers.PermKubeManage)
+		switch {
+		// /api/kube/clusters/test — validate an unsaved kubeconfig
+		case len(parts) == 1 && parts[0] == "test" && r.Method == http.MethodPost:
+			manage(handlers.TestKubeCluster())(w, r)
+		// /api/kube/clusters/{id}
+		case len(parts) == 1 && r.Method == http.MethodPut:
+			manage(handlers.UpdateKubeCluster())(w, r)
+		case len(parts) == 1 && r.Method == http.MethodDelete:
+			manage(handlers.DeleteKubeCluster())(w, r)
+		// /api/kube/clusters/{id}/ping
+		case len(parts) == 2 && parts[1] == "ping" && r.Method == http.MethodGet:
+			view(handlers.KubePing())(w, r)
+		// /api/kube/clusters/{id}/nodes|namespaces|pods|deployments|services|events
+		case len(parts) == 2 && parts[1] == "nodes" && r.Method == http.MethodGet:
+			view(handlers.KubeNodes())(w, r)
+		case len(parts) == 2 && parts[1] == "namespaces" && r.Method == http.MethodGet:
+			view(handlers.KubeNamespaces())(w, r)
+		case len(parts) == 2 && parts[1] == "pods" && r.Method == http.MethodGet:
+			view(handlers.KubePods())(w, r)
+		case len(parts) == 2 && parts[1] == "deployments" && r.Method == http.MethodGet:
+			view(handlers.KubeDeployments())(w, r)
+		case len(parts) == 2 && parts[1] == "services" && r.Method == http.MethodGet:
+			view(handlers.KubeServices())(w, r)
+		case len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet:
+			view(handlers.KubeEvents())(w, r)
+		// /api/kube/clusters/{id}/pods/{ns}/{pod}/logs
+		case len(parts) == 5 && parts[1] == "pods" && parts[4] == "logs" && r.Method == http.MethodGet:
+			view(handlers.KubePodLogs())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
 	// ── Infrastructure: SFTP ──────────────────────────────────────
 	mux.HandleFunc("/api/sftp/hosts/", func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/sftp/hosts/"), "/")
