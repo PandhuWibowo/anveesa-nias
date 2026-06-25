@@ -40,6 +40,7 @@ const canManage = computed(() => hasAnyPermission(['sftp.manage']))
 
 const hosts = ref<SshHost[]>([])
 const hostId = ref<number | null>(null)
+const hostStatus = ref<'unknown' | 'connecting' | 'connected' | 'error'>('unknown')
 const hostOptions = computed(() => hosts.value.map((h) => ({
   value: h.id,
   label: `${h.name} (${h.ssh_host})`,
@@ -79,15 +80,23 @@ const crumbs = computed(() => {
 })
 
 // ── Loading ─────────────────────────────────────────────────────
+// Remember the user's connection intent across refreshes.
+const LAST_HOST_KEY = 'nias:sftp:lastHost'
+
 async function loadHosts() {
   try {
     const { data } = await axios.get<SshHost[]>('/api/docker/hosts')
     hosts.value = data.filter((h) => h.ssh_host)
     if (hostId.value === null && hosts.value.length) {
-      const queryHost = route.query.host ? Number(route.query.host) : null
-      const preferred = queryHost ? hosts.value.find((h) => h.id === queryHost) : null
-      hostId.value = preferred ? preferred.id : hosts.value[0].id
-      await loadDir('')
+      // An explicit ?host= (e.g. from the SSH Hosts page) means "connect now".
+      const queryId = route.query.host ? Number(route.query.host) : null
+      const queryHost = queryId ? hosts.value.find((h) => h.id === queryId) : null
+      if (queryHost) { await selectHost(queryHost.id); return }
+      const saved = localStorage.getItem(LAST_HOST_KEY)
+      if (saved === 'disconnected') return // user explicitly disconnected
+      const savedId = saved ? Number(saved) : null
+      const target = (savedId && hosts.value.find((h) => h.id === savedId)) || hosts.value[0]
+      await selectHost(target.id)
     }
   } catch (e: any) {
     toast.error('Failed to load hosts')
@@ -97,13 +106,26 @@ async function loadHosts() {
 async function selectHost(id: number) {
   hostId.value = id
   cwd.value = '/'
+  localStorage.setItem(LAST_HOST_KEY, String(id))
   await loadDir('')
+}
+
+function disconnectHost() {
+  hostId.value = null
+  hostStatus.value = 'unknown'
+  localStorage.setItem(LAST_HOST_KEY, 'disconnected')
+  // Clear browsing state so nothing stale is shown after disconnect
+  cwd.value = '/'
+  entries.value = []
+  connError.value = ''
+  uploads.value = []
 }
 
 async function loadDir(path: string) {
   if (hostId.value === null) return
   loading.value = true
   connError.value = ''
+  if (hostStatus.value !== 'connected') hostStatus.value = 'connecting'
   try {
     const { data } = await axios.get<{ path: string; entries: SftpEntry[] }>(
       `/api/sftp/hosts/${hostId.value}/list`,
@@ -111,9 +133,11 @@ async function loadDir(path: string) {
     )
     cwd.value = data.path || '/'
     entries.value = data.entries || []
+    hostStatus.value = 'connected'
   } catch (e: any) {
     connError.value = e?.response?.data?.error || 'Could not list directory'
     entries.value = []
+    hostStatus.value = 'error'
   } finally {
     loading.value = false
   }
@@ -289,7 +313,12 @@ onMounted(loadHosts)
               placeholder="Select host…"
               @update:model-value="selectHost(Number($event))"
             />
+            <div v-if="hostId !== null" class="sf-conn-status" :class="`sf-conn-status--${hostStatus}`">
+              <span class="sf-conn-dot"></span>
+              <span>{{ hostStatus === 'connected' ? 'Connected' : hostStatus === 'connecting' ? 'Connecting…' : hostStatus === 'error' ? 'Error' : 'Idle' }}</span>
+            </div>
             <button v-if="hostId !== null" class="base-btn base-btn--sm" :disabled="loading" @click="loadDir(cwd)">Refresh</button>
+            <button v-if="hostId !== null" class="base-btn base-btn--sm" @click="disconnectHost">Disconnect</button>
             <button v-if="canManage" class="base-btn base-btn--sm" @click="router.push({ name: 'ssh-hosts' })">Manage hosts</button>
           </div>
         </section>
@@ -301,7 +330,7 @@ onMounted(loadHosts)
           <button v-if="canManage" class="base-btn base-btn--primary" @click="router.push({ name: 'ssh-hosts' })">Add your first host</button>
         </div>
 
-        <template v-else>
+        <template v-else-if="hostId !== null">
           <!-- Toolbar + breadcrumbs -->
           <div class="sf-bar">
             <button class="base-btn base-btn--sm" :disabled="cwd === '/'" @click="up">↑ Up</button>
@@ -360,6 +389,12 @@ onMounted(loadHosts)
             </table>
           </div>
         </template>
+
+        <!-- Idle: hosts exist but none selected (after disconnect) -->
+        <div v-else class="page-card sf-idle">
+          <div class="sf-idle-icon">🗂️</div>
+          <p>Select a host from the dropdown above to connect.</p>
+        </div>
       </div>
     </div>
 
@@ -405,6 +440,19 @@ onMounted(loadHosts)
 
 <style scoped>
 .sf-host { min-width: 240px; }
+
+/* Connection status badge */
+.sf-conn-status { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; border: 1px solid transparent; }
+.sf-conn-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.sf-conn-status--connected { color: var(--success); background: var(--success-bg, rgba(34,197,94,0.12)); }
+.sf-conn-status--error { color: var(--danger); background: var(--danger-bg, rgba(239,68,68,0.12)); }
+.sf-conn-status--connecting { color: var(--text-muted); background: var(--bg-hover); }
+.sf-conn-status--connecting .sf-conn-dot { animation: sf-blink 1s ease-in-out infinite; }
+.sf-conn-status--unknown { color: var(--text-muted); background: var(--bg-hover); }
+@keyframes sf-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+.sf-idle { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 48px 20px; color: var(--text-muted); font-size: 13px; }
+.sf-idle-icon { font-size: 22px; }
 .sf-empty { text-align: center; padding: 64px 20px; color: var(--text-secondary); }
 .sf-empty-icon { font-size: 44px; }
 .sf-empty h2 { margin: 12px 0 4px; font-size: 16px; color: var(--text-primary); }

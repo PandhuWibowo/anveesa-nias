@@ -248,12 +248,32 @@ function rowSaveError(error: unknown, action: string, fallback: string, values: 
   return columns ? `${message}\nField/column: ${columns}` : message
 }
 
+// Patch the edited row in place so it keeps its position in the grid instead of
+// jumping after a full reload (the DB may return a different order). Returns
+// false when the row can't be located, so the caller can fall back to a reload.
+function applyRowUpdateInPlace(t: TableTab, pkValue: unknown, updates: Record<string, unknown>): boolean {
+  const pkIdx = t.columns.indexOf(t.pkColumn)
+  if (pkIdx < 0) return false
+  const rowIdx = t.rows.findIndex((r) => String((r as unknown[])[pkIdx]) === String(pkValue))
+  if (rowIdx < 0) return false
+  const newRow = [...(t.rows[rowIdx] as unknown[])]
+  for (const [col, val] of Object.entries(updates)) {
+    const cIdx = t.columns.indexOf(col)
+    if (cIdx >= 0) newRow[cIdx] = val
+  }
+  const newRows = t.rows.slice()
+  newRows[rowIdx] = newRow
+  t.rows = newRows
+  return true
+}
+
 async function handleSaveRow(payload: { pkValue: unknown; updates: Record<string, unknown> }) {
   const t = activeTab.value; if (!t || !props.connId) return
   try {
     await axios.put(`/api/connections/${props.connId}/schema/${t.db}/tables/${t.table}/rows`, { pk_column: t.pkColumn, pk_value: payload.pkValue, updates: payload.updates })
     t.hasUnsavedEdits = false
-    toast.success('Row updated'); loadData()
+    toast.success('Row updated')
+    if (!applyRowUpdateInPlace(t, payload.pkValue, payload.updates)) loadData()
   } catch (e) { toast.error(rowSaveError(e, 'Update row', 'Update failed', payload.updates)) }
 }
 
@@ -269,7 +289,11 @@ async function handleSaveAllRows(payload: Array<{ pkValue: unknown; updates: Rec
     ))
     t.hasUnsavedEdits = false
     toast.success(`${payload.length} row${payload.length > 1 ? 's' : ''} updated`)
-    loadData()
+    let allApplied = true
+    for (const item of payload) {
+      if (!applyRowUpdateInPlace(t, item.pkValue, item.updates)) allApplied = false
+    }
+    if (!allApplied) loadData()
   } catch (e) {
     toast.error(readableError(e, { action: 'Bulk update rows', fallback: 'Bulk update failed' }))
   }

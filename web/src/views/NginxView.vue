@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
@@ -76,6 +77,7 @@ interface NginxInfo {
   sites_layout: string
 }
 
+const route = useRoute()
 const toast = useToast()
 const { confirm } = useConfirm()
 const { hasAnyPermission } = useAuth()
@@ -192,12 +194,31 @@ const binOptions = [
 const logOptions = computed(() => logFiles.value.map((f) => ({ value: f.path, label: `${f.path} (${formatBytes(f.size)})` })))
 
 // ── Hosts ───────────────────────────────────────────────────────
+// Remember the user's connection intent across refreshes: the last host they
+// connected to, or an explicit 'disconnected' so we don't silently reconnect.
+const LAST_HOST_KEY = 'nias:nginx:lastHost'
+
 async function loadHosts() {
   try {
     const { data } = await axios.get<SshHost[]>('/api/docker/hosts')
     hosts.value = data.filter((h) => h.ssh_host)
     if (hostId.value === null && hosts.value.length) {
-      hostId.value = hosts.value[0].id
+      // An explicit ?host= (e.g. from the SSH Hosts page) means "connect now"
+      // and overrides any saved disconnect state.
+      const queryId = route.query.host ? Number(route.query.host) : null
+      const queryHost = queryId ? hosts.value.find((h) => h.id === queryId) : null
+      if (queryHost) {
+        await selectHost(queryHost.id)
+        return
+      }
+      const saved = localStorage.getItem(LAST_HOST_KEY)
+      // The user explicitly disconnected — stay on the idle screen.
+      if (saved === 'disconnected') return
+      // Restore the previously connected host if it still exists; otherwise
+      // fall back to the first host (default for a first-ever visit).
+      const savedId = saved ? Number(saved) : null
+      const target = (savedId && hosts.value.find((h) => h.id === savedId)) || hosts.value[0]
+      hostId.value = target.id
       await onHostChange()
       await pingHost()
     }
@@ -209,6 +230,7 @@ async function loadHosts() {
 async function selectHost(id: number) {
   hostId.value = id
   hostStatus.value = 'unknown'
+  localStorage.setItem(LAST_HOST_KEY, String(id))
   await onHostChange()
   await pingHost()
 }
@@ -229,6 +251,7 @@ async function disconnectHost() {
   stopStub()
   hostId.value = null
   hostStatus.value = 'unknown'
+  localStorage.setItem(LAST_HOST_KEY, 'disconnected')
   // Clear all content so stale data isn't shown after disconnect
   version.value = ''
   active.value = ''

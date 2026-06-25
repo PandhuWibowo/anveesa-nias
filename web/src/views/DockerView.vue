@@ -351,14 +351,23 @@ let fitAddon: FitAddon | null = null
 let termSocket: WebSocket | null = null
 
 // ── Data loading ────────────────────────────────────────────────
+// Remember the user's connection intent across refreshes.
+const LAST_HOST_KEY = 'nias:docker:lastHost'
+
 async function loadHosts() {
   try {
     const { data } = await axios.get<DockerHost[]>('/api/docker/hosts')
     hosts.value = data
     if (activeHostId.value === null && data.length) {
-      const queryHost = route.query.host ? Number(route.query.host) : null
-      const preferred = queryHost ? data.find((h) => h.id === queryHost) : null
-      activeHostId.value = preferred ? preferred.id : data[0].id
+      // An explicit ?host= (e.g. from the SSH Hosts page) means "connect now".
+      const queryId = route.query.host ? Number(route.query.host) : null
+      const queryHost = queryId ? data.find((h) => h.id === queryId) : null
+      if (queryHost) { await selectHost(queryHost.id); return }
+      const saved = localStorage.getItem(LAST_HOST_KEY)
+      if (saved === 'disconnected') return // user explicitly disconnected
+      const savedId = saved ? Number(saved) : null
+      const target = (savedId && data.find((h) => h.id === savedId)) || data[0]
+      activeHostId.value = target.id
       await refresh()
     }
   } catch (e: any) {
@@ -372,7 +381,24 @@ async function selectHost(id: number) {
   activeHostId.value = id
   statsMap.value = {}
   expanded.value = {}
+  localStorage.setItem(LAST_HOST_KEY, String(id))
   await refresh()
+}
+
+function disconnectHost() {
+  closeAllStatStreams()
+  autoRefresh.value = false
+  activeHostId.value = null
+  localStorage.setItem(LAST_HOST_KEY, 'disconnected')
+  // Clear content so nothing stale is shown after disconnect
+  containers.value = []
+  images.value = []
+  volumes.value = []
+  networks.value = []
+  daemonInfo.value = null
+  connError.value = ''
+  statsMap.value = {}
+  expanded.value = {}
 }
 
 async function refresh(silent = false) {
@@ -1944,6 +1970,7 @@ onMounted(loadHosts)
               <input type="checkbox" v-model="autoRefresh" /> Auto
             </label>
             <button v-if="activeHost" class="base-btn base-btn--sm" :disabled="loading" @click="refresh()">Refresh</button>
+            <button v-if="activeHost" class="base-btn base-btn--sm" @click="disconnectHost">Disconnect</button>
             <button v-if="activeHost && canManage" class="base-btn base-btn--sm" @click="openEditHost(activeHost)">Edit host</button>
             <button v-if="canManage" class="base-btn base-btn--sm" @click="router.push({ name: 'ssh-hosts' })">Manage hosts</button>
           </div>
@@ -2020,7 +2047,7 @@ onMounted(loadHosts)
           <p v-else class="dk-muted">You don't have permission to add Docker hosts.</p>
         </div>
 
-        <template v-else>
+        <template v-else-if="activeHostId !== null">
           <!-- Daemon status + tabs -->
           <div class="dk-bar">
             <div class="dk-connstat">
@@ -2388,6 +2415,12 @@ onMounted(loadHosts)
           </div>
 
         </template>
+
+        <!-- Idle: hosts exist but none selected (after disconnect) -->
+        <div v-else class="page-card dk-idle">
+          <div class="dk-idle-icon">🐳</div>
+          <p>Select a host from the dropdown above to connect.</p>
+        </div>
       </div>
     </div>
 
@@ -3053,6 +3086,8 @@ onMounted(loadHosts)
 .dk-empty-icon { font-size: 44px; }
 .dk-empty h2 { margin: 12px 0 4px; font-size: 16px; color: var(--text-primary); }
 .dk-empty p { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; }
+.dk-idle { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 48px 20px; color: var(--text-muted); font-size: 13px; }
+.dk-idle-icon { font-size: 22px; }
 
 .dk-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .dk-connstat { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); }
