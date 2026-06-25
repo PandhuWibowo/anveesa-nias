@@ -84,6 +84,7 @@ const canReload = computed(() => hasAnyPermission(['nginx.reload']))
 
 const hosts = ref<SshHost[]>([])
 const hostId = ref<number | null>(null)
+const hostStatus = ref<'unknown' | 'connecting' | 'connected' | 'error'>('unknown')
 const tab = ref<NginxTab>('config')
 
 // Per-host detected/overridable settings
@@ -206,7 +207,33 @@ async function loadHosts() {
 
 async function selectHost(id: number) {
   hostId.value = id
+  hostStatus.value = 'unknown'
   await onHostChange()
+  await pingHost()
+}
+
+async function pingHost() {
+  if (hostId.value === null) return
+  hostStatus.value = 'connecting'
+  try {
+    await axios.get(`/api/docker/hosts/${hostId.value}/ping`)
+    hostStatus.value = 'connected'
+  } catch {
+    hostStatus.value = 'error'
+  }
+}
+
+async function disconnectHost() {
+  stopFollow()
+  stopStub()
+  hostId.value = null
+  hostStatus.value = 'unknown'
+  cmdOutput.value = ''
+  activeFile.value = ''
+  fileContent.value = ''
+  origContent.value = ''
+  activeLog.value = ''
+  logLines.value = []
 }
 
 // ── Fleet (all hosts) ───────────────────────────────────────────
@@ -772,6 +799,23 @@ onBeforeUnmount(() => {
               placeholder="Select host…"
               @update:model-value="selectHost(Number($event))"
             />
+            <!-- Connection status + connect/disconnect -->
+            <template v-if="hostId !== null && !fleetMode">
+              <div class="ng-conn-status" :class="`ng-conn-status--${hostStatus}`" :title="hostStatus === 'connected' ? 'SSH reachable' : hostStatus === 'error' ? 'SSH unreachable' : hostStatus === 'connecting' ? 'Testing…' : 'Not tested'">
+                <span class="ng-conn-dot"></span>
+                <span class="ng-conn-label">{{ hostStatus === 'connected' ? 'Connected' : hostStatus === 'error' ? 'Unreachable' : hostStatus === 'connecting' ? 'Testing…' : 'Unknown' }}</span>
+              </div>
+              <button
+                v-if="hostStatus !== 'connected' && hostStatus !== 'connecting'"
+                class="base-btn base-btn--sm"
+                @click="pingHost"
+              >Connect</button>
+              <button
+                v-if="hostStatus === 'connected'"
+                class="base-btn base-btn--sm"
+                @click="disconnectHost"
+              >Disconnect</button>
+            </template>
             <button v-if="hostId !== null && canReload && !fleetMode" class="base-btn base-btn--sm" :disabled="busy" @click="testConfig">Test config</button>
             <button v-if="hostId !== null && canReload && !fleetMode" class="base-btn base-btn--primary base-btn--sm" :disabled="busy" @click="reload()">Reload</button>
           </div>
@@ -1092,6 +1136,33 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .ng-host { min-width: 240px; }
+
+/* ── Host connection status indicator ── */
+.ng-conn-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 99px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.ng-conn-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.ng-conn-status--connected { background: rgba(34,197,94,0.12); color: var(--success); border-color: rgba(34,197,94,0.25); }
+.ng-conn-status--connected .ng-conn-dot { background: var(--success); }
+.ng-conn-status--error { background: rgba(239,68,68,0.1); color: var(--danger); border-color: rgba(239,68,68,0.25); }
+.ng-conn-status--error .ng-conn-dot { background: var(--danger); }
+.ng-conn-status--connecting { background: var(--bg-hover); color: var(--text-muted); border-color: var(--border); }
+.ng-conn-status--connecting .ng-conn-dot { background: var(--text-muted); animation: blink 1s step-end infinite; }
+.ng-conn-status--unknown { background: var(--bg-hover); color: var(--text-muted); border-color: var(--border); }
+.ng-conn-status--unknown .ng-conn-dot { background: var(--text-muted); }
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
 .ng-empty { text-align: center; padding: 64px 20px; color: var(--text-secondary); }
 .ng-empty-icon { font-size: 44px; }
 .ng-empty h2 { margin: 12px 0 4px; font-size: 16px; color: var(--text-primary); }
