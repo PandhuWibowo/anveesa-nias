@@ -28,6 +28,11 @@ func kubeWSAuthorized(r *http.Request, perm string) bool {
 	if err != nil {
 		return false
 	}
+	// Admins bypass app-permission checks, matching the HTTP middleware. The WS
+	// upgrade can't go through that middleware, so we apply the same rule here.
+	if role, rerr := appdb.GetUserRole(userID); rerr == nil && role == "admin" {
+		return true
+	}
 	return appdb.HasUserAppPermission(userID, perm)
 }
 

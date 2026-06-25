@@ -1026,6 +1026,10 @@ func migrate() error {
 		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"uptime.view"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%uptime.view%'`,
 		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"data.export"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%data.export%'`,
 		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"data.import"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%data.import%'`,
+		// Grant Kubernetes permissions to admin/poweruser roles
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"kube.view"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%kube.view%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"kube.manage"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%kube.manage%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"kube.exec"]' WHERE name = 'admin' AND permissions NOT LIKE '%kube.exec%'`,
 
 		// ── Cloud Provider Configs (Huawei RDS, AWS RDS log integration) ──
 		`CREATE TABLE IF NOT EXISTS cloud_provider_configs (
