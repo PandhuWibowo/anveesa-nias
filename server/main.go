@@ -1026,6 +1026,14 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		// /api/kube/clusters/{id}/describe?kind=&namespace=&name=
 		case len(parts) == 2 && parts[1] == "describe" && r.Method == http.MethodGet:
 			view(handlers.KubeDescribe())(w, r)
+		// /api/kube/clusters/{id}/metrics/{nodes|pods}  (metrics-server usage)
+		case len(parts) == 3 && parts[1] == "metrics" && parts[2] == "nodes" && r.Method == http.MethodGet:
+			view(handlers.KubeNodeMetrics())(w, r)
+		case len(parts) == 3 && parts[1] == "metrics" && parts[2] == "pods" && r.Method == http.MethodGet:
+			view(handlers.KubePodMetrics())(w, r)
+		// /api/kube/clusters/{id}/pods/{ns}/{pod}/detail
+		case len(parts) == 5 && parts[1] == "pods" && parts[4] == "detail" && r.Method == http.MethodGet:
+			view(handlers.KubePodDetail())(w, r)
 		// /api/kube/clusters/{id}/pods/{ns}/{pod}/logs
 		case len(parts) == 5 && parts[1] == "pods" && parts[4] == "logs" && r.Method == http.MethodGet:
 			view(handlers.KubePodLogs())(w, r)

@@ -1529,3 +1529,263 @@ func KubeDescribe() http.HandlerFunc {
 		json.NewEncoder(w).Encode(map[string]any{"yaml": string(yml)})
 	}
 }
+
+// ── Resource metrics (metrics-server) + pod detail ─────────────────────────
+
+// parseCPUMilli parses a Kubernetes CPU quantity into millicores.
+func parseCPUMilli(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	switch {
+	case strings.HasSuffix(s, "n"): // nanocores
+		v, _ := strconv.ParseFloat(strings.TrimSuffix(s, "n"), 64)
+		return int64(v / 1_000_000)
+	case strings.HasSuffix(s, "u"): // microcores
+		v, _ := strconv.ParseFloat(strings.TrimSuffix(s, "u"), 64)
+		return int64(v / 1000)
+	case strings.HasSuffix(s, "m"): // millicores
+		v, _ := strconv.ParseFloat(strings.TrimSuffix(s, "m"), 64)
+		return int64(v)
+	default: // whole cores
+		v, _ := strconv.ParseFloat(s, 64)
+		return int64(v * 1000)
+	}
+}
+
+// parseMemBytes parses a Kubernetes memory quantity into bytes.
+func parseMemBytes(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	units := []struct {
+		suf string
+		mul float64
+	}{
+		{"Ki", 1 << 10}, {"Mi", 1 << 20}, {"Gi", 1 << 30}, {"Ti", 1 << 40}, {"Pi", 1 << 50},
+		{"k", 1e3}, {"M", 1e6}, {"G", 1e9}, {"T", 1e12}, {"P", 1e15},
+	}
+	for _, u := range units {
+		if strings.HasSuffix(s, u.suf) {
+			v, _ := strconv.ParseFloat(strings.TrimSuffix(s, u.suf), 64)
+			return int64(v * u.mul)
+		}
+	}
+	v, _ := strconv.ParseFloat(s, 64)
+	return int64(v)
+}
+
+type kubeUsage struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace,omitempty"`
+	CPUMilli  int64  `json:"cpu_milli"`
+	MemBytes  int64  `json:"mem_bytes"`
+}
+
+// KubeNodeMetrics returns per-node CPU/memory usage from metrics-server.
+func KubeNodeMetrics() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		client, ok := clientFromPath(w, r)
+		if !ok {
+			return
+		}
+		var resp struct {
+			Items []struct {
+				Metadata k8sMeta `json:"metadata"`
+				Usage    struct {
+					CPU    string `json:"cpu"`
+					Memory string `json:"memory"`
+				} `json:"usage"`
+			} `json:"items"`
+		}
+		if err := client.get("/apis/metrics.k8s.io/v1beta1/nodes", &resp); err != nil {
+			// metrics-server not installed / unreachable — report unavailable.
+			json.NewEncoder(w).Encode(map[string]any{"available": false, "items": []kubeUsage{}})
+			return
+		}
+		out := []kubeUsage{}
+		for _, it := range resp.Items {
+			out = append(out, kubeUsage{
+				Name:     it.Metadata.Name,
+				CPUMilli: parseCPUMilli(it.Usage.CPU),
+				MemBytes: parseMemBytes(it.Usage.Memory),
+			})
+		}
+		json.NewEncoder(w).Encode(map[string]any{"available": true, "items": out})
+	}
+}
+
+// KubePodMetrics returns per-pod CPU/memory usage (summed across containers).
+func KubePodMetrics() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		client, ok := clientFromPath(w, r)
+		if !ok {
+			return
+		}
+		path := "/apis/metrics.k8s.io/v1beta1/pods"
+		if ns := strings.TrimSpace(r.URL.Query().Get("namespace")); ns != "" {
+			path = "/apis/metrics.k8s.io/v1beta1/namespaces/" + ns + "/pods"
+		}
+		var resp struct {
+			Items []struct {
+				Metadata   k8sMeta `json:"metadata"`
+				Containers []struct {
+					Usage struct {
+						CPU    string `json:"cpu"`
+						Memory string `json:"memory"`
+					} `json:"usage"`
+				} `json:"containers"`
+			} `json:"items"`
+		}
+		if err := client.get(path, &resp); err != nil {
+			json.NewEncoder(w).Encode(map[string]any{"available": false, "items": []kubeUsage{}})
+			return
+		}
+		out := []kubeUsage{}
+		for _, it := range resp.Items {
+			u := kubeUsage{Name: it.Metadata.Name, Namespace: it.Metadata.Namespace}
+			for _, c := range it.Containers {
+				u.CPUMilli += parseCPUMilli(c.Usage.CPU)
+				u.MemBytes += parseMemBytes(c.Usage.Memory)
+			}
+			out = append(out, u)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"available": true, "items": out})
+	}
+}
+
+// KubePodDetail returns structured pod info (containers + recent events) for a
+// detail drawer. Path: /api/kube/clusters/{id}/pods/{ns}/{pod}/detail
+func KubePodDetail() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		client, ok := clientFromPath(w, r)
+		if !ok {
+			return
+		}
+		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/kube/clusters/"), "/")
+		parts := strings.Split(rest, "/")
+		if len(parts) < 5 {
+			http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
+			return
+		}
+		ns, pod := parts[2], parts[3]
+
+		var p struct {
+			Metadata k8sMeta `json:"metadata"`
+			Spec     struct {
+				NodeName   string `json:"nodeName"`
+				Containers []struct {
+					Name      string `json:"name"`
+					Image     string `json:"image"`
+					Resources struct {
+						Requests map[string]string `json:"requests"`
+						Limits   map[string]string `json:"limits"`
+					} `json:"resources"`
+				} `json:"containers"`
+			} `json:"spec"`
+			Status struct {
+				Phase             string `json:"phase"`
+				PodIP             string `json:"podIP"`
+				QOSClass          string `json:"qosClass"`
+				StartTime         string `json:"startTime"`
+				ContainerStatuses []struct {
+					Name         string `json:"name"`
+					Ready        bool   `json:"ready"`
+					RestartCount int    `json:"restartCount"`
+					State        map[string]struct {
+						Reason string `json:"reason"`
+					} `json:"state"`
+				} `json:"containerStatuses"`
+			} `json:"status"`
+		}
+		if err := client.get(fmt.Sprintf("/api/v1/namespaces/%s/pods/%s", ns, pod), &p); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+
+		// Per-container status lookup.
+		type cstat struct {
+			ready    bool
+			restarts int
+			state    string
+		}
+		statusByName := map[string]cstat{}
+		for _, cs := range p.Status.ContainerStatuses {
+			st := ""
+			for k, v := range cs.State {
+				st = k
+				if v.Reason != "" {
+					st = v.Reason
+				}
+				break
+			}
+			statusByName[cs.Name] = cstat{cs.Ready, cs.RestartCount, st}
+		}
+
+		type detailContainer struct {
+			Name       string `json:"name"`
+			Image      string `json:"image"`
+			Ready      bool   `json:"ready"`
+			Restarts   int    `json:"restarts"`
+			State      string `json:"state"`
+			CPUReq     string `json:"cpu_request"`
+			CPULimit   string `json:"cpu_limit"`
+			MemRequest string `json:"mem_request"`
+			MemLimit   string `json:"mem_limit"`
+		}
+		containers := []detailContainer{}
+		for _, c := range p.Spec.Containers {
+			st := statusByName[c.Name]
+			containers = append(containers, detailContainer{
+				Name:       c.Name,
+				Image:      c.Image,
+				Ready:      st.ready,
+				Restarts:   st.restarts,
+				State:      st.state,
+				CPUReq:     c.Resources.Requests["cpu"],
+				CPULimit:   c.Resources.Limits["cpu"],
+				MemRequest: c.Resources.Requests["memory"],
+				MemLimit:   c.Resources.Limits["memory"],
+			})
+		}
+
+		// Recent events for this pod (best-effort).
+		events := []kubeEvent{}
+		var evResp struct {
+			Items []struct {
+				Type          string `json:"type"`
+				Reason        string `json:"reason"`
+				Message       string `json:"message"`
+				Count         int    `json:"count"`
+				LastTimestamp string `json:"lastTimestamp"`
+			} `json:"items"`
+		}
+		evPath := fmt.Sprintf("/api/v1/namespaces/%s/events?fieldSelector=involvedObject.name=%s", ns, pod)
+		if client.get(evPath, &evResp) == nil {
+			for _, e := range evResp.Items {
+				events = append(events, kubeEvent{
+					Type: e.Type, Reason: e.Reason, Message: e.Message,
+					Count: e.Count, LastSeen: e.LastTimestamp,
+				})
+			}
+			sort.SliceStable(events, func(i, j int) bool { return events[i].LastSeen > events[j].LastSeen })
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"name":       p.Metadata.Name,
+			"namespace":  p.Metadata.Namespace,
+			"node":       p.Spec.NodeName,
+			"phase":      p.Status.Phase,
+			"pod_ip":     p.Status.PodIP,
+			"qos":        p.Status.QOSClass,
+			"start_time": p.Status.StartTime,
+			"containers": containers,
+			"events":     events,
+		})
+	}
+}

@@ -66,6 +66,23 @@ const secrets = ref<KSecret[]>([])
 const pvcs = ref<KPVC[]>([])
 const events = ref<KEvent[]>([])
 
+// metrics-server usage (keyed by node name / "ns/pod")
+interface Usage { cpu_milli: number; mem_bytes: number }
+const nodeMetrics = ref<Record<string, Usage>>({})
+const podMetrics = ref<Record<string, Usage>>({})
+const metricsAvailable = ref(true)
+
+// Auto-refresh
+const autoRefresh = ref(false)
+let refreshTimer: ReturnType<typeof setInterval> | null = null
+
+// Pod detail drawer
+interface PodDetailContainer { name: string; image: string; ready: boolean; restarts: number; state: string; cpu_request: string; cpu_limit: string; mem_request: string; mem_limit: string }
+interface PodDetail { name: string; namespace: string; node: string; phase: string; pod_ip: string; qos: string; start_time: string; containers: PodDetailContainer[]; events: KEvent[] }
+const showPodDetail = ref(false)
+const podDetail = ref<PodDetail | null>(null)
+const podDetailLoading = ref(false)
+
 // Pod logs modal
 const showLogs = ref(false)
 const logsPod = ref<KPod | null>(null)
@@ -182,6 +199,7 @@ async function selectCluster(id: number) {
 }
 
 function disconnect() {
+  stopAuto()
   clusterId.value = null
   status.value = 'unknown'
   version.value = ''
@@ -191,6 +209,7 @@ function disconnect() {
   statefulsets.value = []; daemonsets.value = []; jobs.value = []; cronjobs.value = []
   services.value = []; ingresses.value = []; configmaps.value = []; secrets.value = []
   pvcs.value = []; events.value = []
+  nodeMetrics.value = {}; podMetrics.value = {}
 }
 
 async function loadNamespaces() {
@@ -229,11 +248,39 @@ async function loadTab() {
   }
 }
 
-async function loadNodes() { const { data } = await axios.get<KNode[]>(`${base.value}/nodes`); nodes.value = data ?? [] }
-async function loadPods() { const { data } = await axios.get<KPod[]>(`${base.value}/pods${nsQuery()}`); pods.value = data ?? [] }
+async function loadNodes() {
+  const { data } = await axios.get<KNode[]>(`${base.value}/nodes`)
+  nodes.value = data ?? []
+  loadNodeMetrics()
+}
+async function loadPods() {
+  const { data } = await axios.get<KPod[]>(`${base.value}/pods${nsQuery()}`)
+  pods.value = data ?? []
+  loadPodMetrics()
+}
 async function loadDeployments() { const { data } = await axios.get<KDeployment[]>(`${base.value}/deployments${nsQuery()}`); deployments.value = data ?? [] }
 async function loadServices() { const { data } = await axios.get<KService[]>(`${base.value}/services${nsQuery()}`); services.value = data ?? [] }
 async function loadEvents() { const { data } = await axios.get<KEvent[]>(`${base.value}/events${nsQuery()}`); events.value = data ?? [] }
+
+// Metrics are best-effort — metrics-server may not be installed.
+async function loadNodeMetrics() {
+  try {
+    const { data } = await axios.get<{ available: boolean; items: (Usage & { name: string })[] }>(`${base.value}/metrics/nodes`)
+    metricsAvailable.value = data.available
+    const m: Record<string, Usage> = {}
+    for (const it of data.items || []) m[it.name] = { cpu_milli: it.cpu_milli, mem_bytes: it.mem_bytes }
+    nodeMetrics.value = m
+  } catch { /* ignore */ }
+}
+async function loadPodMetrics() {
+  try {
+    const { data } = await axios.get<{ available: boolean; items: (Usage & { name: string; namespace: string })[] }>(`${base.value}/metrics/pods${nsQuery()}`)
+    metricsAvailable.value = data.available
+    const m: Record<string, Usage> = {}
+    for (const it of data.items || []) m[`${it.namespace}/${it.name}`] = { cpu_milli: it.cpu_milli, mem_bytes: it.mem_bytes }
+    podMetrics.value = m
+  } catch { /* ignore */ }
+}
 // Generic loader for the remaining namespace-scoped list kinds.
 async function loadList(resource: string, target: { value: any[] }) {
   const { data } = await axios.get<any[]>(`${base.value}/${resource}${nsQuery()}`)
@@ -428,6 +475,60 @@ function podClass(s: string): string {
   return 'k8s-pill--err'
 }
 
+// ── Metrics formatting ──────────────────────────────────────────
+function fmtCPU(milli?: number): string {
+  if (milli == null) return '—'
+  if (milli < 1000) return `${milli}m`
+  return `${(milli / 1000).toFixed(milli % 1000 === 0 ? 0 : 1)}`
+}
+function fmtMem(bytes?: number): string {
+  if (!bytes) return '—'
+  const u = ['B', 'Ki', 'Mi', 'Gi', 'Ti']
+  let v = bytes, i = 0
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
+  return `${v.toFixed(i ? 1 : 0)}${u[i]}`
+}
+function cpuCoresToMilli(s: string): number { const f = parseFloat(s); return isNaN(f) ? 0 : f * 1000 }
+function memToBytes(s: string): number {
+  const m = String(s).match(/^([0-9.]+)\s*([A-Za-z]*)$/)
+  if (!m) return 0
+  const map: Record<string, number> = { '': 1, Ki: 1024, Mi: 1024 ** 2, Gi: 1024 ** 3, Ti: 1024 ** 4, k: 1e3, M: 1e6, G: 1e9, T: 1e12 }
+  return parseFloat(m[1]) * (map[m[2]] ?? 1)
+}
+function pct(used: number, cap: number): number { return cap > 0 ? Math.round((used / cap) * 100) : 0 }
+function pctClass(p: number): string { return p >= 90 ? 'k8s-pct--hi' : p >= 70 ? 'k8s-pct--mid' : '' }
+
+// ── Pod detail drawer ───────────────────────────────────────────
+async function openPodDetail(p: KPod) {
+  showPodDetail.value = true
+  podDetail.value = null
+  podDetailLoading.value = true
+  try {
+    const { data } = await axios.get<PodDetail>(`${base.value}/pods/${encodeURIComponent(p.namespace)}/${encodeURIComponent(p.name)}/detail`)
+    podDetail.value = data
+  } catch (e: any) {
+    connError.value = e?.response?.data?.error || 'Failed to load pod detail'
+    showPodDetail.value = false
+  } finally {
+    podDetailLoading.value = false
+  }
+}
+
+// ── Auto-refresh ────────────────────────────────────────────────
+function toggleAuto() {
+  autoRefresh.value = !autoRefresh.value
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
+  if (autoRefresh.value) {
+    refreshTimer = setInterval(() => {
+      if (clusterId.value !== null && status.value === 'connected' && !loading.value) loadTab()
+    }, 5000)
+  }
+}
+function stopAuto() {
+  autoRefresh.value = false
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
+}
+
 const overviewCounts = computed(() => ({
   nodes: nodes.value.length,
   namespaces: namespaces.value.length,
@@ -460,7 +561,7 @@ const currentCount = computed<number>(() => {
 })
 
 onMounted(loadClusters)
-onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
+onBeforeUnmount(() => { stopFollow(); disposeTerminal(); stopAuto() })
 </script>
 
 <template>
@@ -531,6 +632,9 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
                   <span v-if="currentCount >= 0" class="k8s-count">{{ currentCount }}</span>
                 </h3>
                 <div class="k8s-spacer"></div>
+                <label class="k8s-auto" title="Auto-refresh every 5s">
+                  <input type="checkbox" :checked="autoRefresh" @change="toggleAuto" /> Auto
+                </label>
                 <SearchSelect
                   v-if="isScoped && namespaces.length"
                   class="k8s-ns-select"
@@ -566,8 +670,20 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
                   <td><span class="k8s-pill" :class="n.status === 'Ready' ? 'k8s-pill--ok' : 'k8s-pill--err'">{{ n.status }}</span></td>
                   <td>{{ n.roles }}</td>
                   <td class="k8s-mono">{{ n.version }}</td>
-                  <td>{{ n.cpu }}</td>
-                  <td>{{ n.memory }}</td>
+                  <td>
+                    <template v-if="nodeMetrics[n.name]">
+                      {{ fmtCPU(nodeMetrics[n.name].cpu_milli) }} <span class="k8s-dim">/ {{ n.cpu }}</span>
+                      <span class="k8s-pct" :class="pctClass(pct(nodeMetrics[n.name].cpu_milli, cpuCoresToMilli(n.cpu)))">{{ pct(nodeMetrics[n.name].cpu_milli, cpuCoresToMilli(n.cpu)) }}%</span>
+                    </template>
+                    <template v-else>{{ n.cpu }}</template>
+                  </td>
+                  <td>
+                    <template v-if="nodeMetrics[n.name]">
+                      {{ fmtMem(nodeMetrics[n.name].mem_bytes) }} <span class="k8s-dim">/ {{ fmtMem(memToBytes(n.memory)) }}</span>
+                      <span class="k8s-pct" :class="pctClass(pct(nodeMetrics[n.name].mem_bytes, memToBytes(n.memory)))">{{ pct(nodeMetrics[n.name].mem_bytes, memToBytes(n.memory)) }}%</span>
+                    </template>
+                    <template v-else>{{ fmtMem(memToBytes(n.memory)) }}</template>
+                  </td>
                   <td class="k8s-mono">{{ n.internal_ip }}</td>
                   <td>{{ relAge(n.created) }}</td>
                   <td class="k8s-act"><button class="k8s-ico" title="View YAML" @click="describe('node', '', n.name)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button></td>
@@ -589,19 +705,21 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
             </table>
 
             <table v-else-if="tab === 'pods'" class="k8s-table">
-              <thead><tr><th>Name</th><th>Namespace</th><th>Status</th><th>Ready</th><th>Restarts</th><th>Node</th><th>Pod IP</th><th>Age</th><th></th></tr></thead>
+              <thead><tr><th>Name</th><th>Namespace</th><th>Status</th><th>Ready</th><th>Restarts</th><th>CPU</th><th>Memory</th><th>Node</th><th>Age</th><th></th></tr></thead>
               <tbody>
-                <tr v-if="!filteredPods.length"><td colspan="9" class="k8s-msg">No pods.</td></tr>
+                <tr v-if="!filteredPods.length"><td colspan="10" class="k8s-msg">No pods.</td></tr>
                 <tr v-for="p in filteredPods" :key="p.namespace + '/' + p.name">
-                  <td class="k8s-mono">{{ p.name }}</td>
+                  <td class="k8s-mono"><button class="k8s-link" @click="openPodDetail(p)">{{ p.name }}</button></td>
                   <td>{{ p.namespace }}</td>
                   <td><span class="k8s-pill" :class="podClass(p.status)">{{ p.status }}</span></td>
                   <td>{{ p.ready }}</td>
                   <td :class="{ 'k8s-warn': p.restarts > 0 }">{{ p.restarts }}</td>
+                  <td class="k8s-mono">{{ fmtCPU(podMetrics[p.namespace + '/' + p.name]?.cpu_milli) }}</td>
+                  <td class="k8s-mono">{{ fmtMem(podMetrics[p.namespace + '/' + p.name]?.mem_bytes) }}</td>
                   <td class="k8s-mono">{{ p.node }}</td>
-                  <td class="k8s-mono">{{ p.pod_ip }}</td>
                   <td>{{ relAge(p.created) }}</td>
                   <td class="k8s-act">
+                    <button class="k8s-ico" title="Pod details" @click="openPodDetail(p)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></button>
                     <button class="k8s-ico" title="View logs" @click="openLogs(p)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="14" y2="13"/><line x1="8" y1="17" x2="12" y2="17"/></svg></button>
                     <button v-if="canExec" class="k8s-ico" title="Exec into pod" @click="openExec(p)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></button>
                     <button class="k8s-ico" title="View YAML" @click="describe('pod', p.namespace, p.name)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button>
@@ -809,6 +927,52 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
       </aside>
     </div>
 
+    <!-- Pod detail drawer -->
+    <div v-if="showPodDetail" class="k8s-drawer-backdrop" @click.self="showPodDetail = false">
+      <aside class="k8s-drawer">
+        <div class="k8s-drawer-head">
+          <span class="k8s-drawer-title">{{ podDetail ? podDetail.namespace + '/' + podDetail.name : 'Pod' }}</span>
+          <div class="k8s-spacer"></div>
+          <button class="base-btn base-btn--xs" @click="showPodDetail = false">Close</button>
+        </div>
+        <div class="k8s-detail">
+          <div v-if="podDetailLoading" class="k8s-msg">Loading…</div>
+          <template v-else-if="podDetail">
+            <div class="k8s-detail-grid">
+              <div class="k8s-kv"><span>Status</span><span><span class="k8s-pill" :class="podClass(podDetail.phase)">{{ podDetail.phase }}</span></span></div>
+              <div class="k8s-kv"><span>Node</span><span class="k8s-mono">{{ podDetail.node || '—' }}</span></div>
+              <div class="k8s-kv"><span>Pod IP</span><span class="k8s-mono">{{ podDetail.pod_ip || '—' }}</span></div>
+              <div class="k8s-kv"><span>QoS</span><span>{{ podDetail.qos || '—' }}</span></div>
+              <div class="k8s-kv"><span>Started</span><span>{{ podDetail.start_time ? relAge(podDetail.start_time) + ' ago' : '—' }}</span></div>
+            </div>
+
+            <h4 class="k8s-detail-h">Containers ({{ podDetail.containers.length }})</h4>
+            <div v-for="c in podDetail.containers" :key="c.name" class="k8s-ctr">
+              <div class="k8s-ctr-head">
+                <span class="k8s-dot" :class="c.ready ? 'k8s-dot--ok' : 'k8s-dot--err'"></span>
+                <span class="k8s-ctr-name">{{ c.name }}</span>
+                <span class="k8s-pill" :class="c.state === 'Running' ? 'k8s-pill--ok' : c.state === 'Completed' ? 'k8s-pill--ok' : 'k8s-pill--warn'">{{ c.state || '—' }}</span>
+                <span v-if="c.restarts > 0" class="k8s-dim">{{ c.restarts }} restarts</span>
+              </div>
+              <div class="k8s-ctr-img k8s-mono">{{ c.image }}</div>
+              <div class="k8s-ctr-res">
+                <span>CPU <b>{{ c.cpu_request || '—' }}</b> req / <b>{{ c.cpu_limit || '—' }}</b> limit</span>
+                <span>Mem <b>{{ c.mem_request || '—' }}</b> req / <b>{{ c.mem_limit || '—' }}</b> limit</span>
+              </div>
+            </div>
+
+            <h4 class="k8s-detail-h">Recent events ({{ podDetail.events.length }})</h4>
+            <div v-if="!podDetail.events.length" class="k8s-dim">No recent events.</div>
+            <div v-for="(e, i) in podDetail.events" :key="i" class="k8s-ev">
+              <span class="k8s-pill" :class="e.type === 'Warning' ? 'k8s-pill--warn' : 'k8s-pill--ok'">{{ e.reason }}</span>
+              <span class="k8s-ev-msg">{{ e.message }}</span>
+              <span class="k8s-dim k8s-ev-age">{{ relAge(e.last_seen) }}<template v-if="e.count > 1"> ×{{ e.count }}</template></span>
+            </div>
+          </template>
+        </div>
+      </aside>
+    </div>
+
     <!-- Pod logs modal -->
     <div v-if="showLogs" class="k8s-modal-backdrop" @click.self="closeLogs">
       <div class="k8s-modal k8s-modal--wide page-card">
@@ -956,6 +1120,33 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
 .k8s-drawer-head { display: flex; align-items: center; gap: 8px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
 .k8s-drawer-title { font-size: 14px; font-weight: 600; color: var(--text-primary); font-family: var(--mono); word-break: break-all; }
 .k8s-yaml { flex: 1; margin: 0; padding: 14px 18px; overflow: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; white-space: pre; color: var(--text-secondary); background: var(--bg-body); }
+
+/* Auto-refresh + metrics */
+.k8s-auto { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-secondary); cursor: pointer; white-space: nowrap; }
+.k8s-dim { color: var(--text-muted); }
+.k8s-pct { margin-left: 6px; font-size: 11px; font-weight: 600; color: var(--text-muted); }
+.k8s-pct--mid { color: var(--warning); }
+.k8s-pct--hi { color: var(--danger); }
+.k8s-link { background: none; border: none; padding: 0; font: inherit; color: var(--brand); cursor: pointer; text-align: left; }
+.k8s-link:hover { text-decoration: underline; }
+
+/* Pod detail drawer */
+.k8s-detail { flex: 1; overflow: auto; padding: 16px 18px; }
+.k8s-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px 16px; margin-bottom: 18px; }
+.k8s-kv { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
+.k8s-kv > span:first-child { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.k8s-kv > span:last-child { color: var(--text-secondary); }
+.k8s-detail-h { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 18px 0 8px; font-weight: 700; }
+.k8s-ctr { border: 1px solid var(--border); border-radius: var(--r); padding: 10px 12px; margin-bottom: 8px; }
+.k8s-ctr-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.k8s-ctr-name { font-weight: 600; color: var(--text-primary); font-size: 13px; }
+.k8s-ctr-img { font-size: 11px; color: var(--text-muted); margin: 4px 0; word-break: break-all; }
+.k8s-ctr-res { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11.5px; color: var(--text-secondary); }
+.k8s-ctr-res b { color: var(--text-primary); font-weight: 600; }
+.k8s-ev { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.k8s-ev:last-child { border-bottom: none; }
+.k8s-ev-msg { flex: 1; color: var(--text-secondary); }
+.k8s-ev-age { white-space: nowrap; font-size: 11px; }
 
 /* Modals */
 .k8s-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; }
