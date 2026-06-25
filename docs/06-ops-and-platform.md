@@ -209,3 +209,44 @@ Notes:
 
 Screenshot:
 - `docs/screenshots/docker-page.png`
+
+---
+
+## Kubernetes Management
+
+Routes:
+- `/kube-clusters` — cluster connections
+- `/kubernetes` — workload browser
+
+Purpose:
+- Read-only management of Kubernetes clusters (Alibaba ACK, Huawei CCE, or any standard kubeconfig) directly from the browser, plus pod logs and an interactive exec terminal.
+
+Connection workflow:
+1. Open **Kubernetes Clusters → Add cluster**.
+2. Pick the provider (Alibaba ACK / Huawei CCE / Other) and paste the cluster's kubeconfig (or upload the file).
+   - ACK: cluster detail → **Connection Information** → Public or Internal Access kubeconfig.
+   - Use the **Public Access** kubeconfig if Nias reaches the cluster over the internet; **Internal Access** only if Nias runs inside the cluster's VPC.
+3. **Test connection** to confirm the API server is reachable, then Save.
+4. Open **Kubernetes**, select the cluster, and browse.
+
+Resource browser (Lens-style left sidebar):
+- **Cluster** — Overview, Nodes, Namespaces.
+- **Workloads** — Pods, Deployments, StatefulSets, DaemonSets, Jobs, CronJobs.
+- **Network** — Services, Ingresses.
+- **Config & Storage** — ConfigMaps, Secrets (values masked), PVCs.
+- **Events**.
+
+Per-resource actions:
+- **YAML** — describe any object as YAML in a side drawer.
+- **Logs** (pods) — snapshot or live follow, with a container selector.
+- **Exec** (pods) — interactive in-browser shell, gated behind the high-risk `kube.exec` permission.
+
+Notes:
+- The kubeconfig is AES-encrypted at rest using `NIAS_ENCRYPTION_KEY`.
+- The Nias host must have network reachability to each cluster's API server (use the public-access kubeconfig for clusters outside its network).
+- Auth supported: embedded client certificate or bearer token. Exec-plugin kubeconfigs (e.g. `ack-ram-authenticator` `exec:` blocks) are not yet supported.
+- This integration is read-only — no resource mutations (scale/delete/apply). The exec terminal can run commands inside a container, which is why it requires a separate high-risk permission.
+- Permissions: `kube.view` (browse), `kube.manage` (manage cluster connections), `kube.exec` (pod exec).
+
+Screenshot:
+- `docs/screenshots/kubernetes-page.png`

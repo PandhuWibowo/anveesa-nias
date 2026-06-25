@@ -952,10 +952,10 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
 
 /* Describe drawer */
 .k8s-drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; justify-content: flex-end; z-index: 110; }
-.k8s-drawer { width: 620px; max-width: 94vw; height: 100%; background: var(--bg-surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; box-shadow: var(--shadow-lg); }
+.k8s-drawer { width: clamp(560px, 55vw, 1200px); max-width: 96vw; height: 100%; background: var(--bg-surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; box-shadow: var(--shadow-lg); }
 .k8s-drawer-head { display: flex; align-items: center; gap: 8px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
 .k8s-drawer-title { font-size: 14px; font-weight: 600; color: var(--text-primary); font-family: var(--mono); word-break: break-all; }
-.k8s-yaml { flex: 1; margin: 0; padding: 14px 18px; overflow: auto; font-family: var(--mono); font-size: 11.5px; line-height: 1.5; white-space: pre; color: var(--text-secondary); background: var(--bg-body); }
+.k8s-yaml { flex: 1; margin: 0; padding: 14px 18px; overflow: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; white-space: pre; color: var(--text-secondary); background: var(--bg-body); }
 
 /* Modals */
 .k8s-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; }

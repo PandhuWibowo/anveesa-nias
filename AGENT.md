@@ -37,6 +37,8 @@ server/
     pool.go                    # Live *sql.DB connection pool
     nginx.go                   # SSH-based nginx management
     docker.go                  # SSH-tunneled Docker daemon management
+    kube.go                    # Kubernetes read-only mgmt (kubeconfig REST client)
+    kube_exec.go               # K8s pod logs-follow + exec terminal (WebSocket)
     ai.go                      # AI-assisted SQL/analytics
     kafka.go                   # Kafka topic browse/produce/consume
     redis.go                   # Redis key browser
@@ -58,10 +60,13 @@ web/src/
     ConnectionsView.vue        # Connection list + new/edit form + template picker
     NginxView.vue              # SSH-based nginx management + host connect/disconnect
     DockerView.vue             # Docker host management
+    KubernetesView.vue         # Lens-style K8s browser (sidebar, describe, logs, exec)
+    KubeClustersView.vue       # K8s cluster connections (kubeconfig CRUD)
     # ...
   composables/
     useConnections.ts          # Connection CRUD state
     useConnectionTemplates.ts  # Connection template CRUD state
+    useKubeClusters.ts         # K8s cluster CRUD + overview state
     useAuth.ts                 # Auth state, permissions
     # ...
   components/
@@ -85,6 +90,9 @@ Reusable host+port+database presets — no credentials stored. Users pick a temp
 
 ### Nginx SSH Host Connect/Disconnect (`NginxView.vue`)
 `hostStatus` ref (`unknown | connecting | connected | error`) tracks SSH reachability of the selected host. Selecting a host auto-pings via `GET /api/docker/hosts/{id}/ping`. Connect button re-pings; Disconnect stops log following/polling and resets to the no-host state.
+
+### Kubernetes (`/api/kube/*`, `KubernetesView.vue`)
+Read-only management of ACK/CCE clusters via a stored kubeconfig (AES-encrypted in `kube_clusters`). `handlers/kube.go` parses the kubeconfig and builds a lightweight HTTPS client (client-cert or bearer token — no `client-go`, no exec plugins) to read nodes/namespaces/pods/deployments/statefulsets/daemonsets/jobs/cronjobs/services/ingresses/configmaps/secrets(masked)/pvcs/events + a Describe (JSON→YAML via `yaml.v3`) view. `handlers/kube_exec.go` adds WebSocket pod **logs-follow** and an **exec terminal** (k8s `v4.channel.k8s.io` framing), self-authed via `?token=` with an admin bypass. Permissions: `kube.view` / `kube.manage` / `kube.exec` (high-risk, admin-only by default). UI is Lens-style: left resource sidebar grouped Cluster/Workloads/Network/Config & Storage/Events, content table with item counts, hover icon row-actions (logs/exec/yaml), responsive YAML drawer. `provider` (alibaba/huawei/other) is informational — room to add cloud-API cluster discovery later. The same SSH-host connect/disconnect persistence pattern (`localStorage` `nias:kube:lastCluster`, `?cluster=` deep-link) is used here too.
 
 ## Running Locally
 

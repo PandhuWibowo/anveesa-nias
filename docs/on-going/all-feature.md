@@ -79,6 +79,7 @@ Dokumen ini merangkum seluruh fitur yang tersedia di Anveesa Nias, internal deve
 - **SFTP Hosts** — halaman khusus untuk daftar dan manajemen SSH host untuk file browsing; card per host dengan status SSH, tombol "Browse files →" ke halaman SFTP
 - **Docker** — manajemen container, image, volume, network, compose via SSH tunnel ke Docker daemon remote; exec terminal langsung dari browser
 - **Nginx** — manajemen konfigurasi nginx via SSH: edit config, toggle sites, tail/search log, inspect TLS certs, fleet health view; status koneksi SSH (Connect / Disconnect) per host
+- **Kubernetes** — manajemen read-only cluster Kubernetes (Alibaba ACK, Huawei CCE, atau kubeconfig standar): browse nodes, namespaces, pods, deployments, statefulsets, daemonsets, jobs, cronjobs, services, ingresses, configmaps, secrets (di-mask), pvcs, events; lihat YAML (describe), pod logs (snapshot + live follow), dan exec terminal interaktif ke pod. Koneksi via kubeconfig (dienkripsi AES). Permission: `kube.view`, `kube.manage`, `kube.exec` (high-risk)
 
 ---
 

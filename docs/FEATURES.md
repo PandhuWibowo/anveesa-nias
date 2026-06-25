@@ -58,7 +58,9 @@ Current primary routes covered:
 - `/permissions?tab=users`
 - `/workflows`
 - `/security`
-- `/docker-hosts`
+- `/ssh-hosts`
 - `/docker`
-- `/sftp-hosts`
+- `/sftp`
 - `/nginx`
+- `/kube-clusters`
+- `/kubernetes`
