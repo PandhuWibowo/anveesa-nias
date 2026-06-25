@@ -11,7 +11,16 @@ WORKDIR /app/web
 
 # Install dependencies
 COPY web/package.json web/bun.lock* ./
-RUN bun install --frozen-lockfile
+# bun's tarball extraction can fail transiently (most often on the large
+# typescript package) and leaves a corrupted partial in its global cache, so a
+# plain re-run keeps failing. Retry a few times, clearing the cache each time.
+RUN for i in 1 2 3; do \
+        bun install --frozen-lockfile && exit 0; \
+        echo "bun install attempt $i failed — clearing cache and retrying..."; \
+        rm -rf /root/.bun/install/cache ~/.bun/install/cache; \
+        sleep 2; \
+    done; \
+    echo "bun install failed after 3 attempts" >&2; exit 1
 
 # Build frontend
 COPY web/ ./
