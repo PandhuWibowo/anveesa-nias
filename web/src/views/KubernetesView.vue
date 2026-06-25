@@ -95,23 +95,41 @@ let execWS: WebSocket | null = null
 
 const LAST_CLUSTER_KEY = 'nias:kube:lastCluster'
 
-const TABS: { key: KubeTab; label: string }[] = [
-  { key: 'overview', label: 'Overview' },
-  { key: 'nodes', label: 'Nodes' },
-  { key: 'namespaces', label: 'Namespaces' },
-  { key: 'pods', label: 'Pods' },
-  { key: 'deployments', label: 'Deployments' },
-  { key: 'statefulsets', label: 'StatefulSets' },
-  { key: 'daemonsets', label: 'DaemonSets' },
-  { key: 'jobs', label: 'Jobs' },
-  { key: 'cronjobs', label: 'CronJobs' },
-  { key: 'services', label: 'Services' },
-  { key: 'ingresses', label: 'Ingresses' },
-  { key: 'configmaps', label: 'ConfigMaps' },
-  { key: 'secrets', label: 'Secrets' },
-  { key: 'pvcs', label: 'PVCs' },
-  { key: 'events', label: 'Events' },
+// Grouped resource navigation (left sidebar).
+const NAV_GROUPS: { title: string; items: { key: KubeTab; label: string }[] }[] = [
+  { title: 'Cluster', items: [
+    { key: 'overview', label: 'Overview' },
+    { key: 'nodes', label: 'Nodes' },
+    { key: 'namespaces', label: 'Namespaces' },
+  ] },
+  { title: 'Workloads', items: [
+    { key: 'pods', label: 'Pods' },
+    { key: 'deployments', label: 'Deployments' },
+    { key: 'statefulsets', label: 'StatefulSets' },
+    { key: 'daemonsets', label: 'DaemonSets' },
+    { key: 'jobs', label: 'Jobs' },
+    { key: 'cronjobs', label: 'CronJobs' },
+  ] },
+  { title: 'Network', items: [
+    { key: 'services', label: 'Services' },
+    { key: 'ingresses', label: 'Ingresses' },
+  ] },
+  { title: 'Config & Storage', items: [
+    { key: 'configmaps', label: 'ConfigMaps' },
+    { key: 'secrets', label: 'Secrets' },
+    { key: 'pvcs', label: 'PVCs' },
+  ] },
+  { title: 'Events', items: [
+    { key: 'events', label: 'Events' },
+  ] },
 ]
+const TAB_LABELS: Record<string, string> = Object.fromEntries(
+  NAV_GROUPS.flatMap((g) => g.items.map((i) => [i.key, i.label])),
+)
+
+// Namespace-scoped resources (show the namespace filter for these).
+const SCOPED = new Set<KubeTab>(['pods', 'deployments', 'statefulsets', 'daemonsets', 'jobs', 'cronjobs', 'services', 'ingresses', 'configmaps', 'secrets', 'pvcs', 'events'])
+const isScoped = computed(() => SCOPED.has(tab.value))
 
 function providerShort(p: string): string {
   return p === 'alibaba' ? 'ACK' : p === 'huawei' ? 'CCE' : 'k8s'
@@ -419,6 +437,28 @@ const overviewCounts = computed(() => ({
   services: services.value.length,
 }))
 
+// Title + item count shown in the content header for the active resource.
+const currentTitle = computed(() => TAB_LABELS[tab.value] || '')
+const currentCount = computed<number>(() => {
+  switch (tab.value) {
+    case 'nodes': return filteredNodes.value.length
+    case 'namespaces': return filteredNamespaces.value.length
+    case 'pods': return filteredPods.value.length
+    case 'deployments': return filteredDeployments.value.length
+    case 'statefulsets': return filteredStatefulSets.value.length
+    case 'daemonsets': return filteredDaemonSets.value.length
+    case 'jobs': return filteredJobs.value.length
+    case 'cronjobs': return filteredCronJobs.value.length
+    case 'services': return filteredServices.value.length
+    case 'ingresses': return filteredIngresses.value.length
+    case 'configmaps': return filteredConfigMaps.value.length
+    case 'secrets': return filteredSecrets.value.length
+    case 'pvcs': return filteredPVCs.value.length
+    case 'events': return filteredEvents.value.length
+    default: return -1
+  }
+})
+
 onMounted(loadClusters)
 onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
 </script>
@@ -463,46 +503,59 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
 
         <!-- Connected -->
         <template v-else-if="clusterId !== null">
-          <div class="k8s-bar">
-            <span class="k8s-connline">
-              <span class="k8s-dot" :class="status === 'connected' ? 'k8s-dot--ok' : 'k8s-dot--err'"></span>
-              <template v-if="version">Kubernetes <b>{{ version }}</b></template>
-              <span v-else-if="connError" class="k8s-err">{{ connError }}</span>
-              <span v-else class="k8s-muted">Connecting…</span>
-            </span>
-            <div class="k8s-spacer"></div>
-            <SearchSelect
-              v-if="namespaces.length"
-              class="k8s-ns-select"
-              :model-value="namespaceFilter"
-              :options="nsOptions"
-              placeholder="All namespaces"
-              @update:model-value="namespaceFilter = String($event); onNamespaceChange()"
-            />
-            <input v-model="search" class="base-input k8s-search" type="search" placeholder="Filter…" />
-          </div>
+          <div class="k8s-shell">
+            <!-- Resource sidebar -->
+            <aside class="k8s-side">
+              <div class="k8s-side-ver">
+                <span class="k8s-dot" :class="status === 'connected' ? 'k8s-dot--ok' : 'k8s-dot--err'"></span>
+                <span v-if="version" class="k8s-side-vertxt">{{ version }}</span>
+                <span v-else class="k8s-muted">connecting…</span>
+              </div>
+              <div v-for="g in NAV_GROUPS" :key="g.title" class="k8s-side-group">
+                <div class="k8s-side-grouptitle">{{ g.title }}</div>
+                <button
+                  v-for="it in g.items"
+                  :key="it.key"
+                  class="k8s-side-item"
+                  :class="{ 'k8s-side-item--active': tab === it.key }"
+                  @click="switchTab(it.key)"
+                >{{ it.label }}</button>
+              </div>
+            </aside>
 
-          <!-- Tabs -->
-          <div class="k8s-tabs">
-            <button v-for="t in TABS" :key="t.key" class="k8s-tab" :class="{ 'k8s-tab--active': tab === t.key }" @click="switchTab(t.key)">
-              {{ t.label }}
-            </button>
-          </div>
+            <!-- Content -->
+            <div class="k8s-content">
+              <div class="k8s-content-head">
+                <h3 class="k8s-content-title">
+                  {{ currentTitle }}
+                  <span v-if="currentCount >= 0" class="k8s-count">{{ currentCount }}</span>
+                </h3>
+                <div class="k8s-spacer"></div>
+                <SearchSelect
+                  v-if="isScoped && namespaces.length"
+                  class="k8s-ns-select"
+                  :model-value="namespaceFilter"
+                  :options="nsOptions"
+                  placeholder="All namespaces"
+                  @update:model-value="namespaceFilter = String($event); onNamespaceChange()"
+                />
+                <input v-if="tab !== 'overview'" v-model="search" class="base-input k8s-search" type="search" placeholder="Filter…" />
+              </div>
 
-          <div v-if="connError && status === 'error'" class="page-card k8s-conn-err">{{ connError }}</div>
+              <div v-if="connError && status === 'error'" class="page-card k8s-conn-err">{{ connError }}</div>
 
-          <!-- Overview -->
-          <div v-else-if="tab === 'overview'" class="k8s-cards">
-            <div class="k8s-kpi"><div class="k8s-kpi-val">{{ overviewCounts.nodes }}</div><div class="k8s-kpi-label">Nodes</div></div>
-            <div class="k8s-kpi"><div class="k8s-kpi-val">{{ overviewCounts.namespaces }}</div><div class="k8s-kpi-label">Namespaces</div></div>
-            <div class="k8s-kpi"><div class="k8s-kpi-val">{{ overviewCounts.runningPods }}<span class="k8s-kpi-sub">/{{ overviewCounts.pods }}</span></div><div class="k8s-kpi-label">Pods running</div></div>
-            <div class="k8s-kpi"><div class="k8s-kpi-val">{{ overviewCounts.deployments }}</div><div class="k8s-kpi-label">Deployments</div></div>
-            <div class="k8s-kpi"><div class="k8s-kpi-val">{{ overviewCounts.services }}</div><div class="k8s-kpi-label">Services</div></div>
-          </div>
+              <!-- Overview -->
+              <div v-else-if="tab === 'overview'" class="k8s-cards">
+                <div class="k8s-kpi"><div class="k8s-kpi-val">{{ overviewCounts.nodes }}</div><div class="k8s-kpi-label">Nodes</div></div>
+                <div class="k8s-kpi"><div class="k8s-kpi-val">{{ overviewCounts.namespaces }}</div><div class="k8s-kpi-label">Namespaces</div></div>
+                <div class="k8s-kpi"><div class="k8s-kpi-val">{{ overviewCounts.runningPods }}<span class="k8s-kpi-sub">/{{ overviewCounts.pods }}</span></div><div class="k8s-kpi-label">Pods running</div></div>
+                <div class="k8s-kpi"><div class="k8s-kpi-val">{{ overviewCounts.deployments }}</div><div class="k8s-kpi-label">Deployments</div></div>
+                <div class="k8s-kpi"><div class="k8s-kpi-val">{{ overviewCounts.services }}</div><div class="k8s-kpi-label">Services</div></div>
+              </div>
 
-          <!-- Tables -->
-          <div v-else class="page-card k8s-table-wrap">
-            <div v-if="loading" class="k8s-msg">Loading…</div>
+              <!-- Tables -->
+              <div v-else class="page-card k8s-table-wrap">
+                <div v-if="loading" class="k8s-msg">Loading…</div>
 
             <table v-else-if="tab === 'nodes'" class="k8s-table">
               <thead><tr><th>Name</th><th>Status</th><th>Roles</th><th>Version</th><th>CPU</th><th>Memory</th><th>Internal IP</th><th>Age</th><th></th></tr></thead>
@@ -517,7 +570,7 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
                   <td>{{ n.memory }}</td>
                   <td class="k8s-mono">{{ n.internal_ip }}</td>
                   <td>{{ relAge(n.created) }}</td>
-                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('node', '', n.name)">YAML</button></td>
+                  <td class="k8s-act"><button class="k8s-ico" title="View YAML" @click="describe('node', '', n.name)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button></td>
                 </tr>
               </tbody>
             </table>
@@ -530,7 +583,7 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
                   <td class="k8s-mono">{{ n.name }}</td>
                   <td><span class="k8s-pill" :class="n.status === 'Active' ? 'k8s-pill--ok' : 'k8s-pill--warn'">{{ n.status }}</span></td>
                   <td>{{ relAge(n.created) }}</td>
-                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('namespace', '', n.name)">YAML</button></td>
+                  <td class="k8s-act"><button class="k8s-ico" title="View YAML" @click="describe('namespace', '', n.name)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button></td>
                 </tr>
               </tbody>
             </table>
@@ -549,9 +602,9 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
                   <td class="k8s-mono">{{ p.pod_ip }}</td>
                   <td>{{ relAge(p.created) }}</td>
                   <td class="k8s-act">
-                    <button class="base-btn base-btn--xs" @click="openLogs(p)">Logs</button>
-                    <button v-if="canExec" class="base-btn base-btn--xs" @click="openExec(p)">Exec</button>
-                    <button class="base-btn base-btn--xs" @click="describe('pod', p.namespace, p.name)">YAML</button>
+                    <button class="k8s-ico" title="View logs" @click="openLogs(p)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="14" y2="13"/><line x1="8" y1="17" x2="12" y2="17"/></svg></button>
+                    <button v-if="canExec" class="k8s-ico" title="Exec into pod" @click="openExec(p)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></button>
+                    <button class="k8s-ico" title="View YAML" @click="describe('pod', p.namespace, p.name)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button>
                   </td>
                 </tr>
               </tbody>
@@ -569,7 +622,7 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
                   <td>{{ d.available }}</td>
                   <td class="k8s-mono k8s-img">{{ d.images.join(', ') }}</td>
                   <td>{{ relAge(d.created) }}</td>
-                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('deployment', d.namespace, d.name)">YAML</button></td>
+                  <td class="k8s-act"><button class="k8s-ico" title="View YAML" @click="describe('deployment', d.namespace, d.name)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button></td>
                 </tr>
               </tbody>
             </table>
@@ -584,7 +637,7 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
                   <td>{{ d.ready }}</td>
                   <td class="k8s-mono k8s-img">{{ d.images.join(', ') }}</td>
                   <td>{{ relAge(d.created) }}</td>
-                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('statefulset', d.namespace, d.name)">YAML</button></td>
+                  <td class="k8s-act"><button class="k8s-ico" title="View YAML" @click="describe('statefulset', d.namespace, d.name)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button></td>
                 </tr>
               </tbody>
             </table>
@@ -600,7 +653,7 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
                   <td>{{ d.current }}</td>
                   <td>{{ d.ready }}</td>
                   <td>{{ relAge(d.created) }}</td>
-                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('daemonset', d.namespace, d.name)">YAML</button></td>
+                  <td class="k8s-act"><button class="k8s-ico" title="View YAML" @click="describe('daemonset', d.namespace, d.name)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button></td>
                 </tr>
               </tbody>
             </table>
@@ -615,7 +668,7 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
                   <td>{{ j.completions }}</td>
                   <td><span class="k8s-pill" :class="j.status === 'Complete' ? 'k8s-pill--ok' : j.status === 'Failed' ? 'k8s-pill--err' : 'k8s-pill--warn'">{{ j.status }}</span></td>
                   <td>{{ relAge(j.created) }}</td>
-                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('job', j.namespace, j.name)">YAML</button></td>
+                  <td class="k8s-act"><button class="k8s-ico" title="View YAML" @click="describe('job', j.namespace, j.name)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button></td>
                 </tr>
               </tbody>
             </table>
@@ -631,7 +684,7 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
                   <td>{{ j.suspend ? 'Yes' : 'No' }}</td>
                   <td>{{ j.active }}</td>
                   <td>{{ relAge(j.last_schedule) }}</td>
-                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('cronjob', j.namespace, j.name)">YAML</button></td>
+                  <td class="k8s-act"><button class="k8s-ico" title="View YAML" @click="describe('cronjob', j.namespace, j.name)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button></td>
                 </tr>
               </tbody>
             </table>
@@ -648,7 +701,7 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
                   <td class="k8s-mono">{{ s.external_ip }}</td>
                   <td class="k8s-mono">{{ s.ports }}</td>
                   <td>{{ relAge(s.created) }}</td>
-                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('service', s.namespace, s.name)">YAML</button></td>
+                  <td class="k8s-act"><button class="k8s-ico" title="View YAML" @click="describe('service', s.namespace, s.name)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button></td>
                 </tr>
               </tbody>
             </table>
@@ -664,7 +717,7 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
                   <td class="k8s-mono k8s-img">{{ i.hosts.join(', ') || '-' }}</td>
                   <td class="k8s-mono">{{ i.address || '-' }}</td>
                   <td>{{ relAge(i.created) }}</td>
-                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('ingress', i.namespace, i.name)">YAML</button></td>
+                  <td class="k8s-act"><button class="k8s-ico" title="View YAML" @click="describe('ingress', i.namespace, i.name)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button></td>
                 </tr>
               </tbody>
             </table>
@@ -678,7 +731,7 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
                   <td>{{ c.namespace }}</td>
                   <td class="k8s-mono k8s-img">{{ c.keys.join(', ') || '-' }}</td>
                   <td>{{ relAge(c.created) }}</td>
-                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('configmap', c.namespace, c.name)">YAML</button></td>
+                  <td class="k8s-act"><button class="k8s-ico" title="View YAML" @click="describe('configmap', c.namespace, c.name)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button></td>
                 </tr>
               </tbody>
             </table>
@@ -693,7 +746,7 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
                   <td class="k8s-mono">{{ s.type }}</td>
                   <td class="k8s-mono k8s-img">{{ s.keys.join(', ') || '-' }}</td>
                   <td>{{ relAge(s.created) }}</td>
-                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('secret', s.namespace, s.name)">YAML</button></td>
+                  <td class="k8s-act"><button class="k8s-ico" title="View YAML" @click="describe('secret', s.namespace, s.name)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button></td>
                 </tr>
               </tbody>
             </table>
@@ -710,7 +763,7 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
                   <td>{{ p.storage_class || '-' }}</td>
                   <td class="k8s-mono k8s-img">{{ p.volume || '-' }}</td>
                   <td>{{ relAge(p.created) }}</td>
-                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('pvc', p.namespace, p.name)">YAML</button></td>
+                  <td class="k8s-act"><button class="k8s-ico" title="View YAML" @click="describe('pvc', p.namespace, p.name)"><svg class="k8s-ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button></td>
                 </tr>
               </tbody>
             </table>
@@ -730,6 +783,8 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
                 </tr>
               </tbody>
             </table>
+              </div>
+            </div>
           </div>
         </template>
 
@@ -816,21 +871,51 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
 .k8s-conn--connecting .k8s-conn-dot { animation: k8s-blink 1s ease-in-out infinite; }
 @keyframes k8s-blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 
-.k8s-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.k8s-connline { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-secondary); }
-.k8s-dot { width: 8px; height: 8px; border-radius: 50%; }
+.k8s-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .k8s-dot--ok { background: var(--success); }
 .k8s-dot--err { background: var(--danger); }
 .k8s-spacer { flex: 1; }
 .k8s-ns-select { min-width: 180px; }
-.k8s-search { min-width: 160px; max-width: 220px; }
+.k8s-search { min-width: 150px; max-width: 200px; }
 .k8s-muted { color: var(--text-muted); }
 .k8s-err { color: var(--danger); }
 
-.k8s-tabs { display: flex; gap: 2px; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
-.k8s-tab { background: none; border: none; padding: 8px 12px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
-.k8s-tab:hover { color: var(--text-secondary); }
-.k8s-tab--active { color: var(--brand); border-bottom-color: var(--brand); font-weight: 600; }
+/* Sidebar shell (Lens-style) */
+.k8s-shell { display: flex; gap: 16px; align-items: flex-start; }
+.k8s-side {
+  position: sticky; top: 8px; align-self: flex-start;
+  width: 180px; flex-shrink: 0;
+  background: var(--bg-surface); border: 1px solid var(--border);
+  border-radius: var(--r-lg); padding: 10px 8px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.k8s-side-ver { display: flex; align-items: center; gap: 6px; padding: 4px 8px 8px; font-size: 11px; font-family: var(--mono); color: var(--text-muted); border-bottom: 1px solid var(--border); }
+.k8s-side-vertxt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k8s-side-group { display: flex; flex-direction: column; gap: 1px; }
+.k8s-side-grouptitle { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); padding: 2px 8px 4px; }
+.k8s-side-item {
+  text-align: left; background: none; border: none; cursor: pointer;
+  padding: 6px 10px; border-radius: var(--r-sm); font-size: 12.5px;
+  color: var(--text-secondary); border-left: 2px solid transparent;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.k8s-side-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.k8s-side-item--active { background: var(--brand-dim); color: var(--brand); border-left-color: var(--brand); font-weight: 600; }
+
+.k8s-content { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.k8s-content-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.k8s-content-title { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 17px; font-weight: 700; color: var(--text-primary); }
+.k8s-count { font-size: 12px; font-weight: 600; color: var(--text-muted); background: var(--bg-hover); border-radius: 99px; padding: 1px 9px; }
+
+/* Compact icon row-actions (revealed on row hover) */
+.k8s-ico {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; margin-left: 2px;
+  background: none; border: 1px solid transparent; border-radius: var(--r-sm);
+  color: var(--text-muted); cursor: pointer; transition: all var(--dur) var(--ease);
+}
+.k8s-ico:hover { background: var(--bg-hover); border-color: var(--border); color: var(--brand); }
+.k8s-ico-svg { width: 15px; height: 15px; }
 
 .k8s-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
 .k8s-kpi { border: 1px solid var(--border); border-radius: var(--r); padding: 16px 18px; background: var(--bg-surface); }
@@ -848,8 +933,8 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
 .k8s-img { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .k8s-msg { text-align: center; color: var(--text-muted); padding: 24px; }
 .k8s-msg-cell { max-width: 360px; color: var(--text-secondary); }
-.k8s-act { text-align: right; white-space: nowrap; }
-.k8s-act .base-btn { margin-left: 4px; }
+.k8s-act { text-align: right; white-space: nowrap; opacity: 0.4; transition: opacity var(--dur) var(--ease); }
+.k8s-table tbody tr:hover .k8s-act { opacity: 1; }
 .k8s-warn { color: var(--warning); font-weight: 600; }
 .k8s-conn-err { padding: 16px; color: var(--danger); font-size: 13px; }
 
