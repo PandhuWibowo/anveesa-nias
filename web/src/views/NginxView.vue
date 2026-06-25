@@ -229,12 +229,24 @@ async function disconnectHost() {
   stopStub()
   hostId.value = null
   hostStatus.value = 'unknown'
+  // Clear all content so stale data isn't shown after disconnect
+  version.value = ''
+  active.value = ''
   cmdOutput.value = ''
+  files.value = []
   activeFile.value = ''
   fileContent.value = ''
   origContent.value = ''
+  backups.value = []
+  sites.value = []
+  logFiles.value = []
   activeLog.value = ''
   logLines.value = []
+  servers.value = []
+  upstreams.value = []
+  certs.value = []
+  stub.value = null
+  effectiveContent.value = ''
 }
 
 // ── Fleet (all hosts) ───────────────────────────────────────────
@@ -825,7 +837,7 @@ onBeforeUnmount(() => {
         <div v-if="!hosts.length" class="page-card ng-empty">
           <div class="ng-empty-icon">🌐</div>
           <h2>No SSH servers</h2>
-          <p>Nginx management uses your remote SSH hosts. Add one under <b>Docker → Add host</b> (Remote host) first.</p>
+          <p>Nginx management uses your remote SSH hosts. Add one under <b>Infrastructure → SSH Hosts</b> first.</p>
         </div>
 
         <!-- FLEET: all hosts at once -->
@@ -870,7 +882,7 @@ onBeforeUnmount(() => {
           </table>
         </div>
 
-        <template v-else>
+        <template v-else-if="hostId !== null">
           <!-- Detected/overridable host settings -->
           <div class="page-card ng-settings">
             <div class="ng-set">
@@ -1118,6 +1130,12 @@ onBeforeUnmount(() => {
             <pre ref="logViewEl" class="ng-logview">{{ logLines.join('\n') || 'No log output.' }}</pre>
           </div>
         </template>
+
+        <!-- Idle: hosts exist but none selected (after disconnect) -->
+        <div v-else class="page-card ng-idle">
+          <div class="ng-idle-icon">🌐</div>
+          <p>Select a host from the dropdown above to connect.</p>
+        </div>
       </div>
     </div>
 
@@ -1165,6 +1183,8 @@ onBeforeUnmount(() => {
 .ng-conn-status--unknown .ng-conn-dot { background: var(--text-muted); }
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
 .ng-empty { text-align: center; padding: 64px 20px; color: var(--text-secondary); }
+.ng-idle { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 48px 20px; color: var(--text-muted); font-size: 13px; }
+.ng-idle-icon { font-size: 22px; }
 .ng-empty-icon { font-size: 44px; }
 .ng-empty h2 { margin: 12px 0 4px; font-size: 16px; color: var(--text-primary); }
 .ng-empty p { font-size: 13px; color: var(--text-muted); }

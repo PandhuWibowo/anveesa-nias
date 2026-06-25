@@ -152,9 +152,8 @@ const allMenuGroups: MenuGroup[] = [
     label: 'Infrastructure',
     icon: 'docker',
     items: [
-      { name: 'docker-hosts', label: 'Docker Hosts', desc: 'Add, edit and test SSH host connections for Docker and Nginx', icon: 'docker', permissionsAny: ['docker.view', 'docker.manage'] },
+      { name: 'ssh-hosts', label: 'SSH Hosts', desc: 'Manage server connections shared by Docker, SFTP, and Nginx', icon: 'docker', permissionsAny: ['docker.view', 'docker.manage', 'sftp.access', 'sftp.manage'] },
       { name: 'docker', label: 'Docker', desc: 'Browse and control containers and images across your servers over SSH', icon: 'docker', permissionsAny: ['docker.view', 'docker.manage'] },
-      { name: 'sftp-hosts', label: 'SFTP Hosts', desc: 'Add and manage SSH host connections for SFTP file browsing', icon: 'sftp', permissionsAny: ['sftp.access', 'sftp.manage'] },
       { name: 'sftp', label: 'SFTP', desc: 'Browse, upload, and download files on your servers over SSH', icon: 'sftp', permissionsAny: ['sftp.access', 'sftp.manage'] },
       { name: 'nginx', label: 'Nginx', desc: 'Edit configs, toggle sites, and follow access & error logs across your servers over SSH', icon: 'nginx', permissionsAny: ['nginx.view', 'nginx.manage', 'nginx.reload'] },
     ],

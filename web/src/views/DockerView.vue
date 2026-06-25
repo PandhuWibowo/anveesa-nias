@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import axios from 'axios'
+import SearchSelect from '@/components/ui/SearchSelect.vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -140,6 +141,10 @@ const canExec = computed(() => hasAnyPermission(['docker.exec']))
 const hosts = ref<DockerHost[]>([])
 const activeHostId = ref<number | null>(null)
 const activeHost = computed(() => hosts.value.find((h) => h.id === activeHostId.value) ?? null)
+const hostOptions = computed(() => hosts.value.map((h) => ({
+  value: h.id,
+  label: h.ssh_host ? `${h.name} (${h.ssh_host})` : `${h.name} (local)`,
+})))
 
 const tab = ref<'containers' | 'images' | 'volumes' | 'networks'>('containers')
 const containers = ref<DockerContainer[]>([])
@@ -1917,14 +1922,14 @@ onMounted(loadHosts)
             </div>
           </div>
           <div class="page-hero__actions">
-            <select
+            <SearchSelect
               v-if="hosts.length"
-              class="base-input dk-host-select"
-              :value="activeHostId ?? ''"
-              @change="selectHost(Number(($event.target as HTMLSelectElement).value))"
-            >
-              <option v-for="h in hosts" :key="h.id" :value="h.id">{{ hostLabel(h) }}</option>
-            </select>
+              class="dk-host-select"
+              :model-value="activeHostId"
+              :options="hostOptions"
+              placeholder="Select host…"
+              @update:model-value="selectHost(Number($event))"
+            />
             <input
               v-if="activeHost"
               v-model="search"
@@ -1940,7 +1945,7 @@ onMounted(loadHosts)
             </label>
             <button v-if="activeHost" class="base-btn base-btn--sm" :disabled="loading" @click="refresh()">Refresh</button>
             <button v-if="activeHost && canManage" class="base-btn base-btn--sm" @click="openEditHost(activeHost)">Edit host</button>
-            <button v-if="canManage" class="base-btn base-btn--sm" @click="router.push({ name: 'docker-hosts' })">Manage hosts</button>
+            <button v-if="canManage" class="base-btn base-btn--sm" @click="router.push({ name: 'ssh-hosts' })">Manage hosts</button>
           </div>
         </section>
 
@@ -2011,7 +2016,7 @@ onMounted(loadHosts)
           <div class="dk-empty-icon">🐳</div>
           <h2>No Docker hosts yet</h2>
           <p>Connect a server by SSH to browse and control its containers.</p>
-          <button v-if="canManage" class="base-btn base-btn--primary" @click="router.push({ name: 'docker-hosts' })">Add your first host</button>
+          <button v-if="canManage" class="base-btn base-btn--primary" @click="router.push({ name: 'ssh-hosts' })">Add your first host</button>
           <p v-else class="dk-muted">You don't have permission to add Docker hosts.</p>
         </div>
 

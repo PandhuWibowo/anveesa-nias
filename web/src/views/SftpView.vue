@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import axios from 'axios'
+import SearchSelect from '@/components/ui/SearchSelect.vue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
@@ -39,6 +40,10 @@ const canManage = computed(() => hasAnyPermission(['sftp.manage']))
 
 const hosts = ref<SshHost[]>([])
 const hostId = ref<number | null>(null)
+const hostOptions = computed(() => hosts.value.map((h) => ({
+  value: h.id,
+  label: `${h.name} (${h.ssh_host})`,
+})))
 const cwd = ref('/')
 const entries = ref<SftpEntry[]>([])
 const loading = ref(false)
@@ -276,16 +281,16 @@ onMounted(loadHosts)
             <div class="page-subtitle">Browse, upload, and download files on your servers over SSH.</div>
           </div>
           <div class="page-hero__actions">
-            <select
+            <SearchSelect
               v-if="hosts.length"
-              class="base-input sf-host"
-              :value="hostId ?? ''"
-              @change="selectHost(Number(($event.target as HTMLSelectElement).value))"
-            >
-              <option v-for="h in hosts" :key="h.id" :value="h.id">{{ h.name }} ({{ h.ssh_host }})</option>
-            </select>
+              class="sf-host"
+              :model-value="hostId"
+              :options="hostOptions"
+              placeholder="Select host…"
+              @update:model-value="selectHost(Number($event))"
+            />
             <button v-if="hostId !== null" class="base-btn base-btn--sm" :disabled="loading" @click="loadDir(cwd)">Refresh</button>
-            <button v-if="canManage" class="base-btn base-btn--sm" @click="router.push({ name: 'sftp-hosts' })">Manage hosts</button>
+            <button v-if="canManage" class="base-btn base-btn--sm" @click="router.push({ name: 'ssh-hosts' })">Manage hosts</button>
           </div>
         </section>
 
@@ -293,7 +298,7 @@ onMounted(loadHosts)
           <div class="sf-empty-icon">🗂️</div>
           <h2>No SSH servers</h2>
           <p>SFTP uses your remote SSH hosts. Add one under <b>SFTP Hosts</b> first.</p>
-          <button v-if="canManage" class="base-btn base-btn--primary" @click="router.push({ name: 'sftp-hosts' })">Add your first host</button>
+          <button v-if="canManage" class="base-btn base-btn--primary" @click="router.push({ name: 'ssh-hosts' })">Add your first host</button>
         </div>
 
         <template v-else>
