@@ -1034,3 +1034,498 @@ func KubeOverview() http.HandlerFunc {
 		json.NewEncoder(w).Encode(out)
 	}
 }
+
+// ── Additional read-only resource kinds ────────────────────────────────────
+
+// listPath builds an all-namespaces or namespace-scoped path for a resource.
+func listPath(apiPrefix, resource string, r *http.Request) string {
+	if ns := strings.TrimSpace(r.URL.Query().Get("namespace")); ns != "" {
+		return fmt.Sprintf("%s/namespaces/%s/%s?limit=1000", apiPrefix, ns, resource)
+	}
+	return fmt.Sprintf("%s/%s?limit=1000", apiPrefix, resource)
+}
+
+type kubeStatefulSet struct {
+	Name      string   `json:"name"`
+	Namespace string   `json:"namespace"`
+	Ready     string   `json:"ready"`
+	Created   string   `json:"created"`
+	Images    []string `json:"images"`
+}
+
+func KubeStatefulSets() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		client, ok := clientFromPath(w, r)
+		if !ok {
+			return
+		}
+		var resp struct {
+			Items []struct {
+				Metadata k8sMeta `json:"metadata"`
+				Spec     struct {
+					Replicas int `json:"replicas"`
+					Template struct {
+						Spec struct {
+							Containers []struct {
+								Image string `json:"image"`
+							} `json:"containers"`
+						} `json:"spec"`
+					} `json:"template"`
+				} `json:"spec"`
+				Status struct {
+					ReadyReplicas int `json:"readyReplicas"`
+				} `json:"status"`
+			} `json:"items"`
+		}
+		if err := client.get(listPath("/apis/apps/v1", "statefulsets", r), &resp); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		out := []kubeStatefulSet{}
+		for _, it := range resp.Items {
+			s := kubeStatefulSet{
+				Name:      it.Metadata.Name,
+				Namespace: it.Metadata.Namespace,
+				Ready:     fmt.Sprintf("%d/%d", it.Status.ReadyReplicas, it.Spec.Replicas),
+				Created:   it.Metadata.CreationTimestamp,
+			}
+			for _, c := range it.Spec.Template.Spec.Containers {
+				s.Images = append(s.Images, c.Image)
+			}
+			out = append(out, s)
+		}
+		json.NewEncoder(w).Encode(out)
+	}
+}
+
+type kubeDaemonSet struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Desired   int    `json:"desired"`
+	Current   int    `json:"current"`
+	Ready     int    `json:"ready"`
+	Created   string `json:"created"`
+}
+
+func KubeDaemonSets() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		client, ok := clientFromPath(w, r)
+		if !ok {
+			return
+		}
+		var resp struct {
+			Items []struct {
+				Metadata k8sMeta `json:"metadata"`
+				Status   struct {
+					DesiredNumberScheduled int `json:"desiredNumberScheduled"`
+					CurrentNumberScheduled int `json:"currentNumberScheduled"`
+					NumberReady            int `json:"numberReady"`
+				} `json:"status"`
+			} `json:"items"`
+		}
+		if err := client.get(listPath("/apis/apps/v1", "daemonsets", r), &resp); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		out := []kubeDaemonSet{}
+		for _, it := range resp.Items {
+			out = append(out, kubeDaemonSet{
+				Name:      it.Metadata.Name,
+				Namespace: it.Metadata.Namespace,
+				Desired:   it.Status.DesiredNumberScheduled,
+				Current:   it.Status.CurrentNumberScheduled,
+				Ready:     it.Status.NumberReady,
+				Created:   it.Metadata.CreationTimestamp,
+			})
+		}
+		json.NewEncoder(w).Encode(out)
+	}
+}
+
+type kubeJob struct {
+	Name        string `json:"name"`
+	Namespace   string `json:"namespace"`
+	Completions string `json:"completions"`
+	Status      string `json:"status"`
+	Created     string `json:"created"`
+}
+
+func KubeJobs() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		client, ok := clientFromPath(w, r)
+		if !ok {
+			return
+		}
+		var resp struct {
+			Items []struct {
+				Metadata k8sMeta `json:"metadata"`
+				Spec     struct {
+					Completions int `json:"completions"`
+				} `json:"spec"`
+				Status struct {
+					Succeeded int `json:"succeeded"`
+					Active    int `json:"active"`
+					Failed    int `json:"failed"`
+				} `json:"status"`
+			} `json:"items"`
+		}
+		if err := client.get(listPath("/apis/batch/v1", "jobs", r), &resp); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		out := []kubeJob{}
+		for _, it := range resp.Items {
+			st := "Running"
+			if it.Status.Active == 0 {
+				if it.Status.Failed > 0 {
+					st = "Failed"
+				} else if it.Status.Succeeded > 0 {
+					st = "Complete"
+				}
+			}
+			out = append(out, kubeJob{
+				Name:        it.Metadata.Name,
+				Namespace:   it.Metadata.Namespace,
+				Completions: fmt.Sprintf("%d/%d", it.Status.Succeeded, it.Spec.Completions),
+				Status:      st,
+				Created:     it.Metadata.CreationTimestamp,
+			})
+		}
+		json.NewEncoder(w).Encode(out)
+	}
+}
+
+type kubeCronJob struct {
+	Name         string `json:"name"`
+	Namespace    string `json:"namespace"`
+	Schedule     string `json:"schedule"`
+	Suspend      bool   `json:"suspend"`
+	Active       int    `json:"active"`
+	LastSchedule string `json:"last_schedule"`
+	Created      string `json:"created"`
+}
+
+func KubeCronJobs() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		client, ok := clientFromPath(w, r)
+		if !ok {
+			return
+		}
+		var resp struct {
+			Items []struct {
+				Metadata k8sMeta `json:"metadata"`
+				Spec     struct {
+					Schedule string `json:"schedule"`
+					Suspend  bool   `json:"suspend"`
+				} `json:"spec"`
+				Status struct {
+					Active           []json.RawMessage `json:"active"`
+					LastScheduleTime string            `json:"lastScheduleTime"`
+				} `json:"status"`
+			} `json:"items"`
+		}
+		if err := client.get(listPath("/apis/batch/v1", "cronjobs", r), &resp); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		out := []kubeCronJob{}
+		for _, it := range resp.Items {
+			out = append(out, kubeCronJob{
+				Name:         it.Metadata.Name,
+				Namespace:    it.Metadata.Namespace,
+				Schedule:     it.Spec.Schedule,
+				Suspend:      it.Spec.Suspend,
+				Active:       len(it.Status.Active),
+				LastSchedule: it.Status.LastScheduleTime,
+				Created:      it.Metadata.CreationTimestamp,
+			})
+		}
+		json.NewEncoder(w).Encode(out)
+	}
+}
+
+type kubeConfigMap struct {
+	Name      string   `json:"name"`
+	Namespace string   `json:"namespace"`
+	Keys      []string `json:"keys"`
+	Created   string   `json:"created"`
+}
+
+func KubeConfigMaps() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		client, ok := clientFromPath(w, r)
+		if !ok {
+			return
+		}
+		var resp struct {
+			Items []struct {
+				Metadata k8sMeta           `json:"metadata"`
+				Data     map[string]string `json:"data"`
+			} `json:"items"`
+		}
+		if err := client.get(listPath("/api/v1", "configmaps", r), &resp); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		out := []kubeConfigMap{}
+		for _, it := range resp.Items {
+			keys := make([]string, 0, len(it.Data))
+			for k := range it.Data {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			out = append(out, kubeConfigMap{
+				Name:      it.Metadata.Name,
+				Namespace: it.Metadata.Namespace,
+				Keys:      keys,
+				Created:   it.Metadata.CreationTimestamp,
+			})
+		}
+		json.NewEncoder(w).Encode(out)
+	}
+}
+
+// kubeSecret deliberately exposes only key names — never the values.
+type kubeSecret struct {
+	Name      string   `json:"name"`
+	Namespace string   `json:"namespace"`
+	Type      string   `json:"type"`
+	Keys      []string `json:"keys"`
+	Created   string   `json:"created"`
+}
+
+func KubeSecrets() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		client, ok := clientFromPath(w, r)
+		if !ok {
+			return
+		}
+		var resp struct {
+			Items []struct {
+				Metadata k8sMeta           `json:"metadata"`
+				Type     string            `json:"type"`
+				Data     map[string]string `json:"data"`
+			} `json:"items"`
+		}
+		if err := client.get(listPath("/api/v1", "secrets", r), &resp); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		out := []kubeSecret{}
+		for _, it := range resp.Items {
+			keys := make([]string, 0, len(it.Data))
+			for k := range it.Data {
+				keys = append(keys, k) // names only — values are never returned
+			}
+			sort.Strings(keys)
+			out = append(out, kubeSecret{
+				Name:      it.Metadata.Name,
+				Namespace: it.Metadata.Namespace,
+				Type:      it.Type,
+				Keys:      keys,
+				Created:   it.Metadata.CreationTimestamp,
+			})
+		}
+		json.NewEncoder(w).Encode(out)
+	}
+}
+
+type kubeIngress struct {
+	Name      string   `json:"name"`
+	Namespace string   `json:"namespace"`
+	Class     string   `json:"class"`
+	Hosts     []string `json:"hosts"`
+	Address   string   `json:"address"`
+	Created   string   `json:"created"`
+}
+
+func KubeIngresses() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		client, ok := clientFromPath(w, r)
+		if !ok {
+			return
+		}
+		var resp struct {
+			Items []struct {
+				Metadata k8sMeta `json:"metadata"`
+				Spec     struct {
+					IngressClassName string `json:"ingressClassName"`
+					Rules            []struct {
+						Host string `json:"host"`
+					} `json:"rules"`
+				} `json:"spec"`
+				Status struct {
+					LoadBalancer struct {
+						Ingress []struct {
+							IP       string `json:"ip"`
+							Hostname string `json:"hostname"`
+						} `json:"ingress"`
+					} `json:"loadBalancer"`
+				} `json:"status"`
+			} `json:"items"`
+		}
+		if err := client.get(listPath("/apis/networking.k8s.io/v1", "ingresses", r), &resp); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		out := []kubeIngress{}
+		for _, it := range resp.Items {
+			ing := kubeIngress{
+				Name:      it.Metadata.Name,
+				Namespace: it.Metadata.Namespace,
+				Class:     it.Spec.IngressClassName,
+				Created:   it.Metadata.CreationTimestamp,
+			}
+			for _, rule := range it.Spec.Rules {
+				if rule.Host != "" {
+					ing.Hosts = append(ing.Hosts, rule.Host)
+				}
+			}
+			addrs := []string{}
+			for _, lb := range it.Status.LoadBalancer.Ingress {
+				if lb.IP != "" {
+					addrs = append(addrs, lb.IP)
+				} else if lb.Hostname != "" {
+					addrs = append(addrs, lb.Hostname)
+				}
+			}
+			ing.Address = strings.Join(addrs, ",")
+			out = append(out, ing)
+		}
+		json.NewEncoder(w).Encode(out)
+	}
+}
+
+type kubePVC struct {
+	Name         string `json:"name"`
+	Namespace    string `json:"namespace"`
+	Status       string `json:"status"`
+	Volume       string `json:"volume"`
+	Capacity     string `json:"capacity"`
+	StorageClass string `json:"storage_class"`
+	Created      string `json:"created"`
+}
+
+func KubePVCs() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		client, ok := clientFromPath(w, r)
+		if !ok {
+			return
+		}
+		var resp struct {
+			Items []struct {
+				Metadata k8sMeta `json:"metadata"`
+				Spec     struct {
+					VolumeName       string  `json:"volumeName"`
+					StorageClassName *string `json:"storageClassName"`
+				} `json:"spec"`
+				Status struct {
+					Phase    string            `json:"phase"`
+					Capacity map[string]string `json:"capacity"`
+				} `json:"status"`
+			} `json:"items"`
+		}
+		if err := client.get(listPath("/api/v1", "persistentvolumeclaims", r), &resp); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		out := []kubePVC{}
+		for _, it := range resp.Items {
+			sc := ""
+			if it.Spec.StorageClassName != nil {
+				sc = *it.Spec.StorageClassName
+			}
+			out = append(out, kubePVC{
+				Name:         it.Metadata.Name,
+				Namespace:    it.Metadata.Namespace,
+				Status:       it.Status.Phase,
+				Volume:       it.Spec.VolumeName,
+				Capacity:     it.Status.Capacity["storage"],
+				StorageClass: sc,
+				Created:      it.Metadata.CreationTimestamp,
+			})
+		}
+		json.NewEncoder(w).Encode(out)
+	}
+}
+
+// ── Describe / raw object (read-only) ──────────────────────────────────────
+
+// describePaths maps a UI "kind" to the API path template for a single object.
+// {ns} and {name} are substituted; cluster-scoped kinds ignore {ns}.
+var describePaths = map[string]string{
+	"pod":         "/api/v1/namespaces/{ns}/pods/{name}",
+	"service":     "/api/v1/namespaces/{ns}/services/{name}",
+	"configmap":   "/api/v1/namespaces/{ns}/configmaps/{name}",
+	"secret":      "/api/v1/namespaces/{ns}/secrets/{name}",
+	"pvc":         "/api/v1/namespaces/{ns}/persistentvolumeclaims/{name}",
+	"deployment":  "/apis/apps/v1/namespaces/{ns}/deployments/{name}",
+	"statefulset": "/apis/apps/v1/namespaces/{ns}/statefulsets/{name}",
+	"daemonset":   "/apis/apps/v1/namespaces/{ns}/daemonsets/{name}",
+	"job":         "/apis/batch/v1/namespaces/{ns}/jobs/{name}",
+	"cronjob":     "/apis/batch/v1/namespaces/{ns}/cronjobs/{name}",
+	"ingress":     "/apis/networking.k8s.io/v1/namespaces/{ns}/ingresses/{name}",
+	"node":        "/api/v1/nodes/{name}",
+	"namespace":   "/api/v1/namespaces/{name}",
+}
+
+// secretsRedact blanks out the data of a Secret object for the describe view.
+func secretRedact(obj map[string]any) {
+	if data, ok := obj["data"].(map[string]any); ok {
+		for k := range data {
+			data[k] = "***REDACTED***"
+		}
+	}
+	if data, ok := obj["stringData"].(map[string]any); ok {
+		for k := range data {
+			data[k] = "***REDACTED***"
+		}
+	}
+}
+
+func KubeDescribe() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		client, ok := clientFromPath(w, r)
+		if !ok {
+			return
+		}
+		kind := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind")))
+		name := strings.TrimSpace(r.URL.Query().Get("name"))
+		ns := strings.TrimSpace(r.URL.Query().Get("namespace"))
+		tmpl, known := describePaths[kind]
+		if !known || name == "" {
+			http.Error(w, jsonError("unknown kind or missing name"), http.StatusBadRequest)
+			return
+		}
+		path := strings.ReplaceAll(tmpl, "{name}", name)
+		path = strings.ReplaceAll(path, "{ns}", ns)
+		var obj map[string]any
+		if err := client.get(path, &obj); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		// Never leak secret values, even in the raw view.
+		if kind == "secret" {
+			secretRedact(obj)
+		}
+		// Trim noisy managed fields.
+		if md, ok := obj["metadata"].(map[string]any); ok {
+			delete(md, "managedFields")
+		}
+		yml, err := yaml.Marshal(obj)
+		if err != nil {
+			http.Error(w, jsonError("yaml: "+err.Error()), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"yaml": string(yml)})
+	}
+}

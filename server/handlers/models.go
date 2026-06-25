@@ -149,18 +149,18 @@ const (
 	PermFoldersManage       = "folders.manage"
 	PermRolesManage         = "roles.manage"
 	PermWorkflowsManage     = "workflows.manage"
-	PermPipelinesView   = "pipelines.view"
-	PermPipelinesManage = "pipelines.manage"
-	PermPipelinesRun    = "pipelines.run"
+	PermPipelinesView       = "pipelines.view"
+	PermPipelinesManage     = "pipelines.manage"
+	PermPipelinesRun        = "pipelines.run"
 	// Observability
 	PermObservabilityView = "observability.view"
 	PermDiscoverView      = "discover.view"
 	PermUptimeView        = "uptime.view"
 	// Data
-	PermDataExport      = "data.export"
-	PermDataImport      = "data.import"
-	PermDBUsersManage   = "dbusers.manage"
-	PermSettingsAlerts  = "settings.alerts"
+	PermDataExport     = "data.export"
+	PermDataImport     = "data.import"
+	PermDBUsersManage  = "dbusers.manage"
+	PermSettingsAlerts = "settings.alerts"
 	// Infrastructure
 	PermDockerView   = "docker.view"
 	PermDockerManage = "docker.manage"
@@ -172,6 +172,7 @@ const (
 	PermNginxReload  = "nginx.reload"
 	PermKubeView     = "kube.view"
 	PermKubeManage   = "kube.manage"
+	PermKubeExec     = "kube.exec"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -246,6 +247,7 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermNginxReload, Label: "Test & Reload Nginx", Group: "Infrastructure"},
 	{Key: PermKubeView, Label: "View Kubernetes Clusters & Workloads", Group: "Infrastructure"},
 	{Key: PermKubeManage, Label: "Manage Kubernetes Cluster Connections", Group: "Infrastructure"},
+	{Key: PermKubeExec, Label: "Exec Into Kubernetes Pods (high-risk)", Group: "Infrastructure"},
 }
 
 // PermissionDef describes a single permission for the UI.

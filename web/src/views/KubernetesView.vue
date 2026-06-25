@@ -1,19 +1,33 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import axios from 'axios'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import '@xterm/xterm/css/xterm.css'
 import { useToast } from '@/composables/useToast'
 import { useAuth } from '@/composables/useAuth'
 import SearchSelect from '@/components/ui/SearchSelect.vue'
-import { useKubeClusters, type KubeCluster } from '@/composables/useKubeClusters'
+import { useKubeClusters } from '@/composables/useKubeClusters'
 
-type KubeTab = 'overview' | 'nodes' | 'namespaces' | 'pods' | 'deployments' | 'services' | 'events'
+type KubeTab =
+  | 'overview' | 'nodes' | 'namespaces' | 'pods' | 'deployments'
+  | 'statefulsets' | 'daemonsets' | 'jobs' | 'cronjobs'
+  | 'services' | 'ingresses' | 'configmaps' | 'secrets' | 'pvcs' | 'events'
 
 interface KNode { name: string; status: string; roles: string; version: string; os: string; cpu: string; memory: string; internal_ip: string; created: string }
 interface KNamespace { name: string; status: string; created: string }
 interface KPod { name: string; namespace: string; status: string; ready: string; restarts: number; node: string; pod_ip: string; created: string; containers: string[] }
 interface KDeployment { name: string; namespace: string; ready: string; up_to_date: number; available: number; created: string; images: string[] }
+interface KStatefulSet { name: string; namespace: string; ready: string; created: string; images: string[] }
+interface KDaemonSet { name: string; namespace: string; desired: number; current: number; ready: number; created: string }
+interface KJob { name: string; namespace: string; completions: string; status: string; created: string }
+interface KCronJob { name: string; namespace: string; schedule: string; suspend: boolean; active: number; last_schedule: string; created: string }
 interface KService { name: string; namespace: string; type: string; cluster_ip: string; external_ip: string; ports: string; created: string }
+interface KIngress { name: string; namespace: string; class: string; hosts: string[]; address: string; created: string }
+interface KConfigMap { name: string; namespace: string; keys: string[]; created: string }
+interface KSecret { name: string; namespace: string; type: string; keys: string[]; created: string }
+interface KPVC { name: string; namespace: string; status: string; volume: string; capacity: string; storage_class: string; created: string }
 interface KEvent { namespace: string; type: string; reason: string; object: string; message: string; count: number; last_seen: string }
 
 const router = useRouter()
@@ -21,6 +35,7 @@ const route = useRoute()
 const toast = useToast()
 const { hasAnyPermission } = useAuth()
 const canManage = computed(() => hasAnyPermission(['kube.manage']))
+const canExec = computed(() => hasAnyPermission(['kube.exec']))
 
 const { clusters, fetchClusters } = useKubeClusters()
 const clusterOptions = computed(() => clusters.value.map((c) => ({ value: c.id, label: `${c.name} (${providerShort(c.provider)})` })))
@@ -32,7 +47,6 @@ const connError = ref('')
 const tab = ref<KubeTab>('overview')
 const loading = ref(false)
 
-// Namespace scope filter (empty = all namespaces)
 const namespaceFilter = ref('')
 const search = ref('')
 
@@ -41,7 +55,15 @@ const nodes = ref<KNode[]>([])
 const namespaces = ref<KNamespace[]>([])
 const pods = ref<KPod[]>([])
 const deployments = ref<KDeployment[]>([])
+const statefulsets = ref<KStatefulSet[]>([])
+const daemonsets = ref<KDaemonSet[]>([])
+const jobs = ref<KJob[]>([])
+const cronjobs = ref<KCronJob[]>([])
 const services = ref<KService[]>([])
+const ingresses = ref<KIngress[]>([])
+const configmaps = ref<KConfigMap[]>([])
+const secrets = ref<KSecret[]>([])
+const pvcs = ref<KPVC[]>([])
 const events = ref<KEvent[]>([])
 
 // Pod logs modal
@@ -51,8 +73,45 @@ const logsContainer = ref('')
 const logsTail = ref('300')
 const logsText = ref('')
 const logsLoading = ref(false)
+const logsFollow = ref(false)
+const logViewEl = ref<HTMLElement | null>(null)
+let logsWS: WebSocket | null = null
+
+// Describe drawer
+const showDescribe = ref(false)
+const describeTitle = ref('')
+const describeYaml = ref('')
+const describeLoading = ref(false)
+
+// Exec terminal
+const showExec = ref(false)
+const execPod = ref<KPod | null>(null)
+const execContainer = ref('')
+const execShell = ref('/bin/sh')
+const termEl = ref<HTMLElement | null>(null)
+let term: Terminal | null = null
+let fitAddon: FitAddon | null = null
+let execWS: WebSocket | null = null
 
 const LAST_CLUSTER_KEY = 'nias:kube:lastCluster'
+
+const TABS: { key: KubeTab; label: string }[] = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'nodes', label: 'Nodes' },
+  { key: 'namespaces', label: 'Namespaces' },
+  { key: 'pods', label: 'Pods' },
+  { key: 'deployments', label: 'Deployments' },
+  { key: 'statefulsets', label: 'StatefulSets' },
+  { key: 'daemonsets', label: 'DaemonSets' },
+  { key: 'jobs', label: 'Jobs' },
+  { key: 'cronjobs', label: 'CronJobs' },
+  { key: 'services', label: 'Services' },
+  { key: 'ingresses', label: 'Ingresses' },
+  { key: 'configmaps', label: 'ConfigMaps' },
+  { key: 'secrets', label: 'Secrets' },
+  { key: 'pvcs', label: 'PVCs' },
+  { key: 'events', label: 'Events' },
+]
 
 function providerShort(p: string): string {
   return p === 'alibaba' ? 'ACK' : p === 'huawei' ? 'CCE' : 'k8s'
@@ -62,6 +121,13 @@ const nsOptions = computed(() => [
   { value: '', label: 'All namespaces' },
   ...namespaces.value.map((n) => ({ value: n.name, label: n.name })),
 ])
+
+const base = computed(() => `/api/kube/clusters/${clusterId.value}`)
+function nsQuery(): string {
+  return namespaceFilter.value ? `?namespace=${encodeURIComponent(namespaceFilter.value)}` : ''
+}
+function wsToken(): string { return localStorage.getItem('nias-token') || '' }
+function wsProto(): string { return location.protocol === 'https:' ? 'wss' : 'ws' }
 
 // ── Connection ──────────────────────────────────────────────────
 async function loadClusters() {
@@ -89,7 +155,6 @@ async function selectCluster(id: number) {
     const { data } = await axios.get<{ version: string }>(`/api/kube/clusters/${id}/ping`)
     version.value = data.version
     status.value = 'connected'
-    // Preload namespaces for the filter, then load the active tab.
     await loadNamespaces()
     await loadTab()
   } catch (e: any) {
@@ -104,13 +169,10 @@ function disconnect() {
   version.value = ''
   connError.value = ''
   localStorage.setItem(LAST_CLUSTER_KEY, 'disconnected')
-  nodes.value = []; namespaces.value = []; pods.value = []
-  deployments.value = []; services.value = []; events.value = []
-}
-
-const base = computed(() => `/api/kube/clusters/${clusterId.value}`)
-function nsQuery(): string {
-  return namespaceFilter.value ? `?namespace=${encodeURIComponent(namespaceFilter.value)}` : ''
+  nodes.value = []; namespaces.value = []; pods.value = []; deployments.value = []
+  statefulsets.value = []; daemonsets.value = []; jobs.value = []; cronjobs.value = []
+  services.value = []; ingresses.value = []; configmaps.value = []; secrets.value = []
+  pvcs.value = []; events.value = []
 }
 
 async function loadNamespaces() {
@@ -131,7 +193,15 @@ async function loadTab() {
       case 'namespaces': await loadNamespaces(); break
       case 'pods': await loadPods(); break
       case 'deployments': await loadDeployments(); break
+      case 'statefulsets': await loadList('statefulsets', statefulsets); break
+      case 'daemonsets': await loadList('daemonsets', daemonsets); break
+      case 'jobs': await loadList('jobs', jobs); break
+      case 'cronjobs': await loadList('cronjobs', cronjobs); break
       case 'services': await loadServices(); break
+      case 'ingresses': await loadList('ingresses', ingresses); break
+      case 'configmaps': await loadList('configmaps', configmaps); break
+      case 'secrets': await loadList('secrets', secrets); break
+      case 'pvcs': await loadList('pvcs', pvcs); break
       case 'events': await loadEvents(); break
     }
   } catch (e: any) {
@@ -146,30 +216,57 @@ async function loadPods() { const { data } = await axios.get<KPod[]>(`${base.val
 async function loadDeployments() { const { data } = await axios.get<KDeployment[]>(`${base.value}/deployments${nsQuery()}`); deployments.value = data ?? [] }
 async function loadServices() { const { data } = await axios.get<KService[]>(`${base.value}/services${nsQuery()}`); services.value = data ?? [] }
 async function loadEvents() { const { data } = await axios.get<KEvent[]>(`${base.value}/events${nsQuery()}`); events.value = data ?? [] }
+// Generic loader for the remaining namespace-scoped list kinds.
+async function loadList(resource: string, target: { value: any[] }) {
+  const { data } = await axios.get<any[]>(`${base.value}/${resource}${nsQuery()}`)
+  target.value = data ?? []
+}
 
 function switchTab(t: KubeTab) {
   tab.value = t
   search.value = ''
   loadTab()
 }
-
 function onNamespaceChange() {
-  // Re-fetch the namespace-scoped tabs.
-  if (['pods', 'deployments', 'services', 'events', 'overview'].includes(tab.value)) loadTab()
+  if (tab.value !== 'nodes' && tab.value !== 'namespaces') loadTab()
 }
 
-// ── Pod logs ────────────────────────────────────────────────────
+// ── Describe (YAML) ─────────────────────────────────────────────
+async function describe(kind: string, namespace: string, name: string) {
+  showDescribe.value = true
+  describeTitle.value = `${kind}/${name}`
+  describeYaml.value = ''
+  describeLoading.value = true
+  try {
+    const q = new URLSearchParams({ kind, name })
+    if (namespace) q.set('namespace', namespace)
+    const { data } = await axios.get<{ yaml: string }>(`${base.value}/describe?${q.toString()}`)
+    describeYaml.value = data.yaml || '(empty)'
+  } catch (e: any) {
+    describeYaml.value = e?.response?.data?.error || 'Failed to load object'
+  } finally {
+    describeLoading.value = false
+  }
+}
+function copyDescribe() {
+  navigator.clipboard?.writeText(describeYaml.value)
+  toast.success('YAML copied')
+}
+
+// ── Pod logs (snapshot + follow) ────────────────────────────────
 async function openLogs(p: KPod) {
   logsPod.value = p
   logsContainer.value = p.containers[0] || ''
   logsTail.value = '300'
   logsText.value = ''
+  logsFollow.value = false
   showLogs.value = true
   await fetchLogs()
 }
 
 async function fetchLogs() {
   if (!logsPod.value) return
+  stopFollow()
   logsLoading.value = true
   try {
     const p = logsPod.value
@@ -186,6 +283,96 @@ async function fetchLogs() {
   }
 }
 
+function toggleFollow() {
+  if (logsFollow.value) { stopFollow(); return }
+  startFollow()
+}
+function startFollow() {
+  if (!logsPod.value || clusterId.value === null) return
+  const p = logsPod.value
+  const q = new URLSearchParams({ token: wsToken(), tail: logsTail.value })
+  if (logsContainer.value) q.set('container', logsContainer.value)
+  const url = `${wsProto()}://${location.host}${base.value}/pods/${encodeURIComponent(p.namespace)}/${encodeURIComponent(p.name)}/logstream?${q.toString()}`
+  logsText.value = ''
+  logsFollow.value = true
+  logsWS = new WebSocket(url)
+  logsWS.onmessage = (e) => {
+    if (typeof e.data === 'string') {
+      logsText.value += e.data
+      nextTick(() => { if (logViewEl.value) logViewEl.value.scrollTop = logViewEl.value.scrollHeight })
+    }
+  }
+  logsWS.onclose = () => { logsFollow.value = false }
+  logsWS.onerror = () => { logsFollow.value = false }
+}
+function stopFollow() {
+  logsFollow.value = false
+  if (logsWS) { logsWS.close(); logsWS = null }
+}
+function closeLogs() {
+  stopFollow()
+  showLogs.value = false
+}
+
+// ── Exec terminal ───────────────────────────────────────────────
+function openExec(p: KPod) {
+  execPod.value = p
+  execContainer.value = p.containers[0] || ''
+  execShell.value = '/bin/sh'
+  showExec.value = true
+  nextTick(() => startExec())
+}
+
+function startExec() {
+  if (!execPod.value || clusterId.value === null || !termEl.value) return
+  disposeTerminal()
+  term = new Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily: 'var(--mono), Menlo, monospace',
+    theme: { background: '#0d1117' },
+  })
+  fitAddon = new FitAddon()
+  term.loadAddon(fitAddon)
+  term.open(termEl.value)
+  fitAddon.fit()
+
+  const p = execPod.value
+  const q = new URLSearchParams({ token: wsToken(), shell: execShell.value })
+  if (execContainer.value) q.set('container', execContainer.value)
+  const url = `${wsProto()}://${location.host}${base.value}/pods/${encodeURIComponent(p.namespace)}/${encodeURIComponent(p.name)}/exec?${q.toString()}`
+  execWS = new WebSocket(url)
+  execWS.binaryType = 'arraybuffer'
+  execWS.onopen = () => sendResize()
+  execWS.onmessage = (e) => {
+    if (e.data instanceof ArrayBuffer) term?.write(new Uint8Array(e.data))
+    else term?.write(e.data)
+  }
+  execWS.onclose = () => term?.write('\r\n\x1b[33m[session closed]\x1b[0m\r\n')
+  execWS.onerror = () => term?.write('\r\n\x1b[31m[connection error]\x1b[0m\r\n')
+
+  term.onData((d) => { if (execWS?.readyState === WebSocket.OPEN) execWS.send(new TextEncoder().encode(d)) })
+  term.onResize(() => sendResize())
+  window.addEventListener('resize', onWinResize)
+}
+function sendResize() {
+  if (execWS?.readyState === WebSocket.OPEN && term) {
+    execWS.send(JSON.stringify({ cols: term.cols, rows: term.rows }))
+  }
+}
+function onWinResize() { fitAddon?.fit() }
+function restartExec() { startExec() }
+function disposeTerminal() {
+  window.removeEventListener('resize', onWinResize)
+  if (execWS) { execWS.close(); execWS = null }
+  if (term) { term.dispose(); term = null }
+  fitAddon = null
+}
+function closeExec() {
+  disposeTerminal()
+  showExec.value = false
+}
+
 // ── Filtering + formatting ──────────────────────────────────────
 function matchesSearch(...fields: string[]): boolean {
   const q = search.value.trim().toLowerCase()
@@ -193,11 +380,19 @@ function matchesSearch(...fields: string[]): boolean {
   return fields.some((f) => (f || '').toLowerCase().includes(q))
 }
 const filteredNodes = computed(() => nodes.value.filter((n) => matchesSearch(n.name, n.roles, n.internal_ip)))
+const filteredNamespaces = computed(() => namespaces.value.filter((n) => matchesSearch(n.name)))
 const filteredPods = computed(() => pods.value.filter((p) => matchesSearch(p.name, p.namespace, p.node, p.status)))
 const filteredDeployments = computed(() => deployments.value.filter((d) => matchesSearch(d.name, d.namespace)))
+const filteredStatefulSets = computed(() => statefulsets.value.filter((d) => matchesSearch(d.name, d.namespace)))
+const filteredDaemonSets = computed(() => daemonsets.value.filter((d) => matchesSearch(d.name, d.namespace)))
+const filteredJobs = computed(() => jobs.value.filter((j) => matchesSearch(j.name, j.namespace, j.status)))
+const filteredCronJobs = computed(() => cronjobs.value.filter((j) => matchesSearch(j.name, j.namespace, j.schedule)))
 const filteredServices = computed(() => services.value.filter((s) => matchesSearch(s.name, s.namespace, s.type)))
+const filteredIngresses = computed(() => ingresses.value.filter((i) => matchesSearch(i.name, i.namespace, i.hosts.join(','))))
+const filteredConfigMaps = computed(() => configmaps.value.filter((c) => matchesSearch(c.name, c.namespace)))
+const filteredSecrets = computed(() => secrets.value.filter((s) => matchesSearch(s.name, s.namespace, s.type)))
+const filteredPVCs = computed(() => pvcs.value.filter((p) => matchesSearch(p.name, p.namespace, p.status)))
 const filteredEvents = computed(() => events.value.filter((e) => matchesSearch(e.reason, e.object, e.message, e.namespace)))
-const filteredNamespaces = computed(() => namespaces.value.filter((n) => matchesSearch(n.name)))
 
 function relAge(iso: string): string {
   if (!iso) return '-'
@@ -209,7 +404,6 @@ function relAge(iso: string): string {
   if (diff < 86400) return `${Math.floor(diff / 3600)}h`
   return `${Math.floor(diff / 86400)}d`
 }
-
 function podClass(s: string): string {
   if (s === 'Running' || s === 'Succeeded') return 'k8s-pill--ok'
   if (s === 'Pending') return 'k8s-pill--warn'
@@ -226,6 +420,7 @@ const overviewCounts = computed(() => ({
 }))
 
 onMounted(loadClusters)
+onBeforeUnmount(() => { stopFollow(); disposeTerminal() })
 </script>
 
 <template>
@@ -237,7 +432,7 @@ onMounted(loadClusters)
           <div class="page-hero__content">
             <div class="page-kicker">Infrastructure</div>
             <div class="page-title">Kubernetes</div>
-            <div class="page-subtitle">Browse clusters, nodes, workloads, and pod logs across Alibaba ACK and Huawei CCE.</div>
+            <div class="page-subtitle">Browse clusters, workloads, services, events, and pod logs across Alibaba ACK and Huawei CCE.</div>
           </div>
           <div class="page-hero__actions">
             <SearchSelect
@@ -268,7 +463,6 @@ onMounted(loadClusters)
 
         <!-- Connected -->
         <template v-else-if="clusterId !== null">
-          <!-- Connection bar -->
           <div class="k8s-bar">
             <span class="k8s-connline">
               <span class="k8s-dot" :class="status === 'connected' ? 'k8s-dot--ok' : 'k8s-dot--err'"></span>
@@ -290,9 +484,8 @@ onMounted(loadClusters)
 
           <!-- Tabs -->
           <div class="k8s-tabs">
-            <button v-for="t in (['overview','nodes','namespaces','pods','deployments','services','events'] as KubeTab[])"
-              :key="t" class="k8s-tab" :class="{ 'k8s-tab--active': tab === t }" @click="switchTab(t)">
-              {{ t.charAt(0).toUpperCase() + t.slice(1) }}
+            <button v-for="t in TABS" :key="t.key" class="k8s-tab" :class="{ 'k8s-tab--active': tab === t.key }" @click="switchTab(t.key)">
+              {{ t.label }}
             </button>
           </div>
 
@@ -311,11 +504,10 @@ onMounted(loadClusters)
           <div v-else class="page-card k8s-table-wrap">
             <div v-if="loading" class="k8s-msg">Loading…</div>
 
-            <!-- Nodes -->
             <table v-else-if="tab === 'nodes'" class="k8s-table">
-              <thead><tr><th>Name</th><th>Status</th><th>Roles</th><th>Version</th><th>CPU</th><th>Memory</th><th>Internal IP</th><th>Age</th></tr></thead>
+              <thead><tr><th>Name</th><th>Status</th><th>Roles</th><th>Version</th><th>CPU</th><th>Memory</th><th>Internal IP</th><th>Age</th><th></th></tr></thead>
               <tbody>
-                <tr v-if="!filteredNodes.length"><td colspan="8" class="k8s-msg">No nodes.</td></tr>
+                <tr v-if="!filteredNodes.length"><td colspan="9" class="k8s-msg">No nodes.</td></tr>
                 <tr v-for="n in filteredNodes" :key="n.name">
                   <td class="k8s-mono">{{ n.name }}</td>
                   <td><span class="k8s-pill" :class="n.status === 'Ready' ? 'k8s-pill--ok' : 'k8s-pill--err'">{{ n.status }}</span></td>
@@ -325,24 +517,24 @@ onMounted(loadClusters)
                   <td>{{ n.memory }}</td>
                   <td class="k8s-mono">{{ n.internal_ip }}</td>
                   <td>{{ relAge(n.created) }}</td>
+                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('node', '', n.name)">YAML</button></td>
                 </tr>
               </tbody>
             </table>
 
-            <!-- Namespaces -->
             <table v-else-if="tab === 'namespaces'" class="k8s-table">
-              <thead><tr><th>Name</th><th>Status</th><th>Age</th></tr></thead>
+              <thead><tr><th>Name</th><th>Status</th><th>Age</th><th></th></tr></thead>
               <tbody>
-                <tr v-if="!filteredNamespaces.length"><td colspan="3" class="k8s-msg">No namespaces.</td></tr>
+                <tr v-if="!filteredNamespaces.length"><td colspan="4" class="k8s-msg">No namespaces.</td></tr>
                 <tr v-for="n in filteredNamespaces" :key="n.name">
                   <td class="k8s-mono">{{ n.name }}</td>
                   <td><span class="k8s-pill" :class="n.status === 'Active' ? 'k8s-pill--ok' : 'k8s-pill--warn'">{{ n.status }}</span></td>
                   <td>{{ relAge(n.created) }}</td>
+                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('namespace', '', n.name)">YAML</button></td>
                 </tr>
               </tbody>
             </table>
 
-            <!-- Pods -->
             <table v-else-if="tab === 'pods'" class="k8s-table">
               <thead><tr><th>Name</th><th>Namespace</th><th>Status</th><th>Ready</th><th>Restarts</th><th>Node</th><th>Pod IP</th><th>Age</th><th></th></tr></thead>
               <tbody>
@@ -356,16 +548,19 @@ onMounted(loadClusters)
                   <td class="k8s-mono">{{ p.node }}</td>
                   <td class="k8s-mono">{{ p.pod_ip }}</td>
                   <td>{{ relAge(p.created) }}</td>
-                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="openLogs(p)">Logs</button></td>
+                  <td class="k8s-act">
+                    <button class="base-btn base-btn--xs" @click="openLogs(p)">Logs</button>
+                    <button v-if="canExec" class="base-btn base-btn--xs" @click="openExec(p)">Exec</button>
+                    <button class="base-btn base-btn--xs" @click="describe('pod', p.namespace, p.name)">YAML</button>
+                  </td>
                 </tr>
               </tbody>
             </table>
 
-            <!-- Deployments -->
             <table v-else-if="tab === 'deployments'" class="k8s-table">
-              <thead><tr><th>Name</th><th>Namespace</th><th>Ready</th><th>Up-to-date</th><th>Available</th><th>Image</th><th>Age</th></tr></thead>
+              <thead><tr><th>Name</th><th>Namespace</th><th>Ready</th><th>Up-to-date</th><th>Available</th><th>Image</th><th>Age</th><th></th></tr></thead>
               <tbody>
-                <tr v-if="!filteredDeployments.length"><td colspan="7" class="k8s-msg">No deployments.</td></tr>
+                <tr v-if="!filteredDeployments.length"><td colspan="8" class="k8s-msg">No deployments.</td></tr>
                 <tr v-for="d in filteredDeployments" :key="d.namespace + '/' + d.name">
                   <td class="k8s-mono">{{ d.name }}</td>
                   <td>{{ d.namespace }}</td>
@@ -374,15 +569,77 @@ onMounted(loadClusters)
                   <td>{{ d.available }}</td>
                   <td class="k8s-mono k8s-img">{{ d.images.join(', ') }}</td>
                   <td>{{ relAge(d.created) }}</td>
+                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('deployment', d.namespace, d.name)">YAML</button></td>
                 </tr>
               </tbody>
             </table>
 
-            <!-- Services -->
-            <table v-else-if="tab === 'services'" class="k8s-table">
-              <thead><tr><th>Name</th><th>Namespace</th><th>Type</th><th>Cluster IP</th><th>External IP</th><th>Ports</th><th>Age</th></tr></thead>
+            <table v-else-if="tab === 'statefulsets'" class="k8s-table">
+              <thead><tr><th>Name</th><th>Namespace</th><th>Ready</th><th>Image</th><th>Age</th><th></th></tr></thead>
               <tbody>
-                <tr v-if="!filteredServices.length"><td colspan="7" class="k8s-msg">No services.</td></tr>
+                <tr v-if="!filteredStatefulSets.length"><td colspan="6" class="k8s-msg">No statefulsets.</td></tr>
+                <tr v-for="d in filteredStatefulSets" :key="d.namespace + '/' + d.name">
+                  <td class="k8s-mono">{{ d.name }}</td>
+                  <td>{{ d.namespace }}</td>
+                  <td>{{ d.ready }}</td>
+                  <td class="k8s-mono k8s-img">{{ d.images.join(', ') }}</td>
+                  <td>{{ relAge(d.created) }}</td>
+                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('statefulset', d.namespace, d.name)">YAML</button></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <table v-else-if="tab === 'daemonsets'" class="k8s-table">
+              <thead><tr><th>Name</th><th>Namespace</th><th>Desired</th><th>Current</th><th>Ready</th><th>Age</th><th></th></tr></thead>
+              <tbody>
+                <tr v-if="!filteredDaemonSets.length"><td colspan="7" class="k8s-msg">No daemonsets.</td></tr>
+                <tr v-for="d in filteredDaemonSets" :key="d.namespace + '/' + d.name">
+                  <td class="k8s-mono">{{ d.name }}</td>
+                  <td>{{ d.namespace }}</td>
+                  <td>{{ d.desired }}</td>
+                  <td>{{ d.current }}</td>
+                  <td>{{ d.ready }}</td>
+                  <td>{{ relAge(d.created) }}</td>
+                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('daemonset', d.namespace, d.name)">YAML</button></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <table v-else-if="tab === 'jobs'" class="k8s-table">
+              <thead><tr><th>Name</th><th>Namespace</th><th>Completions</th><th>Status</th><th>Age</th><th></th></tr></thead>
+              <tbody>
+                <tr v-if="!filteredJobs.length"><td colspan="6" class="k8s-msg">No jobs.</td></tr>
+                <tr v-for="j in filteredJobs" :key="j.namespace + '/' + j.name">
+                  <td class="k8s-mono">{{ j.name }}</td>
+                  <td>{{ j.namespace }}</td>
+                  <td>{{ j.completions }}</td>
+                  <td><span class="k8s-pill" :class="j.status === 'Complete' ? 'k8s-pill--ok' : j.status === 'Failed' ? 'k8s-pill--err' : 'k8s-pill--warn'">{{ j.status }}</span></td>
+                  <td>{{ relAge(j.created) }}</td>
+                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('job', j.namespace, j.name)">YAML</button></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <table v-else-if="tab === 'cronjobs'" class="k8s-table">
+              <thead><tr><th>Name</th><th>Namespace</th><th>Schedule</th><th>Suspend</th><th>Active</th><th>Last schedule</th><th></th></tr></thead>
+              <tbody>
+                <tr v-if="!filteredCronJobs.length"><td colspan="7" class="k8s-msg">No cronjobs.</td></tr>
+                <tr v-for="j in filteredCronJobs" :key="j.namespace + '/' + j.name">
+                  <td class="k8s-mono">{{ j.name }}</td>
+                  <td>{{ j.namespace }}</td>
+                  <td class="k8s-mono">{{ j.schedule }}</td>
+                  <td>{{ j.suspend ? 'Yes' : 'No' }}</td>
+                  <td>{{ j.active }}</td>
+                  <td>{{ relAge(j.last_schedule) }}</td>
+                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('cronjob', j.namespace, j.name)">YAML</button></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <table v-else-if="tab === 'services'" class="k8s-table">
+              <thead><tr><th>Name</th><th>Namespace</th><th>Type</th><th>Cluster IP</th><th>External IP</th><th>Ports</th><th>Age</th><th></th></tr></thead>
+              <tbody>
+                <tr v-if="!filteredServices.length"><td colspan="8" class="k8s-msg">No services.</td></tr>
                 <tr v-for="s in filteredServices" :key="s.namespace + '/' + s.name">
                   <td class="k8s-mono">{{ s.name }}</td>
                   <td>{{ s.namespace }}</td>
@@ -391,11 +648,73 @@ onMounted(loadClusters)
                   <td class="k8s-mono">{{ s.external_ip }}</td>
                   <td class="k8s-mono">{{ s.ports }}</td>
                   <td>{{ relAge(s.created) }}</td>
+                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('service', s.namespace, s.name)">YAML</button></td>
                 </tr>
               </tbody>
             </table>
 
-            <!-- Events -->
+            <table v-else-if="tab === 'ingresses'" class="k8s-table">
+              <thead><tr><th>Name</th><th>Namespace</th><th>Class</th><th>Hosts</th><th>Address</th><th>Age</th><th></th></tr></thead>
+              <tbody>
+                <tr v-if="!filteredIngresses.length"><td colspan="7" class="k8s-msg">No ingresses.</td></tr>
+                <tr v-for="i in filteredIngresses" :key="i.namespace + '/' + i.name">
+                  <td class="k8s-mono">{{ i.name }}</td>
+                  <td>{{ i.namespace }}</td>
+                  <td>{{ i.class || '-' }}</td>
+                  <td class="k8s-mono k8s-img">{{ i.hosts.join(', ') || '-' }}</td>
+                  <td class="k8s-mono">{{ i.address || '-' }}</td>
+                  <td>{{ relAge(i.created) }}</td>
+                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('ingress', i.namespace, i.name)">YAML</button></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <table v-else-if="tab === 'configmaps'" class="k8s-table">
+              <thead><tr><th>Name</th><th>Namespace</th><th>Keys</th><th>Age</th><th></th></tr></thead>
+              <tbody>
+                <tr v-if="!filteredConfigMaps.length"><td colspan="5" class="k8s-msg">No configmaps.</td></tr>
+                <tr v-for="c in filteredConfigMaps" :key="c.namespace + '/' + c.name">
+                  <td class="k8s-mono">{{ c.name }}</td>
+                  <td>{{ c.namespace }}</td>
+                  <td class="k8s-mono k8s-img">{{ c.keys.join(', ') || '-' }}</td>
+                  <td>{{ relAge(c.created) }}</td>
+                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('configmap', c.namespace, c.name)">YAML</button></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <table v-else-if="tab === 'secrets'" class="k8s-table">
+              <thead><tr><th>Name</th><th>Namespace</th><th>Type</th><th>Keys</th><th>Age</th><th></th></tr></thead>
+              <tbody>
+                <tr v-if="!filteredSecrets.length"><td colspan="6" class="k8s-msg">No secrets.</td></tr>
+                <tr v-for="s in filteredSecrets" :key="s.namespace + '/' + s.name">
+                  <td class="k8s-mono">{{ s.name }}</td>
+                  <td>{{ s.namespace }}</td>
+                  <td class="k8s-mono">{{ s.type }}</td>
+                  <td class="k8s-mono k8s-img">{{ s.keys.join(', ') || '-' }}</td>
+                  <td>{{ relAge(s.created) }}</td>
+                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('secret', s.namespace, s.name)">YAML</button></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <table v-else-if="tab === 'pvcs'" class="k8s-table">
+              <thead><tr><th>Name</th><th>Namespace</th><th>Status</th><th>Capacity</th><th>Storage class</th><th>Volume</th><th>Age</th><th></th></tr></thead>
+              <tbody>
+                <tr v-if="!filteredPVCs.length"><td colspan="8" class="k8s-msg">No PVCs.</td></tr>
+                <tr v-for="p in filteredPVCs" :key="p.namespace + '/' + p.name">
+                  <td class="k8s-mono">{{ p.name }}</td>
+                  <td>{{ p.namespace }}</td>
+                  <td><span class="k8s-pill" :class="p.status === 'Bound' ? 'k8s-pill--ok' : 'k8s-pill--warn'">{{ p.status }}</span></td>
+                  <td>{{ p.capacity || '-' }}</td>
+                  <td>{{ p.storage_class || '-' }}</td>
+                  <td class="k8s-mono k8s-img">{{ p.volume || '-' }}</td>
+                  <td>{{ relAge(p.created) }}</td>
+                  <td class="k8s-act"><button class="base-btn base-btn--xs" @click="describe('pvc', p.namespace, p.name)">YAML</button></td>
+                </tr>
+              </tbody>
+            </table>
+
             <table v-else-if="tab === 'events'" class="k8s-table">
               <thead><tr><th>Type</th><th>Reason</th><th>Object</th><th>Namespace</th><th>Message</th><th>Count</th><th>Last seen</th></tr></thead>
               <tbody>
@@ -414,7 +733,7 @@ onMounted(loadClusters)
           </div>
         </template>
 
-        <!-- Idle (after disconnect) -->
+        <!-- Idle -->
         <div v-else class="page-card k8s-idle">
           <div class="k8s-idle-icon">☸️</div>
           <p>Select a cluster from the dropdown above to connect.</p>
@@ -422,25 +741,65 @@ onMounted(loadClusters)
       </div>
     </div>
 
+    <!-- Describe drawer -->
+    <div v-if="showDescribe" class="k8s-drawer-backdrop" @click.self="showDescribe = false">
+      <aside class="k8s-drawer">
+        <div class="k8s-drawer-head">
+          <span class="k8s-drawer-title">{{ describeTitle }}</span>
+          <div class="k8s-spacer"></div>
+          <button class="base-btn base-btn--xs" @click="copyDescribe">Copy</button>
+          <button class="base-btn base-btn--xs" @click="showDescribe = false">Close</button>
+        </div>
+        <pre class="k8s-yaml">{{ describeLoading ? 'Loading…' : describeYaml }}</pre>
+      </aside>
+    </div>
+
     <!-- Pod logs modal -->
-    <div v-if="showLogs" class="k8s-modal-backdrop" @click.self="showLogs = false">
+    <div v-if="showLogs" class="k8s-modal-backdrop" @click.self="closeLogs">
       <div class="k8s-modal k8s-modal--wide page-card">
-        <div class="k8s-modal-title">Logs — {{ logsPod?.namespace }}/{{ logsPod?.name }}</div>
+        <div class="k8s-modal-title">
+          Logs — {{ logsPod?.namespace }}/{{ logsPod?.name }}
+          <span v-if="logsFollow" class="k8s-live">● live</span>
+        </div>
         <div class="k8s-logs-bar">
-          <select v-if="logsPod && logsPod.containers.length > 1" v-model="logsContainer" class="base-input k8s-logs-sel" @change="fetchLogs">
+          <select v-if="logsPod && logsPod.containers.length > 1" v-model="logsContainer" class="base-input k8s-logs-sel" @change="logsFollow ? startFollow() : fetchLogs()">
             <option v-for="c in logsPod.containers" :key="c" :value="c">{{ c }}</option>
           </select>
-          <select v-model="logsTail" class="base-input k8s-logs-sel" @change="fetchLogs">
+          <select v-model="logsTail" class="base-input k8s-logs-sel" @change="logsFollow ? startFollow() : fetchLogs()">
             <option value="100">100 lines</option>
             <option value="300">300 lines</option>
             <option value="1000">1000 lines</option>
             <option value="5000">5000 lines</option>
           </select>
-          <button class="base-btn base-btn--sm" :disabled="logsLoading" @click="fetchLogs">{{ logsLoading ? 'Loading…' : 'Refresh' }}</button>
+          <button class="base-btn base-btn--sm" :class="{ 'base-btn--primary': logsFollow }" @click="toggleFollow">
+            {{ logsFollow ? 'Stop' : 'Follow' }}
+          </button>
+          <button class="base-btn base-btn--sm" :disabled="logsLoading || logsFollow" @click="fetchLogs">Refresh</button>
           <div class="k8s-spacer"></div>
-          <button class="base-btn base-btn--sm" @click="showLogs = false">Close</button>
+          <button class="base-btn base-btn--sm" @click="closeLogs">Close</button>
         </div>
-        <pre class="k8s-logs">{{ logsLoading ? 'Loading…' : logsText }}</pre>
+        <pre ref="logViewEl" class="k8s-logs">{{ logsLoading ? 'Loading…' : logsText }}</pre>
+      </div>
+    </div>
+
+    <!-- Exec terminal modal -->
+    <div v-if="showExec" class="k8s-modal-backdrop" @click.self="closeExec">
+      <div class="k8s-term-modal">
+        <div class="k8s-term-head">
+          <span class="k8s-term-title">Exec — {{ execPod?.namespace }}/{{ execPod?.name }}</span>
+          <div class="k8s-spacer"></div>
+          <select v-if="execPod && execPod.containers.length > 1" v-model="execContainer" class="base-input k8s-term-sel" @change="restartExec">
+            <option v-for="c in execPod.containers" :key="c" :value="c">{{ c }}</option>
+          </select>
+          <select v-model="execShell" class="base-input k8s-term-sel" @change="restartExec">
+            <option value="/bin/sh">/bin/sh</option>
+            <option value="/bin/bash">/bin/bash</option>
+            <option value="/bin/ash">/bin/ash</option>
+          </select>
+          <button class="base-btn base-btn--xs" @click="restartExec">Reconnect</button>
+          <button class="base-btn base-btn--xs" @click="closeExec">Close</button>
+        </div>
+        <div ref="termEl" class="k8s-term"></div>
       </div>
     </div>
   </div>
@@ -449,7 +808,6 @@ onMounted(loadClusters)
 <style scoped>
 .k8s-cluster-select { min-width: 230px; }
 
-/* Connection badge */
 .k8s-conn { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; }
 .k8s-conn-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .k8s-conn--connected { color: var(--success); background: var(--success-bg, rgba(34,197,94,0.12)); }
@@ -458,7 +816,6 @@ onMounted(loadClusters)
 .k8s-conn--connecting .k8s-conn-dot { animation: k8s-blink 1s ease-in-out infinite; }
 @keyframes k8s-blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 
-/* Connection line */
 .k8s-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .k8s-connline { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-secondary); }
 .k8s-dot { width: 8px; height: 8px; border-radius: 50%; }
@@ -470,20 +827,17 @@ onMounted(loadClusters)
 .k8s-muted { color: var(--text-muted); }
 .k8s-err { color: var(--danger); }
 
-/* Tabs */
-.k8s-tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
-.k8s-tab { background: none; border: none; padding: 9px 14px; font-size: 13px; color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.k8s-tabs { display: flex; gap: 2px; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
+.k8s-tab { background: none; border: none; padding: 8px 12px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
 .k8s-tab:hover { color: var(--text-secondary); }
 .k8s-tab--active { color: var(--brand); border-bottom-color: var(--brand); font-weight: 600; }
 
-/* KPI cards */
 .k8s-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
 .k8s-kpi { border: 1px solid var(--border); border-radius: var(--r); padding: 16px 18px; background: var(--bg-surface); }
 .k8s-kpi-val { font-size: 28px; font-weight: 700; color: var(--text-primary); line-height: 1; }
 .k8s-kpi-sub { font-size: 16px; font-weight: 400; color: var(--text-muted); }
 .k8s-kpi-label { font-size: 12px; color: var(--text-muted); margin-top: 6px; text-transform: uppercase; letter-spacing: 0.04em; }
 
-/* Tables */
 .k8s-table-wrap { padding: 4px 6px; overflow-x: auto; }
 .k8s-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .k8s-table th { text-align: left; padding: 9px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; white-space: nowrap; }
@@ -495,16 +849,15 @@ onMounted(loadClusters)
 .k8s-msg { text-align: center; color: var(--text-muted); padding: 24px; }
 .k8s-msg-cell { max-width: 360px; color: var(--text-secondary); }
 .k8s-act { text-align: right; white-space: nowrap; }
+.k8s-act .base-btn { margin-left: 4px; }
 .k8s-warn { color: var(--warning); font-weight: 600; }
 .k8s-conn-err { padding: 16px; color: var(--danger); font-size: 13px; }
 
-/* Pills */
 .k8s-pill { font-size: 11px; padding: 1px 8px; border-radius: 99px; font-weight: 600; }
 .k8s-pill--ok { background: var(--success-bg, rgba(34,197,94,0.12)); color: var(--success); }
 .k8s-pill--warn { background: var(--warning-bg, rgba(245,158,11,0.14)); color: var(--warning); }
 .k8s-pill--err { background: var(--danger-bg, rgba(239,68,68,0.12)); color: var(--danger); }
 
-/* Idle / empty */
 .k8s-empty { padding: 60px 40px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .k8s-empty-icon { font-size: 48px; }
 .k8s-empty h2 { font-size: 18px; font-weight: 600; color: var(--text-primary); margin: 0; }
@@ -512,12 +865,28 @@ onMounted(loadClusters)
 .k8s-idle { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 48px 20px; color: var(--text-muted); font-size: 13px; }
 .k8s-idle-icon { font-size: 22px; }
 
-/* Logs modal */
+/* Describe drawer */
+.k8s-drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; justify-content: flex-end; z-index: 110; }
+.k8s-drawer { width: 620px; max-width: 94vw; height: 100%; background: var(--bg-surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; box-shadow: var(--shadow-lg); }
+.k8s-drawer-head { display: flex; align-items: center; gap: 8px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.k8s-drawer-title { font-size: 14px; font-weight: 600; color: var(--text-primary); font-family: var(--mono); word-break: break-all; }
+.k8s-yaml { flex: 1; margin: 0; padding: 14px 18px; overflow: auto; font-family: var(--mono); font-size: 11.5px; line-height: 1.5; white-space: pre; color: var(--text-secondary); background: var(--bg-body); }
+
+/* Modals */
 .k8s-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; }
 .k8s-modal { padding: 20px; width: 440px; max-width: 94vw; }
 .k8s-modal--wide { width: 860px; }
 .k8s-modal-title { font-size: 15px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px; word-break: break-all; }
+.k8s-live { font-size: 11px; color: var(--success); margin-left: 8px; animation: k8s-blink 1.4s ease-in-out infinite; }
 .k8s-logs-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .k8s-logs-sel { width: auto; min-width: 110px; }
-.k8s-logs { background: var(--bg-body); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 12px; font-family: var(--mono); font-size: 11px; line-height: 1.5; max-height: 62vh; overflow: auto; white-space: pre-wrap; word-break: break-all; color: var(--text-secondary); margin: 0; }
+.k8s-logs { background: var(--bg-body); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 12px; font-family: var(--mono); font-size: 11px; line-height: 1.5; height: 62vh; overflow: auto; white-space: pre-wrap; word-break: break-all; color: var(--text-secondary); margin: 0; }
+
+/* Exec terminal */
+.k8s-term-modal { width: 920px; max-width: 96vw; height: 580px; max-height: 88vh; background: #0d1117; border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); display: flex; flex-direction: column; overflow: hidden; }
+.k8s-term-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--bg-elevated); border-bottom: 1px solid var(--border); }
+.k8s-term-title { font-size: 13px; font-weight: 600; color: var(--text-primary); font-family: var(--mono); }
+.k8s-term-sel { width: auto; min-width: 100px; font-size: 12px; }
+.k8s-term { flex: 1; min-height: 0; padding: 8px 10px; overflow: hidden; }
+.k8s-term :deep(.xterm) { height: 100%; }
 </style>
