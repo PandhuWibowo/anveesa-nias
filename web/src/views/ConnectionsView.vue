@@ -6,6 +6,7 @@ import { useConnections, type DbDriver, type ConnectionForm } from '@/composable
 import { useFolders } from '@/composables/useFolders'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
+import { useConnectionTemplates, type ConnectionTemplateInput } from '@/composables/useConnectionTemplates'
 import DriverIcon from '@/components/ui/DriverIcon.vue'
 import { readableError } from '@/utils/httpError'
 
@@ -13,10 +14,11 @@ const { connections, loading, error: connectionError, testConnection, saveConnec
 const { folders, fetchFolders, moveConnection, setConnectionVisibility } = useFolders()
 const toast = useToast()
 const { confirm } = useConfirm()
+const { templates, fetchTemplates, createTemplate, deleteTemplate } = useConnectionTemplates()
 const router = useRouter()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
 
-onMounted(() => fetchFolders())
+onMounted(() => { fetchFolders(); fetchTemplates() })
 
 const showForm = ref(false)
 const editingId = ref<number | null>(null)
@@ -25,6 +27,12 @@ const saving = ref(false)
 const testResult = ref<{ ok: boolean; message: string } | null>(null)
 const showPassword = ref(false)
 const showSSHPassword = ref(false)
+
+// ── Connection templates ───────────────────────────────────────────
+const showTemplatePicker = ref(false)
+const showSaveAsTemplate = ref(false)
+const templateSaveName = ref('')
+const savingTemplate = ref(false)
 
 const defaultPorts: Record<DbDriver, number> = {
   sqlite: 0,
@@ -299,6 +307,60 @@ function resetForm() {
   testResult.value = null
   showPassword.value = false
   showSSHPassword.value = false
+  showTemplatePicker.value = false
+  showSaveAsTemplate.value = false
+  templateSaveName.value = ''
+}
+
+function applyTemplate(t: typeof templates.value[0]) {
+  form.driver = t.driver as DbDriver
+  form.host = t.host
+  form.port = t.port
+  form.database = t.database
+  form.ssl = t.ssl
+  form.tags = t.tags
+  form.ssh_host = t.ssh_host
+  form.ssh_port = t.ssh_port || 22
+  form.ssh_user = t.ssh_user
+  showTemplatePicker.value = false
+  testResult.value = null
+}
+
+async function handleSaveAsTemplate() {
+  const name = templateSaveName.value.trim()
+  if (!name) { toast.error('Template name is required'); return }
+  savingTemplate.value = true
+  const input: ConnectionTemplateInput = {
+    name,
+    driver: form.driver,
+    host: form.host,
+    port: form.port,
+    database: form.database,
+    ssl: form.ssl,
+    tags: form.tags,
+    ssh_host: form.ssh_host,
+    ssh_port: form.ssh_port || 22,
+    ssh_user: form.ssh_user,
+    description: '',
+    visibility: form.visibility ?? 'shared',
+  }
+  const saved = await createTemplate(input)
+  savingTemplate.value = false
+  if (saved) {
+    toast.success(`Template "${saved.name}" saved`)
+    showSaveAsTemplate.value = false
+    templateSaveName.value = ''
+  } else {
+    toast.error('Failed to save template')
+  }
+}
+
+async function handleDeleteTemplate(id: number, name: string) {
+  const ok = await confirm(`Delete template "${name}"?`, 'Delete Template')
+  if (!ok) return
+  const ok2 = await deleteTemplate(id)
+  if (ok2) toast.success('Template deleted')
+  else toast.error('Failed to delete template')
 }
 
 async function editConnection(id: number) {
@@ -816,12 +878,19 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
             <!-- Body -->
             <div class="conn-modal-body">
 
-              <!-- URL import -->
-              <div class="form-group">
-                <button class="base-btn base-btn--ghost base-btn--sm url-import-btn" @click="showURLImport = !showURLImport">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-                  Import from connection URL
-                </button>
+              <!-- URL import + Template picker row -->
+              <div class="form-group" style="display:flex;flex-direction:column;gap:6px">
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <button class="base-btn base-btn--ghost base-btn--sm url-import-btn" @click="showURLImport = !showURLImport; showTemplatePicker = false">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                    Import from connection URL
+                  </button>
+                  <button class="base-btn base-btn--ghost base-btn--sm" @click="showTemplatePicker = !showTemplatePicker; showURLImport = false">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+                    Load from template
+                    <span v-if="templates.length" style="font-size:10px;opacity:0.6">({{ templates.length }})</span>
+                  </button>
+                </div>
                 <div v-if="showURLImport" class="url-import-row">
                   <input
                     v-model="urlInput"
@@ -831,6 +900,30 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
                     @keydown.enter="parseConnectionURL(urlInput)"
                   />
                   <button class="base-btn base-btn--primary base-btn--sm" @click="parseConnectionURL(urlInput)">Parse</button>
+                </div>
+                <!-- Template picker panel -->
+                <div v-if="showTemplatePicker" class="tmpl-picker">
+                  <div v-if="templates.length === 0" class="tmpl-picker__empty">
+                    No templates yet. Save the current form as a template using the button below.
+                  </div>
+                  <div
+                    v-for="t in templates"
+                    :key="t.id"
+                    class="tmpl-picker__item"
+                    @click="applyTemplate(t)"
+                  >
+                    <div class="tmpl-picker__info">
+                      <span class="tmpl-picker__name">{{ t.name }}</span>
+                      <span class="tmpl-picker__detail">{{ t.driver }} · {{ t.host }}:{{ t.port }} / {{ t.database }}</span>
+                    </div>
+                    <button
+                      class="icon-btn danger"
+                      title="Delete template"
+                      @click.stop="handleDeleteTemplate(t.id, t.name)"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -1286,7 +1379,34 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
             </div>
 
             <!-- Footer -->
-            <div class="conn-modal-foot">
+            <div class="conn-modal-foot" style="flex-direction:column;gap:8px;align-items:stretch">
+              <!-- Save as template row (new connections only) -->
+              <div v-if="!editingId" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <button
+                  class="base-btn base-btn--ghost base-btn--xs"
+                  style="white-space:nowrap"
+                  @click="showSaveAsTemplate = !showSaveAsTemplate; templateSaveName = form.host && form.database ? `${form.driver} · ${form.host}/${form.database}` : ''"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+                  Save as template
+                </button>
+                <template v-if="showSaveAsTemplate">
+                  <input
+                    v-model="templateSaveName"
+                    class="base-input"
+                    style="flex:1;min-width:180px"
+                    placeholder="Template name…"
+                    @keydown.enter="handleSaveAsTemplate"
+                    @keydown.esc="showSaveAsTemplate = false"
+                  />
+                  <button class="base-btn base-btn--primary base-btn--xs" :disabled="savingTemplate" @click="handleSaveAsTemplate">
+                    {{ savingTemplate ? 'Saving…' : 'Save' }}
+                  </button>
+                  <button class="base-btn base-btn--ghost base-btn--xs" @click="showSaveAsTemplate = false">Cancel</button>
+                </template>
+              </div>
+              <!-- Main actions row -->
+              <div style="display:flex;align-items:center;justify-content:space-between">
               <button class="base-btn base-btn--ghost base-btn--sm" :disabled="testing" @click="handleTest">
                 <svg v-if="testing" class="spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
                 {{ testing ? 'Testing…' : 'Test Connection' }}
@@ -1297,6 +1417,7 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
                   <svg v-if="saving" class="spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
                   {{ saving ? (editingId ? 'Updating…' : 'Saving…') : (editingId ? 'Update Connection' : 'Save Connection') }}
                 </button>
+              </div>
               </div>
             </div>
 
@@ -2169,4 +2290,68 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
 .conn-page-btn:disabled { opacity: 0.35; cursor: default; }
 .conn-page-btn--active { background: var(--brand) !important; border-color: var(--brand) !important; color: #fff !important; }
 .conn-page-ellipsis { padding: 0 4px; color: var(--text-muted); font-size: 12px; }
+
+/* ── Connection template picker ── */
+.tmpl-picker {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-body);
+}
+
+.tmpl-picker__empty {
+  padding: 12px 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.tmpl-picker__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.12s;
+}
+
+.tmpl-picker__item:last-child {
+  border-bottom: none;
+}
+
+.tmpl-picker__item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.tmpl-picker__info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tmpl-picker__name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tmpl-picker__detail {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── url-import-btn override (make it not full-width when next to template btn) ── */
+.url-import-btn {
+  width: auto !important;
+  justify-content: flex-start !important;
+}
 </style>

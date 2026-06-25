@@ -255,6 +255,28 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 
 	mux.HandleFunc("/api/connections/test", handlers.TestConnection())
 
+	// ── Connection Templates ──────────────────────────────────────
+	mux.HandleFunc("/api/connection-templates", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermConnectionsView)(handlers.ListConnectionTemplates())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermConnectionsCreate)(handlers.CreateConnectionTemplate())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/connection-templates/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			requireAny(handlers.PermConnectionsEdit)(handlers.UpdateConnectionTemplate())(w, r)
+		case http.MethodDelete:
+			requireAny(handlers.PermConnectionsEdit)(handlers.DeleteConnectionTemplate())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
 	// ── Per-connection routes ─────────────────────────────────────
 	mux.HandleFunc("/api/connections/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/connections/")

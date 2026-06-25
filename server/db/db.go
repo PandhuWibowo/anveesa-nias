@@ -1130,6 +1130,27 @@ func migrate() error {
 			bin         TEXT NOT NULL DEFAULT 'nginx',
 			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+
+		// Connection templates — reusable host/port/database presets (no credentials)
+		`CREATE TABLE IF NOT EXISTS connection_templates (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			name        TEXT NOT NULL,
+			driver      TEXT NOT NULL,
+			host        TEXT NOT NULL DEFAULT '',
+			port        INTEGER NOT NULL DEFAULT 0,
+			database    TEXT NOT NULL DEFAULT '',
+			ssl         INTEGER NOT NULL DEFAULT 0,
+			tags        TEXT NOT NULL DEFAULT '',
+			ssh_host    TEXT NOT NULL DEFAULT '',
+			ssh_port    INTEGER NOT NULL DEFAULT 22,
+			ssh_user    TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
+			visibility  TEXT NOT NULL DEFAULT 'shared',
+			owner_id    INTEGER NOT NULL DEFAULT 0,
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_connection_templates_owner ON connection_templates(owner_id)`,
 	}
 	for _, s := range stmts {
 		convertedSQL := convertSQL(s)
