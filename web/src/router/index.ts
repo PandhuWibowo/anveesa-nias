@@ -261,6 +261,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['kube.view', 'kube.manage'] },
         },
         {
+          path: 'cron',
+          name: 'cron',
+          component: () => import('@/views/CronView.vue'),
+          meta: { requiredPermissionsAny: ['cron.view', 'cron.manage'] },
+        },
+        {
           path: 'nginx',
           name: 'nginx',
           component: () => import('@/views/NginxView.vue'),

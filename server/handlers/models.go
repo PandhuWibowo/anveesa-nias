@@ -173,6 +173,9 @@ const (
 	PermKubeView     = "kube.view"
 	PermKubeManage   = "kube.manage"
 	PermKubeExec     = "kube.exec"
+	PermCronView     = "cron.view"
+	PermCronManage   = "cron.manage"
+	PermCronExec     = "cron.exec"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -248,6 +251,9 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermKubeView, Label: "View Kubernetes Clusters & Workloads", Group: "Infrastructure"},
 	{Key: PermKubeManage, Label: "Manage Kubernetes Cluster Connections", Group: "Infrastructure"},
 	{Key: PermKubeExec, Label: "Exec Into Kubernetes Pods (high-risk)", Group: "Infrastructure"},
+	{Key: PermCronView, Label: "View Cron Hosts, Jobs & Run History", Group: "Infrastructure"},
+	{Key: PermCronManage, Label: "Manage Cron Hosts & Jobs", Group: "Infrastructure"},
+	{Key: PermCronExec, Label: "Run Cron Jobs On-Demand (high-risk)", Group: "Infrastructure"},
 }
 
 // PermissionDef describes a single permission for the UI.

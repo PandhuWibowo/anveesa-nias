@@ -63,7 +63,7 @@ func ListSchedules() http.HandlerFunc {
 		rows, err := appdb.DB.Query(`
 			SELECT id, name, conn_id, COALESCE(dashboard_id,0), sql, COALESCE(kind,'query'), COALESCE(ai_prompt,''), COALESCE(created_by,0),
 			       interval_min, COALESCE(alert_condition,''), COALESCE(alert_threshold,0),
-			       enabled, COALESCE(last_run_at,''), COALESCE(next_run_at,''), created_at
+			       enabled, last_run_at, next_run_at, created_at
 			FROM schedules ORDER BY id`)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
@@ -74,8 +74,13 @@ func ListSchedules() http.HandlerFunc {
 		for rows.Next() {
 			var s Schedule
 			var enabled int
+			// last_run_at / next_run_at are nullable timestamps — postgres rejects
+			// COALESCE(<timestamp>, ''), so read them through sql.NullString.
+			var lastRun, nextRun sql.NullString
 			rows.Scan(&s.ID, &s.Name, &s.ConnID, &s.DashboardID, &s.SQL, &s.Kind, &s.AIPrompt, &s.CreatedBy, &s.IntervalMin, &s.AlertCondition, &s.AlertThreshold,
-				&enabled, &s.LastRunAt, &s.NextRunAt, &s.CreatedAt)
+				&enabled, &lastRun, &nextRun, &s.CreatedAt)
+			s.LastRunAt = lastRun.String
+			s.NextRunAt = nextRun.String
 			s.Enabled = enabled == 1
 			list = append(list, s)
 		}
@@ -650,6 +655,7 @@ func processSchedulerTick() {
 	schedulerMu.Unlock()
 	runDueSchedules()
 	runDuePipelineSchedules()
+	runDueCronJobs()
 }
 
 func executeScheduleWithLock(s Schedule, manual bool) (map[string]any, error) {

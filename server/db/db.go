@@ -1170,6 +1170,39 @@ func migrate() error {
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_kube_clusters_owner ON kube_clusters(owner_id)`,
+
+		// Cron scheduler — jobs target the shared SSH Hosts (docker_hosts) by id.
+		// Cron jobs — centrally-owned scheduled shell commands dispatched to hosts.
+		`CREATE TABLE IF NOT EXISTS cron_jobs (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			name         TEXT NOT NULL,
+			command      TEXT NOT NULL,
+			working_dir  TEXT DEFAULT '',
+			category     TEXT DEFAULT '',
+			cron_expr    TEXT NOT NULL,
+			timeout_sec  INTEGER NOT NULL DEFAULT 3600,
+			host_ids     TEXT NOT NULL DEFAULT '[]',
+			enabled      INTEGER NOT NULL DEFAULT 1,
+			created_by   INTEGER,
+			last_run_at  DATETIME,
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		// Cron job runs — one row per (job,host) execution with captured output.
+		`CREATE TABLE IF NOT EXISTS cron_job_runs (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			job_id      INTEGER NOT NULL,
+			host_id     INTEGER,
+			host_name   TEXT DEFAULT '',
+			trigger     TEXT DEFAULT 'scheduled',
+			status      TEXT DEFAULT 'running',
+			exit_code   INTEGER DEFAULT 0,
+			stdout      TEXT DEFAULT '',
+			stderr      TEXT DEFAULT '',
+			started_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			finished_at DATETIME,
+			duration_ms INTEGER DEFAULT 0
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cron_job_runs_job ON cron_job_runs(job_id)`,
 	}
 	for _, s := range stmts {
 		convertedSQL := convertSQL(s)

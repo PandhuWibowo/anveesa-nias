@@ -805,6 +805,57 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			http.NotFound(w, r)
 		}
 	})
+	// ── Cron scheduler ────────────────────────────────────────────────────
+	// Cron reuses the shared SSH Hosts (docker_hosts); this is a read-only
+	// pick-list gated by cron perms. Host management lives under SSH Hosts.
+	mux.HandleFunc("/api/cron/hosts", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			requireAny(handlers.PermCronView, handlers.PermCronManage)(handlers.ListCronHosts())(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/api/cron/jobs", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermCronView, handlers.PermCronManage)(handlers.ListCronJobs())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermCronManage)(handlers.CreateCronJob())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/cron/jobs/", func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/cron/jobs/"), "/")
+		parts := strings.Split(rest, "/")
+		view := requireAny(handlers.PermCronView, handlers.PermCronManage)
+		manage := requireAny(handlers.PermCronManage)
+		exec := requireAny(handlers.PermCronExec)
+		switch {
+		case len(parts) == 1 && r.Method == http.MethodGet:
+			view(handlers.GetCronJob())(w, r)
+		case len(parts) == 1 && r.Method == http.MethodPut:
+			manage(handlers.UpdateCronJob())(w, r)
+		case len(parts) == 1 && r.Method == http.MethodDelete:
+			manage(handlers.DeleteCronJob())(w, r)
+		case len(parts) == 2 && parts[1] == "toggle" && r.Method == http.MethodPost:
+			manage(handlers.ToggleCronJob())(w, r)
+		case len(parts) == 2 && parts[1] == "run" && r.Method == http.MethodPost:
+			exec(handlers.RunCronJobNow())(w, r)
+		case len(parts) == 2 && parts[1] == "runs" && r.Method == http.MethodGet:
+			view(handlers.ListCronJobRuns())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/cron/runs/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			requireAny(handlers.PermCronView, handlers.PermCronManage)(handlers.GetCronRun())(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
 	mux.HandleFunc("/api/docker/hosts", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
