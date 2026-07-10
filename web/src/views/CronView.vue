@@ -53,6 +53,46 @@ const running = ref(false)
 const SCHEDULE_PRESETS = ['* * * * *', '*/5 * * * *', '0 * * * *', '0 0 * * *', '0 0 * * 0', '@reboot', '@daily']
 const CRON_SPECIALS = ['@reboot', '@yearly', '@annually', '@monthly', '@weekly', '@daily', '@midnight', '@hourly']
 
+// Strict per-field cron syntax so prose in comment lines (e.g. the standard
+// "# Edit this file to introduce tasks..." crontab header) is never
+// misdetected as a disabled schedule. Each field is digits/*/,/-// plus,
+// for month and day-of-week only, the standard 3-letter names — and every
+// numeric atom must fall inside that field's valid range.
+const CRON_FIELD_RANGES: [number, number][] = [
+  [0, 59], // minute
+  [0, 23], // hour
+  [1, 31], // day of month
+  [1, 12], // month
+  [0, 7], // day of week (0 and 7 both = Sunday)
+]
+const CRON_FIELD_NAMES: (string[] | null)[] = [
+  null,
+  null,
+  null,
+  ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'],
+  ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'],
+]
+
+function cronAtomValid(atom: string, min: number, max: number, names: string[] | null): boolean {
+  if (atom === '*') return true
+  if (names && names.includes(atom.toLowerCase())) return true
+  if (!/^\d+$/.test(atom)) return false
+  const n = Number(atom)
+  return n >= min && n <= max
+}
+
+function cronFieldValid(field: string, fieldIdx: number): boolean {
+  const [min, max] = CRON_FIELD_RANGES[fieldIdx]
+  const names = CRON_FIELD_NAMES[fieldIdx]
+  return field.split(',').every((part) => {
+    const [rangePart, stepPart] = part.split('/')
+    if (stepPart !== undefined && !/^\d+$/.test(stepPart)) return false
+    const [lo, hi] = rangePart.split('-')
+    if (hi === undefined) return cronAtomValid(lo, min, max, names)
+    return cronAtomValid(lo, min, max, names) && cronAtomValid(hi, min, max, names)
+  })
+}
+
 const selectedHost = computed(() => hosts.value.find((h) => h.id === selectedId.value) || null)
 const entryRows = computed(() =>
   items.value.map((it, idx) => ({ it, idx })).filter((r) => r.it.kind === 'entry') as {
@@ -80,7 +120,7 @@ function tryParseEntry(s: string): { schedule: string; command: string } | null 
   }
   if (parts.length < 6) return null
   const sched = parts.slice(0, 5)
-  if (!sched.every((f) => /^[\d*/,\-A-Za-z]+$/.test(f))) return null
+  if (!sched.every((f, i) => cronFieldValid(f, i))) return null
   return { schedule: sched.join(' '), command: parts.slice(5).join(' ') }
 }
 
@@ -443,6 +483,18 @@ loadHosts()
 }
 .crn-hosts {
   padding: 0.5rem;
+  position: sticky;
+  top: 0.5rem;
+  max-height: calc(100vh - 140px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+@media (max-width: 860px) {
+  .crn-hosts {
+    position: static;
+    max-height: 320px;
+  }
 }
 .crn-hosts-head {
   font-size: 0.72rem;
@@ -450,6 +502,10 @@ loadHosts()
   letter-spacing: 0.05em;
   color: var(--text-muted, #94a3b8);
   padding: 0.4rem 0.5rem;
+  position: sticky;
+  top: -0.5rem;
+  background: var(--surface, #fff);
+  z-index: 1;
 }
 .crn-hostbtn {
   display: block;
