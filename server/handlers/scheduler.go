@@ -655,7 +655,6 @@ func processSchedulerTick() {
 	schedulerMu.Unlock()
 	runDueSchedules()
 	runDuePipelineSchedules()
-	runDueCronJobs()
 }
 
 func executeScheduleWithLock(s Schedule, manual bool) (map[string]any, error) {

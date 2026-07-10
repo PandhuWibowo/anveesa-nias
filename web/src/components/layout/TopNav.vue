@@ -156,7 +156,7 @@ const allMenuGroups: MenuGroup[] = [
       { name: 'docker', label: 'Docker', desc: 'Browse and control containers and images across your servers over SSH', icon: 'docker', section: 'Servers', permissionsAny: ['docker.view', 'docker.manage'] },
       { name: 'sftp', label: 'SFTP', desc: 'Browse, upload, and download files on your servers over SSH', icon: 'sftp', section: 'Servers', permissionsAny: ['sftp.access', 'sftp.manage'] },
       { name: 'nginx', label: 'Nginx', desc: 'Edit configs, toggle sites, and follow access & error logs across your servers over SSH', icon: 'nginx', section: 'Servers', permissionsAny: ['nginx.view', 'nginx.manage', 'nginx.reload'] },
-      { name: 'cron', label: 'Cron Scheduler', desc: 'Centrally schedule shell commands and dispatch them across your SSH Hosts', icon: 'scheduler', section: 'Servers', permissionsAny: ['cron.view', 'cron.manage'] },
+      { name: 'cron', label: 'Cron Scheduler', desc: 'View and edit the native crontab on each of your SSH Hosts', icon: 'scheduler', section: 'Servers', permissionsAny: ['cron.view', 'cron.manage'] },
       { name: 'kube-clusters', label: 'K8s Clusters', desc: 'Manage Kubernetes cluster connections (Alibaba ACK, Huawei CCE) via kubeconfig', icon: 'kube', section: 'Kubernetes', permissionsAny: ['kube.view', 'kube.manage'] },
       { name: 'kubernetes', label: 'Kubernetes', desc: 'Browse nodes, workloads, services, events, and pod logs across your clusters', icon: 'kube', section: 'Kubernetes', permissionsAny: ['kube.view', 'kube.manage'] },
     ],
