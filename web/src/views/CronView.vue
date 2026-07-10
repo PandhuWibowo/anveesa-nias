@@ -18,6 +18,7 @@ interface CrontabResponse {
   user: string
   exists: boolean
   user_crontab: string
+  sudo_crontab: string
   system_crontab: string
 }
 
@@ -46,6 +47,14 @@ const saving = ref(false)
 const rawMode = ref(false)
 const rawText = ref('')
 const showSystem = ref(false)
+
+// Tab switching between SSH user's crontab and root's (sudo) crontab
+type CrontabTarget = 'user' | 'sudo'
+const crontabTarget = ref<CrontabTarget>('user')
+const sudoItems = ref<CronItem[]>([])
+const sudoOriginalRaw = ref('')
+const sudoRawText = ref('')
+const sudoCrontabRaw = ref('')
 
 const runOutput = ref<{ command: string; exit_code: number; stdout: string; stderr: string } | null>(null)
 const running = ref(false)
@@ -95,15 +104,34 @@ function cronFieldValid(field: string, fieldIdx: number): boolean {
 
 const selectedHost = computed(() => hosts.value.find((h) => h.id === selectedId.value) || null)
 const entryRows = computed(() =>
-  items.value.map((it, idx) => ({ it, idx })).filter((r) => r.it.kind === 'entry') as {
+  activeItems.value.map((it, idx) => ({ it, idx })).filter((r) => r.it.kind === 'entry') as {
     it: Extract<CronItem, { kind: 'entry' }>
     idx: number
   }[],
 )
-const preservedCount = computed(() => items.value.filter((it) => it.kind === 'other' && it.text.trim() !== '').length)
+const preservedCount = computed(() =>
+  (crontabTarget.value === 'user' ? items.value : sudoItems.value).filter(
+    (it) => it.kind === 'other' && it.text.trim() !== '',
+  ).length,
+)
 
-const currentRaw = computed(() => (rawMode.value ? rawText.value : serialize(items.value)))
-const dirty = computed(() => normalize(currentRaw.value) !== normalize(originalRaw.value))
+const activeItems = computed(() => (crontabTarget.value === 'user' ? items.value : sudoItems.value))
+const activeOriginalRaw = computed(() => (crontabTarget.value === 'user' ? originalRaw.value : sudoOriginalRaw.value))
+const activeRawText = computed({
+  get: () => (crontabTarget.value === 'user' ? rawText.value : sudoRawText.value),
+  set: (v: string) => {
+    if (crontabTarget.value === 'user') rawText.value = v
+    else sudoRawText.value = v
+  },
+})
+const currentRaw = computed(() => (rawMode.value ? activeRawText.value : serialize(activeItems.value)))
+const dirty = computed(() => normalize(currentRaw.value) !== normalize(activeOriginalRaw.value))
+const hasSudoCrontab = computed(() => sudoCrontabRaw.value.trim().length > 0)
+
+function switchTab(target: CrontabTarget) {
+  rawMode.value = false
+  crontabTarget.value = target
+}
 
 function normalize(s: string) {
   return s.replace(/\r\n/g, '\n').replace(/\n+$/, '')
@@ -197,12 +225,25 @@ async function loadCrontab() {
     originalRaw.value = data.user_crontab || ''
     items.value = parseCrontab(originalRaw.value)
     rawText.value = serialize(items.value)
+    sudoCrontabRaw.value = data.sudo_crontab || ''
+    sudoOriginalRaw.value = sudoCrontabRaw.value
+    sudoItems.value = parseCrontab(sudoOriginalRaw.value)
+    sudoRawText.value = serialize(sudoItems.value)
     systemRaw.value = data.system_crontab || ''
     cronUser.value = data.user || ''
+    // Auto-select the tab: prefer user crontab, fall back to sudo if empty
+    if (!originalRaw.value.trim() && sudoCrontabRaw.value.trim()) {
+      crontabTarget.value = 'sudo'
+    } else {
+      crontabTarget.value = 'user'
+    }
   } catch (e: any) {
     toast.error(e?.response?.data?.error || 'Failed to read crontab')
     items.value = []
     originalRaw.value = ''
+    sudoItems.value = []
+    sudoOriginalRaw.value = ''
+    sudoCrontabRaw.value = ''
     systemRaw.value = ''
   } finally {
     crontabLoading.value = false
@@ -212,24 +253,28 @@ async function loadCrontab() {
 // ── editing ─────────────────────────────────────────────────────────────────
 
 function addEntry() {
-  items.value.push({ kind: 'entry', schedule: '*/5 * * * *', command: '', enabled: true })
+  activeItems.value.push({ kind: 'entry', schedule: '*/5 * * * *', command: '', enabled: true })
 }
 
 function deleteEntry(idx: number) {
-  items.value.splice(idx, 1)
+  activeItems.value.splice(idx, 1)
 }
 
 function toggleEntry(idx: number) {
-  const it = items.value[idx]
+  const it = activeItems.value[idx]
   if (it.kind === 'entry') it.enabled = !it.enabled
 }
 
 function toggleRawMode() {
   if (rawMode.value) {
     // leaving raw → reparse text into items
-    items.value = parseCrontab(rawText.value)
+    const parsed = parseCrontab(activeRawText.value)
+    if (crontabTarget.value === 'user') items.value = parsed
+    else sudoItems.value = parsed
   } else {
-    rawText.value = serialize(items.value)
+    const serialized = serialize(activeItems.value)
+    if (crontabTarget.value === 'user') rawText.value = serialized
+    else sudoRawText.value = serialized
   }
   rawMode.value = !rawMode.value
 }
@@ -239,7 +284,9 @@ async function save() {
   saving.value = true
   try {
     const raw = currentRaw.value
-    await axios.put(`/api/cron/hosts/${selectedId.value}/crontab`, { raw })
+    const body: { raw: string; target_user?: string } = { raw }
+    if (crontabTarget.value === 'sudo') body.target_user = 'root'
+    await axios.put(`/api/cron/hosts/${selectedId.value}/crontab`, body)
     toast.success('Crontab updated')
     await loadCrontab()
   } catch (e: any) {
@@ -313,7 +360,12 @@ loadHosts()
                 <div>
                   <div class="crn-editor-title">{{ selectedHost.name }}</div>
                   <div class="crn-editor-sub">
-                    crontab for <code>{{ cronUser || selectedHost.ssh_user }}</code>
+                    <template v-if="crontabTarget === 'sudo'">
+                      root crontab via <code>sudo crontab -u root</code>
+                    </template>
+                    <template v-else>
+                      crontab for <code>{{ cronUser || selectedHost.ssh_user }}</code>
+                    </template>
                     <span v-if="dirty" class="crn-dirty">• unsaved changes</span>
                   </div>
                 </div>
@@ -333,12 +385,30 @@ loadHosts()
                 </div>
               </div>
 
+              <!-- Target tabs (only when sudo crontab exists) -->
+              <div v-if="hasSudoCrontab" class="crn-tabs">
+                <button
+                  class="crn-tab"
+                  :class="{ 'crn-tab--active': crontabTarget === 'user' }"
+                  @click="switchTab('user')"
+                >
+                  {{ cronUser || selectedHost.ssh_user }}
+                </button>
+                <button
+                  class="crn-tab"
+                  :class="{ 'crn-tab--active': crontabTarget === 'sudo' }"
+                  @click="switchTab('sudo')"
+                >
+                  root <span class="crn-tab-badge">sudo</span>
+                </button>
+              </div>
+
               <div v-if="crontabLoading" class="crn-msg">Reading crontab…</div>
 
               <!-- Raw editor -->
               <template v-else-if="rawMode">
                 <textarea
-                  v-model="rawText"
+                  v-model="activeRawText"
                   class="crn-raw"
                   spellcheck="false"
                   :readonly="!canManage"
@@ -566,6 +636,40 @@ loadHosts()
   display: flex;
   gap: 0.4rem;
   flex-wrap: wrap;
+}
+.crn-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  margin-bottom: 0.5rem;
+}
+.crn-tab {
+  background: none;
+  border: none;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.8rem;
+  color: var(--text-muted, #64748b);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+.crn-tab:hover {
+  color: var(--text, #1e293b);
+}
+.crn-tab--active {
+  color: var(--accent, #2563eb);
+  border-bottom-color: var(--accent, #2563eb);
+  font-weight: 600;
+}
+.crn-tab-badge {
+  font-size: 0.65rem;
+  background: rgba(234, 179, 8, 0.15);
+  color: #b45309;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-weight: 500;
+  margin-left: 0.25rem;
+  vertical-align: middle;
 }
 .crn-table {
   width: 100%;

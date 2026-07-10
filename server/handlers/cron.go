@@ -169,6 +169,18 @@ func GetHostCrontab() http.HandlerFunc {
 			return
 		}
 
+		// Best-effort: also fetch root's crontab via sudo so non-root SSH
+		// users can see and manage the root scheduler.
+		sudoCrontab := ""
+		sudoOut, sudoErr, sudoCode, _ := runSSHCommand(h, "sudo crontab -l", "", 20)
+		if sudoCode == 0 {
+			sudoCrontab = sudoOut
+		} else if sudoCode != 0 && sudoErr != "" &&
+			!strings.Contains(strings.ToLower(sudoErr), "no crontab") &&
+			!strings.Contains(strings.ToLower(sudoErr), "not allowed") {
+			// sudo denied or no sudo — just skip, don't error.
+		}
+
 		sysOut, _, _, _ := runSSHCommand(h, systemCronCmd, "", 20)
 
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -177,6 +189,7 @@ func GetHostCrontab() http.HandlerFunc {
 			"user":           h.SSHUser,
 			"exists":         exists,
 			"user_crontab":   userCrontab,
+			"sudo_crontab":   sudoCrontab,
 			"system_crontab": strings.TrimSpace(sysOut),
 		})
 	}
@@ -191,25 +204,32 @@ func PutHostCrontab() http.HandlerFunc {
 			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
 			return
 		}
-		var body struct {
-			Raw string `json:"raw"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
-			return
-		}
-		h, err := loadDockerHost(id)
-		if err != nil {
-			http.Error(w, `{"error":"host not found"}`, http.StatusNotFound)
-			return
-		}
-		raw := body.Raw
-		if raw != "" && !strings.HasSuffix(raw, "\n") {
-			raw += "\n"
-		}
-		// `crontab -` reads the new crontab from stdin and validates it; a
-		// syntax error exits non-zero with a message on stderr.
-		out, errOut, code, err := runSSHCommand(h, "crontab -", raw, 20)
+	var body struct {
+		Raw        string `json:"raw"`
+		TargetUser string `json:"target_user"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+		return
+	}
+	h, err := loadDockerHost(id)
+	if err != nil {
+		http.Error(w, `{"error":"host not found"}`, http.StatusNotFound)
+		return
+	}
+	raw := body.Raw
+	if raw != "" && !strings.HasSuffix(raw, "\n") {
+		raw += "\n"
+	}
+	// When target_user is set (e.g. "root"), write via sudo crontab -u so a
+	// non-root SSH user can manage another user's crontab.
+	cmd := "crontab -"
+	if body.TargetUser != "" && body.TargetUser != h.SSHUser {
+		cmd = fmt.Sprintf("sudo crontab -u %s -", shellQuote(body.TargetUser))
+	}
+	// `crontab -` reads the new crontab from stdin and validates it; a
+	// syntax error exits non-zero with a message on stderr.
+	out, errOut, code, err := runSSHCommand(h, cmd, raw, 20)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
