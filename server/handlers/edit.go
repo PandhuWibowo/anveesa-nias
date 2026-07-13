@@ -1,12 +1,50 @@
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 )
+
+// isTextualColumnType reports whether empty string is a meaningful value for
+// this SQL data type (as opposed to being a UI artifact of a cleared field).
+func isTextualColumnType(dataType string) bool {
+	t := strings.ToLower(dataType)
+	switch {
+	case strings.Contains(t, "char"), strings.Contains(t, "text"),
+		strings.Contains(t, "json"), strings.Contains(t, "xml"),
+		strings.Contains(t, "enum"):
+		return true
+	default:
+		return false
+	}
+}
+
+// coerceEmptyStringsToNull rewrites "" -> nil for columns whose SQL type
+// can't accept an empty string (bigint, numeric, boolean, date, uuid, ...),
+// so a cleared grid cell maps to NULL instead of failing in the driver.
+func coerceEmptyStringsToNull(db *sql.DB, driver, dbName, tableName string, values map[string]interface{}) {
+	cols, err := fetchTableColumnsForMetadata(db, driver, dbName, tableName)
+	if err != nil {
+		return
+	}
+	types := make(map[string]string, len(cols))
+	for _, c := range cols {
+		types[c.Name] = c.DataType
+	}
+	for col, val := range values {
+		s, ok := val.(string)
+		if !ok || s != "" {
+			continue
+		}
+		if dt, ok := types[col]; ok && !isTextualColumnType(dt) {
+			values[col] = nil
+		}
+	}
+}
 
 // UpdateRow handles PUT /api/connections/{id}/schema/{db}/tables/{table}/rows
 func UpdateRow() http.HandlerFunc {
@@ -36,6 +74,7 @@ func UpdateRow() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
 		}
+		coerceEmptyStringsToNull(db, driver, dbName, tableName, body.Updates)
 
 		setClauses := make([]string, 0, len(body.Updates))
 		args := make([]interface{}, 0, len(body.Updates)+1)
@@ -111,6 +150,7 @@ func InsertRow() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
 		}
+		coerceEmptyStringsToNull(db, driver, dbName, tableName, body.Values)
 
 		cols := make([]string, 0, len(body.Values))
 		placeholders := make([]string, 0, len(body.Values))
