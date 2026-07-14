@@ -253,9 +253,11 @@ function xlsxCell(value: unknown, styleId = 0) {
   if (rawValue === null || rawValue === undefined) return `<c${style} t="inlineStr"><is><t></t></is></c>`
   if (typeof rawValue === 'number' && Number.isFinite(rawValue)) return `<c${style}><v>${rawValue}</v></c>`
   if (typeof rawValue === 'boolean') return `<c${style} t="b"><v>${rawValue ? 1 : 0}</v></c>`
+  // Values that arrive as strings (e.g. varchar columns holding phone numbers, IDs,
+  // zip codes, or big integers beyond Number's safe range) must stay text — guessing
+  // "looks numeric" from content and coercing via Number() silently corrupted them
+  // (lost leading zeros, lost precision on large IDs, etc).
   const text = String(rawValue)
-  const numeric = text.trim() !== '' && !Number.isNaN(Number(text)) && !/^0\d+/.test(text.trim())
-  if (numeric) return `<c${style}><v>${Number(text)}</v></c>`
   return `<c${style} t="inlineStr"><is><t xml:space="preserve">${escapeXML(text)}</t></is></c>`
 }
 
