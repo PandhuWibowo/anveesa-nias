@@ -516,10 +516,46 @@ async function confirmImport() {
   finally { importLoading.value = false }
 }
 
-async function exportCsv() { const t = activeTab.value; if (!t?.rows.length) return; const { downloadCSV } = await import('@/utils/export'); downloadCSV(t.columns, t.rows, t.table); toast.success('CSV exported') }
-async function exportJson() { const t = activeTab.value; if (!t?.rows.length) return; const { downloadJSON } = await import('@/utils/export'); downloadJSON(t.columns, t.rows, t.table); toast.success('JSON exported') }
-async function exportExcel() { const t = activeTab.value; if (!t?.rows.length) return; const { downloadExcel } = await import('@/utils/export'); downloadExcel(t.columns, t.rows, t.table); toast.success('Excel exported') }
-async function exportSql() { const t = activeTab.value; if (!t?.rows.length) return; const { downloadSQL } = await import('@/utils/export'); downloadSQL(t.columns, t.rows, t.table, t.table, activeConn.value?.driver); toast.success('SQL exported') }
+const exportAllRows = ref(false)
+const exportingAll = ref(false)
+const MAX_EXPORT_ROWS = 20000
+const EXPORT_PAGE_SIZE = 1000
+
+async function fetchAllRowsForExport(t: TableTab): Promise<{ columns: string[]; rows: unknown[][] } | null> {
+  if (!props.connId) return null
+  if (t.totalRows > MAX_EXPORT_ROWS) {
+    toast.error(`This table has ${t.totalRows.toLocaleString()} rows — exporting more than ${MAX_EXPORT_ROWS.toLocaleString()} at once isn't supported. Narrow it down with a filter first.`)
+    return null
+  }
+  const input = t.whereClause || undefined
+  const searchArg = t.filterMode === 'search' ? input : undefined
+  const whereArg = t.filterMode === 'sql' ? input : undefined
+  const pages = Math.max(1, Math.ceil(t.totalRows / EXPORT_PAGE_SIZE))
+  let columns: string[] = t.columns
+  let rows: unknown[][] = []
+  exportingAll.value = true
+  try {
+    for (let p = 1; p <= pages; p++) {
+      const data = await fetchTableData(props.connId, t.db, t.table, p, EXPORT_PAGE_SIZE, t.sortBy, t.sortDir, whereArg, searchArg)
+      if (!data) { toast.error('Failed to fetch all rows for export'); return null }
+      columns = data.columns ?? columns
+      rows = rows.concat(data.rows ?? [])
+    }
+  } finally {
+    exportingAll.value = false
+  }
+  return { columns, rows }
+}
+
+async function resolveExportRows(t: TableTab): Promise<{ columns: string[]; rows: unknown[][] } | null> {
+  if (!exportAllRows.value) return t.rows.length ? { columns: t.columns, rows: t.rows } : null
+  return fetchAllRowsForExport(t)
+}
+
+async function exportCsv() { const t = activeTab.value; if (!t) return; const data = await resolveExportRows(t); if (!data) return; const { downloadCSV } = await import('@/utils/export'); downloadCSV(data.columns, data.rows, t.table); toast.success('CSV exported') }
+async function exportJson() { const t = activeTab.value; if (!t) return; const data = await resolveExportRows(t); if (!data) return; const { downloadJSON } = await import('@/utils/export'); downloadJSON(data.columns, data.rows, t.table); toast.success('JSON exported') }
+async function exportExcel() { const t = activeTab.value; if (!t) return; const data = await resolveExportRows(t); if (!data) return; const { downloadExcel } = await import('@/utils/export'); downloadExcel(data.columns, data.rows, t.table); toast.success('Excel exported') }
+async function exportSql() { const t = activeTab.value; if (!t) return; const data = await resolveExportRows(t); if (!data) return; const { downloadSQL } = await import('@/utils/export'); downloadSQL(data.columns, data.rows, t.table, t.table, activeConn.value?.driver); toast.success('SQL exported') }
 
 // ── Sub-tab + SQL tabs ────────────────────────────────────────────
 type ResultKind = 'query' | 'explain' | 'stream' | 'script' | 'history' | 'saved' | 'error' | 'chart'
@@ -983,12 +1019,16 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
               </button>
               <button class="base-btn base-btn--sm" :class="activeTab.editMode ? 'base-btn--primary' : 'base-btn--ghost'" @click="handleToggleEditMode">{{ activeTab.editMode ? 'Editing' : 'Edit' }}</button>
               <button class="base-btn base-btn--ghost base-btn--sm" @click="openImport">Import</button>
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportCsv" :disabled="!activeTab.rows.length">CSV</button>
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportJson" :disabled="!activeTab.rows.length">JSON</button>
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportExcel" :disabled="!activeTab.rows.length" title="Export to Excel (.xlsx)">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>Excel
+              <label v-if="activeTab.totalRows > activeTab.rows.length" class="export-all-toggle" title="Export all rows matching the current filter/sort, not just this page (capped at 20,000 rows)">
+                <input type="checkbox" v-model="exportAllRows" />
+                All rows
+              </label>
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportCsv" :disabled="(!exportAllRows && !activeTab.rows.length) || exportingAll">{{ exportingAll ? '…' : 'CSV' }}</button>
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportJson" :disabled="(!exportAllRows && !activeTab.rows.length) || exportingAll">{{ exportingAll ? '…' : 'JSON' }}</button>
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportExcel" :disabled="(!exportAllRows && !activeTab.rows.length) || exportingAll" title="Export to Excel (.xlsx)">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>{{ exportingAll ? '…' : 'Excel' }}
               </button>
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportSql" :disabled="!activeTab.rows.length" title="Export as SQL (INSERT statements)">SQL</button>
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="exportSql" :disabled="(!exportAllRows && !activeTab.rows.length) || exportingAll" title="Export as SQL (INSERT statements)">{{ exportingAll ? '…' : 'SQL' }}</button>
               <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!activeTab.columns.length" @click="profilerShow=true" title="Profile columns">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
               </button>
@@ -1630,6 +1670,8 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 .browse-toolbar__meta { font-size:10px;color:var(--text-muted);background:var(--bg-elevated);padding:1px 6px;border-radius:4px;font-weight:600;flex-shrink:0; }
 .browse-toolbar__filter { display:flex;align-items:center;gap:4px;flex:1;min-width:0; }
 .browse-toolbar__actions { display:flex;align-items:center;gap:4px;flex-shrink:0; }
+.export-all-toggle { flex-shrink:0;display:flex;align-items:center;gap:4px;height:24px;padding:0 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg-body);color:var(--text-muted);font-size:10px;font-weight:700;letter-spacing:0.3px;cursor:pointer;white-space:nowrap; }
+.export-all-toggle input { margin:0;cursor:pointer; }
 .browse-toolbar__empty { font-size:13px;color:var(--text-muted); }
 .filter-mode-btn { flex-shrink:0;height:24px;padding:0 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg-body);color:var(--text-muted);font-size:10px;font-weight:700;font-family:var(--mono,monospace);letter-spacing:0.3px;cursor:pointer;transition:border-color .15s,color .15s;white-space:nowrap; }
 .filter-mode-btn:hover,.filter-mode-btn--sql { border-color:var(--brand);color:var(--brand); }
