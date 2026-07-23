@@ -601,8 +601,8 @@ func LaravelQueueFailedJobAction() http.HandlerFunc {
 		}
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/connections/"), "/")
 		action := ""
-		if len(parts) >= 4 {
-			action = parts[3]
+		if len(parts) >= 3 {
+			action = parts[2]
 		}
 
 		var payload laravelFailedJobActionRequest

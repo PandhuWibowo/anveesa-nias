@@ -404,7 +404,7 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueAlerts())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "agent" && r.Method == http.MethodPost:
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.LaravelQueueAgentAction())(w, r)
-			case sub == "laravel-queue" && len(parts) >= 4 && (parts[3] == "retry-failed" || parts[3] == "delete-failed") && r.Method == http.MethodPost:
+			case sub == "laravel-queue" && len(parts) >= 3 && (parts[2] == "retry-failed" || parts[2] == "delete-failed") && r.Method == http.MethodPost:
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.LaravelQueueFailedJobAction())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 4 && r.Method == http.MethodPost:
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.LaravelQueueAction())(w, r)
