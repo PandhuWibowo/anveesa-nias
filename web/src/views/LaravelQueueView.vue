@@ -1368,7 +1368,7 @@ async function retrySelectedFailedJob(job: LaravelFailedJob | null, deleteAfter:
   }
   const targetQueue = queueOverride.trim() || job.queue || selectedQueue.value
   if (!job.queue && !queueOverride.trim()) {
-    toast.warning(`Job has no queue recorded — retrying into "${targetQueue}". Set the correct queue in the sidebar first if needed.`)
+    toast.info(`Job has no queue recorded — retrying into "${targetQueue}". Set the correct queue in the sidebar first if needed.`)
   }
   const ok = await confirmAction(action, `Retry failed job #${job.id} into "${targetQueue}"?`, 'Retry Failed Job')
   if (!ok) return
