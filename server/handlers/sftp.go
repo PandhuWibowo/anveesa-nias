@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -155,6 +156,63 @@ func SftpDownload() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Disposition", `attachment; filename="`+path.Base(p)+`"`)
 		io.Copy(w, f)
+	}
+}
+
+// sftpMaxRead caps how much of a file SftpRead will return.
+const sftpMaxRead = 2 << 20 // 2 MiB
+
+// SftpRead returns a text preview of a remote file's content.
+func SftpRead() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := sftpHostID(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		p := r.URL.Query().Get("path")
+		if strings.TrimSpace(p) == "" {
+			http.Error(w, jsonError("path is required"), http.StatusBadRequest)
+			return
+		}
+		client, cleanup, err := sftpSession(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer cleanup()
+		f, err := client.Open(p)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusNotFound)
+			return
+		}
+		defer f.Close()
+		st, err := f.Stat()
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		if st.IsDir() {
+			http.Error(w, jsonError("cannot read a directory"), http.StatusBadRequest)
+			return
+		}
+		buf, err := io.ReadAll(io.LimitReader(f, sftpMaxRead))
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		binary := false
+		if i := bytes.IndexByte(buf, 0); i != -1 {
+			binary = true
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"path":      p,
+			"content":   string(buf),
+			"size":      st.Size(),
+			"truncated": st.Size() > int64(len(buf)),
+			"binary":    binary,
+		})
 	}
 }
 

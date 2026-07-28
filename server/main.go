@@ -1087,6 +1087,8 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		switch {
 		case len(parts) == 2 && parts[1] == "list" && r.Method == http.MethodGet:
 			access(handlers.SftpList())(w, r)
+		case len(parts) == 2 && parts[1] == "read" && r.Method == http.MethodGet:
+			access(handlers.SftpRead())(w, r)
 		// download self-authenticates via ?token= (browser-native streaming)
 		case len(parts) == 2 && parts[1] == "download" && r.Method == http.MethodGet:
 			handlers.SftpDownload()(w, r)

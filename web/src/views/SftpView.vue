@@ -50,6 +50,12 @@ const entries = ref<SftpEntry[]>([])
 const loading = ref(false)
 const connError = ref('')
 const dragOver = ref(false)
+const search = ref('')
+const filteredEntries = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return entries.value
+  return entries.value.filter((e) => e.name.toLowerCase().includes(q))
+})
 
 const uploads = ref<UploadJob[]>([])
 let uploadSeq = 1
@@ -60,6 +66,15 @@ const folderName = ref('')
 const showRename = ref(false)
 const renameName = ref('')
 const renameTarget = ref<SftpEntry | null>(null)
+
+// View file
+const showView = ref(false)
+const viewName = ref('')
+const viewContent = ref('')
+const viewLoading = ref(false)
+const viewError = ref('')
+const viewTruncated = ref(false)
+const viewBinary = ref(false)
 
 // ── Path helpers ────────────────────────────────────────────────
 function joinPath(base: string, name: string) {
@@ -134,6 +149,7 @@ async function loadDir(path: string) {
     cwd.value = data.path || '/'
     entries.value = data.entries || []
     hostStatus.value = 'connected'
+    search.value = ''
   } catch (e: any) {
     connError.value = e?.response?.data?.error || 'Could not list directory'
     entries.value = []
@@ -268,6 +284,30 @@ async function del(entry: SftpEntry) {
   }
 }
 
+// ── View file ───────────────────────────────────────────────────
+async function view(entry: SftpEntry) {
+  viewName.value = entry.name
+  viewContent.value = ''
+  viewError.value = ''
+  viewTruncated.value = false
+  viewBinary.value = false
+  showView.value = true
+  viewLoading.value = true
+  try {
+    const { data } = await axios.get<{ content: string; truncated: boolean; binary: boolean }>(
+      `/api/sftp/hosts/${hostId.value}/read`,
+      { params: { path: joinPath(cwd.value, entry.name) } },
+    )
+    viewContent.value = data.content
+    viewTruncated.value = data.truncated
+    viewBinary.value = data.binary
+  } catch (e: any) {
+    viewError.value = e?.response?.data?.error || 'Could not read file'
+  } finally {
+    viewLoading.value = false
+  }
+}
+
 // ── Formatting ──────────────────────────────────────────────────
 function formatBytes(n: number): string {
   if (!n) return '0 B'
@@ -342,6 +382,12 @@ onMounted(loadHosts)
               </template>
             </nav>
             <div class="dk-spacer"></div>
+            <input
+              v-model="search"
+              class="base-input sf-search"
+              type="search"
+              placeholder="Filter files…"
+            />
             <button v-if="canManage" class="base-btn base-btn--sm" @click="newFolder">+ Folder</button>
             <label v-if="canManage" class="base-btn base-btn--primary base-btn--sm sf-upload-btn">
               ↑ Upload<input type="file" hidden multiple @change="onFilePick" />
@@ -371,8 +417,9 @@ onMounted(loadHosts)
                 <tr v-if="loading"><td colspan="5" class="sf-msg">Loading…</td></tr>
                 <tr v-else-if="connError"><td colspan="5" class="sf-msg sf-err">{{ connError }}</td></tr>
                 <tr v-else-if="!entries.length"><td colspan="5" class="sf-msg">Empty directory.</td></tr>
-                <tr v-for="e in entries" :key="e.name" class="sf-row" :class="{ 'sf-row--dir': e.isDir }">
-                  <td class="sf-name" @click="open(e)">
+                <tr v-else-if="!filteredEntries.length"><td colspan="5" class="sf-msg">No files match "{{ search }}".</td></tr>
+                <tr v-for="e in filteredEntries" :key="e.name" class="sf-row" :class="{ 'sf-row--dir': e.isDir }">
+                  <td class="sf-name" @click="e.isDir ? open(e) : view(e)">
                     <span class="sf-icon">{{ fileIcon(e) }}</span>
                     <span class="sf-fname">{{ e.name }}</span>
                   </td>
@@ -380,6 +427,7 @@ onMounted(loadHosts)
                   <td class="sf-mode">{{ e.mode }}</td>
                   <td class="sf-time">{{ formatTime(e.modTime) }}</td>
                   <td class="sf-act">
+                    <button v-if="!e.isDir" class="base-btn base-btn--xs" @click.stop="view(e)">View</button>
                     <button v-if="!e.isDir" class="base-btn base-btn--xs" @click.stop="download(e)">Download</button>
                     <button v-if="canManage" class="base-btn base-btn--xs" @click.stop="rename(e)">Rename</button>
                     <button v-if="canManage" class="base-btn base-btn--xs base-btn--danger" @click.stop="del(e)">Delete</button>
@@ -418,6 +466,23 @@ onMounted(loadHosts)
         <div class="sf-modal-actions">
           <button class="base-btn base-btn--sm" @click="showRename = false">Cancel</button>
           <button class="base-btn base-btn--primary base-btn--sm" :disabled="!renameName.trim()" @click="submitRename">Rename</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- View file modal -->
+    <div v-if="showView" class="sf-modal-backdrop" @click.self="showView = false">
+      <div class="sf-modal sf-view-modal page-card">
+        <div class="sf-modal-title">{{ viewName }}</div>
+        <div v-if="viewLoading" class="sf-msg">Loading…</div>
+        <div v-else-if="viewError" class="sf-msg sf-err">{{ viewError }}</div>
+        <div v-else-if="viewBinary" class="sf-msg">This file looks binary and can't be previewed. Use Download instead.</div>
+        <template v-else>
+          <div v-if="viewTruncated" class="sf-view-notice">Showing the first 2 MB of this file.</div>
+          <pre class="sf-view-content">{{ viewContent }}</pre>
+        </template>
+        <div class="sf-modal-actions">
+          <button class="base-btn base-btn--sm" @click="showView = false">Close</button>
         </div>
       </div>
     </div>
@@ -465,6 +530,7 @@ onMounted(loadHosts)
 .sf-crumb--last { color: var(--text-primary); font-weight: 600; }
 .sf-sep { color: var(--text-muted); }
 .sf-upload-btn { cursor: pointer; }
+.sf-search { width: 200px; max-width: 40vw; }
 
 .sf-list { position: relative; padding: 4px 6px; overflow: hidden; }
 .sf-list--drag { outline: 2px dashed var(--brand); outline-offset: -4px; }
@@ -477,8 +543,7 @@ onMounted(loadHosts)
 .sf-msg { text-align: center; color: var(--text-muted); padding: 24px; }
 .sf-err { color: var(--danger); }
 .sf-row:hover { background: var(--bg-hover); }
-.sf-name { display: flex; align-items: center; gap: 9px; cursor: default; }
-.sf-row--dir .sf-name { cursor: pointer; }
+.sf-name { display: flex; align-items: center; gap: 9px; cursor: pointer; }
 .sf-row--dir .sf-fname { color: var(--brand); font-weight: 500; }
 .sf-icon { font-size: 15px; width: 18px; text-align: center; }
 .sf-fname { word-break: break-all; }
@@ -491,9 +556,13 @@ onMounted(loadHosts)
 
 .sf-modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); display: flex; align-items: center; justify-content: center; z-index: 100; }
 .sf-modal { width: 380px; max-width: 92vw; padding: 20px; }
-.sf-modal-title { font-size: 15px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px; }
+.sf-modal-title { font-size: 15px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px; word-break: break-all; }
 .sf-modal-input { width: 100%; }
 .sf-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+.sf-view-modal { width: 760px; max-width: 92vw; max-height: 82vh; display: flex; flex-direction: column; }
+.sf-view-notice { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+.sf-view-content { flex: 1; overflow: auto; background: var(--bg-hover); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 12px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-all; margin: 0; }
 
 .sf-uploads { position: fixed; right: 18px; bottom: 18px; width: 320px; max-height: 50vh; overflow-y: auto; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); z-index: 90; padding: 10px 12px; }
 .sf-uploads-head { font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; }
