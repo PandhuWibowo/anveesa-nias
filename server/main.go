@@ -1100,6 +1100,8 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			manage(handlers.SftpDelete())(w, r)
 		case len(parts) == 2 && parts[1] == "rename" && r.Method == http.MethodPost:
 			manage(handlers.SftpRename())(w, r)
+		case len(parts) == 2 && parts[1] == "compress" && r.Method == http.MethodPost:
+			manage(handlers.SftpCompress())(w, r)
 		default:
 			http.NotFound(w, r)
 		}

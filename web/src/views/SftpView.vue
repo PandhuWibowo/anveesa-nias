@@ -66,6 +66,10 @@ const folderName = ref('')
 const showRename = ref(false)
 const renameName = ref('')
 const renameTarget = ref<SftpEntry | null>(null)
+const showCompress = ref(false)
+const compressTarget = ref<SftpEntry | null>(null)
+const compressFormat = ref<'zip' | 'targz'>('zip')
+const compressing = ref(false)
 
 // View file
 const showView = ref(false)
@@ -269,6 +273,29 @@ async function submitRename() {
     toast.error(e?.response?.data?.error || 'Rename failed')
   }
 }
+function compress(entry: SftpEntry) {
+  compressTarget.value = entry
+  compressFormat.value = 'zip'
+  showCompress.value = true
+}
+async function submitCompress() {
+  const entry = compressTarget.value
+  if (!entry) return
+  compressing.value = true
+  try {
+    const { data } = await axios.post<{ name: string }>(`/api/sftp/hosts/${hostId.value}/compress`, {
+      path: joinPath(cwd.value, entry.name),
+      format: compressFormat.value,
+    })
+    toast.success(`Created ${data.name}`)
+    showCompress.value = false
+    await loadDir(cwd.value)
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Compress failed')
+  } finally {
+    compressing.value = false
+  }
+}
 async function del(entry: SftpEntry) {
   const ok = await confirm(
     `Delete "${entry.name}"${entry.isDir ? ' and everything in it' : ''}? This cannot be undone.`,
@@ -429,6 +456,7 @@ onMounted(loadHosts)
                   <td class="sf-act">
                     <button v-if="!e.isDir" class="base-btn base-btn--xs" @click.stop="view(e)">View</button>
                     <button v-if="!e.isDir" class="base-btn base-btn--xs" @click.stop="download(e)">Download</button>
+                    <button v-if="canManage && e.isDir" class="base-btn base-btn--xs" @click.stop="compress(e)">Compress</button>
                     <button v-if="canManage" class="base-btn base-btn--xs" @click.stop="rename(e)">Rename</button>
                     <button v-if="canManage" class="base-btn base-btn--xs base-btn--danger" @click.stop="del(e)">Delete</button>
                   </td>
@@ -466,6 +494,29 @@ onMounted(loadHosts)
         <div class="sf-modal-actions">
           <button class="base-btn base-btn--sm" @click="showRename = false">Cancel</button>
           <button class="base-btn base-btn--primary base-btn--sm" :disabled="!renameName.trim()" @click="submitRename">Rename</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Compress modal -->
+    <div v-if="showCompress" class="sf-modal-backdrop" @click.self="showCompress = false">
+      <div class="sf-modal page-card">
+        <div class="sf-modal-title">Compress "{{ compressTarget?.name }}"</div>
+        <div class="sf-compress-formats">
+          <label class="sf-radio">
+            <input type="radio" value="zip" v-model="compressFormat" />
+            <span>.zip</span>
+          </label>
+          <label class="sf-radio">
+            <input type="radio" value="targz" v-model="compressFormat" />
+            <span>.tar.gz</span>
+          </label>
+        </div>
+        <div class="sf-modal-actions">
+          <button class="base-btn base-btn--sm" @click="showCompress = false">Cancel</button>
+          <button class="base-btn base-btn--primary base-btn--sm" :disabled="compressing" @click="submitCompress">
+            {{ compressing ? 'Compressing…' : 'Compress' }}
+          </button>
         </div>
       </div>
     </div>
@@ -559,6 +610,9 @@ onMounted(loadHosts)
 .sf-modal-title { font-size: 15px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px; word-break: break-all; }
 .sf-modal-input { width: 100%; }
 .sf-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+.sf-compress-formats { display: flex; gap: 16px; }
+.sf-radio { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-primary); cursor: pointer; }
 
 .sf-view-modal { width: 760px; max-width: 92vw; max-height: 82vh; display: flex; flex-direction: column; }
 .sf-view-notice { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }

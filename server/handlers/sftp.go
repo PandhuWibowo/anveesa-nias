@@ -362,6 +362,86 @@ func SftpDelete() http.HandlerFunc {
 	}
 }
 
+// SftpCompress archives a file or directory into a .zip or .tar.gz sitting
+// next to it, by shelling out to the remote zip/tar binary over SSH (avoids
+// pulling the whole tree through the SFTP link just to re-upload it).
+func SftpCompress() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := sftpHostID(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Path   string `json:"path"`
+			Format string `json:"format"` // "zip" or "targz"
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		p := strings.TrimSpace(body.Path)
+		if p == "" || p == "/" {
+			http.Error(w, jsonError("invalid path"), http.StatusBadRequest)
+			return
+		}
+		var ext string
+		switch body.Format {
+		case "zip":
+			ext = ".zip"
+		case "targz":
+			ext = ".tar.gz"
+		default:
+			http.Error(w, jsonError("format must be zip or targz"), http.StatusBadRequest)
+			return
+		}
+		h, err := loadDockerHost(id)
+		if err != nil {
+			http.Error(w, jsonError("host not found"), http.StatusBadRequest)
+			return
+		}
+
+		dir := path.Dir(p)
+		base := path.Base(p)
+		archiveName := base + ext
+		archivePath := path.Join(dir, archiveName)
+
+		client, cleanup, err := sftpSession(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		if _, statErr := client.Stat(archivePath); statErr == nil {
+			cleanup()
+			http.Error(w, jsonError(archiveName+" already exists"), http.StatusConflict)
+			return
+		}
+		cleanup()
+
+		var cmd string
+		if body.Format == "zip" {
+			cmd = fmt.Sprintf("cd %s && zip -rq %s %s", shellQuote(dir), shellQuote(archiveName), shellQuote(base))
+		} else {
+			cmd = fmt.Sprintf("cd %s && tar -czf %s %s", shellQuote(dir), shellQuote(archiveName), shellQuote(base))
+		}
+		stdout, stderr, exitCode, err := runSSHCommand(h, cmd, "", 300)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		if exitCode != 0 {
+			msg := strings.TrimSpace(stderr)
+			if msg == "" {
+				msg = strings.TrimSpace(stdout)
+			}
+			if msg == "" {
+				msg = fmt.Sprintf("command exited with code %d", exitCode)
+			}
+			http.Error(w, jsonError(msg), http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "name": archiveName, "path": archivePath})
+	}
+}
+
 // SftpRename renames/moves a file or directory.
 func SftpRename() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
