@@ -5,6 +5,7 @@ import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
+import { useListFilter } from '@/composables/useListFilter'
 
 interface DockerHost {
   id: number
@@ -54,6 +55,7 @@ const { hasAnyPermission } = useAuth()
 const canManage = computed(() => hasAnyPermission(['docker.manage']))
 
 const hosts = ref<DockerHost[]>([])
+const { search, filtered: filteredHosts } = useListFilter(hosts, (h, q) => h.name.toLowerCase().includes(q) || h.ssh_host.toLowerCase().includes(q))
 const summaryMap = ref<Map<number, HostSummary>>(new Map())
 const loading = ref(false)
 const overviewLoading = ref(false)
@@ -275,59 +277,69 @@ onMounted(async () => {
           </div>
         </section>
 
+        <!-- Toolbar -->
+        <div v-if="hosts.length" class="dkh-toolbar">
+          <input v-model="search" class="base-input dkh-search" type="search" placeholder="Filter hosts…" />
+        </div>
+
         <!-- Host cards -->
         <div v-if="loading" class="dkh-loading">Loading hosts…</div>
 
-        <div v-else-if="hosts.length" class="dkh-grid">
-          <div v-for="h in hosts" :key="h.id" class="dkh-card page-card">
-            <div class="dkh-card-head">
-              <div class="dkh-status-row">
-                <span
-                  class="dkh-dot"
-                  :class="summaryFor(h) === undefined ? 'dkh-dot--unknown' : summaryFor(h)!.reachable ? 'dkh-dot--ok' : 'dkh-dot--err'"
-                  :title="summaryFor(h) === undefined ? 'Status unknown' : summaryFor(h)!.reachable ? 'Reachable' : (summaryFor(h)!.error || 'Unreachable')"
-                ></span>
-                <span class="dkh-name">{{ h.name }}</span>
+        <template v-else-if="hosts.length">
+          <div v-if="filteredHosts.length" class="dkh-grid">
+            <div v-for="h in filteredHosts" :key="h.id" class="dkh-card page-card">
+              <div class="dkh-card-head">
+                <div class="dkh-status-row">
+                  <span
+                    class="dkh-dot"
+                    :class="summaryFor(h) === undefined ? 'dkh-dot--unknown' : summaryFor(h)!.reachable ? 'dkh-dot--ok' : 'dkh-dot--err'"
+                    :title="summaryFor(h) === undefined ? 'Status unknown' : summaryFor(h)!.reachable ? 'Reachable' : (summaryFor(h)!.error || 'Unreachable')"
+                  ></span>
+                  <span class="dkh-name">{{ h.name }}</span>
+                </div>
+                <div class="dkh-meta">
+                  <span v-if="h.ssh_host" class="dkh-ssh">{{ h.ssh_user ? h.ssh_user + '@' : '' }}{{ h.ssh_host }}{{ h.ssh_port && h.ssh_port !== 22 ? ':' + h.ssh_port : '' }}</span>
+                  <span v-else class="dkh-local">local daemon</span>
+                </div>
               </div>
-              <div class="dkh-meta">
-                <span v-if="h.ssh_host" class="dkh-ssh">{{ h.ssh_user ? h.ssh_user + '@' : '' }}{{ h.ssh_host }}{{ h.ssh_port && h.ssh_port !== 22 ? ':' + h.ssh_port : '' }}</span>
-                <span v-else class="dkh-local">local daemon</span>
+
+              <div v-if="summaryFor(h)" class="dkh-stats">
+                <template v-if="summaryFor(h)!.reachable">
+                  <div class="dkh-stat">
+                    <span class="dkh-stat-val">{{ summaryFor(h)!.running }}<span class="dkh-stat-total">/{{ summaryFor(h)!.total }}</span></span>
+                    <span class="dkh-stat-label">containers</span>
+                  </div>
+                  <div class="dkh-stat">
+                    <span class="dkh-stat-val">{{ summaryFor(h)!.images }}</span>
+                    <span class="dkh-stat-label">images</span>
+                  </div>
+                  <div v-if="summaryFor(h)!.version" class="dkh-stat">
+                    <span class="dkh-stat-val dkh-version">v{{ summaryFor(h)!.version }}</span>
+                    <span class="dkh-stat-label">Docker</span>
+                  </div>
+                </template>
+                <div v-else class="dkh-err">{{ summaryFor(h)!.error || 'Unreachable' }}</div>
               </div>
-            </div>
+              <div v-else class="dkh-stats dkh-stats--pending">
+                <span class="dkh-muted">{{ overviewLoading ? 'Checking status…' : 'Status unknown' }}</span>
+              </div>
 
-            <div v-if="summaryFor(h)" class="dkh-stats">
-              <template v-if="summaryFor(h)!.reachable">
-                <div class="dkh-stat">
-                  <span class="dkh-stat-val">{{ summaryFor(h)!.running }}<span class="dkh-stat-total">/{{ summaryFor(h)!.total }}</span></span>
-                  <span class="dkh-stat-label">containers</span>
-                </div>
-                <div class="dkh-stat">
-                  <span class="dkh-stat-val">{{ summaryFor(h)!.images }}</span>
-                  <span class="dkh-stat-label">images</span>
-                </div>
-                <div v-if="summaryFor(h)!.version" class="dkh-stat">
-                  <span class="dkh-stat-val dkh-version">v{{ summaryFor(h)!.version }}</span>
-                  <span class="dkh-stat-label">Docker</span>
-                </div>
-              </template>
-              <div v-else class="dkh-err">{{ summaryFor(h)!.error || 'Unreachable' }}</div>
-            </div>
-            <div v-else class="dkh-stats dkh-stats--pending">
-              <span class="dkh-muted">{{ overviewLoading ? 'Checking status…' : 'Status unknown' }}</span>
-            </div>
-
-            <div class="dkh-actions">
-              <button class="base-btn base-btn--primary base-btn--xs" @click="manageHost(h)">Manage →</button>
-              <button
-                class="base-btn base-btn--xs"
-                :disabled="pingingId === h.id"
-                @click="pingHost(h)"
-              >{{ pingingId === h.id ? 'Testing…' : 'Test' }}</button>
-              <button v-if="canManage" class="base-btn base-btn--xs" @click="openEditHost(h)">Edit</button>
-              <button v-if="canManage" class="base-btn base-btn--danger base-btn--xs" @click="deleteHost(h)">Delete</button>
+              <div class="dkh-actions">
+                <button class="base-btn base-btn--primary base-btn--xs" @click="manageHost(h)">Manage →</button>
+                <button
+                  class="base-btn base-btn--xs"
+                  :disabled="pingingId === h.id"
+                  @click="pingHost(h)"
+                >{{ pingingId === h.id ? 'Testing…' : 'Test' }}</button>
+                <button v-if="canManage" class="base-btn base-btn--xs" @click="openEditHost(h)">Edit</button>
+                <button v-if="canManage" class="base-btn base-btn--danger base-btn--xs" @click="deleteHost(h)">Delete</button>
+              </div>
             </div>
           </div>
-        </div>
+          <div v-else class="page-card dkh-empty">
+            <p>No hosts match "{{ search }}".</p>
+          </div>
+        </template>
 
         <!-- Empty state -->
         <div v-else class="page-card dkh-empty">
@@ -394,6 +406,10 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+/* Toolbar */
+.dkh-toolbar { display: flex; justify-content: flex-end; }
+.dkh-search { width: 240px; max-width: 100%; }
+
 /* Host cards grid */
 .dkh-grid {
   display: grid;

@@ -5,6 +5,7 @@ import axios from 'axios'
 import { useSavedQueries, type SavedQuery } from '@/composables/useSavedQueries'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
+import { useListFilter } from '@/composables/useListFilter'
 import { pendingSQL } from '@/composables/usePendingSQL'
 import { pendingAIAnalytics } from '@/composables/usePendingAIAnalytics'
 import { pendingDashboardBlock } from '@/composables/usePendingDashboardBlock'
@@ -15,7 +16,6 @@ const { queries, loading, fetchAll, save, remove } = useSavedQueries()
 const { activeConnections: connections } = useConnections()
 const toast = useToast()
 
-const search = ref('')
 const filterConnId = ref<number | 'all'>('all')
 
 // Edit state
@@ -36,21 +36,17 @@ const expandedId = ref<number | null>(null)
 
 onMounted(() => fetchAll())
 
-const filtered = computed(() => {
-  let list = queries.value
-  if (filterConnId.value !== 'all') {
-    list = list.filter(q => q.conn_id === filterConnId.value)
-  }
-  if (search.value.trim()) {
-    const s = search.value.toLowerCase()
-    list = list.filter(q =>
-      q.name.toLowerCase().includes(s) ||
-      q.sql.toLowerCase().includes(s) ||
-      q.description?.toLowerCase().includes(s)
-    )
-  }
-  return list
-})
+const connFiltered = computed(() =>
+  filterConnId.value === 'all'
+    ? queries.value
+    : queries.value.filter(q => q.conn_id === filterConnId.value)
+)
+
+const { search, filtered } = useListFilter(connFiltered, (q, s) =>
+  q.name.toLowerCase().includes(s) ||
+  q.sql.toLowerCase().includes(s) ||
+  (q.description?.toLowerCase().includes(s) ?? false)
+)
 
 function connName(connId: number | null) {
   if (!connId) return null

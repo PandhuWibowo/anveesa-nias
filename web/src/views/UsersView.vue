@@ -3,6 +3,11 @@ import { ref, computed, onMounted } from 'vue'
 import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { readableError } from '@/utils/httpError'
+import { useListFilter } from '@/composables/useListFilter'
+import { useSort } from '@/composables/useSort'
+import { usePagination } from '@/composables/usePagination'
+import Pagination from '@/components/ui/Pagination.vue'
+import SortIcon from '@/components/ui/SortIcon.vue'
 
 const toast = useToast()
 
@@ -55,16 +60,11 @@ onMounted(async () => {
 })
 
 // ── Filter ──────────────────────────────────────────────────────
-const filterSearch = ref('')
 const filterRole = ref('')
 const filterStatus = ref('')
 
-const filteredUsers = computed(() => {
+const roleStatusFilteredUsers = computed(() => {
   let list = users.value
-  if (filterSearch.value.trim()) {
-    const q = filterSearch.value.toLowerCase()
-    list = list.filter(u => u.username.toLowerCase().includes(q))
-  }
   if (filterRole.value) {
     list = list.filter(u => u.role === filterRole.value)
   }
@@ -74,6 +74,10 @@ const filteredUsers = computed(() => {
   }
   return list
 })
+
+const { search: filterSearch, filtered: filteredUsers } = useListFilter(roleStatusFilteredUsers, (u, q) =>
+  u.username.toLowerCase().includes(q)
+)
 
 const availableRoles = computed(() => [...new Set(users.value.map(u => u.role))].sort())
 
@@ -87,49 +91,15 @@ const hasActiveFilters = computed(() => filterSearch.value || filterRole.value |
 
 // ── Sort ────────────────────────────────────────────────────────
 type SortKey = 'id' | 'username' | 'role' | 'is_active' | 'created_at'
-const sortKey = ref<SortKey>('id')
-const sortDir = ref<'asc' | 'desc'>('asc')
+const { sortKey, sortDir, toggleSort: setSort, sort: sortUsers } = useSort<User>((u, key) => {
+  const v = (u as any)[key]
+  return typeof v === 'string' ? v.toLowerCase() : v
+}, 'id')
 
-function setSort(key: SortKey) {
-  if (sortKey.value === key) {
-    sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
-  } else {
-    sortKey.value = key
-    sortDir.value = 'asc'
-  }
-}
-
-const sortedUsers = computed(() => {
-  const list = [...filteredUsers.value]
-  list.sort((a, b) => {
-    let av: any = a[sortKey.value]
-    let bv: any = b[sortKey.value]
-    if (typeof av === 'string') av = av.toLowerCase()
-    if (typeof bv === 'string') bv = bv.toLowerCase()
-    if (av < bv) return sortDir.value === 'asc' ? -1 : 1
-    if (av > bv) return sortDir.value === 'asc' ? 1 : -1
-    return 0
-  })
-  return list
-})
+const sortedUsers = computed(() => sortUsers(filteredUsers.value))
 
 // ── Pagination ──────────────────────────────────────────────────
-const pageSize = ref(10)
-const currentPage = ref(1)
-
-const totalPages = computed(() => Math.max(1, Math.ceil(sortedUsers.value.length / pageSize.value)))
-
-const pagedUsers = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  return sortedUsers.value.slice(start, start + pageSize.value)
-})
-
-function setPage(p: number) {
-  currentPage.value = Math.max(1, Math.min(p, totalPages.value))
-}
-
-// Reset to first page when filters change
-function resetPage() { currentPage.value = 1 }
+const { page: currentPage, pageSize, totalPages, paged: pagedUsers, setPage } = usePagination(sortedUsers, 10)
 
 // ── Custom fields (column visibility) ───────────────────────────
 const visibleColumns = ref({
@@ -195,10 +165,7 @@ const roleColors: Record<string, string> = {
   user: '#94a3b8',
 }
 
-function sortIcon(key: SortKey) {
-  if (sortKey.value !== key) return 'none'
-  return sortDir.value === 'asc' ? 'asc' : 'desc'
-}
+
 </script>
 
 <template>
@@ -237,19 +204,18 @@ function sortIcon(key: SortKey) {
                 class="u-filter-input"
                 v-model="filterSearch"
                 placeholder="Search username…"
-                @input="resetPage"
               />
             </div>
-            <select class="u-filter-select" v-model="filterRole" @change="resetPage">
+            <select class="u-filter-select" v-model="filterRole">
               <option value="">All roles</option>
               <option v-for="r in availableRoles" :key="r" :value="r">{{ r }}</option>
             </select>
-            <select class="u-filter-select" v-model="filterStatus" @change="resetPage">
+            <select class="u-filter-select" v-model="filterStatus">
               <option value="">All status</option>
               <option value="active">Active</option>
               <option value="locked">Locked</option>
             </select>
-            <button v-if="hasActiveFilters" class="u-filter-clear" @click="clearFilters(); resetPage()">Clear</button>
+            <button v-if="hasActiveFilters" class="u-filter-clear" @click="clearFilters()">Clear</button>
 
             <!-- Column visibility -->
             <div class="u-col-toggle" @click.stop>
@@ -268,7 +234,7 @@ function sortIcon(key: SortKey) {
 
             <!-- Page size -->
             <div class="u-pagesize">
-              <select class="u-filter-select" v-model="pageSize" @change="resetPage">
+              <select class="u-filter-select" v-model="pageSize">
                 <option :value="10">10 / page</option>
                 <option :value="25">25 / page</option>
                 <option :value="50">50 / page</option>
@@ -285,35 +251,20 @@ function sortIcon(key: SortKey) {
           <table v-else class="u-table">
             <thead>
               <tr>
-                <th v-if="visibleColumns.id" @click="setSort('id')" class="u-th-sort">
-                  ID
-                  <span class="u-sort-icon" :class="{ 'u-sort-active': sortKey === 'id' }">
-                    {{ sortIcon('id') === 'asc' ? '↑' : sortIcon('id') === 'desc' ? '↓' : '↕' }}
-                  </span>
+                <th v-if="visibleColumns.id" class="u-th-sort" :class="{ sorted: sortKey === 'id' }" @click="setSort('id')">
+                  ID <SortIcon :active="sortKey === 'id'" :dir="sortDir" />
                 </th>
-                <th v-if="visibleColumns.username" @click="setSort('username')" class="u-th-sort">
-                  Username
-                  <span class="u-sort-icon" :class="{ 'u-sort-active': sortKey === 'username' }">
-                    {{ sortIcon('username') === 'asc' ? '↑' : sortIcon('username') === 'desc' ? '↓' : '↕' }}
-                  </span>
+                <th v-if="visibleColumns.username" class="u-th-sort" :class="{ sorted: sortKey === 'username' }" @click="setSort('username')">
+                  Username <SortIcon :active="sortKey === 'username'" :dir="sortDir" />
                 </th>
-                <th v-if="visibleColumns.role" @click="setSort('role')" class="u-th-sort">
-                  Role
-                  <span class="u-sort-icon" :class="{ 'u-sort-active': sortKey === 'role' }">
-                    {{ sortIcon('role') === 'asc' ? '↑' : sortIcon('role') === 'desc' ? '↓' : '↕' }}
-                  </span>
+                <th v-if="visibleColumns.role" class="u-th-sort" :class="{ sorted: sortKey === 'role' }" @click="setSort('role')">
+                  Role <SortIcon :active="sortKey === 'role'" :dir="sortDir" />
                 </th>
-                <th v-if="visibleColumns.is_active" @click="setSort('is_active')" class="u-th-sort">
-                  Status
-                  <span class="u-sort-icon" :class="{ 'u-sort-active': sortKey === 'is_active' }">
-                    {{ sortIcon('is_active') === 'asc' ? '↑' : sortIcon('is_active') === 'desc' ? '↓' : '↕' }}
-                  </span>
+                <th v-if="visibleColumns.is_active" class="u-th-sort" :class="{ sorted: sortKey === 'is_active' }" @click="setSort('is_active')">
+                  Status <SortIcon :active="sortKey === 'is_active'" :dir="sortDir" />
                 </th>
-                <th v-if="visibleColumns.created_at" @click="setSort('created_at')" class="u-th-sort">
-                  Created
-                  <span class="u-sort-icon" :class="{ 'u-sort-active': sortKey === 'created_at' }">
-                    {{ sortIcon('created_at') === 'asc' ? '↑' : sortIcon('created_at') === 'desc' ? '↓' : '↕' }}
-                  </span>
+                <th v-if="visibleColumns.created_at" class="u-th-sort" :class="{ sorted: sortKey === 'created_at' }" @click="setSort('created_at')">
+                  Created <SortIcon :active="sortKey === 'created_at'" :dir="sortDir" />
                 </th>
                 <th></th>
               </tr>
@@ -345,26 +296,14 @@ function sortIcon(key: SortKey) {
           </table>
 
           <!-- Pagination -->
-          <div v-if="!loading && totalPages > 1" class="u-pagination">
-            <span class="u-page-info">
-              {{ (currentPage - 1) * pageSize + 1 }}–{{ Math.min(currentPage * pageSize, sortedUsers.length) }} of {{ sortedUsers.length }}
-            </span>
-            <div class="u-page-controls">
-              <button class="u-page-btn" :disabled="currentPage === 1" @click="setPage(1)">«</button>
-              <button class="u-page-btn" :disabled="currentPage === 1" @click="setPage(currentPage - 1)">‹</button>
-              <template v-for="p in totalPages" :key="p">
-                <button
-                  v-if="Math.abs(p - currentPage) <= 2 || p === 1 || p === totalPages"
-                  class="u-page-btn"
-                  :class="{ 'u-page-btn--active': p === currentPage }"
-                  @click="setPage(p)"
-                >{{ p }}</button>
-                <span v-else-if="Math.abs(p - currentPage) === 3" class="u-page-ellipsis">…</span>
-              </template>
-              <button class="u-page-btn" :disabled="currentPage === totalPages" @click="setPage(currentPage + 1)">›</button>
-              <button class="u-page-btn" :disabled="currentPage === totalPages" @click="setPage(totalPages)">»</button>
-            </div>
-          </div>
+          <Pagination
+            v-if="!loading && totalPages > 1"
+            :page="currentPage"
+            :total-pages="totalPages"
+            :total="sortedUsers.length"
+            item-label="users"
+            @update:page="setPage"
+          />
         </section>
       </div>
     </div>
@@ -482,8 +421,7 @@ function sortIcon(key: SortKey) {
 /* Sort */
 .u-th-sort { cursor: pointer; user-select: none; white-space: nowrap; }
 .u-th-sort:hover { color: var(--text-primary); }
-.u-sort-icon { margin-left: 4px; font-size: 10px; color: var(--text-muted); opacity: 0.5; }
-.u-sort-icon.u-sort-active { opacity: 1; color: var(--brand); }
+.u-th-sort.sorted { color: var(--brand); }
 
 /* Column toggle */
 .u-col-toggle { position: relative; }
@@ -505,25 +443,6 @@ function sortIcon(key: SortKey) {
 }
 .u-col-item input { cursor: pointer; }
 
-/* Pagination */
-.u-pagination {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 20px; border-top: 1px solid var(--border);
-  flex-wrap: wrap; gap: 8px;
-}
-.u-page-info { font-size: 12px; color: var(--text-muted); }
-.u-page-controls { display: flex; align-items: center; gap: 3px; }
-.u-page-btn {
-  min-width: 30px; height: 30px; padding: 0 6px;
-  border: 1px solid var(--border); border-radius: 5px;
-  background: transparent; color: var(--text-primary);
-  font-size: 12px; cursor: pointer; font-family: inherit;
-  transition: background 0.12s, border-color 0.12s;
-}
-.u-page-btn:hover:not(:disabled) { background: rgba(255,255,255,0.06); border-color: var(--brand); }
-.u-page-btn:disabled { opacity: 0.35; cursor: default; }
-.u-page-btn--active { background: var(--brand) !important; border-color: var(--brand) !important; color: #fff !important; }
-.u-page-ellipsis { padding: 0 4px; color: var(--text-muted); font-size: 12px; }
 .u-pagesize { margin-left: auto; }
 
 /* Dialog */

@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
+import { useSort } from '@/composables/useSort'
+import SortIcon from '@/components/ui/SortIcon.vue'
 
 interface AlertLogEntry {
   id: number
@@ -79,6 +81,16 @@ const totalAll = computed(() => totalOk.value + totalError.value)
 function statFor(channel: string, status: string) {
   return stats.value.find(s => s.channel === channel && s.status === status)?.count ?? 0
 }
+
+function alertLogSortValue(e: AlertLogEntry, key: string): unknown {
+  if (key === 'created_at') {
+    const d = new Date(e.created_at.replace(' ', 'T') + 'Z')
+    return isNaN(d.getTime()) ? 0 : d.getTime()
+  }
+  return e[key as keyof AlertLogEntry]
+}
+const { sortKey, sortDir, toggleSort, sort } = useSort<AlertLogEntry>(alertLogSortValue)
+const sortedEntries = computed(() => sort(entries.value))
 
 async function load() {
   loading.value = true
@@ -379,17 +391,17 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
             <table class="alg-table">
               <thead>
                 <tr>
-                  <th>Time</th>
-                  <th>Channel</th>
-                  <th>Target</th>
-                  <th>Triggered By</th>
-                  <th>Status</th>
+                  <th class="alg-th-sort" :class="{ sorted: sortKey === 'created_at' }" @click="toggleSort('created_at')">Time <SortIcon :active="sortKey === 'created_at'" :dir="sortDir" /></th>
+                  <th class="alg-th-sort" :class="{ sorted: sortKey === 'channel' }" @click="toggleSort('channel')">Channel <SortIcon :active="sortKey === 'channel'" :dir="sortDir" /></th>
+                  <th class="alg-th-sort" :class="{ sorted: sortKey === 'target_name' }" @click="toggleSort('target_name')">Target <SortIcon :active="sortKey === 'target_name'" :dir="sortDir" /></th>
+                  <th class="alg-th-sort" :class="{ sorted: sortKey === 'triggered_by' }" @click="toggleSort('triggered_by')">Triggered By <SortIcon :active="sortKey === 'triggered_by'" :dir="sortDir" /></th>
+                  <th class="alg-th-sort" :class="{ sorted: sortKey === 'status' }" @click="toggleSort('status')">Status <SortIcon :active="sortKey === 'status'" :dir="sortDir" /></th>
                   <th>Error</th>
                 </tr>
               </thead>
               <tbody>
                 <tr
-                  v-for="e in entries"
+                  v-for="e in sortedEntries"
                   :key="e.id"
                   :class="{ 'alg-row--error': e.status === 'error' }"
                 >
@@ -769,6 +781,9 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
   white-space: nowrap;
   background: rgba(255, 255, 255, 0.02);
 }
+
+.alg-th-sort { cursor: pointer; user-select: none; }
+.alg-th-sort:hover { color: var(--text-primary); }
 
 .alg-table td {
   padding: 10px 14px;

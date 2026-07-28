@@ -4,6 +4,7 @@ import DataSessionPane from '@/components/database/DataSessionPane.vue'
 import { useConnections } from '@/composables/useConnections'
 import { useTheme } from '@/composables/useTheme'
 import { pendingSQL } from '@/composables/usePendingSQL'
+import { useListFilter } from '@/composables/useListFilter'
 
 const props = defineProps<{ activeConnId?: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -105,7 +106,6 @@ function closeSession(id: string) {
 
 // Picker for new sessions
 const pickerOpen = ref(false)
-const pickerSearch = ref('')
 const pickerRef = ref<HTMLElement | null>(null)
 const addBtnRef = ref<HTMLButtonElement | null>(null)
 const pickerPos = ref({ top: 0, left: 0, width: 300, maxHeight: 380 })
@@ -126,11 +126,7 @@ function isNonSqlDriver(driver: string) {
 
 const sqlConns = computed(() => connections.value.filter(c => !isNonSqlDriver(c.driver)))
 
-const filteredConns = computed(() =>
-  pickerSearch.value
-    ? sqlConns.value.filter(c => c.name.toLowerCase().includes(pickerSearch.value.toLowerCase()))
-    : sqlConns.value
-)
+const { search: pickerSearch, filtered: filteredConns } = useListFilter(sqlConns, (c, q) => c.name.toLowerCase().includes(q))
 
 function togglePicker() {
   if (pickerOpen.value) { pickerOpen.value = false; return }

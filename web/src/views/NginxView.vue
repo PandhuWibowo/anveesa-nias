@@ -5,8 +5,10 @@ import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
+import { useSort } from '@/composables/useSort'
 import NginxEditor from '@/components/nginx/NginxEditor.vue'
 import SearchSelect from '@/components/ui/SearchSelect.vue'
+import SortIcon from '@/components/ui/SortIcon.vue'
 
 type NginxTab = 'config' | 'sites' | 'logs' | 'map' | 'certs' | 'status'
 interface NginxCert {
@@ -168,6 +170,11 @@ let lastStub: { requests: number; t: number } | null = null
 const fleetMode = ref(false)
 const fleet = ref<FleetHost[]>([])
 const loadingFleet = ref(false)
+function fleetSortValue(f: FleetHost, key: string): unknown {
+  return f[key as keyof FleetHost]
+}
+const { sortKey: fleetSortKey, sortDir: fleetSortDir, toggleSort: toggleFleetSort, sort: sortFleet } = useSort<FleetHost>(fleetSortValue)
+const sortedFleet = computed(() => sortFleet(fleet.value))
 
 // A permission/sudo error means the SSH user lacks direct access — the fix is
 // to elevate. We flip `useSudo` on and retry once, transparently.
@@ -872,12 +879,19 @@ onBeforeUnmount(() => {
           </div>
           <table class="ng-table">
             <thead>
-              <tr><th>Host</th><th>Version</th><th>State</th><th>Config test</th><th>Cert expiry</th><th></th></tr>
+              <tr>
+                <th class="ng-th-sort" :class="{ sorted: fleetSortKey === 'name' }" @click="toggleFleetSort('name')">Host <SortIcon :active="fleetSortKey === 'name'" :dir="fleetSortDir" /></th>
+                <th class="ng-th-sort" :class="{ sorted: fleetSortKey === 'version' }" @click="toggleFleetSort('version')">Version <SortIcon :active="fleetSortKey === 'version'" :dir="fleetSortDir" /></th>
+                <th class="ng-th-sort" :class="{ sorted: fleetSortKey === 'active' }" @click="toggleFleetSort('active')">State <SortIcon :active="fleetSortKey === 'active'" :dir="fleetSortDir" /></th>
+                <th class="ng-th-sort" :class="{ sorted: fleetSortKey === 'test_ok' }" @click="toggleFleetSort('test_ok')">Config test <SortIcon :active="fleetSortKey === 'test_ok'" :dir="fleetSortDir" /></th>
+                <th class="ng-th-sort" :class="{ sorted: fleetSortKey === 'soonest_days' }" @click="toggleFleetSort('soonest_days')">Cert expiry <SortIcon :active="fleetSortKey === 'soonest_days'" :dir="fleetSortDir" /></th>
+                <th></th>
+              </tr>
             </thead>
             <tbody>
               <tr v-if="loadingFleet"><td colspan="6" class="ng-msg">Probing all hosts over SSH…</td></tr>
               <tr v-else-if="!fleet.length"><td colspan="6" class="ng-msg">No SSH hosts.</td></tr>
-              <tr v-for="f in fleet" :key="f.id">
+              <tr v-for="f in sortedFleet" :key="f.id">
                 <td>
                   <div class="ng-sname">{{ f.name }}</div>
                   <div class="ng-fleet-sub">{{ f.ssh_host }}</div>
@@ -1255,6 +1269,8 @@ onBeforeUnmount(() => {
 .ng-sites-hint { font-size: 11px; color: var(--text-muted); }
 .ng-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .ng-table th { text-align: left; padding: 9px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+.ng-th-sort { cursor: pointer; user-select: none; }
+.ng-th-sort:hover { color: var(--text-primary); }
 .ng-table td { padding: 9px 12px; border-bottom: 1px solid var(--border); }
 .ng-table tbody tr:last-child td { border-bottom: none; }
 .ng-msg { text-align: center; color: var(--text-muted); padding: 24px; }

@@ -5,6 +5,7 @@ import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
+import { useListFilter } from '@/composables/useListFilter'
 
 interface DockerHost {
   id: number
@@ -54,6 +55,9 @@ const { hasAnyPermission } = useAuth()
 const canManage = computed(() => hasAnyPermission(['docker.manage', 'sftp.manage']))
 
 const hosts = ref<DockerHost[]>([])
+const { search, filtered: filteredHosts } = useListFilter(hosts, (h, q) =>
+  h.name.toLowerCase().includes(q) || h.ssh_host.toLowerCase().includes(q),
+)
 const summaryMap = ref<Map<number, HostSummary>>(new Map())
 const loading = ref(false)
 const overviewLoading = ref(false)
@@ -269,9 +273,14 @@ onMounted(async () => {
 
         <div v-if="loading" class="ssh-loading">Loading hosts…</div>
 
-        <!-- Host cards -->
-        <div v-else-if="hosts.length" class="ssh-grid">
-          <div v-for="h in hosts" :key="h.id" class="ssh-card page-card">
+        <template v-else-if="hosts.length">
+          <div class="ssh-toolbar">
+            <input v-model="search" class="base-input ssh-search" type="search" placeholder="Filter hosts…" />
+          </div>
+
+          <!-- Host cards -->
+          <div v-if="filteredHosts.length" class="ssh-grid">
+          <div v-for="h in filteredHosts" :key="h.id" class="ssh-card page-card">
 
             <!-- Card header -->
             <div class="ssh-card-head">
@@ -351,7 +360,11 @@ onMounted(async () => {
               <button v-if="canManage" class="base-btn base-btn--danger base-btn--xs" @click="deleteHost(h)">Delete</button>
             </div>
           </div>
-        </div>
+          </div>
+          <div v-else class="page-card ssh-empty">
+            <p>No hosts match "{{ search }}".</p>
+          </div>
+        </template>
 
         <!-- Empty state -->
         <div v-else class="page-card ssh-empty">
@@ -418,6 +431,9 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.ssh-toolbar { display: flex; margin-bottom: 14px; }
+.ssh-search { width: 240px; max-width: 40vw; }
+
 /* Grid */
 .ssh-grid {
   display: grid;

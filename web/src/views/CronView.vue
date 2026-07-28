@@ -4,6 +4,9 @@ import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
+import { useListFilter } from '@/composables/useListFilter'
+import { useSort } from '@/composables/useSort'
+import SortIcon from '@/components/ui/SortIcon.vue'
 
 interface CronHost {
   id: number
@@ -109,6 +112,17 @@ const entryRows = computed(() =>
     idx: number
   }[],
 )
+type EntryRow = { it: Extract<CronItem, { kind: 'entry' }>; idx: number }
+const { search: cronSearch, filtered: filteredEntryRows } = useListFilter(entryRows, (row, q) =>
+  row.it.schedule.toLowerCase().includes(q) || row.it.command.toLowerCase().includes(q),
+)
+function cronSortValue(row: EntryRow, key: string): string {
+  if (key === 'schedule') return row.it.schedule.toLowerCase()
+  if (key === 'command') return row.it.command.toLowerCase()
+  return ''
+}
+const { sortKey, sortDir, toggleSort, sort } = useSort<EntryRow>(cronSortValue)
+const sortedEntryRows = computed(() => sort(filteredEntryRows.value))
 const preservedCount = computed(() =>
   (crontabTarget.value === 'user' ? items.value : sudoItems.value).filter(
     (it) => it.kind === 'other' && it.text.trim() !== '',
@@ -131,6 +145,7 @@ const hasSudoCrontab = computed(() => sudoCrontabRaw.value.trim().length > 0)
 function switchTab(target: CrontabTarget) {
   rawMode.value = false
   crontabTarget.value = target
+  cronSearch.value = ''
 }
 
 function normalize(s: string) {
@@ -220,6 +235,7 @@ async function loadCrontab() {
   if (!selectedId.value) return
   crontabLoading.value = true
   rawMode.value = false
+  cronSearch.value = ''
   try {
     const { data } = await axios.get<CrontabResponse>(`/api/cron/hosts/${selectedId.value}/crontab`)
     originalRaw.value = data.user_crontab || ''
@@ -418,17 +434,27 @@ loadHosts()
 
               <!-- Table editor -->
               <template v-else>
+                <div v-if="entryRows.length" class="crn-filter">
+                  <input v-model="cronSearch" class="base-input crn-search" type="search" placeholder="Filter jobs…" />
+                </div>
                 <table v-if="entryRows.length" class="crn-table">
                   <thead>
                     <tr>
                       <th class="crn-c-on">On</th>
-                      <th class="crn-c-sched">Schedule</th>
-                      <th>Command</th>
+                      <th class="crn-c-sched" :class="{ sorted: sortKey === 'schedule' }" @click="toggleSort('schedule')">
+                        Schedule <SortIcon :active="sortKey === 'schedule'" :dir="sortDir" />
+                      </th>
+                      <th class="crn-c-cmd" :class="{ sorted: sortKey === 'command' }" @click="toggleSort('command')">
+                        Command <SortIcon :active="sortKey === 'command'" :dir="sortDir" />
+                      </th>
                       <th class="crn-c-act"></th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="row in entryRows" :key="row.idx" :class="{ 'crn-off': !row.it.enabled }">
+                    <tr v-if="!sortedEntryRows.length">
+                      <td colspan="4" class="crn-msg">No jobs match "{{ cronSearch }}".</td>
+                    </tr>
+                    <tr v-for="row in sortedEntryRows" :key="row.idx" :class="{ 'crn-off': !row.it.enabled }">
                       <td>
                         <label class="crn-switch">
                           <input
@@ -690,11 +716,23 @@ loadHosts()
   border-bottom: 1px solid var(--border, #f1f5f9);
   vertical-align: middle;
 }
+.crn-filter {
+  margin-bottom: 0.6rem;
+}
+.crn-search {
+  width: 240px;
+  max-width: 60vw;
+}
 .crn-c-on {
   width: 42px;
 }
 .crn-c-sched {
   width: 190px;
+}
+.crn-c-sched,
+.crn-c-cmd {
+  cursor: pointer;
+  user-select: none;
 }
 .crn-c-act {
   width: 70px;

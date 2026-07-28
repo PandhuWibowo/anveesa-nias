@@ -3,6 +3,9 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
+import { useSort } from '@/composables/useSort'
+import Pagination from '@/components/ui/Pagination.vue'
+import SortIcon from '@/components/ui/SortIcon.vue'
 
 // ── Shareable link helpers ────────────────────────────────────────
 function readURLParams() {
@@ -90,8 +93,6 @@ const timeRanges = [
   { value: '6h', label: '6h' },
   { value: '24h', label: '24h' },
 ]
-const sortCol = ref<'name' | 'last_1m' | 'avg' | 'max'>('last_1m')
-const sortDir = ref<'asc' | 'desc'>('desc')
 const pageSize = ref(25)
 const currentPage = ref(1)
 const showMetricMenu = ref(false)
@@ -155,6 +156,12 @@ interface HostRow {
   latest_ts: string
 }
 
+const { sortKey: sortCol, sortDir, toggleSort, sort: applySort } = useSort<HostRow>(
+  (item, key) => (key === 'name' ? item.name : (item[key as 'last_1m' | 'avg' | 'max'] ?? -Infinity)),
+  'last_1m'
+)
+sortDir.value = 'desc'
+
 const rows = ref<HostRow[]>([])
 const total = ref(0)
 const loading = ref(false)
@@ -200,18 +207,10 @@ const pinnedRows = computed(() => rows.value.filter(r => pinnedHosts.value.has(r
 const unpinnedRows = computed(() => rows.value.filter(r => !pinnedHosts.value.has(r.name)))
 
 const sortedRows = computed(() => {
-  let list = anomalyOnly.value
+  const list = anomalyOnly.value
     ? unpinnedRows.value.filter(r => anomalyHosts.value.has(r.name))
-    : [...unpinnedRows.value]
-  list.sort((a, b) => {
-    let av: any, bv: any
-    if (sortCol.value === 'name') { av = a.name; bv = b.name }
-    else { av = a[sortCol.value] ?? -Infinity; bv = b[sortCol.value] ?? -Infinity }
-    if (av < bv) return sortDir.value === 'asc' ? -1 : 1
-    if (av > bv) return sortDir.value === 'asc' ? 1 : -1
-    return 0
-  })
-  return list
+    : unpinnedRows.value
+  return applySort(list)
 })
 
 const totalPages = computed(() => Math.max(1, Math.ceil(sortedRows.value.length / pageSize.value)))
@@ -219,16 +218,6 @@ const pagedRows = computed(() => {
   const s = (currentPage.value - 1) * pageSize.value
   return sortedRows.value.slice(s, s + pageSize.value)
 })
-
-function setSort(col: typeof sortCol.value) {
-  if (sortCol.value === col) sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
-  else { sortCol.value = col; sortDir.value = 'desc' }
-}
-
-function sortIcon(col: typeof sortCol.value) {
-  if (sortCol.value !== col) return '↕'
-  return sortDir.value === 'asc' ? '↑' : '↓'
-}
 
 // ── Format helpers ────────────────────────────────────────────────
 function fmtValue(v: number | null, fmt: string, unit: string): string {
@@ -1131,18 +1120,18 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
                 <tr>
                   <th v-if="compareMode" class="inv-th inv-th--check"></th>
                   <th class="inv-th inv-th--pin"></th>
-                  <th class="inv-th inv-th--name" @click="setSort('name')">
-                    Name <span class="inv-sort-icon" :class="{ active: sortCol === 'name' }">{{ sortIcon('name') }}</span>
+                  <th class="inv-th inv-th--name" :class="{ sorted: sortCol === 'name' }" @click="toggleSort('name')">
+                    Name <SortIcon :active="sortCol === 'name'" :dir="sortDir" />
                   </th>
                   <th class="inv-th inv-th--spark">Trend</th>
-                  <th class="inv-th inv-th--metric" @click="setSort('last_1m')">
-                    Last 1m <span class="inv-sort-icon" :class="{ active: sortCol === 'last_1m' }">{{ sortIcon('last_1m') }}</span>
+                  <th class="inv-th inv-th--metric" :class="{ sorted: sortCol === 'last_1m' }" @click="toggleSort('last_1m')">
+                    Last 1m <SortIcon :active="sortCol === 'last_1m'" :dir="sortDir" />
                   </th>
-                  <th class="inv-th inv-th--metric" @click="setSort('avg')">
-                    Avg <span class="inv-sort-icon" :class="{ active: sortCol === 'avg' }">{{ sortIcon('avg') }}</span>
+                  <th class="inv-th inv-th--metric" :class="{ sorted: sortCol === 'avg' }" @click="toggleSort('avg')">
+                    Avg <SortIcon :active="sortCol === 'avg'" :dir="sortDir" />
                   </th>
-                  <th class="inv-th inv-th--metric" @click="setSort('max')">
-                    Max <span class="inv-sort-icon" :class="{ active: sortCol === 'max' }">{{ sortIcon('max') }}</span>
+                  <th class="inv-th inv-th--metric" :class="{ sorted: sortCol === 'max' }" @click="toggleSort('max')">
+                    Max <SortIcon :active="sortCol === 'max'" :dir="sortDir" />
                   </th>
                   <th class="inv-th inv-th--ts">Last seen</th>
                 </tr>
@@ -1249,15 +1238,7 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
                   </select>
                 </label>
               </div>
-              <div class="inv-pagination" v-if="totalPages > 1">
-                <button class="inv-page-btn" :disabled="currentPage === 1" @click="currentPage--">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-                </button>
-                <span class="inv-page-info">{{ currentPage }} / {{ totalPages }}</span>
-                <button class="inv-page-btn" :disabled="currentPage === totalPages" @click="currentPage++">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-                </button>
-              </div>
+              <Pagination v-if="totalPages > 1" :page="currentPage" :total-pages="totalPages" @update:page="currentPage = $event" />
             </div>
           </section>
           </div><!-- end inventory tab -->
@@ -1787,8 +1768,6 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
 .inv-th--ts { text-align: right; width: 100px; }
 .inv-th--check { width: 36px; min-width: 36px; }
 .inv-th--pin { width: 34px; min-width: 34px; }
-.inv-sort-icon { font-size: 10px; margin-left: 4px; opacity: 0.5; }
-.inv-sort-icon.active { opacity: 1; color: var(--brand); }
 
 .inv-row:hover td { background: rgba(255,255,255,0.025); }
 .inv-row--pinned td { background: rgba(99,102,241,0.035); }
@@ -1848,16 +1827,6 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
 .inv-sep { opacity: 0.4; }
 .inv-per-page { display: flex; align-items: center; gap: 5px; }
 .inv-per-page-sel { border: 1px solid var(--border); border-radius: 4px; background: var(--bg-body); color: var(--text-primary); font-size: 12px; padding: 2px 4px; outline: none; }
-.inv-pagination { display: flex; align-items: center; gap: 6px; }
-.inv-page-btn {
-  width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
-  border: 1px solid var(--border); border-radius: 5px; background: transparent;
-  color: var(--text-muted); cursor: pointer; transition: all 0.1s;
-}
-.inv-page-btn:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
-.inv-page-btn:disabled { opacity: 0.3; cursor: default; }
-.inv-page-info { font-size: 12px; color: var(--text-muted); }
-
 /* Compare bar */
 .inv-compare-bar {
   display: flex; align-items: center; gap: 10px;

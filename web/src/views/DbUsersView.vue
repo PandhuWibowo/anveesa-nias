@@ -4,6 +4,9 @@ import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConnections } from '@/composables/useConnections'
 import { readableError } from '@/utils/httpError'
+import { useListFilter } from '@/composables/useListFilter'
+import { useSort } from '@/composables/useSort'
+import SortIcon from '@/components/ui/SortIcon.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const toast = useToast()
@@ -29,13 +32,15 @@ interface DBUser {
 const users = ref<DBUser[]>([])
 const loadingUsers = ref(false)
 const selectedUser = ref<DBUser | null>(null)
-const userSearch = ref('')
 
-const filteredUsers = computed(() => {
-  const q = userSearch.value.toLowerCase()
-  if (!q) return users.value
-  return users.value.filter(u => u.username.toLowerCase().includes(q) || u.host?.toLowerCase().includes(q))
-})
+const { search: userSearch, filtered: searchedUsers } = useListFilter(users, (u, q) =>
+  u.username.toLowerCase().includes(q) || (u.host || '').toLowerCase().includes(q)
+)
+function dbUserSortValue(u: DBUser, key: string): unknown {
+  return u[key as keyof DBUser]
+}
+const { sortKey: userSortKey, sortDir: userSortDir, toggleSort: toggleUserSort, sort: sortUsers } = useSort<DBUser>(dbUserSortValue)
+const filteredUsers = computed(() => sortUsers(searchedUsers.value))
 
 async function loadUsers() {
   if (!props.activeConnId) return
@@ -551,6 +556,17 @@ function grantLabel(g: GrantEntry) {
             <div class="dbu-search">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
               <input class="dbu-search-input" v-model="userSearch" placeholder="Filter users…" />
+            </div>
+
+            <!-- Sort -->
+            <div class="dbu-sort-bar">
+              <span class="dbu-sort-label">Sort</span>
+              <button class="dbu-sort-btn" :class="{ sorted: userSortKey === 'username' }" @click="toggleUserSort('username')">
+                Username <SortIcon :active="userSortKey === 'username'" :dir="userSortDir" />
+              </button>
+              <button class="dbu-sort-btn" :class="{ sorted: userSortKey === 'host' }" @click="toggleUserSort('host')">
+                Host <SortIcon :active="userSortKey === 'host'" :dir="userSortDir" />
+              </button>
             </div>
 
             <div v-if="loadingUsers" class="dbu-loading">
@@ -1082,6 +1098,22 @@ function grantLabel(g: GrantEntry) {
   color: var(--text-primary); font-size: 12px; width: 100%; font-family: inherit;
 }
 .dbu-search-input::placeholder { color: var(--text-muted); }
+
+/* Sort bar */
+.dbu-sort-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px 8px; border-bottom: 1px solid var(--border);
+}
+.dbu-sort-label { font-size: 11px; color: var(--text-muted); }
+.dbu-sort-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: transparent; border: 1px solid var(--border); border-radius: 999px;
+  padding: 2px 8px; font-size: 11px; color: var(--text-muted);
+  cursor: pointer; font-family: inherit; transition: all 0.12s;
+}
+.dbu-sort-btn:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+.dbu-sort-btn.sorted { color: var(--brand); border-color: var(--brand); }
+
 .dbu-user-list { overflow-y: auto; flex: 1; }
 .dbu-user-row {
   display: flex; align-items: center; gap: 10px;

@@ -5,6 +5,9 @@ import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useSearchCache } from '@/composables/useSearchCache'
+import { useListFilter } from '@/composables/useListFilter'
+import { useSort } from '@/composables/useSort'
+import SortIcon from '@/components/ui/SortIcon.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -90,16 +93,20 @@ const runResults = ref<Record<number, { violations: PolicyViolation[]; summary: 
 
 // ── Shard Rules ───────────────────────────────────────────────────────────────
 const shardSettings = ref<ShardSetting[]>([])
-const shardFilterIndex = ref('')
 const shardEditing = ref<ShardSetting | null>(null)
 const shardEditJson = ref('')
 const shardShowEditor = ref(false)
 
-const filteredShards = computed(() => {
-  const q = shardFilterIndex.value.trim().toLowerCase()
-  if (!q) return shardSettings.value
-  return shardSettings.value.filter(s => s.index.toLowerCase().includes(q))
-})
+const { search: shardFilterIndex, filtered: textFilteredShards } = useListFilter(shardSettings, (s, q) => s.index.toLowerCase().includes(q))
+function shardSortValue(s: ShardSetting, key: string): string | number {
+  if (key === 'index') return s.index.toLowerCase()
+  if (key === 'shards') return s.number_of_shards
+  if (key === 'replicas') return s.number_of_replicas
+  if (key === 'tier') return s.routing_allocation_include || ''
+  return ''
+}
+const { sortKey, sortDir, toggleSort, sort } = useSort<ShardSetting>(shardSortValue)
+const filteredShards = computed(() => sort(textFilteredShards.value))
 
 onMounted(async () => {
   if (!connections.value.length) await fetchConnections()
@@ -741,7 +748,15 @@ function formatDate(v: string) {
 
         <div class="sp-table-wrap">
           <table class="sp-table">
-            <thead><tr><th>Index</th><th>Shards</th><th>Replicas</th><th>Tier preference</th><th></th></tr></thead>
+            <thead>
+              <tr>
+                <th class="sp-th-sort" :class="{ sorted: sortKey === 'index' }" @click="toggleSort('index')">Index <SortIcon :active="sortKey === 'index'" :dir="sortDir" /></th>
+                <th class="sp-th-sort" :class="{ sorted: sortKey === 'shards' }" @click="toggleSort('shards')">Shards <SortIcon :active="sortKey === 'shards'" :dir="sortDir" /></th>
+                <th class="sp-th-sort" :class="{ sorted: sortKey === 'replicas' }" @click="toggleSort('replicas')">Replicas <SortIcon :active="sortKey === 'replicas'" :dir="sortDir" /></th>
+                <th class="sp-th-sort" :class="{ sorted: sortKey === 'tier' }" @click="toggleSort('tier')">Tier preference <SortIcon :active="sortKey === 'tier'" :dir="sortDir" /></th>
+                <th></th>
+              </tr>
+            </thead>
             <tbody>
               <tr v-for="s in filteredShards" :key="s.index">
                 <td class="sp-mono">{{ s.index }}</td>
@@ -797,6 +812,7 @@ function formatDate(v: string) {
 .sp-table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
 .sp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .sp-table th { background: var(--bg-elevated); color: var(--text-muted); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.sp-table th.sp-th-sort { cursor: pointer; user-select: none; }
 .sp-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--text-secondary); vertical-align: middle; }
 .sp-table tr:last-child td { border-bottom: 0; }
 .sp-table tr:hover td { background: var(--bg-hover); }

@@ -5,6 +5,7 @@ import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
+import { useListFilter } from '@/composables/useListFilter'
 
 interface DockerHost {
   id: number
@@ -46,6 +47,9 @@ const canManage = computed(() => hasAnyPermission(['sftp.manage']))
 // Only remote SSH hosts can be used for SFTP
 const allHosts = ref<DockerHost[]>([])
 const hosts = computed(() => allHosts.value.filter((h) => h.ssh_host))
+const { search, filtered: filteredHosts } = useListFilter(hosts, (h, q) =>
+  h.name.toLowerCase().includes(q) || h.ssh_host.toLowerCase().includes(q),
+)
 const pingState = ref<Record<number, HostPingState>>({})
 const pingingId = ref<number | null>(null)
 const loading = ref(false)
@@ -233,9 +237,14 @@ onMounted(async () => {
 
         <div v-if="loading" class="sfh-loading">Loading hosts…</div>
 
-        <!-- Host cards -->
-        <div v-else-if="hosts.length" class="sfh-grid">
-          <div v-for="h in hosts" :key="h.id" class="sfh-card page-card">
+        <template v-else-if="hosts.length">
+          <div class="sfh-toolbar">
+            <input v-model="search" class="base-input sfh-search" type="search" placeholder="Filter hosts…" />
+          </div>
+
+          <!-- Host cards -->
+          <div v-if="filteredHosts.length" class="sfh-grid">
+          <div v-for="h in filteredHosts" :key="h.id" class="sfh-card page-card">
             <div class="sfh-card-head">
               <div class="sfh-status-row">
                 <span
@@ -268,7 +277,11 @@ onMounted(async () => {
               <button v-if="canManage" class="base-btn base-btn--danger base-btn--xs" @click="deleteHost(h)">Delete</button>
             </div>
           </div>
-        </div>
+          </div>
+          <div v-else class="page-card sfh-empty">
+            <p>No hosts match "{{ search }}".</p>
+          </div>
+        </template>
 
         <!-- Empty state -->
         <div v-else-if="!loading" class="page-card sfh-empty">
@@ -338,6 +351,9 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.sfh-toolbar { display: flex; margin-bottom: 14px; }
+.sfh-search { width: 240px; max-width: 40vw; }
+
 /* Host cards grid */
 .sfh-grid {
   display: grid;

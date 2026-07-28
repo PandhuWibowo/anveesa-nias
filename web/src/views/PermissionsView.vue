@@ -5,6 +5,11 @@ import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConnections } from '@/composables/useConnections'
 import { useAuth } from '@/composables/useAuth'
+import { useListFilter } from '@/composables/useListFilter'
+import { useSort } from '@/composables/useSort'
+import { usePagination } from '@/composables/usePagination'
+import Pagination from '@/components/ui/Pagination.vue'
+import SortIcon from '@/components/ui/SortIcon.vue'
 import { readableError } from '@/utils/httpError'
 
 const toast = useToast()
@@ -627,43 +632,17 @@ function toggleDirectPermission(permKey: string) {
 // ── Filter / Sort / Pagination / Custom Fields ─────────────────
 
 // ROLES tab
-const roleSearch = ref('')
-const roleSortKey = ref<'name' | 'user_count' | 'permissions'>('name')
-const roleSortDir = ref<'asc' | 'desc'>('asc')
-const rolePage = ref(1)
-const rolePageSize = ref(10)
+const { search: roleSearch, filtered: roleSearchFiltered } = useListFilter(roles, (r, q) =>
+  r.name.toLowerCase().includes(q) || r.description.toLowerCase().includes(q)
+)
+const { sortKey: roleSortKey, sortDir: roleSortDir, toggleSort: setRoleSort, sort: sortRoles } = useSort<Role>((r, key) => {
+  if (key === 'name') return r.name.toLowerCase()
+  if (key === 'user_count') return r.user_count
+  return (r.permissions || []).length
+}, 'name')
 
-const filteredRoles = computed(() => {
-  let list = roles.value
-  if (roleSearch.value.trim()) {
-    const q = roleSearch.value.toLowerCase()
-    list = list.filter(r => r.name.toLowerCase().includes(q) || r.description.toLowerCase().includes(q))
-  }
-  return [...list].sort((a, b) => {
-    let av: any, bv: any
-    if (roleSortKey.value === 'name') { av = a.name.toLowerCase(); bv = b.name.toLowerCase() }
-    else if (roleSortKey.value === 'user_count') { av = a.user_count; bv = b.user_count }
-    else { av = (a.permissions || []).length; bv = (b.permissions || []).length }
-    if (av < bv) return roleSortDir.value === 'asc' ? -1 : 1
-    if (av > bv) return roleSortDir.value === 'asc' ? 1 : -1
-    return 0
-  })
-})
-
-const roleTotalPages = computed(() => Math.max(1, Math.ceil(filteredRoles.value.length / rolePageSize.value)))
-const pagedRoles = computed(() => {
-  const s = (rolePage.value - 1) * rolePageSize.value
-  return filteredRoles.value.slice(s, s + rolePageSize.value)
-})
-
-function setRoleSort(key: typeof roleSortKey.value) {
-  if (roleSortKey.value === key) roleSortDir.value = roleSortDir.value === 'asc' ? 'desc' : 'asc'
-  else { roleSortKey.value = key; roleSortDir.value = 'asc' }
-}
-function roleSortIcon(key: typeof roleSortKey.value) {
-  if (roleSortKey.value !== key) return '↕'
-  return roleSortDir.value === 'asc' ? '↑' : '↓'
-}
+const filteredRoles = computed(() => sortRoles(roleSearchFiltered.value))
+const { page: rolePage, pageSize: rolePageSize, totalPages: roleTotalPages, paged: pagedRoles, setPage: setRolePage } = usePagination(filteredRoles, 10)
 
 const visibleRoleColumns = ref({ name: true, description: true, user_count: true, permissions: true })
 const showRoleColMenu = ref(false)
@@ -674,46 +653,16 @@ const roleColDefs = [
   { key: 'permissions' as const, label: 'Permissions' },
 ]
 
-watch(roleSearch, () => { rolePage.value = 1 })
-
 // GROUPS tab
-const groupSearch = ref('')
-const groupSortKey = ref<'name' | 'visibility' | 'is_active'>('name')
-const groupSortDir = ref<'asc' | 'desc'>('asc')
-const groupPage = ref(1)
-const groupPageSize = ref(10)
+const { search: groupSearch, filtered: groupSearchFiltered } = useListFilter(groups, (g, q) => g.name.toLowerCase().includes(q))
+const { sortKey: groupSortKey, sortDir: groupSortDir, toggleSort: setGroupSort, sort: sortGroups } = useSort<AccessGroup>((g, key) => {
+  if (key === 'name') return g.name.toLowerCase()
+  if (key === 'visibility') return g.visibility
+  return g.is_active ? 0 : 1
+}, 'name')
 
-const filteredGroups = computed(() => {
-  let list = groups.value
-  if (groupSearch.value.trim()) {
-    const q = groupSearch.value.toLowerCase()
-    list = list.filter(g => g.name.toLowerCase().includes(q))
-  }
-  return [...list].sort((a, b) => {
-    let av: any, bv: any
-    if (groupSortKey.value === 'name') { av = a.name.toLowerCase(); bv = b.name.toLowerCase() }
-    else if (groupSortKey.value === 'visibility') { av = a.visibility; bv = b.visibility }
-    else { av = a.is_active ? 0 : 1; bv = b.is_active ? 0 : 1 }
-    if (av < bv) return groupSortDir.value === 'asc' ? -1 : 1
-    if (av > bv) return groupSortDir.value === 'asc' ? 1 : -1
-    return 0
-  })
-})
-
-const groupTotalPages = computed(() => Math.max(1, Math.ceil(filteredGroups.value.length / groupPageSize.value)))
-const pagedGroups = computed(() => {
-  const s = (groupPage.value - 1) * groupPageSize.value
-  return filteredGroups.value.slice(s, s + groupPageSize.value)
-})
-
-function setGroupSort(key: typeof groupSortKey.value) {
-  if (groupSortKey.value === key) groupSortDir.value = groupSortDir.value === 'asc' ? 'desc' : 'asc'
-  else { groupSortKey.value = key; groupSortDir.value = 'asc' }
-}
-function groupSortIcon(key: typeof groupSortKey.value) {
-  if (groupSortKey.value !== key) return '↕'
-  return groupSortDir.value === 'asc' ? '↑' : '↓'
-}
+const filteredGroups = computed(() => sortGroups(groupSearchFiltered.value))
+const { page: groupPage, pageSize: groupPageSize, totalPages: groupTotalPages, paged: pagedGroups, setPage: setGroupPage } = usePagination(filteredGroups, 10)
 
 const visibleGroupColumns = ref({ name: true, visibility: true, role_restrict: true, is_active: true })
 const showGroupColMenu = ref(false)
@@ -724,54 +673,31 @@ const groupColDefs = [
   { key: 'is_active' as const, label: 'Status' },
 ]
 
-watch(groupSearch, () => { groupPage.value = 1 })
-
 // USERS tab
-const userSearch = ref('')
 const userFilterRole = ref('')
 const userFilterStatus = ref('')
-const userSortKeyPerm = ref<'username' | 'role' | 'is_active' | 'created_at'>('username')
-const userSortDirPerm = ref<'asc' | 'desc'>('asc')
-const userPage = ref(1)
-const userPageSize = ref(10)
 
-const filteredUsers = computed(() => {
+const userRoleStatusFiltered = computed(() => {
   let list = users.value
-  if (userSearch.value.trim()) {
-    const q = userSearch.value.toLowerCase()
-    list = list.filter(u => u.username.toLowerCase().includes(q))
-  }
   if (userFilterRole.value) list = list.filter(u => u.role === userFilterRole.value)
   if (userFilterStatus.value) {
     const active = userFilterStatus.value === 'active'
     list = list.filter(u => u.is_active === active)
   }
-  return [...list].sort((a, b) => {
-    let av: any, bv: any
-    if (userSortKeyPerm.value === 'username') { av = a.username.toLowerCase(); bv = b.username.toLowerCase() }
-    else if (userSortKeyPerm.value === 'role') { av = a.role; bv = b.role }
-    else if (userSortKeyPerm.value === 'is_active') { av = a.is_active ? 0 : 1; bv = b.is_active ? 0 : 1 }
-    else { av = a.created_at; bv = b.created_at }
-    if (av < bv) return userSortDirPerm.value === 'asc' ? -1 : 1
-    if (av > bv) return userSortDirPerm.value === 'asc' ? 1 : -1
-    return 0
-  })
+  return list
 })
 
-const userTotalPages = computed(() => Math.max(1, Math.ceil(filteredUsers.value.length / userPageSize.value)))
-const pagedUsers = computed(() => {
-  const s = (userPage.value - 1) * userPageSize.value
-  return filteredUsers.value.slice(s, s + userPageSize.value)
-})
+const { search: userSearch, filtered: userSearchFiltered } = useListFilter(userRoleStatusFiltered, (u, q) => u.username.toLowerCase().includes(q))
 
-function setUserSortPerm(key: typeof userSortKeyPerm.value) {
-  if (userSortKeyPerm.value === key) userSortDirPerm.value = userSortDirPerm.value === 'asc' ? 'desc' : 'asc'
-  else { userSortKeyPerm.value = key; userSortDirPerm.value = 'asc' }
-}
-function userSortIconPerm(key: typeof userSortKeyPerm.value) {
-  if (userSortKeyPerm.value !== key) return '↕'
-  return userSortDirPerm.value === 'asc' ? '↑' : '↓'
-}
+const { sortKey: userSortKeyPerm, sortDir: userSortDirPerm, toggleSort: setUserSortPerm, sort: sortUsersPerm } = useSort<User>((u, key) => {
+  if (key === 'username') return u.username.toLowerCase()
+  if (key === 'role') return u.role
+  if (key === 'is_active') return u.is_active ? 0 : 1
+  return u.created_at
+}, 'username')
+
+const filteredUsers = computed(() => sortUsersPerm(userSearchFiltered.value))
+const { page: userPage, pageSize: userPageSize, totalPages: userTotalPages, paged: pagedUsers, setPage: setUserPage } = usePagination(filteredUsers, 10)
 
 const availableUserRoles = computed(() => [...new Set(users.value.map(u => u.role))].sort())
 const hasUserFilters = computed(() => userSearch.value || userFilterRole.value || userFilterStatus.value)
@@ -786,16 +712,10 @@ const userColDefs = [
   { key: 'created_at' as const, label: 'Created' },
 ]
 
-watch([userSearch, userFilterRole, userFilterStatus], () => { userPage.value = 1 })
-
 function closeAllColMenus() {
   showRoleColMenu.value = false
   showGroupColMenu.value = false
   showUserColMenu.value = false
-}
-
-function permPageBtn(current: number, total: number, target: number) {
-  return Math.max(1, Math.min(target, total))
 }
 
 // ── Init ──
@@ -915,7 +835,7 @@ watch(() => route.query.tab, () => {
               </label>
             </div>
           </div>
-          <select class="perm-filter-sel" v-model="rolePageSize" @change="rolePage = 1">
+          <select class="perm-filter-sel" v-model="rolePageSize">
             <option :value="10">10 / page</option>
             <option :value="25">25 / page</option>
             <option :value="50">50 / page</option>
@@ -931,15 +851,15 @@ watch(() => route.query.tab, () => {
           <table class="perm-table">
             <thead>
               <tr>
-                <th v-if="visibleRoleColumns.name" @click="setRoleSort('name')" class="perm-th-sort">
-                  Role Name <span class="perm-sort-icon" :class="{ active: roleSortKey === 'name' }">{{ roleSortIcon('name') }}</span>
+                <th v-if="visibleRoleColumns.name" class="perm-th-sort" :class="{ sorted: roleSortKey === 'name' }" @click="setRoleSort('name')">
+                  Role Name <SortIcon :active="roleSortKey === 'name'" :dir="roleSortDir" />
                 </th>
                 <th v-if="visibleRoleColumns.description">Description</th>
-                <th v-if="visibleRoleColumns.user_count" @click="setRoleSort('user_count')" class="perm-th-sort">
-                  Users <span class="perm-sort-icon" :class="{ active: roleSortKey === 'user_count' }">{{ roleSortIcon('user_count') }}</span>
+                <th v-if="visibleRoleColumns.user_count" class="perm-th-sort" :class="{ sorted: roleSortKey === 'user_count' }" @click="setRoleSort('user_count')">
+                  Users <SortIcon :active="roleSortKey === 'user_count'" :dir="roleSortDir" />
                 </th>
-                <th v-if="visibleRoleColumns.permissions" @click="setRoleSort('permissions')" class="perm-th-sort">
-                  Permissions <span class="perm-sort-icon" :class="{ active: roleSortKey === 'permissions' }">{{ roleSortIcon('permissions') }}</span>
+                <th v-if="visibleRoleColumns.permissions" class="perm-th-sort" :class="{ sorted: roleSortKey === 'permissions' }" @click="setRoleSort('permissions')">
+                  Permissions <SortIcon :active="roleSortKey === 'permissions'" :dir="roleSortDir" />
                 </th>
                 <th></th>
               </tr>
@@ -991,19 +911,14 @@ watch(() => route.query.tab, () => {
         </div>
 
         <!-- Roles pagination -->
-        <div v-if="!rolesLoading && roleTotalPages > 1" class="perm-pagination">
-          <span class="perm-page-info">{{ (rolePage - 1) * rolePageSize + 1 }}–{{ Math.min(rolePage * rolePageSize, filteredRoles.length) }} of {{ filteredRoles.length }}</span>
-          <div class="perm-page-controls">
-            <button class="perm-page-btn" :disabled="rolePage === 1" @click="rolePage = permPageBtn(rolePage, roleTotalPages, 1)">«</button>
-            <button class="perm-page-btn" :disabled="rolePage === 1" @click="rolePage = permPageBtn(rolePage, roleTotalPages, rolePage - 1)">‹</button>
-            <template v-for="p in roleTotalPages" :key="p">
-              <button v-if="Math.abs(p - rolePage) <= 2 || p === 1 || p === roleTotalPages" class="perm-page-btn" :class="{ 'perm-page-btn--active': p === rolePage }" @click="rolePage = p">{{ p }}</button>
-              <span v-else-if="Math.abs(p - rolePage) === 3" class="perm-page-ellipsis">…</span>
-            </template>
-            <button class="perm-page-btn" :disabled="rolePage === roleTotalPages" @click="rolePage = permPageBtn(rolePage, roleTotalPages, rolePage + 1)">›</button>
-            <button class="perm-page-btn" :disabled="rolePage === roleTotalPages" @click="rolePage = permPageBtn(rolePage, roleTotalPages, roleTotalPages)">»</button>
-          </div>
-        </div>
+        <Pagination
+          v-if="!rolesLoading && roleTotalPages > 1"
+          :page="rolePage"
+          :total-pages="roleTotalPages"
+          :total="filteredRoles.length"
+          item-label="roles"
+          @update:page="setRolePage"
+        />
       </div>
 
       <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -1041,7 +956,7 @@ watch(() => route.query.tab, () => {
               </label>
             </div>
           </div>
-          <select class="perm-filter-sel" v-model="groupPageSize" @change="groupPage = 1">
+          <select class="perm-filter-sel" v-model="groupPageSize">
             <option :value="10">10 / page</option>
             <option :value="25">25 / page</option>
             <option :value="50">50 / page</option>
@@ -1057,15 +972,15 @@ watch(() => route.query.tab, () => {
           <table class="perm-table">
             <thead>
               <tr>
-                <th v-if="visibleGroupColumns.name" @click="setGroupSort('name')" class="perm-th-sort">
-                  Group Name <span class="perm-sort-icon" :class="{ active: groupSortKey === 'name' }">{{ groupSortIcon('name') }}</span>
+                <th v-if="visibleGroupColumns.name" class="perm-th-sort" :class="{ sorted: groupSortKey === 'name' }" @click="setGroupSort('name')">
+                  Group Name <SortIcon :active="groupSortKey === 'name'" :dir="groupSortDir" />
                 </th>
-                <th v-if="visibleGroupColumns.visibility" @click="setGroupSort('visibility')" class="perm-th-sort">
-                  Visibility <span class="perm-sort-icon" :class="{ active: groupSortKey === 'visibility' }">{{ groupSortIcon('visibility') }}</span>
+                <th v-if="visibleGroupColumns.visibility" class="perm-th-sort" :class="{ sorted: groupSortKey === 'visibility' }" @click="setGroupSort('visibility')">
+                  Visibility <SortIcon :active="groupSortKey === 'visibility'" :dir="groupSortDir" />
                 </th>
                 <th v-if="visibleGroupColumns.role_restrict">Role Restriction</th>
-                <th v-if="visibleGroupColumns.is_active" @click="setGroupSort('is_active')" class="perm-th-sort">
-                  Status <span class="perm-sort-icon" :class="{ active: groupSortKey === 'is_active' }">{{ groupSortIcon('is_active') }}</span>
+                <th v-if="visibleGroupColumns.is_active" class="perm-th-sort" :class="{ sorted: groupSortKey === 'is_active' }" @click="setGroupSort('is_active')">
+                  Status <SortIcon :active="groupSortKey === 'is_active'" :dir="groupSortDir" />
                 </th>
                 <th></th>
               </tr>
@@ -1105,19 +1020,14 @@ watch(() => route.query.tab, () => {
         </div>
 
         <!-- Groups pagination -->
-        <div v-if="!groupsLoading && groupTotalPages > 1" class="perm-pagination">
-          <span class="perm-page-info">{{ (groupPage - 1) * groupPageSize + 1 }}–{{ Math.min(groupPage * groupPageSize, filteredGroups.length) }} of {{ filteredGroups.length }}</span>
-          <div class="perm-page-controls">
-            <button class="perm-page-btn" :disabled="groupPage === 1" @click="groupPage = permPageBtn(groupPage, groupTotalPages, 1)">«</button>
-            <button class="perm-page-btn" :disabled="groupPage === 1" @click="groupPage = permPageBtn(groupPage, groupTotalPages, groupPage - 1)">‹</button>
-            <template v-for="p in groupTotalPages" :key="p">
-              <button v-if="Math.abs(p - groupPage) <= 2 || p === 1 || p === groupTotalPages" class="perm-page-btn" :class="{ 'perm-page-btn--active': p === groupPage }" @click="groupPage = p">{{ p }}</button>
-              <span v-else-if="Math.abs(p - groupPage) === 3" class="perm-page-ellipsis">…</span>
-            </template>
-            <button class="perm-page-btn" :disabled="groupPage === groupTotalPages" @click="groupPage = permPageBtn(groupPage, groupTotalPages, groupPage + 1)">›</button>
-            <button class="perm-page-btn" :disabled="groupPage === groupTotalPages" @click="groupPage = permPageBtn(groupPage, groupTotalPages, groupTotalPages)">»</button>
-          </div>
-        </div>
+        <Pagination
+          v-if="!groupsLoading && groupTotalPages > 1"
+          :page="groupPage"
+          :total-pages="groupTotalPages"
+          :total="filteredGroups.length"
+          item-label="groups"
+          @update:page="setGroupPage"
+        />
       </div>
 
       <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -1165,7 +1075,7 @@ watch(() => route.query.tab, () => {
               </label>
             </div>
           </div>
-          <select class="perm-filter-sel" v-model="userPageSize" @change="userPage = 1">
+          <select class="perm-filter-sel" v-model="userPageSize">
             <option :value="10">10 / page</option>
             <option :value="25">25 / page</option>
             <option :value="50">50 / page</option>
@@ -1181,18 +1091,18 @@ watch(() => route.query.tab, () => {
           <table class="perm-table">
             <thead>
               <tr>
-                <th v-if="visibleUserColumns.username" @click="setUserSortPerm('username')" class="perm-th-sort">
-                  Username <span class="perm-sort-icon" :class="{ active: userSortKeyPerm === 'username' }">{{ userSortIconPerm('username') }}</span>
+                <th v-if="visibleUserColumns.username" class="perm-th-sort" :class="{ sorted: userSortKeyPerm === 'username' }" @click="setUserSortPerm('username')">
+                  Username <SortIcon :active="userSortKeyPerm === 'username'" :dir="userSortDirPerm" />
                 </th>
-                <th v-if="visibleUserColumns.role" @click="setUserSortPerm('role')" class="perm-th-sort">
-                  Role <span class="perm-sort-icon" :class="{ active: userSortKeyPerm === 'role' }">{{ userSortIconPerm('role') }}</span>
+                <th v-if="visibleUserColumns.role" class="perm-th-sort" :class="{ sorted: userSortKeyPerm === 'role' }" @click="setUserSortPerm('role')">
+                  Role <SortIcon :active="userSortKeyPerm === 'role'" :dir="userSortDirPerm" />
                 </th>
                 <th v-if="visibleUserColumns.effective_access">Effective Access</th>
-                <th v-if="visibleUserColumns.is_active" @click="setUserSortPerm('is_active')" class="perm-th-sort">
-                  Status <span class="perm-sort-icon" :class="{ active: userSortKeyPerm === 'is_active' }">{{ userSortIconPerm('is_active') }}</span>
+                <th v-if="visibleUserColumns.is_active" class="perm-th-sort" :class="{ sorted: userSortKeyPerm === 'is_active' }" @click="setUserSortPerm('is_active')">
+                  Status <SortIcon :active="userSortKeyPerm === 'is_active'" :dir="userSortDirPerm" />
                 </th>
-                <th v-if="visibleUserColumns.created_at" @click="setUserSortPerm('created_at')" class="perm-th-sort">
-                  Created <span class="perm-sort-icon" :class="{ active: userSortKeyPerm === 'created_at' }">{{ userSortIconPerm('created_at') }}</span>
+                <th v-if="visibleUserColumns.created_at" class="perm-th-sort" :class="{ sorted: userSortKeyPerm === 'created_at' }" @click="setUserSortPerm('created_at')">
+                  Created <SortIcon :active="userSortKeyPerm === 'created_at'" :dir="userSortDirPerm" />
                 </th>
                 <th></th>
               </tr>
@@ -1243,19 +1153,14 @@ watch(() => route.query.tab, () => {
         </div>
 
         <!-- Users pagination -->
-        <div v-if="!usersLoading && userTotalPages > 1" class="perm-pagination">
-          <span class="perm-page-info">{{ (userPage - 1) * userPageSize + 1 }}–{{ Math.min(userPage * userPageSize, filteredUsers.length) }} of {{ filteredUsers.length }}</span>
-          <div class="perm-page-controls">
-            <button class="perm-page-btn" :disabled="userPage === 1" @click="userPage = permPageBtn(userPage, userTotalPages, 1)">«</button>
-            <button class="perm-page-btn" :disabled="userPage === 1" @click="userPage = permPageBtn(userPage, userTotalPages, userPage - 1)">‹</button>
-            <template v-for="p in userTotalPages" :key="p">
-              <button v-if="Math.abs(p - userPage) <= 2 || p === 1 || p === userTotalPages" class="perm-page-btn" :class="{ 'perm-page-btn--active': p === userPage }" @click="userPage = p">{{ p }}</button>
-              <span v-else-if="Math.abs(p - userPage) === 3" class="perm-page-ellipsis">…</span>
-            </template>
-            <button class="perm-page-btn" :disabled="userPage === userTotalPages" @click="userPage = permPageBtn(userPage, userTotalPages, userPage + 1)">›</button>
-            <button class="perm-page-btn" :disabled="userPage === userTotalPages" @click="userPage = permPageBtn(userPage, userTotalPages, userTotalPages)">»</button>
-          </div>
-        </div>
+        <Pagination
+          v-if="!usersLoading && userTotalPages > 1"
+          :page="userPage"
+          :total-pages="userTotalPages"
+          :total="filteredUsers.length"
+          item-label="users"
+          @update:page="setUserPage"
+        />
       </div>
       </div>
     </div>
@@ -2238,8 +2143,7 @@ watch(() => route.query.tab, () => {
 /* Sortable table headers */
 .perm-th-sort { cursor: pointer; user-select: none; white-space: nowrap; }
 .perm-th-sort:hover { color: var(--text-primary); }
-.perm-sort-icon { margin-left: 4px; font-size: 10px; color: var(--text-muted); opacity: 0.5; }
-.perm-sort-icon.active { opacity: 1; color: var(--brand); }
+.perm-th-sort.sorted { color: var(--brand); }
 
 /* Column toggle */
 .perm-col-toggle { position: relative; }
@@ -2259,24 +2163,4 @@ watch(() => route.query.tab, () => {
   padding: 4px 0; cursor: pointer;
 }
 .perm-col-item input { cursor: pointer; }
-
-/* Pagination */
-.perm-pagination {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 20px; border-top: 1px solid var(--border);
-  flex-wrap: wrap; gap: 8px;
-}
-.perm-page-info { font-size: 12px; color: var(--text-muted); }
-.perm-page-controls { display: flex; align-items: center; gap: 3px; }
-.perm-page-btn {
-  min-width: 30px; height: 30px; padding: 0 6px;
-  border: 1px solid var(--border); border-radius: 5px;
-  background: transparent; color: var(--text-primary);
-  font-size: 12px; cursor: pointer; font-family: inherit;
-  transition: background 0.12s, border-color 0.12s;
-}
-.perm-page-btn:hover:not(:disabled) { background: rgba(255,255,255,0.06); border-color: var(--brand); }
-.perm-page-btn:disabled { opacity: 0.35; cursor: default; }
-.perm-page-btn--active { background: var(--brand) !important; border-color: var(--brand) !important; color: #fff !important; }
-.perm-page-ellipsis { padding: 0 4px; color: var(--text-muted); font-size: 12px; }
 </style>

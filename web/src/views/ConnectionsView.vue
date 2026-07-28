@@ -1,13 +1,17 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
-import { useConnections, type DbDriver, type ConnectionForm } from '@/composables/useConnections'
+import { useConnections, type DbDriver, type ConnectionForm, type Connection } from '@/composables/useConnections'
 import { useFolders } from '@/composables/useFolders'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useConnectionTemplates, type ConnectionTemplateInput } from '@/composables/useConnectionTemplates'
+import { useListFilter } from '@/composables/useListFilter'
+import { useSort } from '@/composables/useSort'
+import { usePagination } from '@/composables/usePagination'
 import DriverIcon from '@/components/ui/DriverIcon.vue'
+import Pagination from '@/components/ui/Pagination.vue'
 import { readableError } from '@/utils/httpError'
 
 const { connections, loading, error: connectionError, testConnection, saveConnection, removeConnection, fetchConnections, disconnectConnection, reconnectConnection } = useConnections()
@@ -521,16 +525,11 @@ async function handleReconnect(id: number, name: string) {
 }
 
 // ── Filter ───────────────────────────────────────────────────────
-const connFilterSearch = ref('')
 const connFilterDriver = ref('')
 const connFilterStatus = ref('')
 
-const filteredConnections = computed(() => {
+const driverStatusFilteredConnections = computed(() => {
   let list = connections.value
-  if (connFilterSearch.value.trim()) {
-    const q = connFilterSearch.value.toLowerCase()
-    list = list.filter(c => c.name.toLowerCase().includes(q) || driverFullName(c.driver).toLowerCase().includes(q))
-  }
   if (connFilterDriver.value) {
     list = list.filter(c => c.driver === connFilterDriver.value)
   }
@@ -540,6 +539,10 @@ const filteredConnections = computed(() => {
   }
   return list
 })
+
+const { search: connFilterSearch, filtered: filteredConnections } = useListFilter(driverStatusFilteredConnections, (c, q) =>
+  c.name.toLowerCase().includes(q) || driverFullName(c.driver).toLowerCase().includes(q)
+)
 
 const availableDrivers = computed(() => [...new Set(connections.value.map(c => c.driver))].sort())
 const hasConnFilters = computed(() => connFilterSearch.value || connFilterDriver.value || connFilterStatus.value)
@@ -552,50 +555,16 @@ function clearConnFilters() {
 
 // ── Sort ─────────────────────────────────────────────────────────
 type ConnSortKey = 'name' | 'driver' | 'status'
-const connSortKey = ref<ConnSortKey>('name')
-const connSortDir = ref<'asc' | 'desc'>('asc')
+const { sortKey: connSortKey, sortDir: connSortDir, toggleSort: setConnSort, sort: sortConnections } = useSort<Connection>((c, key) => {
+  if (key === 'name') return c.name.toLowerCase()
+  if (key === 'driver') return c.driver
+  return c.disconnected ? 1 : 0
+}, 'name')
 
-function setConnSort(key: ConnSortKey) {
-  if (connSortKey.value === key) {
-    connSortDir.value = connSortDir.value === 'asc' ? 'desc' : 'asc'
-  } else {
-    connSortKey.value = key
-    connSortDir.value = 'asc'
-  }
-}
-
-const sortedConnections = computed(() => {
-  const list = [...filteredConnections.value]
-  list.sort((a, b) => {
-    let av: any, bv: any
-    if (connSortKey.value === 'name') { av = a.name.toLowerCase(); bv = b.name.toLowerCase() }
-    else if (connSortKey.value === 'driver') { av = a.driver; bv = b.driver }
-    else { av = a.disconnected ? 1 : 0; bv = b.disconnected ? 1 : 0 }
-    if (av < bv) return connSortDir.value === 'asc' ? -1 : 1
-    if (av > bv) return connSortDir.value === 'asc' ? 1 : -1
-    return 0
-  })
-  return list
-})
+const sortedConnections = computed(() => sortConnections(filteredConnections.value))
 
 // ── Pagination ───────────────────────────────────────────────────
-const connPageSize = ref(12)
-const connCurrentPage = ref(1)
-
-const connTotalPages = computed(() => Math.max(1, Math.ceil(sortedConnections.value.length / connPageSize.value)))
-
-const pagedConnections = computed(() => {
-  const start = (connCurrentPage.value - 1) * connPageSize.value
-  return sortedConnections.value.slice(start, start + connPageSize.value)
-})
-
-function setConnPage(p: number) {
-  connCurrentPage.value = Math.max(1, Math.min(p, connTotalPages.value))
-}
-
-function resetConnPage() { connCurrentPage.value = 1 }
-
-watch([connFilterSearch, connFilterDriver, connFilterStatus], resetConnPage)
+const { page: connCurrentPage, pageSize: connPageSize, totalPages: connTotalPages, paged: pagedConnections, setPage: setConnPage } = usePagination(sortedConnections, 12)
 
 // ── Custom fields (card detail visibility) ───────────────────────
 const connShowFields = ref({
@@ -703,7 +672,7 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
             </div>
 
             <!-- Page size -->
-            <select class="conn-filter-sel" v-model="connPageSize" @change="resetConnPage">
+            <select class="conn-filter-sel" v-model="connPageSize">
               <option :value="6">6 / page</option>
               <option :value="12">12 / page</option>
               <option :value="24">24 / page</option>
@@ -832,26 +801,14 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
           </div>
 
           <!-- Pagination -->
-          <div v-if="!loading && connTotalPages > 1" class="conn-pagination">
-            <span class="conn-page-info">
-              {{ (connCurrentPage - 1) * connPageSize + 1 }}–{{ Math.min(connCurrentPage * connPageSize, sortedConnections.length) }} of {{ sortedConnections.length }}
-            </span>
-            <div class="conn-page-controls">
-              <button class="conn-page-btn" :disabled="connCurrentPage === 1" @click="setConnPage(1)">«</button>
-              <button class="conn-page-btn" :disabled="connCurrentPage === 1" @click="setConnPage(connCurrentPage - 1)">‹</button>
-              <template v-for="p in connTotalPages" :key="p">
-                <button
-                  v-if="Math.abs(p - connCurrentPage) <= 2 || p === 1 || p === connTotalPages"
-                  class="conn-page-btn"
-                  :class="{ 'conn-page-btn--active': p === connCurrentPage }"
-                  @click="setConnPage(p)"
-                >{{ p }}</button>
-                <span v-else-if="Math.abs(p - connCurrentPage) === 3" class="conn-page-ellipsis">…</span>
-              </template>
-              <button class="conn-page-btn" :disabled="connCurrentPage === connTotalPages" @click="setConnPage(connCurrentPage + 1)">›</button>
-              <button class="conn-page-btn" :disabled="connCurrentPage === connTotalPages" @click="setConnPage(connTotalPages)">»</button>
-            </div>
-          </div>
+          <Pagination
+            v-if="!loading && connTotalPages > 1"
+            :page="connCurrentPage"
+            :total-pages="connTotalPages"
+            :total="sortedConnections.length"
+            item-label="connections"
+            @update:page="setConnPage"
+          />
         </section>
 
       </div>
@@ -2270,26 +2227,6 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
   padding: 4px 0; cursor: pointer;
 }
 .conn-col-item input { cursor: pointer; }
-
-/* Pagination */
-.conn-pagination {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 20px; border-top: 1px solid var(--border);
-  flex-wrap: wrap; gap: 8px;
-}
-.conn-page-info { font-size: 12px; color: var(--text-muted); }
-.conn-page-controls { display: flex; align-items: center; gap: 3px; }
-.conn-page-btn {
-  min-width: 30px; height: 30px; padding: 0 6px;
-  border: 1px solid var(--border); border-radius: 5px;
-  background: transparent; color: var(--text-primary);
-  font-size: 12px; cursor: pointer; font-family: inherit;
-  transition: background 0.12s, border-color 0.12s;
-}
-.conn-page-btn:hover:not(:disabled) { background: rgba(255,255,255,0.06); border-color: var(--brand); }
-.conn-page-btn:disabled { opacity: 0.35; cursor: default; }
-.conn-page-btn--active { background: var(--brand) !important; border-color: var(--brand) !important; color: #fff !important; }
-.conn-page-ellipsis { padding: 0 4px; color: var(--text-muted); font-size: 12px; }
 
 /* ── Connection template picker ── */
 .tmpl-picker {

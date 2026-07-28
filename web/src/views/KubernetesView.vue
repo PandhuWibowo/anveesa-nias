@@ -8,7 +8,10 @@ import '@xterm/xterm/css/xterm.css'
 import { useToast } from '@/composables/useToast'
 import { useAuth } from '@/composables/useAuth'
 import SearchSelect from '@/components/ui/SearchSelect.vue'
+import SortIcon from '@/components/ui/SortIcon.vue'
 import { useKubeClusters } from '@/composables/useKubeClusters'
+import { useListFilter } from '@/composables/useListFilter'
+import { useSort } from '@/composables/useSort'
 
 type KubeTab =
   | 'overview' | 'nodes' | 'namespaces' | 'pods' | 'deployments'
@@ -48,7 +51,6 @@ const tab = ref<KubeTab>('overview')
 const loading = ref(false)
 
 const namespaceFilter = ref('')
-const search = ref('')
 
 // Data
 const nodes = ref<KNode[]>([])
@@ -439,25 +441,73 @@ function closeExec() {
 }
 
 // ── Filtering + formatting ──────────────────────────────────────
-function matchesSearch(...fields: string[]): boolean {
-  const q = search.value.trim().toLowerCase()
-  if (!q) return true
+// One search box drives one list at a time (only the active tab's table is
+// shown, and switching tabs resets the query) — but each resource type has
+// its own array + matcher, so each gets its own useListFilter instance and a
+// writable `search` computed fans the single input out to all of them.
+function fieldsMatch(q: string, ...fields: string[]): boolean {
   return fields.some((f) => (f || '').toLowerCase().includes(q))
 }
-const filteredNodes = computed(() => nodes.value.filter((n) => matchesSearch(n.name, n.roles, n.internal_ip)))
-const filteredNamespaces = computed(() => namespaces.value.filter((n) => matchesSearch(n.name)))
-const filteredPods = computed(() => pods.value.filter((p) => matchesSearch(p.name, p.namespace, p.node, p.status)))
-const filteredDeployments = computed(() => deployments.value.filter((d) => matchesSearch(d.name, d.namespace)))
-const filteredStatefulSets = computed(() => statefulsets.value.filter((d) => matchesSearch(d.name, d.namespace)))
-const filteredDaemonSets = computed(() => daemonsets.value.filter((d) => matchesSearch(d.name, d.namespace)))
-const filteredJobs = computed(() => jobs.value.filter((j) => matchesSearch(j.name, j.namespace, j.status)))
-const filteredCronJobs = computed(() => cronjobs.value.filter((j) => matchesSearch(j.name, j.namespace, j.schedule)))
-const filteredServices = computed(() => services.value.filter((s) => matchesSearch(s.name, s.namespace, s.type)))
-const filteredIngresses = computed(() => ingresses.value.filter((i) => matchesSearch(i.name, i.namespace, i.hosts.join(','))))
-const filteredConfigMaps = computed(() => configmaps.value.filter((c) => matchesSearch(c.name, c.namespace)))
-const filteredSecrets = computed(() => secrets.value.filter((s) => matchesSearch(s.name, s.namespace, s.type)))
-const filteredPVCs = computed(() => pvcs.value.filter((p) => matchesSearch(p.name, p.namespace, p.status)))
-const filteredEvents = computed(() => events.value.filter((e) => matchesSearch(e.reason, e.object, e.message, e.namespace)))
+const { search: searchNodes, filtered: filteredNodes } = useListFilter(nodes, (n, q) => fieldsMatch(q, n.name, n.roles, n.internal_ip))
+const { search: searchNamespaces, filtered: filteredNamespaces } = useListFilter(namespaces, (n, q) => fieldsMatch(q, n.name))
+const { search: searchPods, filtered: filteredPods } = useListFilter(pods, (p, q) => fieldsMatch(q, p.name, p.namespace, p.node, p.status))
+const { search: searchDeployments, filtered: filteredDeployments } = useListFilter(deployments, (d, q) => fieldsMatch(q, d.name, d.namespace))
+const { search: searchStatefulSets, filtered: filteredStatefulSets } = useListFilter(statefulsets, (d, q) => fieldsMatch(q, d.name, d.namespace))
+const { search: searchDaemonSets, filtered: filteredDaemonSets } = useListFilter(daemonsets, (d, q) => fieldsMatch(q, d.name, d.namespace))
+const { search: searchJobs, filtered: filteredJobs } = useListFilter(jobs, (j, q) => fieldsMatch(q, j.name, j.namespace, j.status))
+const { search: searchCronJobs, filtered: filteredCronJobs } = useListFilter(cronjobs, (j, q) => fieldsMatch(q, j.name, j.namespace, j.schedule))
+const { search: searchServices, filtered: filteredServices } = useListFilter(services, (s, q) => fieldsMatch(q, s.name, s.namespace, s.type))
+const { search: searchIngresses, filtered: filteredIngresses } = useListFilter(ingresses, (i, q) => fieldsMatch(q, i.name, i.namespace, i.hosts.join(',')))
+const { search: searchConfigMaps, filtered: filteredConfigMaps } = useListFilter(configmaps, (c, q) => fieldsMatch(q, c.name, c.namespace))
+const { search: searchSecrets, filtered: filteredSecrets } = useListFilter(secrets, (s, q) => fieldsMatch(q, s.name, s.namespace, s.type))
+const { search: searchPVCs, filtered: filteredPVCs } = useListFilter(pvcs, (p, q) => fieldsMatch(q, p.name, p.namespace, p.status))
+const { search: searchEvents, filtered: filteredEvents } = useListFilter(events, (e, q) => fieldsMatch(q, e.reason, e.object, e.message, e.namespace))
+const search = computed<string>({
+  get: () => searchNodes.value,
+  set: (v: string) => {
+    searchNodes.value = v
+    searchNamespaces.value = v
+    searchPods.value = v
+    searchDeployments.value = v
+    searchStatefulSets.value = v
+    searchDaemonSets.value = v
+    searchJobs.value = v
+    searchCronJobs.value = v
+    searchServices.value = v
+    searchIngresses.value = v
+    searchConfigMaps.value = v
+    searchSecrets.value = v
+    searchPVCs.value = v
+    searchEvents.value = v
+  },
+})
+
+// ── Sort (pods + deployments — the most-used resource tables) ───
+function podSortValue(p: KPod, key: string): unknown {
+  switch (key) {
+    case 'name': return p.name.toLowerCase()
+    case 'namespace': return p.namespace.toLowerCase()
+    case 'status': return p.status.toLowerCase()
+    case 'restarts': return p.restarts
+    case 'node': return p.node.toLowerCase()
+    case 'created': return p.created
+    default: return ''
+  }
+}
+const { sortKey: podSortKey, sortDir: podSortDir, toggleSort: togglePodSort, sort: sortPods } = useSort<KPod>(podSortValue)
+const sortedPods = computed(() => sortPods(filteredPods.value))
+
+function deploymentSortValue(d: KDeployment, key: string): unknown {
+  switch (key) {
+    case 'name': return d.name.toLowerCase()
+    case 'namespace': return d.namespace.toLowerCase()
+    case 'ready': return d.ready
+    case 'created': return d.created
+    default: return ''
+  }
+}
+const { sortKey: deploymentSortKey, sortDir: deploymentSortDir, toggleSort: toggleDeploymentSort, sort: sortDeployments } = useSort<KDeployment>(deploymentSortValue)
+const sortedDeployments = computed(() => sortDeployments(filteredDeployments.value))
 
 function relAge(iso: string): string {
   if (!iso) return '-'
@@ -705,10 +755,21 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal(); stopAuto() })
             </table>
 
             <table v-else-if="tab === 'pods'" class="k8s-table">
-              <thead><tr><th>Name</th><th>Namespace</th><th>Status</th><th>Ready</th><th>Restarts</th><th>CPU</th><th>Memory</th><th>Node</th><th>Age</th><th></th></tr></thead>
+              <thead><tr>
+                <th class="k8s-th-sort" :class="{ sorted: podSortKey === 'name' }" @click="togglePodSort('name')">Name <SortIcon :active="podSortKey === 'name'" :dir="podSortDir" /></th>
+                <th class="k8s-th-sort" :class="{ sorted: podSortKey === 'namespace' }" @click="togglePodSort('namespace')">Namespace <SortIcon :active="podSortKey === 'namespace'" :dir="podSortDir" /></th>
+                <th class="k8s-th-sort" :class="{ sorted: podSortKey === 'status' }" @click="togglePodSort('status')">Status <SortIcon :active="podSortKey === 'status'" :dir="podSortDir" /></th>
+                <th>Ready</th>
+                <th class="k8s-th-sort" :class="{ sorted: podSortKey === 'restarts' }" @click="togglePodSort('restarts')">Restarts <SortIcon :active="podSortKey === 'restarts'" :dir="podSortDir" /></th>
+                <th>CPU</th>
+                <th>Memory</th>
+                <th class="k8s-th-sort" :class="{ sorted: podSortKey === 'node' }" @click="togglePodSort('node')">Node <SortIcon :active="podSortKey === 'node'" :dir="podSortDir" /></th>
+                <th class="k8s-th-sort" :class="{ sorted: podSortKey === 'created' }" @click="togglePodSort('created')">Age <SortIcon :active="podSortKey === 'created'" :dir="podSortDir" /></th>
+                <th></th>
+              </tr></thead>
               <tbody>
                 <tr v-if="!filteredPods.length"><td colspan="10" class="k8s-msg">No pods.</td></tr>
-                <tr v-for="p in filteredPods" :key="p.namespace + '/' + p.name">
+                <tr v-for="p in sortedPods" :key="p.namespace + '/' + p.name">
                   <td class="k8s-mono"><button class="k8s-link" @click="openPodDetail(p)">{{ p.name }}</button></td>
                   <td>{{ p.namespace }}</td>
                   <td><span class="k8s-pill" :class="podClass(p.status)">{{ p.status }}</span></td>
@@ -729,10 +790,19 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal(); stopAuto() })
             </table>
 
             <table v-else-if="tab === 'deployments'" class="k8s-table">
-              <thead><tr><th>Name</th><th>Namespace</th><th>Ready</th><th>Up-to-date</th><th>Available</th><th>Image</th><th>Age</th><th></th></tr></thead>
+              <thead><tr>
+                <th class="k8s-th-sort" :class="{ sorted: deploymentSortKey === 'name' }" @click="toggleDeploymentSort('name')">Name <SortIcon :active="deploymentSortKey === 'name'" :dir="deploymentSortDir" /></th>
+                <th class="k8s-th-sort" :class="{ sorted: deploymentSortKey === 'namespace' }" @click="toggleDeploymentSort('namespace')">Namespace <SortIcon :active="deploymentSortKey === 'namespace'" :dir="deploymentSortDir" /></th>
+                <th class="k8s-th-sort" :class="{ sorted: deploymentSortKey === 'ready' }" @click="toggleDeploymentSort('ready')">Ready <SortIcon :active="deploymentSortKey === 'ready'" :dir="deploymentSortDir" /></th>
+                <th>Up-to-date</th>
+                <th>Available</th>
+                <th>Image</th>
+                <th class="k8s-th-sort" :class="{ sorted: deploymentSortKey === 'created' }" @click="toggleDeploymentSort('created')">Age <SortIcon :active="deploymentSortKey === 'created'" :dir="deploymentSortDir" /></th>
+                <th></th>
+              </tr></thead>
               <tbody>
                 <tr v-if="!filteredDeployments.length"><td colspan="8" class="k8s-msg">No deployments.</td></tr>
-                <tr v-for="d in filteredDeployments" :key="d.namespace + '/' + d.name">
+                <tr v-for="d in sortedDeployments" :key="d.namespace + '/' + d.name">
                   <td class="k8s-mono">{{ d.name }}</td>
                   <td>{{ d.namespace }}</td>
                   <td>{{ d.ready }}</td>
@@ -1090,6 +1160,7 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal(); stopAuto() })
 .k8s-table-wrap { padding: 4px 6px; overflow-x: auto; }
 .k8s-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .k8s-table th { text-align: left; padding: 9px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; white-space: nowrap; }
+.k8s-th-sort { cursor: pointer; user-select: none; }
 .k8s-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .k8s-table tbody tr:last-child td { border-bottom: none; }
 .k8s-table tbody tr:hover { background: var(--bg-hover); }

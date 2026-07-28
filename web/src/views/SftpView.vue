@@ -3,9 +3,12 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import axios from 'axios'
 import SearchSelect from '@/components/ui/SearchSelect.vue'
+import SortIcon from '@/components/ui/SortIcon.vue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
+import { useListFilter } from '@/composables/useListFilter'
+import { useSort } from '@/composables/useSort'
 
 interface SshHost {
   id: number
@@ -50,12 +53,16 @@ const entries = ref<SftpEntry[]>([])
 const loading = ref(false)
 const connError = ref('')
 const dragOver = ref(false)
-const search = ref('')
-const filteredEntries = computed(() => {
-  const q = search.value.trim().toLowerCase()
-  if (!q) return entries.value
-  return entries.value.filter((e) => e.name.toLowerCase().includes(q))
-})
+
+const { search, filtered: searchedEntries } = useListFilter(entries, (e, q) => e.name.toLowerCase().includes(q))
+function sftpSortValue(e: SftpEntry, key: string): string | number {
+  if (key === 'name') return e.name.toLowerCase()
+  if (key === 'size') return e.size
+  if (key === 'modTime') return e.modTime
+  return ''
+}
+const { sortKey, sortDir, toggleSort, sort } = useSort<SftpEntry>(sftpSortValue)
+const filteredEntries = computed(() => sort(searchedEntries.value))
 
 const uploads = ref<UploadJob[]>([])
 let uploadSeq = 1
@@ -433,10 +440,10 @@ onMounted(loadHosts)
             <table class="sf-table">
               <thead>
                 <tr>
-                  <th class="sf-col-name">Name</th>
-                  <th class="sf-col-size">Size</th>
+                  <th class="sf-col-name" :class="{ sorted: sortKey === 'name' }" @click="toggleSort('name')">Name <SortIcon :active="sortKey === 'name'" :dir="sortDir" /></th>
+                  <th class="sf-col-size" :class="{ sorted: sortKey === 'size' }" @click="toggleSort('size')">Size <SortIcon :active="sortKey === 'size'" :dir="sortDir" /></th>
                   <th class="sf-col-mode">Permissions</th>
-                  <th class="sf-col-time">Modified</th>
+                  <th class="sf-col-time" :class="{ sorted: sortKey === 'modTime' }" @click="toggleSort('modTime')">Modified <SortIcon :active="sortKey === 'modTime'" :dir="sortDir" /></th>
                   <th class="sf-col-act"></th>
                 </tr>
               </thead>
@@ -604,6 +611,7 @@ onMounted(loadHosts)
 .sf-act { text-align: right; white-space: nowrap; }
 .sf-act .base-btn { margin-left: 5px; }
 .sf-col-size, .sf-col-mode, .sf-col-time { width: 1%; }
+.sf-col-name, .sf-col-size, .sf-col-time { cursor: pointer; user-select: none; }
 
 .sf-modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); display: flex; align-items: center; justify-content: center; z-index: 100; }
 .sf-modal { width: 380px; max-width: 92vw; padding: 20px; }

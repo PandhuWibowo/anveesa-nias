@@ -6,6 +6,7 @@ import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
 import { useKubeClusters, type KubeCluster, type KubeClusterInput, type KubeSummary } from '@/composables/useKubeClusters'
+import { useListFilter } from '@/composables/useListFilter'
 
 const router = useRouter()
 const toast = useToast()
@@ -14,6 +15,9 @@ const { hasAnyPermission } = useAuth()
 const canManage = computed(() => hasAnyPermission(['kube.manage']))
 
 const { clusters, loading, fetchClusters, createCluster, updateCluster, deleteCluster } = useKubeClusters()
+const { search, filtered: filteredClusters } = useListFilter(clusters, (c, q) =>
+  c.name.toLowerCase().includes(q) || c.provider.toLowerCase().includes(q),
+)
 
 const summaryMap = ref<Map<number, KubeSummary>>(new Map())
 const overviewLoading = ref(false)
@@ -189,9 +193,14 @@ onMounted(async () => {
 
         <div v-if="loading" class="k8s-loading">Loading clusters…</div>
 
-        <!-- Cluster cards -->
-        <div v-else-if="clusters.length" class="k8s-grid">
-          <div v-for="c in clusters" :key="c.id" class="k8s-card page-card">
+        <template v-else-if="clusters.length">
+          <div class="k8s-toolbar">
+            <input v-model="search" class="base-input k8s-search" type="search" placeholder="Filter clusters…" />
+          </div>
+
+          <!-- Cluster cards -->
+          <div v-if="filteredClusters.length" class="k8s-grid">
+          <div v-for="c in filteredClusters" :key="c.id" class="k8s-card page-card">
             <div class="k8s-card-head">
               <div class="k8s-status-row">
                 <span
@@ -226,7 +235,11 @@ onMounted(async () => {
               <button v-if="canManage" class="base-btn base-btn--danger base-btn--xs" @click="remove(c)">Delete</button>
             </div>
           </div>
-        </div>
+          </div>
+          <div v-else class="page-card k8s-empty">
+            <p>No clusters match "{{ search }}".</p>
+          </div>
+        </template>
 
         <!-- Empty -->
         <div v-else class="page-card k8s-empty">
@@ -286,6 +299,8 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.k8s-toolbar { display: flex; margin-bottom: 14px; }
+.k8s-search { width: 240px; max-width: 40vw; }
 .k8s-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
 .k8s-card { padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
 .k8s-card-head { display: flex; flex-direction: column; gap: 4px; }

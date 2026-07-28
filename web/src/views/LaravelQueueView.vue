@@ -12,6 +12,7 @@ import { useConnections } from '@/composables/useConnections'
 import { useLaravelQueue, type LaravelActiveJob, type LaravelFailedJob, type LaravelHorizonJobs, type LaravelHorizonSummary, type LaravelQueueAuditItem, type LaravelQueueFeatureFlags, type LaravelQueueJob, type LaravelQueueQuarantineItem, type LaravelQueueRules, type LaravelQueueSummary } from '@/composables/useLaravelQueue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
+import { useListFilter } from '@/composables/useListFilter'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -72,7 +73,6 @@ const sidebarCollapsed = ref(false)
 const insightsCollapsed = ref(false)
 const detailFullscreenOpen = ref(false)
 const failedGroupBy = ref<'job' | 'exception' | 'queue' | 'date'>('job')
-const search = ref('')
 const retryAfter = ref(90)
 const autoRefresh = ref(false)
 const refreshSeconds = ref(10)
@@ -158,20 +158,17 @@ const isRedis = computed(() => activeConn.value?.driver === 'redis')
 const isSql = computed(() => activeConn.value != null && !isNonSqlDriver(activeConn.value.driver))
 // When in SQL-only mode, the user picks a Redis conn just for the retry-push step
 const retryRedisConnId = ref<number | null>(null)
-const filteredJobs = computed(() => {
-  const query = search.value.trim().toLowerCase()
-  return jobs.value.filter((job) => {
-    if (activeState.value !== 'all' && job.state !== activeState.value) return false
-    if (!query) return true
-    return [
-      job.uuid,
-      job.display_name,
-      job.command_name,
-      job.job,
-      job.raw,
-    ].some(value => String(value || '').toLowerCase().includes(query))
-  })
+const stateFilteredJobs = computed(() => {
+  if (activeState.value === 'all') return jobs.value
+  return jobs.value.filter((job) => job.state === activeState.value)
 })
+const { search, filtered: filteredJobs } = useListFilter(stateFilteredJobs, (job, query) => [
+  job.uuid,
+  job.display_name,
+  job.command_name,
+  job.job,
+  job.raw,
+].some(value => String(value || '').toLowerCase().includes(query)))
 const filteredActiveJobs = computed(() => {
   const query = search.value.trim().toLowerCase()
   return activeJobs.value.filter((job) => {

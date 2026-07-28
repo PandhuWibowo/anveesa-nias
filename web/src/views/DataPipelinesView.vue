@@ -957,7 +957,7 @@ function runStatusClass(status: string) {
     <div v-if="view === 'list'" class="list-view">
       <div class="list-header">
         <h1 class="page-title">NIAS FlowGrid</h1>
-        <button class="btn-primary" @click="openCreateModal">+ New Pipeline</button>
+        <button class="base-btn base-btn--primary" @click="openCreateModal">+ New Pipeline</button>
       </div>
 
       <section class="dashboard-doc-strip">
@@ -977,7 +977,7 @@ function runStatusClass(status: string) {
               {{ option.label }}
             </button>
           </div>
-          <button class="btn-secondary" @click="showDashboardDocs = !showDashboardDocs">
+          <button class="base-btn base-btn--ghost" @click="showDashboardDocs = !showDashboardDocs">
             {{ showDashboardDocs ? 'Hide docs' : 'Show docs' }}
           </button>
         </div>
@@ -1053,7 +1053,7 @@ function runStatusClass(status: string) {
     <div v-else class="canvas-view">
       <!-- Top bar -->
       <div class="canvas-topbar">
-        <button class="btn-ghost" @click="backToList">← Pipelines</button>
+        <button class="base-btn base-btn--ghost" @click="backToList">← Pipelines</button>
         <div class="pipeline-title">
           <span class="pipeline-name">{{ currentPipeline?.name }}</span>
           <span class="pipeline-type">{{ pipelineTypeLabel(currentPipeline?.pipeline_type) }}</span>
@@ -1074,17 +1074,17 @@ function runStatusClass(status: string) {
             <button :class="{ active: showBuildGuide }" @click="showBuildGuide = !showBuildGuide">Guide</button>
             <button :class="{ active: showInspectorPanel }" @click="showInspectorPanel = !showInspectorPanel">Inspector</button>
           </div>
-          <button class="btn-secondary" :disabled="savingPipeline" @click="save">
+          <button class="base-btn base-btn--ghost" :disabled="savingPipeline" @click="save">
             {{ savingPipeline ? 'Saving…' : 'Save' }}
           </button>
-          <button class="btn-primary" :disabled="running" @click="runPipeline">
+          <button class="base-btn base-btn--primary" :disabled="running" @click="runPipeline">
             {{ running ? '⏳ Running…' : '▶ Run / Backdate' }}
           </button>
-          <button class="btn-ghost" @click="inspectorTab = 'runs'">
+          <button class="base-btn base-btn--ghost" @click="inspectorTab = 'runs'">
             History ({{ runs.length }})
           </button>
-          <button class="btn-ghost" @click="inspectorTab = 'schedule'">Schedule</button>
-          <button class="btn-ghost" @click="inspectorTab = 'docs'">Docs</button>
+          <button class="base-btn base-btn--ghost" @click="inspectorTab = 'schedule'">Schedule</button>
+          <button class="base-btn base-btn--ghost" @click="inspectorTab = 'docs'">Docs</button>
         </div>
       </div>
 
@@ -1191,7 +1191,7 @@ function runStatusClass(status: string) {
                   ? 'Klik starter flow untuk membuat contoh: ambil data, ubah data, lalu simpan hasil.'
                   : 'Add a starter flow to create an example: read data, change it, then save the result.' }}
               </span>
-              <button class="btn-primary" @click.stop="addStarterFlow">
+              <button class="base-btn base-btn--primary" @click.stop="addStarterFlow">
                 {{ docLanguage === 'id' ? 'Tambah starter flow' : 'Add starter flow' }}
               </button>
             </div>
@@ -1445,7 +1445,7 @@ function runStatusClass(status: string) {
                 Use <code v-pre>{{business_date}}</code> and <code v-pre>{{params.batch_id}}</code> in SQL, URLs, and payloads.
               </div>
 
-              <button class="btn-remove-node" @click="removeSelectedNode">Remove Node</button>
+              <button class="base-btn base-btn--danger wide" style="margin-top: 20px" @click="removeSelectedNode">Remove Node</button>
             </template>
 
             <div v-else class="config-empty inspector-empty">
@@ -1465,7 +1465,7 @@ function runStatusClass(status: string) {
                 <span class="panel-kicker">Runs</span>
                 <strong>{{ runs.length }} executions</strong>
               </div>
-              <button class="btn-secondary" :disabled="running" @click="runPipeline">
+              <button class="base-btn base-btn--ghost" :disabled="running" @click="runPipeline">
                 {{ running ? 'Running…' : 'Run' }}
               </button>
             </div>
@@ -1483,7 +1483,7 @@ function runStatusClass(status: string) {
                 <span class="run-info">{{ formatDate(run.started_at) }}</span>
                 <span v-if="run.business_date" class="run-business-date">{{ run.business_date }}</span>
                 <span class="run-rows">{{ run.rows_processed }} rows</span>
-                <button class="btn-mini" :disabled="running" @click.stop="rerunPipeline(run)">Re-run</button>
+                <button class="base-btn base-btn--xs" :disabled="running" @click.stop="rerunPipeline(run)">Re-run</button>
               </div>
             </div>
 
@@ -1552,7 +1552,7 @@ function runStatusClass(status: string) {
             <div v-if="pipelineApiEnabledModel && currentPipeline" class="api-route">
               POST /api/pipelines/{{ currentPipeline.id }}/run
             </div>
-            <button class="btn-secondary wide" :disabled="savingPipeline" @click="save">
+            <button class="base-btn base-btn--ghost wide" :disabled="savingPipeline" @click="save">
               {{ savingPipeline ? 'Saving…' : 'Save settings' }}
             </button>
           </div>
@@ -1631,8 +1631,8 @@ function runStatusClass(status: string) {
         <h2>Delete Pipeline</h2>
         <p class="modal-confirm-text">Delete pipeline <strong>"{{ pipelineToDelete?.name }}"</strong>? This action cannot be undone.</p>
         <div class="modal-actions">
-          <button class="btn-ghost" @click="showDeleteModal = false">Cancel</button>
-          <button class="btn-danger-solid" @click="confirmDelete">Delete</button>
+          <button class="base-btn base-btn--ghost" @click="showDeleteModal = false">Cancel</button>
+          <button class="base-btn base-btn--danger" @click="confirmDelete">Delete</button>
         </div>
       </div>
     </div>
@@ -1656,8 +1656,8 @@ function runStatusClass(status: string) {
           </select>
         </div>
         <div class="modal-actions">
-          <button class="btn-ghost" @click="showCreateModal = false">Cancel</button>
-          <button class="btn-primary" :disabled="!newPipelineName.trim()" @click="confirmCreate">Create</button>
+          <button class="base-btn base-btn--ghost" @click="showCreateModal = false">Cancel</button>
+          <button class="base-btn base-btn--primary" :disabled="!newPipelineName.trim()" @click="confirmCreate">Create</button>
         </div>
       </div>
     </div>
@@ -2778,28 +2778,6 @@ function runStatusClass(status: string) {
   font-size: 10px;
 }
 
-.btn-remove-node {
-  margin-top: 20px;
-  width: 100%;
-  padding: 8px 0;
-  background: transparent;
-  border: 1px solid var(--danger);
-  color: var(--danger);
-  border-radius: var(--r);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition:
-    background-color var(--dur) var(--ease),
-    border-color var(--dur) var(--ease),
-    color var(--dur) var(--ease);
-}
-.btn-remove-node:hover {
-  background: var(--danger-bg);
-  border-color: var(--danger);
-  color: var(--danger);
-}
-
 .run-list-full {
   overflow-y: auto;
   max-height: 240px;
@@ -3050,75 +3028,6 @@ function runStatusClass(status: string) {
 }
 
 /* ── Buttons ───────────────────────────────────────────────── */
-.btn-primary,
-.btn-secondary,
-.btn-ghost,
-.btn-mini {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  border: 1px solid transparent;
-  border-radius: var(--r);
-  font-family: inherit;
-  font-weight: 500;
-  line-height: 1;
-  white-space: nowrap;
-  cursor: pointer;
-  transition:
-    background-color var(--dur) var(--ease),
-    border-color var(--dur) var(--ease),
-    color var(--dur) var(--ease),
-    opacity var(--dur) var(--ease);
-}
-
-.btn-primary {
-  background: var(--brand);
-  color: var(--brand-fg);
-  border-color: var(--brand);
-  padding: 7px 14px;
-  font-size: 13px;
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: var(--brand-h);
-  border-color: var(--brand-h);
-}
-
-.btn-secondary {
-  background: transparent;
-  color: var(--text-secondary);
-  border-color: var(--border-2);
-  padding: 7px 14px;
-  font-size: 13px;
-}
-
-.btn-secondary:hover:not(:disabled) {
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-}
-
-.btn-ghost {
-  background: transparent;
-  color: var(--text-secondary);
-  border-color: transparent;
-  padding: 6px 10px;
-  font-size: 13px;
-}
-
-.btn-ghost:hover {
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-}
-
-.btn-primary:disabled,
-.btn-secondary:disabled,
-.btn-ghost:disabled,
-.btn-mini:disabled {
-  opacity: 0.45;
-  pointer-events: none;
-}
-
 .btn-icon {
   display: inline-flex;
   align-items: center;
@@ -3149,22 +3058,6 @@ function runStatusClass(status: string) {
   background: var(--danger-bg);
 }
 
-.btn-danger-solid {
-  padding: 7px 18px;
-  border-radius: var(--r);
-  border: none;
-  background: var(--danger);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: opacity var(--dur) var(--ease);
-}
-
-.btn-danger-solid:hover {
-  opacity: 0.85;
-}
-
 .modal-confirm {
   min-width: 320px;
   max-width: 420px;
@@ -3175,21 +3068,6 @@ function runStatusClass(status: string) {
   font-size: 14px;
   color: var(--text-secondary);
   line-height: 1.5;
-}
-
-.btn-mini {
-  border-color: var(--border-2);
-  background: transparent;
-  color: var(--text-secondary);
-  border-radius: var(--r-sm);
-  padding: 2px 7px;
-  font-size: 11px;
-}
-
-.btn-mini:hover:not(:disabled) {
-  border-color: var(--brand);
-  color: var(--text-primary);
-  background: var(--brand-dim);
 }
 
 .wide {

@@ -4,6 +4,8 @@ import { useConnections } from '@/composables/useConnections'
 import { useRedis, type RedisInfoResponse, type RedisKeySummary, type RedisMonitorMessage, type RedisScriptResult, type RedisSlowlogEntry, type RedisValueResponse, type RedisWritableType } from '@/composables/useRedis'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
+import SortIcon from '@/components/ui/SortIcon.vue'
+import { useSort } from '@/composables/useSort'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -85,9 +87,18 @@ const redisTypes: Array<{ value: RedisWritableType; label: string }> = [
 
 const redisDbIndexes = Array.from({ length: 16 }, (_, index) => index)
 
+function keySortValue(item: RedisKeySummary, key: string): string | number {
+  if (key === 'key') return item.key.toLowerCase()
+  if (key === 'type') return item.type
+  if (key === 'ttl') return item.ttl
+  return ''
+}
+const { sortKey, sortDir, toggleSort, sort } = useSort<RedisKeySummary>(keySortValue)
+const sortedKeys = computed(() => sort(keys.value))
+
 const keyGroups = computed(() => {
   const groups = new Map<string, RedisKeySummary[]>()
-  for (const item of keys.value) {
+  for (const item of sortedKeys.value) {
     const idx = item.key.indexOf(':')
     const group = idx > 0 ? item.key.slice(0, idx) : 'root'
     if (!groups.has(group)) groups.set(group, [])
@@ -803,7 +814,13 @@ function quoteCommandArg(value: string) {
           <button class="base-btn base-btn--primary base-btn--sm" :disabled="reconnecting" @click="reconnectRedis(true)">{{ reconnecting ? 'Connecting...' : 'Reconnect' }}</button>
         </div>
 
-        <div v-else-if="treeMode" class="redis-key-list redis-key-list--tree">
+        <div v-else class="redis-sort-bar">
+          <button type="button" class="redis-sort-btn" :class="{ sorted: sortKey === 'key' }" @click="toggleSort('key')">Name <SortIcon :active="sortKey === 'key'" :dir="sortDir" /></button>
+          <button type="button" class="redis-sort-btn" :class="{ sorted: sortKey === 'type' }" @click="toggleSort('type')">Type <SortIcon :active="sortKey === 'type'" :dir="sortDir" /></button>
+          <button type="button" class="redis-sort-btn" :class="{ sorted: sortKey === 'ttl' }" @click="toggleSort('ttl')">TTL <SortIcon :active="sortKey === 'ttl'" :dir="sortDir" /></button>
+        </div>
+
+        <div v-if="redisConnected && treeMode" class="redis-key-list redis-key-list--tree">
           <div v-for="group in keyGroups" :key="group.name" class="redis-tree-group">
             <div class="redis-tree-group__head">
               <span>▾ {{ group.name }}</span>
@@ -823,9 +840,9 @@ function quoteCommandArg(value: string) {
           <div v-if="!loadingKeys && keys.length === 0" class="redis-muted">No keys found.</div>
         </div>
 
-        <div v-else class="redis-key-list">
+        <div v-else-if="redisConnected" class="redis-key-list">
           <button
-            v-for="item in keys"
+            v-for="item in sortedKeys"
             :key="item.key"
             class="redis-key"
             :class="{ 'is-active': selectedKey === item.key }"
@@ -1376,6 +1393,44 @@ function quoteCommandArg(value: string) {
   gap: 6px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
+}
+
+.redis-sort-bar {
+  display: flex;
+  gap: 2px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.redis-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 7px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.redis-sort-btn:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.redis-sort-btn.sorted {
+  color: var(--brand);
+}
+
+.redis-sort-btn .sort-icon {
+  opacity: 0.5;
+  font-size: 0.85em;
+}
+
+.redis-sort-btn.sorted .sort-icon {
+  opacity: 1;
 }
 
 .redis-disconnected {

@@ -3,12 +3,15 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import axios from 'axios'
 import SearchSelect from '@/components/ui/SearchSelect.vue'
+import SortIcon from '@/components/ui/SortIcon.vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
+import { useListFilter } from '@/composables/useListFilter'
+import { useSort } from '@/composables/useSort'
 
 interface DockerHost {
   id: number
@@ -152,7 +155,6 @@ const images = ref<DockerImage[]>([])
 const volumes = ref<DockerVolume[]>([])
 const networks = ref<DockerNetwork[]>([])
 const groupByCompose = ref(true)
-const search = ref('')
 
 // ── Multi-host overview ─────────────────────────────────────────
 const overview = ref<HostSummary[]>([])
@@ -289,7 +291,6 @@ const logsCid = ref('')
 const logsLoading = ref(false)
 const logsTail = ref('200')
 const logsTimestamps = ref(false)
-const logsSearch = ref('')
 const logsPretty = ref(true)
 
 // ── Inspect / exec slide-over ───────────────────────────────────
@@ -604,8 +605,7 @@ function normLevel(l: string): string {
   if (u === 'PANIC') return 'FATAL'
   return u
 }
-const logEntries = computed<LogEntry[]>(() => {
-  const q = logsSearch.value.trim().toLowerCase()
+const parsedLogEntries = computed<LogEntry[]>(() => {
   const out: LogEntry[] = []
   for (const raw of logsText.value.split('\n')) {
     if (raw === '') continue
@@ -634,11 +634,11 @@ const logEntries = computed<LogEntry[]>(() => {
     }
     out.push({ ts, level, text: body, json, cont: [] })
   }
-  if (!q) return out
-  return out.filter(
-    (e) => e.text.toLowerCase().includes(q) || e.cont.some((c) => c.toLowerCase().includes(q)),
-  )
+  return out
 })
+const { search: logsSearch, filtered: logEntries } = useListFilter(parsedLogEntries, (e, q) =>
+  e.text.toLowerCase().includes(q) || e.cont.some((c) => c.toLowerCase().includes(q)),
+)
 
 // Raw text respecting the search filter (for the plain view + download).
 const logsDisplay = computed(() => {
@@ -1467,32 +1467,46 @@ async function openTerminal(c: DockerContainer) {
 }
 
 // ── Search / filter ─────────────────────────────────────────────
-const filteredContainers = computed(() => {
-  const q = search.value.trim().toLowerCase()
-  if (!q) return containers.value
-  return containers.value.filter(
-    (c) => containerName(c).toLowerCase().includes(q) || c.image.toLowerCase().includes(q),
-  )
+// One search box drives four independent resource lists (only one tab is
+// visible at a time), so each list gets its own useListFilter instance and
+// a writable `search` computed fans a single input out to all of them.
+const { search: searchContainers, filtered: filteredContainers } = useListFilter(containers, (c, q) =>
+  containerName(c).toLowerCase().includes(q) || c.image.toLowerCase().includes(q),
+)
+const { search: searchImages, filtered: filteredImages } = useListFilter(images, (i, q) =>
+  (i.repoTags || []).join(' ').toLowerCase().includes(q),
+)
+const { search: searchVolumes, filtered: filteredVolumes } = useListFilter(volumes, (v, q) =>
+  v.name.toLowerCase().includes(q),
+)
+const { search: searchNetworks, filtered: filteredNetworks } = useListFilter(networks, (n, q) =>
+  n.name.toLowerCase().includes(q),
+)
+const search = computed<string>({
+  get: () => searchContainers.value,
+  set: (v: string) => {
+    searchContainers.value = v
+    searchImages.value = v
+    searchVolumes.value = v
+    searchNetworks.value = v
+  },
 })
-const filteredImages = computed(() => {
-  const q = search.value.trim().toLowerCase()
-  if (!q) return images.value
-  return images.value.filter((i) => (i.repoTags || []).join(' ').toLowerCase().includes(q))
-})
-const filteredVolumes = computed(() => {
-  const q = search.value.trim().toLowerCase()
-  if (!q) return volumes.value
-  return volumes.value.filter((v) => v.name.toLowerCase().includes(q))
-})
-const filteredNetworks = computed(() => {
-  const q = search.value.trim().toLowerCase()
-  if (!q) return networks.value
-  return networks.value.filter((n) => n.name.toLowerCase().includes(q))
-})
+
+// ── Sort (containers table) ─────────────────────────────────────
+function containerSortValue(c: DockerContainer, key: string): unknown {
+  switch (key) {
+    case 'name': return containerName(c).toLowerCase()
+    case 'image': return c.image.toLowerCase()
+    case 'state': return c.state.toLowerCase()
+    case 'status': return c.status.toLowerCase()
+    default: return ''
+  }
+}
+const { sortKey: containerSortKey, sortDir: containerSortDir, toggleSort: toggleContainerSort, sort: sortContainers } = useSort<DockerContainer>(containerSortValue)
 
 // ── Compose grouping ────────────────────────────────────────────
 const containerGroups = computed(() => {
-  const list = filteredContainers.value
+  const list = sortContainers(filteredContainers.value)
   if (!groupByCompose.value) return [{ project: '', containers: list }]
   const groups: Record<string, DockerContainer[]> = {}
   for (const c of list) {
@@ -2138,10 +2152,10 @@ onMounted(loadHosts)
               <thead>
                 <tr>
                   <th></th>
-                  <th>Name</th>
-                  <th>Image</th>
-                  <th>State</th>
-                  <th>Status</th>
+                  <th class="dk-th-sort" :class="{ sorted: containerSortKey === 'name' }" @click="toggleContainerSort('name')">Name <SortIcon :active="containerSortKey === 'name'" :dir="containerSortDir" /></th>
+                  <th class="dk-th-sort" :class="{ sorted: containerSortKey === 'image' }" @click="toggleContainerSort('image')">Image <SortIcon :active="containerSortKey === 'image'" :dir="containerSortDir" /></th>
+                  <th class="dk-th-sort" :class="{ sorted: containerSortKey === 'state' }" @click="toggleContainerSort('state')">State <SortIcon :active="containerSortKey === 'state'" :dir="containerSortDir" /></th>
+                  <th class="dk-th-sort" :class="{ sorted: containerSortKey === 'status' }" @click="toggleContainerSort('status')">Status <SortIcon :active="containerSortKey === 'status'" :dir="containerSortDir" /></th>
                   <th>Ports</th>
                   <th class="dk-actions-col">Actions</th>
                 </tr>
@@ -3103,6 +3117,7 @@ onMounted(loadHosts)
 .dk-table-wrap { padding: 4px 6px; overflow-x: auto; }
 .dk-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .dk-table th { text-align: left; padding: 10px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+.dk-th-sort { cursor: pointer; user-select: none; }
 .dk-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .dk-table tbody tr:last-child td { border-bottom: none; }
 .dk-empty-row { text-align: center; color: var(--text-muted); padding: 24px; }

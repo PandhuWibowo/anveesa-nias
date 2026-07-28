@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
+import Pagination from '@/components/ui/Pagination.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -237,21 +238,6 @@ function jumpToInputPage() {
   goToPage(target)
 }
 
-// Visible page window (up to 7 buttons)
-const pageWindow = computed(() => {
-  const total = totalPages.value
-  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
-  const cur = currentPage.value
-  const pages: (number | '…')[] = [1]
-  const lo = Math.max(2, cur - 2)
-  const hi = Math.min(total - 1, cur + 2)
-  if (lo > 2) pages.push('…')
-  for (let p = lo; p <= hi; p++) pages.push(p)
-  if (hi < total - 1) pages.push('…')
-  pages.push(total)
-  return pages
-})
-
 // Chips: active filters the user can individually remove
 const activeFilters = computed(() => {
   const chips: { label: string; clear: () => void }[] = []
@@ -269,7 +255,10 @@ function clearAllFilters() {
 
 function goToPage(p: number | '…') {
   if (p === '…' || typeof p !== 'number') return
-  if (!canGoToPage(p)) return
+  if (!canGoToPage(p)) {
+    toast.error(`Page ${p.toLocaleString()} is beyond the ${MAX_RESULT_WINDOW.toLocaleString()}-result jump window — use Next to step further, or narrow the filters/time range.`)
+    return
+  }
   currentPage.value = p; run(true)
 }
 
@@ -1161,26 +1150,7 @@ function hitKey(hit: Hit, idx: number): string {
 
       <!-- ── Pagination ──────────────────────────────────── -->
       <div v-if="totalPages > 1" class="disc-pagination">
-        <button class="disc-pg-btn disc-pg-nav"
-          :disabled="currentPage === 1"
-          @click="goToPage(currentPage - 1)">‹ Prev</button>
-
-        <template v-for="p in pageWindow" :key="String(p)">
-          <span v-if="p === '…'" class="disc-pg-ellipsis">…</span>
-          <button v-else class="disc-pg-btn"
-            :class="{ active: p === currentPage }"
-            :disabled="!canGoToPage(p)"
-            :title="!canGoToPage(p) ? 'Navigate page by page to reach this page' : undefined"
-            @click="goToPage(p)">{{ p }}</button>
-        </template>
-
-        <button class="disc-pg-btn disc-pg-nav"
-          :disabled="currentPage === totalPages || !canGoToPage(currentPage + 1)"
-          @click="goToPage(currentPage + 1)">Next ›</button>
-
-        <span class="disc-pg-info">
-          Page {{ currentPage }} of {{ totalPages.toLocaleString() }}
-        </span>
+        <Pagination :page="currentPage" :total-pages="totalPages" :total="totalHits" item-label="results" @update:page="goToPage" />
 
         <span class="disc-pg-jump">
           <input
@@ -1192,7 +1162,7 @@ function hitKey(hit: Hit, idx: number): string {
             :placeholder="`1–${jumpTarget.toLocaleString()}`"
             :title="`Jump directly to any page up to ${jumpTarget.toLocaleString()} (first ${MAX_RESULT_WINDOW.toLocaleString()} results). Use Next to step deeper.`"
             @keyup.enter="jumpToInputPage" />
-          <button class="disc-pg-btn disc-pg-nav" :disabled="jumpPageInput == null" @click="jumpToInputPage">Go</button>
+          <button class="base-btn base-btn--ghost base-btn--xs" :disabled="jumpPageInput == null" @click="jumpToInputPage">Go</button>
         </span>
       </div>
 
@@ -1834,18 +1804,6 @@ export { flatSource }
   display: flex; align-items: center; justify-content: center;
   gap: 4px; padding: 10px 0 4px; flex-shrink: 0; flex-wrap: wrap;
 }
-.disc-pg-btn {
-  min-width: 32px; height: 28px; padding: 0 8px;
-  border: 1px solid var(--border); border-radius: 6px;
-  background: var(--bg-elevated); color: var(--text-secondary);
-  font-size: 12.5px; cursor: pointer; transition: all .12s;
-}
-.disc-pg-btn:hover:not(:disabled) { border-color:#00bfb3; color:#00bfb3; }
-.disc-pg-btn.active { background:#00bfb3; border-color:#00bfb3; color:#fff; font-weight:700; }
-.disc-pg-btn:disabled { opacity:.35; cursor:not-allowed; }
-.disc-pg-nav { padding: 0 12px; font-size: 13px; }
-.disc-pg-ellipsis { color: var(--text-muted); font-size: 13px; padding: 0 4px; line-height: 28px; }
-.disc-pg-info { font-size: 11.5px; color: var(--text-muted); margin-left: 8px; white-space: nowrap; }
 .disc-pg-jump { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; }
 .disc-pg-jump-input {
   width: 78px; height: 28px; padding: 0 8px;

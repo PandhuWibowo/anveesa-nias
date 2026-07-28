@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
 import { readableError } from '@/utils/httpError'
+import { useListFilter } from '@/composables/useListFilter'
 
 interface Schedule {
   id: number; name: string; conn_id: number; sql: string
@@ -41,6 +42,9 @@ function goToScheduleSource(s: Schedule) {
   }
 }
 const schedules = ref<Schedule[]>([])
+const { search, filtered: filteredSchedules } = useListFilter(schedules, (s, q) =>
+  s.name.toLowerCase().includes(q) || s.sql.toLowerCase().includes(q),
+)
 const dashboards = ref<AnalyticsDashboard[]>([])
 const loading = ref(false)
 const showForm = ref(false)
@@ -235,12 +239,16 @@ onMounted(() => { load(); fetchSchedulerStatus() })
       </div>
 
       <!-- List -->
+      <div class="sc-toolbar" v-if="schedules.length">
+        <input v-model="search" class="base-input sc-search" type="search" placeholder="Filter schedules…" />
+      </div>
       <div class="page-grid sc-list">
         <div v-if="loading" class="sc-empty">
           <svg class="spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
         </div>
         <div v-else-if="schedules.length === 0" class="sc-empty">No schedules yet.</div>
-        <div v-for="s in schedules" :key="s.id" class="page-card sc-item" :class="{ 'sc-item--off': !s.enabled }">
+        <div v-else-if="filteredSchedules.length === 0" class="sc-empty">No schedules match "{{ search }}".</div>
+        <div v-for="s in filteredSchedules" :key="s.id" class="page-card sc-item" :class="{ 'sc-item--off': !s.enabled }">
           <div class="sc-item-head">
             <div class="sc-dot" :class="s.enabled ? 'sc-dot--on' : 'sc-dot--off'" />
             <div class="sc-item-info">
@@ -371,6 +379,8 @@ onMounted(() => { load(); fetchSchedulerStatus() })
 .sc-header { display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap; }
 .sc-title { font-size:20px; font-weight:700; color:var(--text-primary); }
 .sc-sub { font-size:13px; color:var(--text-muted); margin-top:3px; }
+.sc-toolbar { display:flex; }
+.sc-search { width:240px; max-width:40vw; }
 .sc-list { display:flex; flex-direction:column; gap:8px; }
 .sc-empty { display:flex; align-items:center; justify-content:center; padding:32px; color:var(--text-muted); gap:8px; }
 .sc-item { background:var(--bg-elevated); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
