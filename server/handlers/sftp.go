@@ -418,16 +418,33 @@ func SftpCompress() http.HandlerFunc {
 
 		// On failure (e.g. a permission-denied file partway through), clean up
 		// whatever partial archive got written — otherwise it lingers and blocks
-		// every retry with a false "already exists" conflict.
+		// every retry with a false "already exists" conflict. chmod 644 so a
+		// sudo-created archive is still downloadable over the unprivileged
+		// SFTP session afterward.
 		var buildCmd string
 		if body.Format == "zip" {
 			buildCmd = fmt.Sprintf("zip -rq %s %s", shellQuote(archiveName), shellQuote(base))
 		} else {
 			buildCmd = fmt.Sprintf("tar -czf %s %s", shellQuote(archiveName), shellQuote(base))
 		}
-		cmd := fmt.Sprintf("cd %s && %s; ec=$?; if [ $ec -ne 0 ]; then rm -f %s; fi; exit $ec",
-			shellQuote(dir), buildCmd, shellQuote(archiveName))
-		stdout, stderr, exitCode, err := runSSHCommand(h, cmd, "", 300)
+		innerCmd := fmt.Sprintf("cd %s && %s && chmod 644 %s; ec=$?; if [ $ec -ne 0 ]; then rm -f %s; fi; exit $ec",
+			shellQuote(dir), buildCmd, shellQuote(archiveName), shellQuote(archiveName))
+
+		// Reuses the same sudo convention as Nginx config management: ?sudo=1
+		// elevates via `sudo -S` (password auth, password piped on stdin) or
+		// `sudo -n` (key auth, requires NOPASSWD) — for paths the SSH user
+		// can't read/write directly, like root-owned /etc/ssl.
+		cmd := innerCmd
+		stdin := ""
+		if nginxUseSudo(r) {
+			if h.SSHPassword != "" {
+				cmd = "sudo -S -p '' sh -c " + shellQuote(innerCmd)
+				stdin = h.SSHPassword + "\n"
+			} else {
+				cmd = "sudo -n sh -c " + shellQuote(innerCmd)
+			}
+		}
+		stdout, stderr, exitCode, err := runSSHCommand(h, cmd, stdin, 300)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return

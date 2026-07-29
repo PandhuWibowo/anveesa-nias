@@ -285,15 +285,35 @@ function compress(entry: SftpEntry) {
   compressFormat.value = 'zip'
   showCompress.value = true
 }
+// A permission/sudo error means the SSH user lacks direct access to read the
+// source or write into the destination directory (e.g. root-owned /etc/ssl)
+// — the fix is to elevate. We retry once with sudo, transparently.
+function isPermDenied(msg: string): boolean {
+  const m = msg.toLowerCase()
+  return m.includes('permission denied') || m.includes('not permitted') || m.includes('sudo')
+}
+async function runCompress(entry: SftpEntry, sudo: boolean) {
+  const { data } = await axios.post<{ name: string }>(
+    `/api/sftp/hosts/${hostId.value}/compress`,
+    { path: joinPath(cwd.value, entry.name), format: compressFormat.value },
+    { params: sudo ? { sudo: '1' } : {} },
+  )
+  return data
+}
 async function submitCompress() {
   const entry = compressTarget.value
   if (!entry) return
   compressing.value = true
   try {
-    const { data } = await axios.post<{ name: string }>(`/api/sftp/hosts/${hostId.value}/compress`, {
-      path: joinPath(cwd.value, entry.name),
-      format: compressFormat.value,
-    })
+    let data: { name: string }
+    try {
+      data = await runCompress(entry, false)
+    } catch (e: any) {
+      const msg = e?.response?.data?.error || ''
+      if (!isPermDenied(msg)) throw e
+      toast.info('Permission denied — retrying with sudo')
+      data = await runCompress(entry, true)
+    }
     toast.success(`Created ${data.name}`)
     showCompress.value = false
     await loadDir(cwd.value)
