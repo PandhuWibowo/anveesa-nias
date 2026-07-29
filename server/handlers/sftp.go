@@ -416,12 +416,17 @@ func SftpCompress() http.HandlerFunc {
 		}
 		cleanup()
 
-		var cmd string
+		// On failure (e.g. a permission-denied file partway through), clean up
+		// whatever partial archive got written — otherwise it lingers and blocks
+		// every retry with a false "already exists" conflict.
+		var buildCmd string
 		if body.Format == "zip" {
-			cmd = fmt.Sprintf("cd %s && zip -rq %s %s", shellQuote(dir), shellQuote(archiveName), shellQuote(base))
+			buildCmd = fmt.Sprintf("zip -rq %s %s", shellQuote(archiveName), shellQuote(base))
 		} else {
-			cmd = fmt.Sprintf("cd %s && tar -czf %s %s", shellQuote(dir), shellQuote(archiveName), shellQuote(base))
+			buildCmd = fmt.Sprintf("tar -czf %s %s", shellQuote(archiveName), shellQuote(base))
 		}
+		cmd := fmt.Sprintf("cd %s && %s; ec=$?; if [ $ec -ne 0 ]; then rm -f %s; fi; exit $ec",
+			shellQuote(dir), buildCmd, shellQuote(archiveName))
 		stdout, stderr, exitCode, err := runSSHCommand(h, cmd, "", 300)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
