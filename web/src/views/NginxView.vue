@@ -429,11 +429,16 @@ async function rescan() {
   toast.success('Rescanned host')
 }
 
-// Persist settings (debounced) whenever the user changes binary, paths, or sudo.
+// Persist settings and reload the active tab (debounced) whenever the user
+// changes binary, paths, or sudo — so editing Config Root/Log Directory
+// refreshes the file list without needing a manual "Rescan".
 watch([bin, configRoot, logDir, useSudo, logContainer], () => {
   if (suppressSave || hostId.value === null) return
   if (saveTimer) clearTimeout(saveTimer)
-  saveTimer = setTimeout(saveSettings, 600)
+  saveTimer = setTimeout(() => {
+    saveSettings()
+    loadCurrentTab()
+  }, 600)
 })
 
 async function loadCurrentTab() {
