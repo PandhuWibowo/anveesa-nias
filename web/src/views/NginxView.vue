@@ -136,16 +136,34 @@ interface EditorTab {
   origContent: string
   loading: boolean
   backups: NginxBackup[]
+  // Snapshot of this host's config root/binary/sudo at the moment the tab was
+  // opened. Save/backup/revert use these instead of the live toolbar values
+  // so a tab keeps working correctly even while a *different* host is the
+  // one currently selected — e.g. the right pane in split view.
+  root: string
+  bin: string
+  sudo: boolean
 }
 function tabKey(hid: number, p: string) {
   return `${hid}:${p}`
 }
+function tabBase(t: EditorTab) {
+  return `/api/nginx/hosts/${t.hostId}`
+}
+function tabParams(t: EditorTab) {
+  return { root: t.root, bin: t.bin, sudo: t.sudo ? '1' : undefined }
+}
 const tabs = ref<EditorTab[]>([])
 const activeTabId = ref('')
+// Second, independent pane for side-by-side viewing/editing — set by clicking
+// a tab's split icon. Empty means split view is off.
+const rightTabId = ref('')
+const splitView = computed(() => rightTabId.value !== '')
 // Remembers the last active tab per host so switching the host dropdown
 // (without clicking a tab directly) restores what you were last looking at.
 const lastActiveTabByHost: Record<number, string> = {}
 const activeTab = computed<EditorTab | undefined>(() => tabs.value.find((t) => t.id === activeTabId.value))
+const rightTab = computed<EditorTab | undefined>(() => tabs.value.find((t) => t.id === rightTabId.value))
 const activeFile = computed(() => activeTab.value?.path ?? '')
 function tabHostName(t: EditorTab): string {
   return hosts.value.find((h) => h.id === t.hostId)?.name || `host ${t.hostId}`
@@ -166,16 +184,31 @@ const backups = computed<NginxBackup[]>({
   get: () => activeTab.value?.backups ?? [],
   set: (v) => { if (activeTab.value) activeTab.value.backups = v },
 })
+const rightContent = computed<string>({
+  get: () => rightTab.value?.content ?? '',
+  set: (v) => { if (rightTab.value) rightTab.value.content = v },
+})
 const dirty = computed(() => fileContent.value !== origContent.value)
 function tabDirty(t: EditorTab) {
   return t.content !== t.origContent
 }
 
-// Activates a tab, switching the whole page to its host first if needed.
+// Activates a tab in the primary (left) pane, switching the whole page to its
+// host first if needed.
 async function activateTab(t: EditorTab) {
   activeTabId.value = t.id
   lastActiveTabByHost[t.hostId] = t.id
   if (t.hostId !== hostId.value) await selectHost(t.hostId)
+}
+
+// Opens a tab in the second pane for side-by-side viewing — this one never
+// switches the page's current host, since the whole point is comparing files
+// from two different hosts at once without losing either's context.
+function openInSplit(t: EditorTab) {
+  rightTabId.value = rightTabId.value === t.id ? '' : t.id
+}
+function closeSplit() {
+  rightTabId.value = ''
 }
 
 function toggleEditorFullscreen() {
@@ -710,12 +743,15 @@ async function openFile(p: string) {
     activateTab(existing)
     return
   }
-  const newTab: EditorTab = { id: key, hostId: hid, path: p, content: '', origContent: '', loading: true, backups: [] }
+  const newTab: EditorTab = {
+    id: key, hostId: hid, path: p, content: '', origContent: '', loading: true, backups: [],
+    root: configRoot.value, bin: bin.value, sudo: useSudo.value,
+  }
   tabs.value.push(newTab)
   activeTabId.value = key
   lastActiveTabByHost[hid] = key
   try {
-    const { data } = await axios.get(`${base.value}/config/file`, { params: { ...cfgParams.value, path: p } })
+    const { data } = await axios.get(`${tabBase(newTab)}/config/file`, { params: { ...tabParams(newTab), path: p } })
     newTab.content = data.content || ''
     newTab.origContent = newTab.content
     loadBackups(newTab)
@@ -749,6 +785,7 @@ async function closeTab(id: string) {
   const t = tabs.value[idx]
   if (tabDirty(t) && !(await confirm(`Discard unsaved changes to ${t.path}?`, 'Discard'))) return
   tabs.value.splice(idx, 1)
+  if (rightTabId.value === id) rightTabId.value = ''
   if (activeTabId.value !== id) return
   const sameHost = tabs.value.filter((t2) => t2.hostId === t.hostId)
   const fallback = sameHost.length ? sameHost[Math.min(idx, sameHost.length - 1)] : tabs.value[Math.min(idx, tabs.value.length - 1)]
@@ -757,12 +794,14 @@ async function closeTab(id: string) {
 }
 
 // loadBackups lists the *.bak.<unix> snapshots saved for the open file,
-// writing directly into the given tab object so a slow request can't land
-// its results on the wrong tab if the user has since switched away.
+// writing directly into the given tab object (using that tab's own snapshot
+// of root/bin/sudo, not necessarily the currently-selected host's) so a slow
+// request can't land its results on the wrong tab if the user has since
+// switched away, and split-pane tabs from another host still work correctly.
 async function loadBackups(t: EditorTab) {
   try {
-    const { data } = await axios.get<{ backups: NginxBackup[] }>(`${base.value}/config/backups`, {
-      params: { ...cfgParams.value, path: t.path },
+    const { data } = await axios.get<{ backups: NginxBackup[] }>(`${tabBase(t)}/config/backups`, {
+      params: { ...tabParams(t), path: t.path },
     })
     t.backups = data.backups || []
   } catch {
@@ -771,41 +810,46 @@ async function loadBackups(t: EditorTab) {
 }
 
 // loadBackup pulls an older snapshot into the editor (marking it dirty) so the
-// user can review and Save to restore. activeFile stays the original target.
-async function revertTo(backupPath: string) {
+// user can review and Save to restore. The tab's own path stays the target.
+async function revertTabTo(t: EditorTab, backupPath: string) {
   if (!backupPath) return
-  if (dirty.value && !(await confirm('Discard unsaved changes and load this backup?', 'Load backup'))) return
+  if (tabDirty(t) && !(await confirm('Discard unsaved changes and load this backup?', 'Load backup'))) return
   try {
-    const { data } = await axios.get(`${base.value}/config/file`, { params: { ...cfgParams.value, path: backupPath } })
-    fileContent.value = data.content || ''
+    const { data } = await axios.get(`${tabBase(t)}/config/file`, { params: { ...tabParams(t), path: backupPath } })
+    t.content = data.content || ''
     toast.info('Backup loaded — review and Save to restore')
   } catch (e: any) {
     toast.error(e?.response?.data?.error || 'Failed to load backup')
   }
+}
+function revertTo(backupPath: string) {
+  if (activeTab.value) return revertTabTo(activeTab.value, backupPath)
 }
 
 function backupLabel(b: NginxBackup): string {
   return b.time ? new Date(b.time * 1000).toLocaleString() : b.name
 }
 
-async function saveFile() {
-  if (!activeFile.value) return
+async function saveTab(t: EditorTab) {
   busy.value = true
   try {
-    await axios.post(`${base.value}/config/file`, {
-      root: configRoot.value,
-      path: activeFile.value,
-      content: fileContent.value,
-      sudo: useSudo.value,
+    await axios.post(`${tabBase(t)}/config/file`, {
+      root: t.root,
+      path: t.path,
+      content: t.content,
+      sudo: t.sudo,
     })
-    origContent.value = fileContent.value
+    t.origContent = t.content
     toast.success('Saved — run Test config before reloading')
-    if (activeTab.value) loadBackups(activeTab.value)
+    loadBackups(t)
   } catch (e: any) {
     toast.error(e?.response?.data?.error || 'Save failed')
   } finally {
     busy.value = false
   }
+}
+async function saveFile() {
+  if (activeTab.value) await saveTab(activeTab.value)
 }
 
 // ── Sites ───────────────────────────────────────────────────────
@@ -1160,46 +1204,92 @@ onBeforeUnmount(() => {
                   <span class="ng-tabchip-name">{{ t.path.split('/').pop() }}</span>
                   <span class="ng-tabchip-host">{{ tabHostName(t) }}</span>
                   <span v-if="tabDirty(t)" class="ng-tabchip-dot">●</span>
+                  <span
+                    class="ng-tabchip-split-btn"
+                    :class="{ 'ng-tabchip-split-btn--on': t.id === rightTabId }"
+                    title="Open in split view (side by side)"
+                    @click.stop="openInSplit(t)"
+                  ><ActionIcon name="split" /></span>
                   <span class="ng-tabchip-close" title="Close tab" @click.stop="closeTab(t.id)">×</span>
                 </button>
               </div>
-              <div v-if="!activeFile" class="ng-editor-empty">Select a config file to view or edit.</div>
-              <template v-else>
-                <div class="ng-editor-bar">
-                  <span class="ng-editor-path">{{ activeFile }}</span>
-                  <span v-if="dirty" class="ng-dirty">● unsaved</span>
-                  <div class="dk-spacer"></div>
-                  <button class="base-btn base-btn--sm" @click="openEffective">nginx -T</button>
-                  <select
-                    v-if="backups.length"
-                    class="base-input base-input--sm ng-baksel"
-                    :value="''"
-                    title="Load a previous backup into the editor"
-                    @change="revertTo(($event.target as HTMLSelectElement).value); ($event.target as HTMLSelectElement).value = ''"
-                  >
-                    <option value="" disabled>↩ Backups ({{ backups.length }})</option>
-                    <option v-for="b in backups" :key="b.path" :value="b.path">{{ backupLabel(b) }}</option>
-                  </select>
-                  <button
-                    v-if="canManage"
-                    class="base-btn base-btn--primary base-btn--sm"
-                    :disabled="busy || !dirty"
-                    @click="saveFile"
-                  >Save</button>
-                  <button
-                    class="icon-btn"
-                    :title="editorFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'"
-                    @click="toggleEditorFullscreen"
-                  >
-                    <ActionIcon :name="editorFullscreen ? 'collapse' : 'expand'" />
-                  </button>
+              <div class="ng-panes" :class="{ 'ng-panes--split': splitView }">
+                <div class="ng-pane">
+                  <div v-if="!activeFile" class="ng-editor-empty">Select a config file to view or edit.</div>
+                  <template v-else>
+                    <div class="ng-editor-bar">
+                      <span class="ng-editor-path">{{ activeFile }}</span>
+                      <span class="ng-tabchip-host">{{ activeTab && tabHostName(activeTab) }}</span>
+                      <span v-if="dirty" class="ng-dirty">● unsaved</span>
+                      <div class="dk-spacer"></div>
+                      <button class="base-btn base-btn--sm" @click="openEffective">nginx -T</button>
+                      <select
+                        v-if="backups.length"
+                        class="base-input base-input--sm ng-baksel"
+                        :value="''"
+                        title="Load a previous backup into the editor"
+                        @change="revertTo(($event.target as HTMLSelectElement).value); ($event.target as HTMLSelectElement).value = ''"
+                      >
+                        <option value="" disabled>↩ Backups ({{ backups.length }})</option>
+                        <option v-for="b in backups" :key="b.path" :value="b.path">{{ backupLabel(b) }}</option>
+                      </select>
+                      <button
+                        v-if="canManage"
+                        class="base-btn base-btn--primary base-btn--sm"
+                        :disabled="busy || !dirty"
+                        @click="saveFile"
+                      >Save</button>
+                      <button
+                        class="icon-btn"
+                        :title="editorFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'"
+                        @click="toggleEditorFullscreen"
+                      >
+                        <ActionIcon :name="editorFullscreen ? 'collapse' : 'expand'" />
+                      </button>
+                    </div>
+                    <NginxEditor
+                      v-model="fileContent"
+                      :readonly="!canManage || loadingFile"
+                      class="ng-cm-wrap"
+                    />
+                  </template>
                 </div>
-                <NginxEditor
-                  v-model="fileContent"
-                  :readonly="!canManage || loadingFile"
-                  class="ng-cm-wrap"
-                />
-              </template>
+                <div v-if="splitView" class="ng-pane">
+                  <div v-if="!rightTab" class="ng-editor-empty">Click the split icon on another tab to compare it here.</div>
+                  <template v-else>
+                    <div class="ng-editor-bar">
+                      <span class="ng-editor-path">{{ rightTab.path }}</span>
+                      <span class="ng-tabchip-host">{{ tabHostName(rightTab) }}</span>
+                      <span v-if="tabDirty(rightTab)" class="ng-dirty">● unsaved</span>
+                      <div class="dk-spacer"></div>
+                      <select
+                        v-if="rightTab.backups.length"
+                        class="base-input base-input--sm ng-baksel"
+                        :value="''"
+                        title="Load a previous backup into the editor"
+                        @change="revertTabTo(rightTab, ($event.target as HTMLSelectElement).value); ($event.target as HTMLSelectElement).value = ''"
+                      >
+                        <option value="" disabled>↩ Backups ({{ rightTab.backups.length }})</option>
+                        <option v-for="b in rightTab.backups" :key="b.path" :value="b.path">{{ backupLabel(b) }}</option>
+                      </select>
+                      <button
+                        v-if="canManage"
+                        class="base-btn base-btn--primary base-btn--sm"
+                        :disabled="busy || !tabDirty(rightTab)"
+                        @click="saveTab(rightTab)"
+                      >Save</button>
+                      <button class="icon-btn" title="Close split" @click="closeSplit">
+                        <ActionIcon name="close" />
+                      </button>
+                    </div>
+                    <NginxEditor
+                      v-model="rightContent"
+                      :readonly="!canManage || rightTab.loading"
+                      class="ng-cm-wrap"
+                    />
+                  </template>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1506,6 +1596,13 @@ onBeforeUnmount(() => {
 .ng-tabchip-dot { color: var(--brand); font-size: 8px; }
 .ng-tabchip-close { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: var(--r-sm); font-size: 14px; line-height: 1; color: var(--text-muted); }
 .ng-tabchip-close:hover { background: var(--bg-hover); color: var(--danger); }
+.ng-tabchip-split-btn { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: var(--r-sm); color: var(--text-muted); }
+.ng-tabchip-split-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.ng-tabchip-split-btn--on { color: var(--brand); background: var(--brand-dim); }
+.ng-panes { display: flex; flex: 1; min-height: 0; }
+.ng-panes--split .ng-pane { border-right: 1px solid var(--border); }
+.ng-panes--split .ng-pane:last-child { border-right: none; }
+.ng-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .ng-editor-path { font-family: var(--mono); font-size: 12px; color: var(--text-primary); word-break: break-all; }
 .ng-dirty { color: var(--warning); font-size: 11px; }
 .ng-textarea { flex: 1; min-height: 420px; border: none; resize: none; padding: 12px; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; background: var(--bg-base, var(--bg-surface)); color: var(--text-primary); outline: none; tab-size: 4; }
