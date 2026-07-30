@@ -117,6 +117,33 @@ func nginxUseSudo(r *http.Request) bool {
 	return v == "1" || v == "true"
 }
 
+// nginxLogContainer returns the Docker container name to read logs from, when
+// nginx runs inside a container and its log directory isn't a path on the SSH
+// host's own filesystem at all (no bind mount) — so plain SFTP/SSH file
+// access can't reach it, only `docker exec <container> ...` can.
+func nginxLogContainer(r *http.Request) string {
+	return strings.TrimSpace(r.URL.Query().Get("container"))
+}
+
+// dockerExecArgs prefixes an argv with `docker exec <container>` when set,
+// so the command runs inside the container instead of directly on the host.
+func dockerExecArgs(container string, args []string) []string {
+	if container == "" {
+		return args
+	}
+	return append([]string{"docker", "exec", container}, args...)
+}
+
+// dockerExecWrap is dockerExecArgs' raw-shell-string equivalent, for the one
+// caller (log streaming) that builds a command string directly instead of an
+// argv slice.
+func dockerExecWrap(container, cmd string) string {
+	if container == "" {
+		return cmd
+	}
+	return "docker exec " + shellQuote(container) + " sh -c " + shellQuote(cmd)
+}
+
 // runHostPrivileged runs args on the host, optionally elevating with sudo. With
 // a password-auth host it uses `sudo -S` and feeds the SSH password on stdin
 // (the SSH password doubles as the sudo password — the common case); with key
@@ -289,17 +316,17 @@ func NginxGetSettings() http.HandlerFunc {
 			return
 		}
 		var useSudo int
-		var configRoot, logDir, bin string
+		var configRoot, logDir, bin, logContainer string
 		err = appdb.DB.QueryRow(appdb.ConvertQuery(
-			`SELECT use_sudo, config_root, log_dir, bin FROM nginx_host_settings WHERE host_id = ?`), id).
-			Scan(&useSudo, &configRoot, &logDir, &bin)
+			`SELECT use_sudo, config_root, log_dir, bin, log_container FROM nginx_host_settings WHERE host_id = ?`), id).
+			Scan(&useSudo, &configRoot, &logDir, &bin, &logContainer)
 		if err != nil {
 			json.NewEncoder(w).Encode(map[string]interface{}{"exists": false})
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"exists": true, "use_sudo": useSudo != 0,
-			"config_root": configRoot, "log_dir": logDir, "bin": bin,
+			"config_root": configRoot, "log_dir": logDir, "bin": bin, "log_container": logContainer,
 		})
 	}
 }
@@ -315,10 +342,11 @@ func NginxSaveSettings() http.HandlerFunc {
 			return
 		}
 		var body struct {
-			UseSudo    bool   `json:"use_sudo"`
-			ConfigRoot string `json:"config_root"`
-			LogDir     string `json:"log_dir"`
-			Bin        string `json:"bin"`
+			UseSudo      bool   `json:"use_sudo"`
+			ConfigRoot   string `json:"config_root"`
+			LogDir       string `json:"log_dir"`
+			Bin          string `json:"bin"`
+			LogContainer string `json:"log_container"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 		sudoInt := 0
@@ -331,18 +359,18 @@ func NginxSaveSettings() http.HandlerFunc {
 		}
 		// Driver-agnostic upsert: UPDATE, then INSERT if nothing was updated.
 		res, err := appdb.DB.Exec(appdb.ConvertQuery(
-			`UPDATE nginx_host_settings SET use_sudo=?, config_root=?, log_dir=?, bin=?,
+			`UPDATE nginx_host_settings SET use_sudo=?, config_root=?, log_dir=?, bin=?, log_container=?,
 			        updated_at=CURRENT_TIMESTAMP WHERE host_id=?`),
-			sudoInt, body.ConfigRoot, body.LogDir, bin, id)
+			sudoInt, body.ConfigRoot, body.LogDir, bin, body.LogContainer, id)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
 			if _, err := appdb.DB.Exec(appdb.ConvertQuery(
-				`INSERT INTO nginx_host_settings (host_id, use_sudo, config_root, log_dir, bin)
-				 VALUES (?, ?, ?, ?, ?)`),
-				id, sudoInt, body.ConfigRoot, body.LogDir, bin); err != nil {
+				`INSERT INTO nginx_host_settings (host_id, use_sudo, config_root, log_dir, bin, log_container)
+				 VALUES (?, ?, ?, ?, ?, ?)`),
+				id, sudoInt, body.ConfigRoot, body.LogDir, bin, body.LogContainer); err != nil {
 				http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 				return
 			}
@@ -944,16 +972,18 @@ func NginxLogList() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
 		}
+		container := nginxLogContainer(r)
 		files := make([]nginxFileEntry, 0, 16)
-		if nginxUseSudo(r) {
+		if container != "" || nginxUseSudo(r) {
 			h, e := loadDockerHost(id)
 			if e != nil {
 				http.Error(w, jsonError("host not found"), http.StatusBadRequest)
 				return
 			}
-			out, e := runHostPrivileged(h, true, []string{
+			args := dockerExecArgs(container, []string{
 				"find", dir, "-maxdepth", "1", "-type", "f", "-printf", "%f\t%s\n",
-			}, "")
+			})
+			out, e := runHostPrivileged(h, nginxUseSudo(r), args, "")
 			if e != nil {
 				http.Error(w, jsonError(strings.TrimSpace(out)), http.StatusBadGateway)
 				return
@@ -1039,7 +1069,8 @@ func NginxLogTail() http.HandlerFunc {
 		if n, e := strconv.Atoi(r.URL.Query().Get("lines")); e == nil && n > 0 && n <= 5000 {
 			lines = n
 		}
-		out, err := runHostPrivileged(h, nginxUseSudo(r), []string{"sh", "-c", nginxTailScript(full, lines)}, "")
+		args := dockerExecArgs(nginxLogContainer(r), []string{"sh", "-c", nginxTailScript(full, lines)})
+		out, err := runHostPrivileged(h, nginxUseSudo(r), args, "")
 		if err != nil {
 			http.Error(w, jsonError(strings.TrimSpace(out)+": "+err.Error()), http.StatusBadGateway)
 			return
@@ -1102,7 +1133,8 @@ func NginxLogSearch() http.HandlerFunc {
 		if n, e := strconv.Atoi(r.URL.Query().Get("lines")); e == nil && n > 0 && n <= 2000 {
 			lines = n
 		}
-		out, err := runHostPrivileged(h, nginxUseSudo(r), []string{"sh", "-c", nginxSearchScript(full, q, lines)}, "")
+		args := dockerExecArgs(nginxLogContainer(r), []string{"sh", "-c", nginxSearchScript(full, q, lines)})
+		out, err := runHostPrivileged(h, nginxUseSudo(r), args, "")
 		if err != nil {
 			http.Error(w, jsonError(strings.TrimSpace(out)+": "+err.Error()), http.StatusBadGateway)
 			return
@@ -1176,6 +1208,7 @@ func NginxLogStream() http.HandlerFunc {
 		// password is required") show up as log lines instead of a silent close.
 		quoted := "'" + strings.ReplaceAll(full, "'", `'\''`) + "'"
 		cmd := "tail -n 100 -F " + quoted + " 2>&1"
+		cmd = dockerExecWrap(nginxLogContainer(r), cmd)
 		if nginxUseSudo(r) {
 			if h.SSHPassword != "" {
 				cmd = "sudo -S -p '' " + cmd

@@ -1134,6 +1134,10 @@ func migrate() error {
 			bin         TEXT NOT NULL DEFAULT 'nginx',
 			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+		// When nginx runs inside a Docker container (log_dir isn't a path on the
+		// SSH host's own filesystem at all), log operations run via
+		// `docker exec <log_container> ...` instead of directly over SSH/SFTP.
+		`ALTER TABLE nginx_host_settings ADD COLUMN log_container TEXT NOT NULL DEFAULT ''`,
 
 		// Connection templates — reusable host/port/database presets (no credentials)
 		`CREATE TABLE IF NOT EXISTS connection_templates (

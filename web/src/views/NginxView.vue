@@ -96,6 +96,10 @@ const tab = ref<NginxTab>('config')
 const bin = ref('nginx')
 const configRoot = ref('/etc/nginx')
 const logDir = ref('/var/log/nginx')
+// When nginx runs inside a Docker container, log_dir isn't a path on the SSH
+// host's own filesystem at all — logs are read via `docker exec <container>`
+// instead of directly over SSH/SFTP.
+const logContainer = ref('')
 const useSudo = ref(false)
 const sitesLayout = ref('') // 'symlink' | 'confd' | ''
 const version = ref('')
@@ -220,7 +224,7 @@ const isCompressed = computed(() => /\.(gz|tgz|bz2|xz|zst)$/i.test(activeLog.val
 const sudoParam = computed(() => (useSudo.value ? '1' : undefined))
 // Shared query params so every call respects the (possibly overridden) host settings.
 const cfgParams = computed(() => ({ root: configRoot.value, bin: bin.value, sudo: sudoParam.value }))
-const logParams = computed(() => ({ dir: logDir.value, bin: bin.value, sudo: sudoParam.value }))
+const logParams = computed(() => ({ dir: logDir.value, bin: bin.value, sudo: sudoParam.value, container: logContainer.value.trim() || undefined }))
 
 // Searchable-dropdown option lists
 const hostOptions = computed(() => hosts.value.map((h) => ({ value: h.id, label: `${h.name} (${h.ssh_host})` })))
@@ -368,6 +372,7 @@ async function loadSettings(): Promise<boolean> {
     if (data.bin) bin.value = data.bin
     if (data.config_root) configRoot.value = data.config_root
     if (data.log_dir) logDir.value = data.log_dir
+    logContainer.value = data.log_container || ''
     return true
   } catch {
     return false
@@ -382,6 +387,7 @@ async function saveSettings() {
       config_root: configRoot.value,
       log_dir: logDir.value,
       bin: bin.value,
+      log_container: logContainer.value.trim(),
     })
   } catch {
     /* non-fatal — settings are a convenience */
@@ -418,7 +424,7 @@ async function rescan() {
 }
 
 // Persist settings (debounced) whenever the user changes binary, paths, or sudo.
-watch([bin, configRoot, logDir, useSudo], () => {
+watch([bin, configRoot, logDir, useSudo, logContainer], () => {
   if (suppressSave || hostId.value === null) return
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(saveSettings, 600)
@@ -966,6 +972,10 @@ onBeforeUnmount(() => {
               <label>Log directory</label>
               <input v-model="logDir" class="base-input" spellcheck="false" />
             </div>
+            <div class="ng-set" title="If nginx runs inside a Docker container, name it here — logs are then read via `docker exec` instead of directly on the SSH host, since a container's own filesystem usually isn't visible over SFTP/SSH">
+              <label>Log container <span class="ng-optional">optional</span></label>
+              <input v-model="logContainer" class="base-input ng-logcontainer" spellcheck="false" placeholder="e.g. nginx-app" />
+            </div>
             <label class="ng-sudo" title="Run privileged commands via sudo, using this host's SSH password (or NOPASSWD for key auth)">
               <input type="checkbox" v-model="useSudo" @change="loadCurrentTab" />
               Use sudo
@@ -1286,6 +1296,8 @@ onBeforeUnmount(() => {
 .ng-set--grow { flex: 1 1 220px; }
 .ng-set label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); font-weight: 600; }
 .ng-set .base-input { width: 100%; font-family: var(--mono); font-size: 12px; }
+.ng-optional { text-transform: none; letter-spacing: normal; font-weight: 400; opacity: 0.7; }
+.ng-logcontainer { width: 150px; }
 .ng-sudo { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); white-space: nowrap; cursor: pointer; padding-bottom: 6px; }
 .ng-sudo input { cursor: pointer; }
 
