@@ -6,12 +6,120 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
 var uuidWhereRe = regexp.MustCompile(`(?i)(=\s*)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b`)
+
+// primaryKeyColumns returns a table's primary key column(s), in ordinal
+// order — used as a deterministic ORDER BY tiebreaker. Without one,
+// LIMIT/OFFSET pagination has no guaranteed row order for ties (rows sharing
+// the same value in the sorted column, or every row when no sort is
+// requested at all): the database is free to return them in a different
+// order on each page fetch, which surfaces as rows that look duplicated,
+// missing, or simply don't match what asc/desc sorting should show.
+func primaryKeyColumns(db *sql.DB, driver, dbName, tableName string) []string {
+	var query string
+	var args []interface{}
+	switch driver {
+	case "sqlite3":
+		rows, err := db.Query(`PRAGMA table_info(` + quoteIdent(driver, tableName) + `)`)
+		if err != nil {
+			return nil
+		}
+		defer rows.Close()
+		type pkCol struct {
+			name string
+			pos  int
+		}
+		var pks []pkCol
+		for rows.Next() {
+			var cid int
+			var name, dataType string
+			var notNull, pk int
+			var defVal *string
+			if rows.Scan(&cid, &name, &dataType, &notNull, &defVal, &pk) != nil {
+				continue
+			}
+			if pk > 0 {
+				pks = append(pks, pkCol{name, pk})
+			}
+		}
+		sort.Slice(pks, func(i, j int) bool { return pks[i].pos < pks[j].pos })
+		cols := make([]string, len(pks))
+		for i, p := range pks {
+			cols[i] = p.name
+		}
+		return cols
+	case "postgres":
+		schemaName := dbName
+		if schemaName == "" {
+			schemaName = "public"
+		}
+		query = `
+			SELECT kcu.column_name
+			FROM information_schema.key_column_usage kcu
+			JOIN information_schema.table_constraints tc
+			  ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+			WHERE tc.constraint_type = 'PRIMARY KEY' AND kcu.table_name = $1 AND kcu.table_schema = $2
+			ORDER BY kcu.ordinal_position`
+		args = []interface{}{tableName, schemaName}
+	case "mysql", "mariadb":
+		query = `
+			SELECT COLUMN_NAME FROM information_schema.COLUMNS
+			WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_KEY = 'PRI'
+			ORDER BY ORDINAL_POSITION`
+		args = []interface{}{dbName, tableName}
+	case "sqlserver":
+		query = `
+			SELECT ku.COLUMN_NAME
+			FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+			JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE ku ON tc.CONSTRAINT_NAME = ku.CONSTRAINT_NAME
+			WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY' AND tc.TABLE_NAME = @p1
+			ORDER BY ku.ORDINAL_POSITION`
+		args = []interface{}{tableName}
+	default:
+		return nil
+	}
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var name string
+		if rows.Scan(&name) == nil {
+			cols = append(cols, name)
+		}
+	}
+	return cols
+}
+
+// orderByTerms builds the ORDER BY term list: the user's requested sort
+// column/direction (if any) followed by tiebreaker columns, so identical
+// values in the sorted column — or "no sort requested" entirely — still get
+// a stable, repeatable row order across page fetches.
+func orderByTerms(driver, orderBy, orderDir string, tieBreakers []string) []string {
+	var terms []string
+	if orderBy != "" {
+		terms = append(terms, fmt.Sprintf("%s %s", quoteIdent(driver, orderBy), orderDir))
+	}
+	for _, c := range tieBreakers {
+		if strings.EqualFold(c, orderBy) {
+			continue
+		}
+		if c == "ctid" || c == "rowid" {
+			terms = append(terms, c) // pseudo-columns, not real identifiers
+		} else {
+			terms = append(terms, quoteIdent(driver, c))
+		}
+	}
+	return terms
+}
 
 func quoteUnquotedUUIDs(where string) string {
 	return uuidWhereRe.ReplaceAllStringFunc(where, func(match string) string {
@@ -525,13 +633,27 @@ func GetTableData() http.HandlerFunc {
 			orderDir = "ASC"
 		}
 
+		// A deterministic tiebreaker (the PK, or a per-row pseudo-column when
+		// there isn't one) so paginated results stay stable and consistent
+		// with the requested sort — see primaryKeyColumns/orderByTerms above.
+		tieBreakers := primaryKeyColumns(db, driver, dbName, tableName)
+		if len(tieBreakers) == 0 {
+			switch driver {
+			case "postgres":
+				tieBreakers = []string{"ctid"}
+			case "sqlite3":
+				tieBreakers = []string{"rowid"}
+			}
+		}
+		orderTerms := orderByTerms(driver, orderBy, orderDir, tieBreakers)
+
 		// Build SELECT with optional WHERE and ORDER BY
 		var dataSQL string
 		switch driver {
 		case "sqlserver":
 			orderClause := "ORDER BY (SELECT NULL)"
-			if orderBy != "" {
-				orderClause = fmt.Sprintf("ORDER BY %s %s", quoteIdent(driver, orderBy), orderDir)
+			if len(orderTerms) > 0 {
+				orderClause = "ORDER BY " + strings.Join(orderTerms, ", ")
 			}
 			dataSQL = fmt.Sprintf(
 				`SELECT * FROM %s%s %s OFFSET %d ROWS FETCH NEXT %d ROWS ONLY`,
@@ -539,14 +661,14 @@ func GetTableData() http.HandlerFunc {
 			)
 		case "postgres":
 			dataSQL = fmt.Sprintf("SELECT * FROM %s%s", tableRef, whereFragment)
-			if orderBy != "" {
-				dataSQL += fmt.Sprintf(` ORDER BY %s %s`, quoteIdent(driver, orderBy), orderDir)
+			if len(orderTerms) > 0 {
+				dataSQL += " ORDER BY " + strings.Join(orderTerms, ", ")
 			}
 			dataSQL += fmt.Sprintf(" LIMIT $1 OFFSET $2")
 		default:
 			dataSQL = fmt.Sprintf("SELECT * FROM %s%s", tableRef, whereFragment)
-			if orderBy != "" {
-				dataSQL += fmt.Sprintf(` ORDER BY %s %s`, quoteIdent(driver, orderBy), orderDir)
+			if len(orderTerms) > 0 {
+				dataSQL += " ORDER BY " + strings.Join(orderTerms, ", ")
 			}
 			dataSQL += " LIMIT ? OFFSET ?"
 		}
