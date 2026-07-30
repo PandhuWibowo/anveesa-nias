@@ -121,13 +121,36 @@ async function loadOverview() {
   try {
     const { data } = await axios.get<HostSummary[]>('/api/docker/overview')
     const m = new Map<number, HostSummary>()
-    for (const s of data) m.set(s.host_id, s)
+    for (const s of data) {
+      // A manually disconnected host shouldn't get silently reconnected by a
+      // bulk status refresh — it stays "Disconnected" until the user
+      // explicitly reconnects it.
+      if (!disconnected.value.has(s.host_id)) m.set(s.host_id, s)
+    }
     summaryMap.value = m
   } catch {
     // best-effort
   } finally {
     overviewLoading.value = false
   }
+}
+
+// ── Per-host connect/disconnect ──────────────────────────────────
+// "Disconnect" just stops this host from showing/receiving live status (and
+// opts it out of bulk refreshes) — it doesn't touch the saved host record.
+const disconnected = ref<Set<number>>(new Set())
+function isDisconnected(h: DockerHost) {
+  return disconnected.value.has(h.id)
+}
+function disconnectHost(h: DockerHost) {
+  disconnected.value = new Set(disconnected.value).add(h.id)
+  summaryMap.value.delete(h.id)
+}
+async function connectHost(h: DockerHost) {
+  const s = new Set(disconnected.value)
+  s.delete(h.id)
+  disconnected.value = s
+  await pingHost(h)
 }
 
 async function pingHost(h: DockerHost) {
@@ -244,9 +267,13 @@ async function deleteHost(h: DockerHost) {
 }
 
 function cardActions(h: DockerHost): RowAction[] {
-  const actions: RowAction[] = [
-    { key: 'test', label: pingingId.value === h.id ? 'Testing…' : 'Test', icon: 'check', primary: true, disabled: pingingId.value === h.id, onClick: () => pingHost(h) },
-  ]
+  const actions: RowAction[] = []
+  if (isDisconnected(h)) {
+    actions.push({ key: 'connect', label: 'Connect', icon: 'power', primary: true, onClick: () => connectHost(h) })
+  } else {
+    actions.push({ key: 'test', label: pingingId.value === h.id ? 'Testing…' : 'Test', icon: 'check', primary: true, disabled: pingingId.value === h.id, onClick: () => pingHost(h) })
+    actions.push({ key: 'disconnect', label: 'Disconnect', icon: 'power', onClick: () => disconnectHost(h) })
+  }
   if (canManage.value) {
     actions.push({ key: 'edit', label: 'Edit', icon: 'edit', onClick: () => openEditHost(h) })
     actions.push({ key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => deleteHost(h) })
@@ -299,8 +326,8 @@ onMounted(async () => {
               <div class="ssh-status-row">
                 <span
                   class="ssh-dot"
-                  :class="summaryFor(h) === undefined ? 'ssh-dot--unknown' : summaryFor(h)!.reachable ? 'ssh-dot--ok' : 'ssh-dot--err'"
-                  :title="summaryFor(h) === undefined ? 'Status unknown' : summaryFor(h)!.reachable ? 'Reachable' : (summaryFor(h)!.error || 'Unreachable')"
+                  :class="isDisconnected(h) ? 'ssh-dot--off' : summaryFor(h) === undefined ? 'ssh-dot--unknown' : summaryFor(h)!.reachable ? 'ssh-dot--ok' : 'ssh-dot--err'"
+                  :title="isDisconnected(h) ? 'Disconnected' : summaryFor(h) === undefined ? 'Status unknown' : summaryFor(h)!.reachable ? 'Reachable' : (summaryFor(h)!.error || 'Unreachable')"
                 ></span>
                 <span class="ssh-name">{{ h.name }}</span>
               </div>
@@ -313,7 +340,10 @@ onMounted(async () => {
             </div>
 
             <!-- Docker stats (remote + reachable) -->
-            <div v-if="summaryFor(h)" class="ssh-stats">
+            <div v-if="isDisconnected(h)" class="ssh-stats ssh-stats--pending">
+              <span class="ssh-muted">Disconnected</span>
+            </div>
+            <div v-else-if="summaryFor(h)" class="ssh-stats">
               <template v-if="summaryFor(h)!.reachable">
                 <div class="ssh-stat">
                   <span class="ssh-stat-val">{{ summaryFor(h)!.running }}<span class="ssh-stat-total">/{{ summaryFor(h)!.total }}</span></span>
@@ -462,6 +492,7 @@ onMounted(async () => {
 .ssh-dot--ok      { background: var(--success); }
 .ssh-dot--err     { background: var(--danger); }
 .ssh-dot--unknown { background: var(--text-muted); opacity: 0.5; }
+.ssh-dot--off     { background: var(--text-muted); opacity: 0.3; }
 .ssh-name { font-size: 15px; font-weight: 600; color: var(--text-primary); }
 .ssh-meta { padding-left: 16px; }
 .ssh-addr { font-size: 12px; font-family: var(--mono); color: var(--text-muted); }

@@ -6,6 +6,7 @@ import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
 import { useSort } from '@/composables/useSort'
+import { useListFilter } from '@/composables/useListFilter'
 import NginxEditor from '@/components/nginx/NginxEditor.vue'
 import SearchSelect from '@/components/ui/SearchSelect.vue'
 import SortIcon from '@/components/ui/SortIcon.vue'
@@ -117,6 +118,12 @@ const dirty = computed(() => fileContent.value !== origContent.value)
 // Sites
 const sites = ref<NginxSite[]>([])
 const loadingSites = ref(false)
+const { search: siteSearch, filtered: siteSearchFiltered } = useListFilter(sites, (s, q) => s.name.toLowerCase().includes(q) || s.state.toLowerCase().includes(q))
+function siteSortValue(s: NginxSite, key: string): unknown {
+  return key === 'name' ? s.name.toLowerCase() : s.state
+}
+const { sortKey: siteSortKey, sortDir: siteSortDir, toggleSort: toggleSiteSort, sort: sortSites } = useSort<NginxSite>(siteSortValue)
+const sortedSites = computed(() => sortSites(siteSearchFiltered.value))
 
 // Logs
 const logFiles = ref<NginxFile[]>([])
@@ -153,10 +160,30 @@ const loadingEffective = ref(false)
 const servers = ref<NginxServerInfo[]>([])
 const upstreams = ref<NginxUpstreamInfo[]>([])
 const loadingMap = ref(false)
+const { search: serverSearch, filtered: filteredServers } = useListFilter(servers, (s, q) =>
+  (s.names || '').toLowerCase().includes(q) || (s.listen || []).join(' ').toLowerCase().includes(q) ||
+  (s.root || '').toLowerCase().includes(q) || (s.proxy_pass || []).join(' ').toLowerCase().includes(q),
+)
+const { search: upstreamSearch, filtered: filteredUpstreams } = useListFilter(upstreams, (u, q) =>
+  u.name.toLowerCase().includes(q) || (u.servers || []).join(' ').toLowerCase().includes(q),
+)
 
 // Certs
 const certs = ref<NginxCert[]>([])
 const loadingCerts = ref(false)
+const { search: certSearch, filtered: certSearchFiltered } = useListFilter(certs, (c, q) =>
+  (c.domains || []).some((d) => d.toLowerCase().includes(q)) || (c.subject || '').toLowerCase().includes(q) || c.path.toLowerCase().includes(q),
+)
+function certSortValue(c: NginxCert, key: string): unknown {
+  if (key === 'domains') return (c.domains?.[0] || c.subject || '').toLowerCase()
+  if (key === 'not_after') return c.not_after || ''
+  if (key === 'days_left') return c.days_left
+  return ''
+}
+const { sortKey: certSortKey, sortDir: certSortDir, toggleSort: toggleCertSort, sort: sortCerts } = useSort<NginxCert>(certSortValue)
+// Default (no sort clicked yet) keeps the backend's own "soonest expiry
+// first" order — sort() only reorders once a header is actually clicked.
+const sortedCerts = computed(() => sortCerts(certSearchFiltered.value))
 
 // stub_status
 const stub = ref<NginxStub | null>(null)
@@ -174,7 +201,10 @@ function fleetSortValue(f: FleetHost, key: string): unknown {
   return f[key as keyof FleetHost]
 }
 const { sortKey: fleetSortKey, sortDir: fleetSortDir, toggleSort: toggleFleetSort, sort: sortFleet } = useSort<FleetHost>(fleetSortValue)
-const sortedFleet = computed(() => sortFleet(fleet.value))
+const { search: fleetSearch, filtered: filteredFleet } = useListFilter(fleet, (f, q) =>
+  f.name.toLowerCase().includes(q) || f.ssh_host.toLowerCase().includes(q) || (f.version || '').toLowerCase().includes(q) || (f.active || '').toLowerCase().includes(q),
+)
+const sortedFleet = computed(() => sortFleet(filteredFleet.value))
 
 // A permission/sudo error means the SSH user lacks direct access — the fix is
 // to elevate. We flip `useSudo` on and retry once, transparently.
@@ -874,6 +904,7 @@ onBeforeUnmount(() => {
         <div v-else-if="fleetMode" class="page-card ng-sites">
           <div class="ng-sites-head">
             Fleet health <span class="ng-count">{{ fleet.length }}</span> · unhealthy first
+            <input v-model="fleetSearch" class="base-input ng-searchinput" type="search" placeholder="Filter hosts…" />
             <div class="dk-spacer"></div>
             <button class="base-btn base-btn--sm" :disabled="loadingFleet" @click="loadFleet">{{ loadingFleet ? 'Probing…' : 'Refresh' }}</button>
           </div>
@@ -891,6 +922,7 @@ onBeforeUnmount(() => {
             <tbody>
               <tr v-if="loadingFleet"><td colspan="6" class="ng-msg">Probing all hosts over SSH…</td></tr>
               <tr v-else-if="!fleet.length"><td colspan="6" class="ng-msg">No SSH hosts.</td></tr>
+              <tr v-else-if="!sortedFleet.length"><td colspan="6" class="ng-msg">No hosts match "{{ fleetSearch }}".</td></tr>
               <tr v-for="f in sortedFleet" :key="f.id">
                 <td>
                   <div class="ng-sname">{{ f.name }}</div>
@@ -1013,15 +1045,21 @@ onBeforeUnmount(() => {
               <span class="ng-sites-hint">
                 {{ sitesLayout === 'confd' ? 'enable/disable renames .conf ↔ .conf.disabled' : sitesLayout === 'symlink' ? 'sites-available ↔ sites-enabled symlinks' : '' }}
               </span>
+              <input v-model="siteSearch" class="base-input ng-searchinput" type="search" placeholder="Filter sites…" />
             </div>
             <table class="ng-table">
               <thead>
-                <tr><th>File</th><th>Status</th><th></th></tr>
+                <tr>
+                  <th class="ng-th-sort" :class="{ sorted: siteSortKey === 'name' }" @click="toggleSiteSort('name')">File <SortIcon :active="siteSortKey === 'name'" :dir="siteSortDir" /></th>
+                  <th class="ng-th-sort" :class="{ sorted: siteSortKey === 'state' }" @click="toggleSiteSort('state')">Status <SortIcon :active="siteSortKey === 'state'" :dir="siteSortDir" /></th>
+                  <th></th>
+                </tr>
               </thead>
               <tbody>
                 <tr v-if="loadingSites"><td colspan="3" class="ng-msg">Loading…</td></tr>
                 <tr v-else-if="!sites.length"><td colspan="3" class="ng-msg">No server blocks found.</td></tr>
-                <tr v-for="s in sites" :key="s.name">
+                <tr v-else-if="!sortedSites.length"><td colspan="3" class="ng-msg">No sites match "{{ siteSearch }}".</td></tr>
+                <tr v-for="s in sortedSites" :key="s.name">
                   <td class="ng-sname">{{ s.name }}</td>
                   <td>
                     <span
@@ -1046,7 +1084,10 @@ onBeforeUnmount(() => {
           <!-- MAP -->
           <div v-else-if="tab === 'map'" class="ng-mapwrap">
             <div class="page-card ng-mapcard">
-              <div class="ng-mapcard-head">Servers <span class="ng-count">{{ servers.length }}</span></div>
+              <div class="ng-mapcard-head">
+                Servers <span class="ng-count">{{ servers.length }}</span>
+                <input v-model="serverSearch" class="base-input ng-searchinput ng-mapsearch" type="search" placeholder="Filter servers…" />
+              </div>
               <table class="ng-table">
                 <thead>
                   <tr><th>server_name</th><th>listen</th><th>root / proxy_pass</th><th>cert</th></tr>
@@ -1054,7 +1095,8 @@ onBeforeUnmount(() => {
                 <tbody>
                   <tr v-if="loadingMap"><td colspan="4" class="ng-msg">Parsing config…</td></tr>
                   <tr v-else-if="!servers.length"><td colspan="4" class="ng-msg">No server blocks.</td></tr>
-                  <tr v-for="(s, i) in servers" :key="i">
+                  <tr v-else-if="!filteredServers.length"><td colspan="4" class="ng-msg">No servers match "{{ serverSearch }}".</td></tr>
+                  <tr v-for="(s, i) in filteredServers" :key="i">
                     <td class="ng-sname">{{ s.names || '—' }}</td>
                     <td class="ng-mono">{{ (s.listen || []).join(', ') || '—' }}</td>
                     <td class="ng-mono">
@@ -1068,13 +1110,17 @@ onBeforeUnmount(() => {
               </table>
             </div>
             <div class="page-card ng-mapcard">
-              <div class="ng-mapcard-head">Upstreams <span class="ng-count">{{ upstreams.length }}</span></div>
+              <div class="ng-mapcard-head">
+                Upstreams <span class="ng-count">{{ upstreams.length }}</span>
+                <input v-model="upstreamSearch" class="base-input ng-searchinput ng-mapsearch" type="search" placeholder="Filter upstreams…" />
+              </div>
               <table class="ng-table">
                 <thead><tr><th>name</th><th>servers</th></tr></thead>
                 <tbody>
                   <tr v-if="loadingMap"><td colspan="2" class="ng-msg">Parsing…</td></tr>
                   <tr v-else-if="!upstreams.length"><td colspan="2" class="ng-msg">No upstreams.</td></tr>
-                  <tr v-for="u in upstreams" :key="u.name">
+                  <tr v-else-if="!filteredUpstreams.length"><td colspan="2" class="ng-msg">No upstreams match "{{ upstreamSearch }}".</td></tr>
+                  <tr v-for="u in filteredUpstreams" :key="u.name">
                     <td class="ng-sname">{{ u.name }}</td>
                     <td class="ng-mono">{{ (u.servers || []).join(', ') }}</td>
                   </tr>
@@ -1085,15 +1131,24 @@ onBeforeUnmount(() => {
 
           <!-- CERTS -->
           <div v-else-if="tab === 'certs'" class="page-card ng-sites">
-            <div class="ng-sites-head">SSL certificates <span class="ng-count">{{ certs.length }}</span> · soonest expiry first</div>
+            <div class="ng-sites-head">
+              SSL certificates <span class="ng-count">{{ certs.length }}</span> · soonest expiry first
+              <input v-model="certSearch" class="base-input ng-searchinput" type="search" placeholder="Filter certificates…" />
+            </div>
             <table class="ng-table">
               <thead>
-                <tr><th>Domains</th><th>Expires</th><th>Days left</th><th>Certificate</th></tr>
+                <tr>
+                  <th class="ng-th-sort" :class="{ sorted: certSortKey === 'domains' }" @click="toggleCertSort('domains')">Domains <SortIcon :active="certSortKey === 'domains'" :dir="certSortDir" /></th>
+                  <th class="ng-th-sort" :class="{ sorted: certSortKey === 'not_after' }" @click="toggleCertSort('not_after')">Expires <SortIcon :active="certSortKey === 'not_after'" :dir="certSortDir" /></th>
+                  <th class="ng-th-sort" :class="{ sorted: certSortKey === 'days_left' }" @click="toggleCertSort('days_left')">Days left <SortIcon :active="certSortKey === 'days_left'" :dir="certSortDir" /></th>
+                  <th>Certificate</th>
+                </tr>
               </thead>
               <tbody>
                 <tr v-if="loadingCerts"><td colspan="4" class="ng-msg">Reading certificates…</td></tr>
                 <tr v-else-if="!certs.length"><td colspan="4" class="ng-msg">No ssl_certificate directives found.</td></tr>
-                <tr v-for="(c, i) in certs" :key="i">
+                <tr v-else-if="!sortedCerts.length"><td colspan="4" class="ng-msg">No certificates match "{{ certSearch }}".</td></tr>
+                <tr v-for="(c, i) in sortedCerts" :key="i">
                   <td class="ng-mono">{{ (c.domains || []).length ? c.domains.join(', ') : (c.subject || '—') }}</td>
                   <td class="ng-mono">{{ c.error ? '—' : c.not_after }}</td>
                   <td>
@@ -1299,7 +1354,8 @@ onBeforeUnmount(() => {
 /* Map */
 .ng-mapwrap { display: flex; flex-direction: column; gap: 14px; }
 .ng-mapcard { padding: 4px 6px; }
-.ng-mapcard-head { padding: 10px 12px; font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; }
+.ng-mapcard-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; }
+.ng-mapsearch { flex: 0 1 220px; margin-left: auto; text-transform: none; letter-spacing: normal; }
 .ng-count { display: inline-block; background: var(--bg-hover); color: var(--text-muted); border-radius: 99px; padding: 1px 8px; font-size: 11px; margin-left: 4px; }
 .ng-mono { font-family: var(--mono); font-size: 12px; color: var(--text-secondary); word-break: break-all; }
 .ng-proxy { display: block; color: var(--brand); }

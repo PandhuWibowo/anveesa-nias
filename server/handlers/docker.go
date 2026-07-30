@@ -2926,9 +2926,9 @@ func DockerEvents() http.HandlerFunc {
 		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 		for scanner.Scan() {
 			var ev struct {
-				Type  string `json:"Type"`
+				Type   string `json:"Type"`
 				Action string `json:"Action"`
-				Actor struct {
+				Actor  struct {
 					Attributes map[string]string `json:"Attributes"`
 				} `json:"Actor"`
 				Time int64 `json:"time"`
@@ -2995,8 +2995,8 @@ func DockerTopology() http.HandlerFunc {
 			} `json:"Mounts"`
 			NetworkSettings struct {
 				Networks map[string]struct {
-					NetworkID   string `json:"NetworkID"`
-					IPAddress   string `json:"IPAddress"`
+					NetworkID string `json:"NetworkID"`
+					IPAddress string `json:"IPAddress"`
 				} `json:"Networks"`
 			} `json:"NetworkSettings"`
 		}
@@ -3107,52 +3107,73 @@ func DockerOverview() http.HandlerFunc {
 		}
 		rows.Close()
 
+		const overviewHostTimeout = 12 * time.Second
+
 		summaries := make([]dockerHostSummary, len(hostRows))
 		var wg sync.WaitGroup
 		for i, hr := range hostRows {
 			wg.Add(1)
 			go func(i int, hr hostRow) {
 				defer wg.Done()
-				s := dockerHostSummary{HostID: hr.id, Name: hr.name, SSHHost: hr.sshHost}
-				h, err := loadDockerHost(hr.id)
-				if err != nil {
-					s.Error = err.Error()
-					summaries[i] = s
-					return
-				}
-				d, err := dialDocker(h)
-				if err != nil {
-					s.Error = err.Error()
-					summaries[i] = s
-					return
-				}
-				defer d.Close()
-				var ver struct {
-					Version string `json:"version"`
-				}
-				if err := d.getJSON("/version", nil, &ver); err != nil {
-					s.Error = err.Error()
-					summaries[i] = s
-					return
-				}
-				s.Reachable = true
-				s.Version = ver.Version
-				cq := url.Values{}
-				cq.Set("all", "1")
-				var conts []dockerContainer
-				if d.getJSON("/containers/json", cq, &conts) == nil {
-					s.Total = len(conts)
-					for _, c := range conts {
-						if c.State == "running" {
-							s.Running++
+				base := dockerHostSummary{HostID: hr.id, Name: hr.name, SSHHost: hr.sshHost}
+
+				// dialDocker's SSH dial has its own timeout, but opening the
+				// unix-socket-forward channel and the HTTP round trip after
+				// that don't reliably respect context cancellation — a single
+				// stuck/unresponsive host would otherwise block this whole
+				// per-host check (and, since we wg.Wait() below, every other
+				// host's result) forever. Bound it explicitly instead.
+				done := make(chan dockerHostSummary, 1)
+				go func() {
+					s := base
+					h, err := loadDockerHost(hr.id)
+					if err != nil {
+						s.Error = err.Error()
+						done <- s
+						return
+					}
+					d, err := dialDocker(h)
+					if err != nil {
+						s.Error = err.Error()
+						done <- s
+						return
+					}
+					defer d.Close()
+					var ver struct {
+						Version string `json:"version"`
+					}
+					if err := d.getJSON("/version", nil, &ver); err != nil {
+						s.Error = err.Error()
+						done <- s
+						return
+					}
+					s.Reachable = true
+					s.Version = ver.Version
+					cq := url.Values{}
+					cq.Set("all", "1")
+					var conts []dockerContainer
+					if d.getJSON("/containers/json", cq, &conts) == nil {
+						s.Total = len(conts)
+						for _, c := range conts {
+							if c.State == "running" {
+								s.Running++
+							}
 						}
 					}
+					var imgs []dockerImage
+					if d.getJSON("/images/json", nil, &imgs) == nil {
+						s.Images = len(imgs)
+					}
+					done <- s
+				}()
+
+				select {
+				case s := <-done:
+					summaries[i] = s
+				case <-time.After(overviewHostTimeout):
+					base.Error = fmt.Sprintf("timed out after %s", overviewHostTimeout)
+					summaries[i] = base
 				}
-				var imgs []dockerImage
-				if d.getJSON("/images/json", nil, &imgs) == nil {
-					s.Images = len(imgs)
-				}
-				summaries[i] = s
 			}(i, hr)
 		}
 		wg.Wait()
