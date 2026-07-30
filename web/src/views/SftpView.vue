@@ -5,6 +5,7 @@ import axios from 'axios'
 import SearchSelect from '@/components/ui/SearchSelect.vue'
 import SortIcon from '@/components/ui/SortIcon.vue'
 import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
+import SftpFolderPicker from '@/components/ui/SftpFolderPicker.vue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
@@ -66,6 +67,18 @@ function sftpSortValue(e: SftpEntry, key: string): string | number {
 }
 const { sortKey, sortDir, toggleSort, sort } = useSort<SftpEntry>(sftpSortValue)
 const filteredEntries = computed(() => sort(searchedEntries.value))
+
+// ── Multi-select ──────────────────────────────────────────────
+const selected = ref<Set<string>>(new Set())
+function toggleSelect(name: string) {
+  const s = new Set(selected.value)
+  if (s.has(name)) s.delete(name); else s.add(name)
+  selected.value = s
+}
+const allSelected = computed(() => filteredEntries.value.length > 0 && selected.value.size === filteredEntries.value.length)
+function toggleSelectAll() {
+  selected.value = allSelected.value ? new Set() : new Set(filteredEntries.value.map((e) => e.name))
+}
 
 const uploads = ref<UploadJob[]>([])
 let uploadSeq = 1
@@ -164,6 +177,7 @@ async function loadDir(path: string) {
     entries.value = data.entries || []
     hostStatus.value = 'connected'
     search.value = ''
+    selected.value = new Set()
   } catch (e: any) {
     connError.value = e?.response?.data?.error || 'Could not list directory'
     entries.value = []
@@ -436,6 +450,44 @@ async function extract(entry: SftpEntry) {
   }
 }
 
+// ── Move (single item or the current multi-selection) ───────────
+const showMove = ref(false)
+const moveTargets = ref<SftpEntry[]>([])
+const moveExcludePaths = computed(() =>
+  moveTargets.value.filter((e) => e.isDir).map((e) => joinPath(cwd.value, e.name)),
+)
+function openMove(entry: SftpEntry) {
+  moveTargets.value = [entry]
+  showMove.value = true
+}
+function openMoveSelected() {
+  moveTargets.value = filteredEntries.value.filter((e) => selected.value.has(e.name))
+  if (!moveTargets.value.length) return
+  showMove.value = true
+}
+async function confirmMove(destDir: string) {
+  showMove.value = false
+  const targets = moveTargets.value
+  moveTargets.value = []
+  let okCount = 0
+  const errors: string[] = []
+  for (const entry of targets) {
+    try {
+      await withSudoRetry((sudo) => axios.post(`/api/sftp/hosts/${hostId.value}/rename`, {
+        from: joinPath(cwd.value, entry.name),
+        to: joinPath(destDir, entry.name),
+      }, { params: sudoParams(sudo) }))
+      okCount++
+    } catch (e: any) {
+      errors.push(`${entry.name}: ${e?.response?.data?.error || 'move failed'}`)
+    }
+  }
+  if (okCount) toast.success(`Moved ${okCount} item${okCount === 1 ? '' : 's'} to ${destDir}`)
+  errors.forEach((msg) => toast.error(msg))
+  selected.value = new Set()
+  await loadDir(cwd.value)
+}
+
 // ── Row actions (View/Download inline; the rest in the "⋯" menu) ──
 function rowActions(e: SftpEntry): RowAction[] {
   const actions: RowAction[] = []
@@ -449,6 +501,7 @@ function rowActions(e: SftpEntry): RowAction[] {
     } else if (isArchive(e.name)) {
       actions.push({ key: 'extract', label: 'Extract', icon: 'unarchive', onClick: () => extract(e) })
     }
+    actions.push({ key: 'move', label: 'Move', icon: 'move', onClick: () => openMove(e) })
     actions.push({ key: 'rename', label: 'Rename', icon: 'edit', onClick: () => rename(e) })
     actions.push({ key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => del(e) })
   }
@@ -541,6 +594,13 @@ onMounted(loadHosts)
             </label>
           </div>
 
+          <!-- Bulk selection bar -->
+          <div v-if="canManage && selected.size > 0" class="sf-bulk-bar">
+            <span>{{ selected.size }} selected</span>
+            <button class="base-btn base-btn--sm" @click="openMoveSelected">Move…</button>
+            <button class="base-btn base-btn--sm" @click="selected = new Set()">Clear</button>
+          </div>
+
           <!-- File list with drag-drop -->
           <div
             class="page-card sf-list"
@@ -553,6 +613,7 @@ onMounted(loadHosts)
             <table class="sf-table">
               <thead>
                 <tr>
+                  <th v-if="canManage" class="sf-col-check"><input type="checkbox" :checked="allSelected" @change="toggleSelectAll" /></th>
                   <th class="sf-col-name" :class="{ sorted: sortKey === 'name' }" @click="toggleSort('name')">Name <SortIcon :active="sortKey === 'name'" :dir="sortDir" /></th>
                   <th class="sf-col-size" :class="{ sorted: sortKey === 'size' }" @click="toggleSort('size')">Size <SortIcon :active="sortKey === 'size'" :dir="sortDir" /></th>
                   <th class="sf-col-mode">Permissions</th>
@@ -561,11 +622,14 @@ onMounted(loadHosts)
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="loading"><td colspan="5" class="sf-msg">Loading…</td></tr>
-                <tr v-else-if="connError"><td colspan="5" class="sf-msg sf-err">{{ connError }}</td></tr>
-                <tr v-else-if="!entries.length"><td colspan="5" class="sf-msg">Empty directory.</td></tr>
-                <tr v-else-if="!filteredEntries.length"><td colspan="5" class="sf-msg">No files match "{{ search }}".</td></tr>
+                <tr v-if="loading"><td :colspan="canManage ? 6 : 5" class="sf-msg">Loading…</td></tr>
+                <tr v-else-if="connError"><td :colspan="canManage ? 6 : 5" class="sf-msg sf-err">{{ connError }}</td></tr>
+                <tr v-else-if="!entries.length"><td :colspan="canManage ? 6 : 5" class="sf-msg">Empty directory.</td></tr>
+                <tr v-else-if="!filteredEntries.length"><td :colspan="canManage ? 6 : 5" class="sf-msg">No files match "{{ search }}".</td></tr>
                 <tr v-for="e in filteredEntries" :key="e.name" class="sf-row" :class="{ 'sf-row--dir': e.isDir }">
+                  <td v-if="canManage" class="sf-col-check" @click.stop>
+                    <input type="checkbox" :checked="selected.has(e.name)" @change="toggleSelect(e.name)" />
+                  </td>
                   <td class="sf-name" @click="e.isDir ? open(e) : view(e)">
                     <span class="sf-icon">{{ fileIcon(e) }}</span>
                     <span class="sf-fname">{{ e.name }}</span>
@@ -654,6 +718,18 @@ onMounted(loadHosts)
       </div>
     </div>
 
+    <!-- Move (destination folder picker) -->
+    <SftpFolderPicker
+      :show="showMove"
+      :host-id="hostId"
+      :start-path="cwd"
+      :source-dir="cwd"
+      :exclude-paths="moveExcludePaths"
+      :title="moveTargets.length === 1 ? `Move '${moveTargets[0].name}'` : `Move ${moveTargets.length} items`"
+      @close="showMove = false; moveTargets = []"
+      @pick="confirmMove"
+    />
+
     <!-- Upload progress dock -->
     <div v-if="uploads.length" class="sf-uploads">
       <div class="sf-uploads-head">Uploads</div>
@@ -706,6 +782,9 @@ onMounted(loadHosts)
 .sf-sep { color: var(--text-muted); }
 .sf-upload-btn { cursor: pointer; }
 .sf-search { width: 200px; max-width: 40vw; }
+
+.sf-bulk-bar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: var(--brand-dim); border: 1px solid var(--brand); border-radius: var(--r-sm); font-size: 13px; color: var(--text-primary); }
+.sf-col-check { width: 1%; padding: 8px 4px 8px 12px !important; }
 
 .sf-list { position: relative; padding: 4px 6px; overflow: hidden; }
 .sf-list--drag { outline: 2px dashed var(--brand); outline-offset: -4px; }
