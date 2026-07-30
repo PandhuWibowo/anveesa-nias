@@ -590,6 +590,114 @@ func shellFailureMessage(stdout, stderr string, exitCode int) string {
 	return msg
 }
 
+// archiveKind sniffs a filename to decide which tool reads/writes it — GNU
+// tar auto-detects gzip/bzip2/xz compression on read (list/extract) from the
+// file's own magic bytes, so ".tar", ".tar.gz" and ".tgz" all share one path.
+func archiveKind(p string) (string, bool) {
+	lower := strings.ToLower(p)
+	switch {
+	case strings.HasSuffix(lower, ".zip"):
+		return "zip", true
+	case strings.HasSuffix(lower, ".tar.gz"), strings.HasSuffix(lower, ".tgz"), strings.HasSuffix(lower, ".tar"):
+		return "tar", true
+	default:
+		return "", false
+	}
+}
+
+// SftpArchiveList previews a .zip/.tar(.gz) archive by listing its entries,
+// without extracting anything.
+func SftpArchiveList() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := sftpHostID(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		p := strings.TrimSpace(r.URL.Query().Get("path"))
+		if p == "" {
+			http.Error(w, jsonError("path is required"), http.StatusBadRequest)
+			return
+		}
+		kind, ok := archiveKind(p)
+		if !ok {
+			http.Error(w, jsonError("not a recognized archive (.zip, .tar, .tar.gz, .tgz)"), http.StatusBadRequest)
+			return
+		}
+		h, err := loadDockerHost(id)
+		if err != nil {
+			http.Error(w, jsonError("host not found"), http.StatusBadRequest)
+			return
+		}
+		var cmd string
+		if kind == "zip" {
+			cmd = "unzip -l " + shellQuote(p)
+		} else {
+			cmd = "tar -tvf " + shellQuote(p)
+		}
+		stdout, stderr, exitCode, err := runShellMaybeSudo(h, r, cmd, 30)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		if exitCode != 0 {
+			http.Error(w, jsonError(shellFailureMessage(stdout, stderr, exitCode)), http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"path": p, "listing": stdout})
+	}
+}
+
+// SftpExtract extracts a .zip/.tar(.gz) archive into the directory it lives
+// in ("extract here"), overwriting any existing files with the same names.
+func SftpExtract() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := sftpHostID(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Path string `json:"path"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		p := strings.TrimSpace(body.Path)
+		if p == "" {
+			http.Error(w, jsonError("path is required"), http.StatusBadRequest)
+			return
+		}
+		kind, ok := archiveKind(p)
+		if !ok {
+			http.Error(w, jsonError("not a recognized archive (.zip, .tar, .tar.gz, .tgz)"), http.StatusBadRequest)
+			return
+		}
+		h, err := loadDockerHost(id)
+		if err != nil {
+			http.Error(w, jsonError("host not found"), http.StatusBadRequest)
+			return
+		}
+		dir := path.Dir(p)
+		var cmd string
+		if kind == "zip" {
+			cmd = fmt.Sprintf("unzip -o %s -d %s", shellQuote(p), shellQuote(dir))
+		} else {
+			cmd = fmt.Sprintf("tar -xf %s -C %s", shellQuote(p), shellQuote(dir))
+		}
+		stdout, stderr, exitCode, err := runShellMaybeSudo(h, r, cmd, 300)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		if exitCode != 0 {
+			http.Error(w, jsonError(shellFailureMessage(stdout, stderr, exitCode)), http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "path": dir})
+	}
+}
+
 // SftpRename renames/moves a file or directory.
 func SftpRename() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

@@ -388,6 +388,10 @@ async function del(entry: SftpEntry) {
 }
 
 // ── View file ───────────────────────────────────────────────────
+function isArchive(name: string): boolean {
+  const n = name.toLowerCase()
+  return n.endsWith('.zip') || n.endsWith('.tar.gz') || n.endsWith('.tgz') || n.endsWith('.tar')
+}
 async function view(entry: SftpEntry) {
   viewName.value = entry.name
   viewContent.value = ''
@@ -397,17 +401,37 @@ async function view(entry: SftpEntry) {
   showView.value = true
   viewLoading.value = true
   try {
-    const { data } = await axios.get<{ content: string; truncated: boolean; binary: boolean }>(
-      `/api/sftp/hosts/${hostId.value}/read`,
-      { params: { path: joinPath(cwd.value, entry.name) } },
-    )
-    viewContent.value = data.content
-    viewTruncated.value = data.truncated
-    viewBinary.value = data.binary
+    if (isArchive(entry.name)) {
+      const { data } = await axios.get<{ listing: string }>(
+        `/api/sftp/hosts/${hostId.value}/archive`,
+        { params: { path: joinPath(cwd.value, entry.name) } },
+      )
+      viewContent.value = data.listing
+    } else {
+      const { data } = await axios.get<{ content: string; truncated: boolean; binary: boolean }>(
+        `/api/sftp/hosts/${hostId.value}/read`,
+        { params: { path: joinPath(cwd.value, entry.name) } },
+      )
+      viewContent.value = data.content
+      viewTruncated.value = data.truncated
+      viewBinary.value = data.binary
+    }
   } catch (e: any) {
     viewError.value = e?.response?.data?.error || 'Could not read file'
   } finally {
     viewLoading.value = false
+  }
+}
+async function extract(entry: SftpEntry) {
+  const ok = await confirm(`Extract "${entry.name}" into this folder? Existing files with the same names will be overwritten.`, 'Extract')
+  if (!ok) return
+  try {
+    await withSudoRetry((sudo) => axios.post(`/api/sftp/hosts/${hostId.value}/extract`,
+      { path: joinPath(cwd.value, entry.name) }, { params: sudoParams(sudo) }))
+    toast.success(`Extracted ${entry.name}`)
+    await loadDir(cwd.value)
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Extract failed')
   }
 }
 
@@ -533,6 +557,7 @@ onMounted(loadHosts)
                     <button v-if="!e.isDir" class="base-btn base-btn--xs" @click.stop="view(e)">View</button>
                     <button v-if="!e.isDir" class="base-btn base-btn--xs" @click.stop="download(e)">Download</button>
                     <button v-if="canManage && e.isDir" class="base-btn base-btn--xs" @click.stop="compress(e)">Compress</button>
+                    <button v-if="canManage && !e.isDir && isArchive(e.name)" class="base-btn base-btn--xs" @click.stop="extract(e)">Extract</button>
                     <button v-if="canManage" class="base-btn base-btn--xs" @click.stop="rename(e)">Rename</button>
                     <button v-if="canManage" class="base-btn base-btn--xs base-btn--danger" @click.stop="del(e)">Delete</button>
                   </td>
