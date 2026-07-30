@@ -216,26 +216,29 @@ async function uploadFiles(files: FileList | File[]) {
 function wasInterrupted(job: UploadJob): boolean {
   return job.status === 'paused' || job.status === 'cancelled'
 }
-async function uploadOne(job: UploadJob) {
-  job.status = 'uploading'
-  job.error = ''
+function performUpload(job: UploadJob, sudo: boolean) {
   const controller = new AbortController()
   job.controller = controller
   const fd = new FormData()
   fd.append('file', job.file)
   const start = Date.now()
+  return axios.post(`/api/sftp/hosts/${hostId.value}/upload`, fd, {
+    params: { path: cwd.value, ...sudoParams(sudo) },
+    signal: controller.signal,
+    onUploadProgress: (e) => {
+      job.loaded = e.loaded
+      job.total = e.total || job.file.size
+      job.pct = job.total ? Math.round((job.loaded / job.total) * 100) : 0
+      const elapsed = (Date.now() - start) / 1000
+      job.speed = elapsed > 0 ? job.loaded / elapsed : 0
+    },
+  })
+}
+async function uploadOne(job: UploadJob) {
+  job.status = 'uploading'
+  job.error = ''
   try {
-    await axios.post(`/api/sftp/hosts/${hostId.value}/upload`, fd, {
-      params: { path: cwd.value },
-      signal: controller.signal,
-      onUploadProgress: (e) => {
-        job.loaded = e.loaded
-        job.total = e.total || job.file.size
-        job.pct = job.total ? Math.round((job.loaded / job.total) * 100) : 0
-        const elapsed = (Date.now() - start) / 1000
-        job.speed = elapsed > 0 ? job.loaded / elapsed : 0
-      },
-    })
+    await withSudoRetry((sudo) => performUpload(job, sudo))
     job.status = 'done'
     job.pct = 100
     setTimeout(() => {

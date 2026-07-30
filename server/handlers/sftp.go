@@ -12,8 +12,11 @@ import (
 	"strconv"
 	"strings"
 
+	"time"
+
 	appdb "github.com/anveesa/nias/db"
 	"github.com/pkg/sftp"
+	"golang.org/x/crypto/ssh"
 )
 
 // SFTP rides on the existing SSH host credentials (the same records used for
@@ -28,6 +31,15 @@ type sftpEntry struct {
 	ModTime int64  `json:"modTime"`
 }
 
+// sftpSessionTimeout bounds starting the SFTP subsystem once the SSH
+// connection itself is up. sshClientForHost's ssh.Dial already has its own
+// 10s timeout for the TCP+handshake phase, but the SFTP subsystem request
+// that follows has no timeout of its own in golang.org/x/crypto/ssh — if the
+// remote sshd never answers it (a stalled connection, a dropped packet after
+// the handshake, etc.), the request hung forever with no error surfaced
+// anywhere. This bounds that second phase too.
+const sftpSessionTimeout = 20 * time.Second
+
 // sftpSession opens an SSH + SFTP session to a host. Caller must call cleanup.
 func sftpSession(id int64) (*sftp.Client, func(), error) {
 	h, err := loadDockerHost(id)
@@ -37,20 +49,48 @@ func sftpSession(id int64) (*sftp.Client, func(), error) {
 	if strings.TrimSpace(h.SSHHost) == "" {
 		return nil, nil, fmt.Errorf("SFTP needs an SSH host — local hosts aren't supported")
 	}
-	sc, err := sshClientForHost(h)
-	if err != nil {
-		return nil, nil, err
+
+	type result struct {
+		client *sftp.Client
+		sc     *ssh.Client
+		err    error
 	}
-	client, err := sftp.NewClient(sc,
-		sftp.UseConcurrentWrites(true),
-		sftp.UseConcurrentReads(true),
-		sftp.MaxConcurrentRequestsPerFile(64),
-	)
-	if err != nil {
-		sc.Close()
-		return nil, nil, err
+	ch := make(chan result, 1)
+	go func() {
+		sc, err := sshClientForHost(h)
+		if err != nil {
+			ch <- result{err: err}
+			return
+		}
+		client, err := sftp.NewClient(sc,
+			sftp.UseConcurrentWrites(true),
+			sftp.UseConcurrentReads(true),
+			sftp.MaxConcurrentRequestsPerFile(64),
+		)
+		if err != nil {
+			sc.Close()
+			ch <- result{err: err}
+			return
+		}
+		ch <- result{client: client, sc: sc}
+	}()
+
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			return nil, nil, res.err
+		}
+		return res.client, func() { res.client.Close(); res.sc.Close() }, nil
+	case <-time.After(sftpSessionTimeout):
+		// Don't leak the connection if it eventually does come through late.
+		go func() {
+			if res := <-ch; res.err == nil {
+				res.client.Close()
+				res.sc.Close()
+			}
+		}()
+		return nil, nil, fmt.Errorf("timed out connecting to %s over SSH/SFTP", h.SSHHost)
 	}
-	return client, func() { client.Close(); sc.Close() }, nil
 }
 
 func sftpPathParts(r *http.Request) []string {
@@ -231,6 +271,15 @@ func SftpUpload() http.HandlerFunc {
 			http.Error(w, jsonError("destination path is required"), http.StatusBadRequest)
 			return
 		}
+		sudo := nginxUseSudo(r)
+		var h *DockerHost
+		if sudo {
+			h, err = loadDockerHost(id)
+			if err != nil {
+				http.Error(w, jsonError("host not found"), http.StatusBadRequest)
+				return
+			}
+		}
 		client, cleanup, err := sftpSession(id)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
@@ -257,22 +306,52 @@ func SftpUpload() http.HandlerFunc {
 				part.Close()
 				continue
 			}
-			remote := path.Join(dest, path.Base(part.FileName()))
-			f, err := client.Create(remote)
+			name := path.Base(part.FileName())
+			remote := path.Join(dest, name)
+
+			// Without sudo, write straight to the destination as before. With
+			// sudo, the destination directory usually isn't writable by the
+			// plain SSH user — write to a scratch path in /tmp (world-writable
+			// almost everywhere) over the same unprivileged SFTP session, then
+			// move it into place with an elevated shell command. This avoids
+			// re-architecting the upload as a privileged shell stream just to
+			// support restricted destinations.
+			writePath := remote
+			if sudo {
+				writePath = fmt.Sprintf("/tmp/.nias-upload-%d-%s", time.Now().UnixNano(), name)
+			}
+			f, err := client.Create(writePath)
 			if err != nil {
 				part.Close()
-				http.Error(w, jsonError("create "+remote+": "+err.Error()), http.StatusBadGateway)
+				http.Error(w, jsonError("create "+writePath+": "+err.Error()), http.StatusBadGateway)
 				return
 			}
 			// io.Copy uses File.ReadFrom → concurrent/pipelined writes for speed.
-			if _, err := io.Copy(f, part); err != nil {
-				f.Close()
-				part.Close()
-				http.Error(w, jsonError("write "+remote+": "+err.Error()), http.StatusBadGateway)
-				return
-			}
+			_, copyErr := io.Copy(f, part)
 			f.Close()
 			part.Close()
+			if copyErr != nil {
+				if sudo {
+					client.Remove(writePath)
+				}
+				http.Error(w, jsonError("write "+writePath+": "+copyErr.Error()), http.StatusBadGateway)
+				return
+			}
+			if sudo {
+				cmd := fmt.Sprintf("mkdir -p %s && mv %s %s && chmod 644 %s",
+					shellQuote(dest), shellQuote(writePath), shellQuote(remote), shellQuote(remote))
+				stdout, stderr, exitCode, err := runShellMaybeSudo(h, r, cmd, 60)
+				if err != nil {
+					client.Remove(writePath)
+					http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+					return
+				}
+				if exitCode != 0 {
+					client.Remove(writePath)
+					http.Error(w, jsonError(shellFailureMessage(stdout, stderr, exitCode)), http.StatusBadGateway)
+					return
+				}
+			}
 			count++
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "uploaded": count})
