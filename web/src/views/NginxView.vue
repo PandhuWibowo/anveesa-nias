@@ -155,12 +155,19 @@ function tabParams(t: EditorTab) {
 }
 const tabs = ref<EditorTab[]>([])
 const activeTabId = ref('')
-// Second, independent pane for side-by-side viewing/editing — set by clicking
-// a tab's split icon. Empty means split view is off.
+// The tab strip only ever shows tabs for the currently selected host — mixing
+// every host's tabs into one strip made it look "broken" whenever you
+// switched hosts and none of the visible tabs matched (empty editor, nothing
+// showing as active, no visible reason why). Switch hosts, the strip switches
+// with it; nothing lingers from a host you've since navigated away from.
+const currentHostTabs = computed(() => tabs.value.filter((t) => t.hostId === hostId.value))
+// Second, independent pane for side-by-side viewing — populated only via the
+// explicit "Compare with another host" picker, never by clicking a tab, so
+// there's no ambiguity about which host a given click will affect.
 const rightTabId = ref('')
 const splitView = computed(() => rightTabId.value !== '')
 // Remembers the last active tab per host so switching the host dropdown
-// (without clicking a tab directly) restores what you were last looking at.
+// restores what you were last looking at on that host.
 const lastActiveTabByHost: Record<number, string> = {}
 const activeTab = computed<EditorTab | undefined>(() => tabs.value.find((t) => t.id === activeTabId.value))
 const rightTab = computed<EditorTab | undefined>(() => tabs.value.find((t) => t.id === rightTabId.value))
@@ -188,25 +195,115 @@ const rightContent = computed<string>({
   get: () => rightTab.value?.content ?? '',
   set: (v) => { if (rightTab.value) rightTab.value.content = v },
 })
+
+// "Compare with another host" picker — the only way into split view. Loads
+// its own copy of that host's settings/file tree independent of the toolbar
+// above, since the toolbar always reflects the host you're actually on.
+const showComparePicker = ref(false)
+const compareHostId = ref<number | null>(null)
+const compareRoot = ref('/etc/nginx')
+const compareBin = ref('nginx')
+const compareSudo = ref(false)
+const compareFiles = ref<NginxFile[]>([])
+const compareLoadingFiles = ref(false)
+const compareHostOptions = computed(() => hosts.value.map((h) => ({ value: h.id, label: `${h.name} (${h.ssh_host})` })))
+
+function openComparePicker() {
+  showComparePicker.value = true
+  compareHostId.value = null
+  compareFiles.value = []
+}
+function closeComparePicker() {
+  showComparePicker.value = false
+}
+async function selectCompareHost(id: number) {
+  compareHostId.value = id
+  compareRoot.value = '/etc/nginx'
+  compareBin.value = 'nginx'
+  compareSudo.value = false
+  try {
+    const { data } = await axios.get(`/api/nginx/hosts/${id}/settings`)
+    if (data.exists) {
+      if (data.config_root) compareRoot.value = data.config_root
+      if (data.bin) compareBin.value = data.bin
+      compareSudo.value = !!data.use_sudo
+    } else {
+      const { data: info } = await axios.get<NginxInfo>(`/api/nginx/hosts/${id}/info`)
+      compareRoot.value = info.config_root || compareRoot.value
+      compareBin.value = info.bin || compareBin.value
+    }
+  } catch {
+    /* fall back to defaults above — the tree request below will surface any real error */
+  }
+  await loadCompareTree()
+}
+async function loadCompareTree() {
+  if (compareHostId.value === null) return
+  compareLoadingFiles.value = true
+  try {
+    const { data } = await axios.get<{ files: NginxFile[] }>(`/api/nginx/hosts/${compareHostId.value}/config/tree`, {
+      params: { root: compareRoot.value, bin: compareBin.value, sudo: compareSudo.value ? '1' : undefined },
+    })
+    compareFiles.value = data.files || []
+  } catch (e: any) {
+    if (!compareSudo.value && isPermDenied(e)) {
+      compareSudo.value = true
+      return loadCompareTree()
+    }
+    toast.error(e?.response?.data?.error || 'Failed to list config')
+    compareFiles.value = []
+  } finally {
+    compareLoadingFiles.value = false
+  }
+}
+async function openCompareFile(p: string) {
+  if (compareHostId.value === null) return
+  const hid = compareHostId.value
+  const root = compareRoot.value
+  const binv = compareBin.value
+  const sudov = compareSudo.value
+  const key = tabKey(hid, p)
+  const existing = tabs.value.find((t) => t.id === key)
+  if (existing) {
+    rightTabId.value = existing.id
+    showComparePicker.value = false
+    return
+  }
+  const newTab: EditorTab = { id: key, hostId: hid, path: p, content: '', origContent: '', loading: true, backups: [], root, bin: binv, sudo: sudov }
+  tabs.value.push(newTab)
+  rightTabId.value = key
+  showComparePicker.value = false
+  try {
+    const { data } = await axios.get(`${tabBase(newTab)}/config/file`, { params: { ...tabParams(newTab), path: p } })
+    newTab.content = data.content || ''
+    newTab.origContent = newTab.content
+    loadBackups(newTab)
+  } catch (e: any) {
+    const idx = tabs.value.indexOf(newTab)
+    if (!sudov && isPermDenied(e)) {
+      if (idx !== -1) tabs.value.splice(idx, 1)
+      compareSudo.value = true
+      return openCompareFile(p)
+    }
+    toast.error(e?.response?.data?.error || 'Failed to read file')
+    if (idx !== -1) tabs.value.splice(idx, 1)
+    if (rightTabId.value === key) rightTabId.value = ''
+  } finally {
+    newTab.loading = false
+  }
+}
 const dirty = computed(() => fileContent.value !== origContent.value)
 function tabDirty(t: EditorTab) {
   return t.content !== t.origContent
 }
 
-// Activates a tab in the primary (left) pane, switching the whole page to its
-// host first if needed.
-async function activateTab(t: EditorTab) {
+// Activates a tab in the primary (left) pane. The strip only ever shows tabs
+// for the current host, so this never needs to switch hosts itself.
+function activateTab(t: EditorTab) {
   activeTabId.value = t.id
   lastActiveTabByHost[t.hostId] = t.id
-  if (t.hostId !== hostId.value) await selectHost(t.hostId)
 }
 
-// Opens a tab in the second pane for side-by-side viewing — this one never
-// switches the page's current host, since the whole point is comparing files
-// from two different hosts at once without losing either's context.
-function openInSplit(t: EditorTab) {
-  rightTabId.value = rightTabId.value === t.id ? '' : t.id
-}
 function closeSplit() {
   rightTabId.value = ''
 }
@@ -1192,25 +1289,21 @@ onBeforeUnmount(() => {
               </button>
             </div>
             <div class="ng-editor" :class="{ 'ng-editor--full': editorFullscreen }">
-              <div v-if="tabs.length" class="ng-tabstrip">
+              <div v-if="currentHostTabs.length || splitView" class="ng-tabstrip">
                 <button
-                  v-for="t in tabs"
+                  v-for="t in currentHostTabs"
                   :key="t.id"
                   class="ng-tabchip"
                   :class="{ 'ng-tabchip--active': t.id === activeTabId }"
-                  :title="`${tabHostName(t)}: ${t.path}`"
+                  :title="t.path"
                   @click="activateTab(t)"
                 >
                   <span class="ng-tabchip-name">{{ t.path.split('/').pop() }}</span>
-                  <span class="ng-tabchip-host">{{ tabHostName(t) }}</span>
                   <span v-if="tabDirty(t)" class="ng-tabchip-dot">●</span>
-                  <span
-                    class="ng-tabchip-split-btn"
-                    :class="{ 'ng-tabchip-split-btn--on': t.id === rightTabId }"
-                    title="Open in split view (side by side)"
-                    @click.stop="openInSplit(t)"
-                  ><ActionIcon name="split" /></span>
                   <span class="ng-tabchip-close" title="Close tab" @click.stop="closeTab(t.id)">×</span>
+                </button>
+                <button class="base-btn base-btn--sm ng-compare-btn" title="Open a file from another host side by side" @click="openComparePicker">
+                  <ActionIcon name="split" /> Compare with another host
                 </button>
               </div>
               <div class="ng-panes" :class="{ 'ng-panes--split': splitView }">
@@ -1221,7 +1314,7 @@ onBeforeUnmount(() => {
                       <span class="ng-editor-path">{{ activeFile }}</span>
                       <span class="ng-tabchip-host">{{ activeTab && tabHostName(activeTab) }}</span>
                       <span v-if="dirty" class="ng-dirty">● unsaved</span>
-                      <div class="dk-spacer"></div>
+                      <span class="ng-editor-bar-spacer"></span>
                       <button class="base-btn base-btn--sm" @click="openEffective">nginx -T</button>
                       <select
                         v-if="backups.length"
@@ -1255,13 +1348,13 @@ onBeforeUnmount(() => {
                   </template>
                 </div>
                 <div v-if="splitView" class="ng-pane">
-                  <div v-if="!rightTab" class="ng-editor-empty">Click the split icon on another tab to compare it here.</div>
+                  <div v-if="!rightTab" class="ng-editor-empty">Loading…</div>
                   <template v-else>
                     <div class="ng-editor-bar">
                       <span class="ng-editor-path">{{ rightTab.path }}</span>
                       <span class="ng-tabchip-host">{{ tabHostName(rightTab) }}</span>
                       <span v-if="tabDirty(rightTab)" class="ng-dirty">● unsaved</span>
-                      <div class="dk-spacer"></div>
+                      <span class="ng-editor-bar-spacer"></span>
                       <select
                         v-if="rightTab.backups.length"
                         class="base-input base-input--sm ng-baksel"
@@ -1289,6 +1382,41 @@ onBeforeUnmount(() => {
                     />
                   </template>
                 </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Compare-with-another-host picker (the only way into split view) -->
+          <div v-if="showComparePicker" class="ng-modal-backdrop" @click.self="closeComparePicker">
+            <div class="ng-modal ng-modal--compare page-card">
+              <div class="ng-modal-head">
+                <h3>Compare with another host</h3>
+                <button class="icon-btn" @click="closeComparePicker"><ActionIcon name="close" /></button>
+              </div>
+              <div class="ng-modal-body">
+                <label class="ng-modal-label">Host</label>
+                <SearchSelect
+                  :model-value="compareHostId"
+                  :options="compareHostOptions"
+                  placeholder="Select a host…"
+                  @update:model-value="selectCompareHost(Number($event))"
+                />
+                <template v-if="compareHostId !== null">
+                  <label class="ng-modal-label">File</label>
+                  <div class="ng-compare-files">
+                    <div v-if="compareLoadingFiles" class="ng-editor-empty">Loading files…</div>
+                    <div v-else-if="!compareFiles.length" class="ng-editor-empty">No files found.</div>
+                    <button
+                      v-for="f in compareFiles"
+                      :key="f.path"
+                      class="ng-fileitem"
+                      @click="openCompareFile(f.path)"
+                    >
+                      <span class="ng-fname">{{ f.path }}</span>
+                      <span class="ng-fsize">{{ formatBytes(f.size) }}</span>
+                    </button>
+                  </div>
+                </template>
               </div>
             </div>
           </div>
@@ -1596,9 +1724,7 @@ onBeforeUnmount(() => {
 .ng-tabchip-dot { color: var(--brand); font-size: 8px; }
 .ng-tabchip-close { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: var(--r-sm); font-size: 14px; line-height: 1; color: var(--text-muted); }
 .ng-tabchip-close:hover { background: var(--bg-hover); color: var(--danger); }
-.ng-tabchip-split-btn { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: var(--r-sm); color: var(--text-muted); }
-.ng-tabchip-split-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
-.ng-tabchip-split-btn--on { color: var(--brand); background: var(--brand-dim); }
+.ng-compare-btn { display: inline-flex; align-items: center; gap: 6px; margin: 4px 4px 4px auto; flex-shrink: 0; white-space: nowrap; }
 .ng-panes { display: flex; flex: 1; min-height: 0; }
 .ng-panes--split .ng-pane { border-right: 1px solid var(--border); }
 .ng-panes--split .ng-pane:last-child { border-right: none; }
@@ -1667,4 +1793,10 @@ onBeforeUnmount(() => {
 .ng-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--text-secondary); }
 .ng-modal-head code { font-family: var(--mono); color: var(--brand); }
 .ng-modal-editor { flex: 1; min-height: 0; }
+.ng-modal--compare { width: 480px; height: auto; max-height: 80vh; }
+.ng-modal-body { display: flex; flex-direction: column; gap: 6px; padding: 16px; overflow-y: auto; }
+.ng-modal-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); font-weight: 600; margin-top: 8px; }
+.ng-modal-label:first-child { margin-top: 0; }
+.ng-compare-files { border: 1px solid var(--border); border-radius: var(--r-md); overflow-y: auto; max-height: 320px; }
+.ng-editor-bar-spacer { flex: 1; }
 </style>
