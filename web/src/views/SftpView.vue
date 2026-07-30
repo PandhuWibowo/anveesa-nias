@@ -25,13 +25,15 @@ interface SftpEntry {
 }
 interface UploadJob {
   id: number
+  file: File
   name: string
   loaded: number
   total: number
   pct: number
   speed: number
-  done: boolean
+  status: 'uploading' | 'paused' | 'done' | 'error' | 'cancelled'
   error: string
+  controller: AbortController | null
 }
 
 const router = useRouter()
@@ -187,47 +189,88 @@ function download(entry: SftpEntry) {
   a.click()
 }
 
-// ── Upload (streamed, with progress + speed) ────────────────────
+// ── Upload (streamed, with progress + speed; pause/resume/cancel) ──
 async function uploadFiles(files: FileList | File[]) {
   for (const file of Array.from(files)) {
-    await uploadOne(file)
+    const job: UploadJob = {
+      id: uploadSeq++,
+      file,
+      name: file.name,
+      loaded: 0,
+      total: file.size,
+      pct: 0,
+      speed: 0,
+      status: 'uploading',
+      error: '',
+      controller: null,
+    }
+    uploads.value = [job, ...uploads.value]
+    await uploadOne(job)
   }
 }
-async function uploadOne(file: File) {
-  const job: UploadJob = {
-    id: uploadSeq++,
-    name: file.name,
-    loaded: 0,
-    total: file.size,
-    pct: 0,
-    speed: 0,
-    done: false,
-    error: '',
-  }
-  uploads.value = [job, ...uploads.value]
+// Pause aborts the in-flight request; Resume re-uploads the same file from
+// the start (0%) — there's no server-side append/resume support, so this is
+// a "stop and restart" pause rather than a true byte-offset resume.
+// (Split into its own function so TS re-checks job.status fresh instead of
+// narrowing it to the literal set from earlier in uploadOne's control flow.)
+function wasInterrupted(job: UploadJob): boolean {
+  return job.status === 'paused' || job.status === 'cancelled'
+}
+async function uploadOne(job: UploadJob) {
+  job.status = 'uploading'
+  job.error = ''
+  const controller = new AbortController()
+  job.controller = controller
   const fd = new FormData()
-  fd.append('file', file)
+  fd.append('file', job.file)
   const start = Date.now()
   try {
     await axios.post(`/api/sftp/hosts/${hostId.value}/upload`, fd, {
       params: { path: cwd.value },
+      signal: controller.signal,
       onUploadProgress: (e) => {
         job.loaded = e.loaded
-        job.total = e.total || file.size
+        job.total = e.total || job.file.size
         job.pct = job.total ? Math.round((job.loaded / job.total) * 100) : 0
         const elapsed = (Date.now() - start) / 1000
         job.speed = elapsed > 0 ? job.loaded / elapsed : 0
       },
     })
-    job.done = true
+    job.status = 'done'
     job.pct = 100
     setTimeout(() => {
       uploads.value = uploads.value.filter((u) => u.id !== job.id)
     }, 2500)
     await loadDir(cwd.value)
   } catch (e: any) {
-    job.error = e?.response?.data?.error || 'upload failed'
+    if (wasInterrupted(job)) {
+      // expected — pauseUpload()/cancelUpload() already set the status and aborted
+    } else if (axios.isCancel(e) || e.code === 'ERR_CANCELED') {
+      job.status = 'cancelled'
+    } else {
+      job.status = 'error'
+      job.error = e?.response?.data?.error || 'upload failed'
+    }
+  } finally {
+    job.controller = null
   }
+}
+function pauseUpload(job: UploadJob) {
+  if (job.status !== 'uploading') return
+  job.status = 'paused'
+  job.controller?.abort()
+}
+function resumeUpload(job: UploadJob) {
+  if (job.status !== 'paused') return
+  job.loaded = 0
+  job.pct = 0
+  job.speed = 0
+  uploadOne(job)
+}
+function cancelUpload(job: UploadJob) {
+  job.status = 'cancelled'
+  job.controller?.abort()
+  uploads.value = uploads.value.filter((u) => u.id !== job.id)
 }
 function onFilePick(ev: Event) {
   const input = ev.target as HTMLInputElement
@@ -574,11 +617,19 @@ onMounted(loadHosts)
       <div v-for="u in uploads" :key="u.id" class="sf-up">
         <div class="sf-up-row">
           <span class="sf-up-name">{{ u.name }}</span>
-          <span v-if="u.error" class="sf-err">{{ u.error }}</span>
-          <span v-else-if="u.done" class="sf-up-done">✓ done</span>
+          <span v-if="u.status === 'error'" class="sf-err">{{ u.error }}</span>
+          <span v-else-if="u.status === 'done'" class="sf-up-done">✓ done</span>
+          <span v-else-if="u.status === 'cancelled'" class="sf-up-meta">Cancelled</span>
+          <span v-else-if="u.status === 'paused'" class="sf-up-meta">Paused · {{ u.pct }}%</span>
           <span v-else class="sf-up-meta">{{ u.pct }}% · {{ formatBytes(u.speed) }}/s</span>
         </div>
-        <div class="sf-up-bar"><div class="sf-up-fill" :class="{ 'sf-up-fill--err': u.error }" :style="{ width: u.pct + '%' }"></div></div>
+        <div class="sf-up-bar"><div class="sf-up-fill" :class="{ 'sf-up-fill--err': u.status === 'error', 'sf-up-fill--paused': u.status === 'paused' }" :style="{ width: u.pct + '%' }"></div></div>
+        <div class="sf-up-actions">
+          <button v-if="u.status === 'uploading'" class="sf-up-btn" @click="pauseUpload(u)">Pause</button>
+          <button v-if="u.status === 'paused'" class="sf-up-btn" @click="resumeUpload(u)">Resume</button>
+          <button v-if="u.status === 'uploading' || u.status === 'paused'" class="sf-up-btn sf-up-btn--danger" @click="cancelUpload(u)">Cancel</button>
+          <button v-if="u.status === 'error' || u.status === 'cancelled'" class="sf-up-btn" @click="uploads = uploads.filter((j) => j.id !== u.id)">Dismiss</button>
+        </div>
       </div>
     </div>
   </div>
@@ -659,4 +710,9 @@ onMounted(loadHosts)
 .sf-up-bar { height: 5px; background: var(--bg-hover); border-radius: 99px; overflow: hidden; }
 .sf-up-fill { height: 100%; background: var(--brand); transition: width 0.2s ease; }
 .sf-up-fill--err { background: var(--danger); }
+.sf-up-fill--paused { background: var(--text-muted); }
+.sf-up-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 4px; }
+.sf-up-btn { background: none; border: none; padding: 0; font-size: 11px; color: var(--brand); cursor: pointer; }
+.sf-up-btn:hover { text-decoration: underline; }
+.sf-up-btn--danger { color: var(--danger); }
 </style>
