@@ -22,7 +22,7 @@ import (
 )
 
 var (
-	version   = "0.1.0"
+	version   = "1.2.0"
 	buildTime = "unknown"
 	startTime time.Time
 )

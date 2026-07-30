@@ -13,11 +13,12 @@ It is built with a Go HTTP API and a Vue 3 + Vite frontend.
 - Public dashboard sharing and iframe embed support per dashboard or per chart.
 - User management, roles, permissions, 2FA, notifications, and approval workflows.
 - Audit, monitoring, backups, scheduler, and operational views.
+- Docker, Nginx, and Kubernetes management over SSH, plus an SFTP file browser with upload/compress/extract and sudo elevation for restricted paths.
 - SQLite or PostgreSQL internal storage, with optional Redis-backed cache and rate limiting.
 
 ## Project Status
 
-This repository is being prepared for public open-source collaboration. APIs may still change before a stable `v1.0.0` release.
+Anveesa Nias reached its first stable release at `v1.0.0` — from here, REST API routes, permission constants, and the connection/credential storage schema are considered stable, with incompatible changes bumping the major version per [semver](https://semver.org/). See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Repository
 

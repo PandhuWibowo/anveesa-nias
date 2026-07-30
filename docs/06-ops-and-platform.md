@@ -148,34 +148,73 @@ Screenshot:
 
 ---
 
-## Docker Hosts Management
+## SSH Hosts Management
 
 Route:
-- `/docker-hosts`
+- `/ssh-hosts` (`/docker-hosts` and `/sftp-hosts` redirect here — it's one shared host list)
 
 Purpose:
-- Dedicated page for listing and managing all Docker SSH host connections.
+- Dedicated page for listing and managing all SSH host connections used by Docker, Nginx, and SFTP.
 
 Use cases:
-- Add a new remote server as a Docker host.
+- Add a new remote server as an SSH host.
 - Edit SSH credentials or socket path for an existing host.
 - Delete a host connection that is no longer needed.
-- Test SSH + Docker daemon connectivity for each host.
+- Test SSH (+ Docker daemon, where applicable) connectivity for each host.
 - View reachability, running container count, image count, and Docker version for each host at a glance.
+- Filter the host list by name or address.
 
 Typical workflow:
-1. Open Docker Hosts.
+1. Open SSH Hosts.
 2. Click **Add host** to register a remote server.
 3. Enter SSH credentials (password or private key).
 4. Use **Test** to verify connectivity before saving.
-5. Click **Manage →** on any card to jump to the Docker page for that host.
+5. Click **Manage →** on any card to jump to the Docker page for that host, or pick it from the host dropdown on the Nginx or SFTP pages.
 
 Notes:
-- Hosts added here are shared with the Nginx management page.
+- Hosts added here are shared across Docker, Nginx, and SFTP — add a host once, use it everywhere.
 - SSH credentials are AES-encrypted at rest using `NIAS_ENCRYPTION_KEY`.
 
 Screenshot:
 - `docs/screenshots/docker-hosts-page.png`
+
+---
+
+## SFTP
+
+Route:
+- `/sftp`
+
+Purpose:
+- Browse, upload, download, and manage files on remote servers over SSH/SFTP, without exposing an FTP port.
+
+Use cases:
+- Browse a remote filesystem (e.g. `/etc/nginx`, `/opt/app`) from the browser.
+- Filter the current directory's file list by name, and sort by Name, Size, or Modified.
+- Preview a text file's contents, or list what's inside a `.zip`/`.tar`/`.tar.gz`/`.tgz` archive, without downloading it.
+- Upload files with progress, and pause, resume, or cancel an in-progress upload.
+- Create folders, rename, and delete files or folders (recursively).
+- Compress a folder into `.zip` or `.tar.gz`, or extract an existing archive in place.
+
+Connection workflow:
+1. Select a host from the dropdown (hosts come from **SSH Hosts** — see above).
+2. The app connects over SSH and shows a status badge: **Connected**, **Connecting…**, or **Error**.
+3. Use **Refresh** to reload the current directory, or **Disconnect** to end the session.
+
+Typical workflow:
+1. Open SFTP and pick a host.
+2. Navigate into a directory using the breadcrumbs or by clicking a folder.
+3. Use **+ Folder** / **Upload** to add content, or the per-row **Rename** / **Delete** / **Compress** / **Extract** actions.
+4. Click a file's name (or **View**) to preview it; click a folder's **Compress** action to archive it.
+
+Notes:
+- Requires an SSH host — local (socket-only) hosts aren't supported for SFTP.
+- Write operations (New Folder, Delete, Rename, Upload, Compress, Extract) automatically retry once with `sudo` when the SSH user lacks direct permission on a path (e.g. a root-owned directory) — this only works if the SSH user actually has sudo rights on that host (`NOPASSWD` for key auth, or the SSH password doubling as the sudo password for password auth).
+- Pausing an upload stops the transfer; resuming re-uploads the file from the start (there's no byte-offset resume).
+- Permissions: `sftp.access` (browse & download), `sftp.manage` (upload, rename, delete, compress, extract).
+
+Screenshot:
+- `docs/screenshots/sftp-page.png`
 
 ---
 
