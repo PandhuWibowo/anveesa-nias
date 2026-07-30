@@ -5,6 +5,7 @@ import axios from 'axios'
 import SearchSelect from '@/components/ui/SearchSelect.vue'
 import SortIcon from '@/components/ui/SortIcon.vue'
 import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
+import ActionIcon from '@/components/ui/ActionIcon.vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -140,6 +141,11 @@ const toast = useToast()
 const { confirm } = useConfirm()
 const { hasAnyPermission } = useAuth()
 const canManage = computed(() => hasAnyPermission(['docker.manage']))
+
+function copyPath(path: string) {
+  navigator.clipboard?.writeText(path)
+  toast.success('Path copied')
+}
 const canExec = computed(() => hasAnyPermission(['docker.exec']))
 
 const hosts = ref<DockerHost[]>([])
@@ -2372,7 +2378,12 @@ onMounted(loadHosts)
                     <span v-if="v.refCount < 0" class="dk-muted">—</span>
                     <span v-else :class="{ 'dk-unused': v.refCount === 0 }">{{ v.refCount }} container{{ v.refCount === 1 ? '' : 's' }}</span>
                   </td>
-                  <td class="dk-mono dk-id">{{ v.mountpoint }}</td>
+                  <td class="dk-mono dk-id">
+                    <span>{{ v.mountpoint }}</span>
+                    <button v-if="v.mountpoint" class="dk-icon-btn" title="Copy path" @click="copyPath(v.mountpoint)">
+                      <ActionIcon name="copy" />
+                    </button>
+                  </td>
                   <td class="dk-actions-col">
                     <RowActionsMenu :actions="volumeActions(v)" />
                   </td>
@@ -2669,8 +2680,14 @@ onMounted(loadHosts)
             <h4>Mounts</h4>
             <div v-for="(m, i) in inspView.mounts" :key="i" class="dk-mount">
               <span class="dk-mono">{{ m.source }}</span>
+              <button class="dk-icon-btn" title="Copy source path" @click="copyPath(m.source)">
+                <ActionIcon name="copy" />
+              </button>
               <span class="dk-arrow">→</span>
               <span class="dk-mono">{{ m.destination }}</span>
+              <button class="dk-icon-btn" title="Copy destination path" @click="copyPath(m.destination)">
+                <ActionIcon name="copy" />
+              </button>
               <span class="dk-tag">{{ m.rw ? 'rw' : 'ro' }}</span>
             </div>
           </section>

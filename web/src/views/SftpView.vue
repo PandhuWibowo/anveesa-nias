@@ -5,6 +5,7 @@ import axios from 'axios'
 import SearchSelect from '@/components/ui/SearchSelect.vue'
 import SortIcon from '@/components/ui/SortIcon.vue'
 import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
+import ActionIcon from '@/components/ui/ActionIcon.vue'
 import SftpFolderPicker from '@/components/ui/SftpFolderPicker.vue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
@@ -488,6 +489,11 @@ async function confirmMove(destDir: string) {
   await loadDir(cwd.value)
 }
 
+function copyPath(path: string) {
+  navigator.clipboard?.writeText(path)
+  toast.success('Path copied')
+}
+
 // ── Row actions (View/Download inline; the rest in the "⋯" menu) ──
 function rowActions(e: SftpEntry): RowAction[] {
   const actions: RowAction[] = []
@@ -495,6 +501,7 @@ function rowActions(e: SftpEntry): RowAction[] {
     actions.push({ key: 'view', label: 'View', icon: 'view', primary: true, onClick: () => view(e) })
     actions.push({ key: 'download', label: 'Download', icon: 'download', primary: true, onClick: () => download(e) })
   }
+  actions.push({ key: 'copy-path', label: 'Copy path', icon: 'copy', onClick: () => copyPath(joinPath(cwd.value, e.name)) })
   if (canManage.value) {
     if (e.isDir) {
       actions.push({ key: 'compress', label: 'Compress', icon: 'archive', onClick: () => compress(e) })
@@ -581,6 +588,9 @@ onMounted(loadHosts)
                 <button class="sf-crumb" :class="{ 'sf-crumb--last': i === crumbs.length - 1 }" @click="loadDir(c.path)">{{ c.label }}</button>
               </template>
             </nav>
+            <button class="icon-btn" title="Copy current path" @click="copyPath(cwd)">
+              <ActionIcon name="copy" />
+            </button>
             <div class="dk-spacer"></div>
             <input
               v-model="search"

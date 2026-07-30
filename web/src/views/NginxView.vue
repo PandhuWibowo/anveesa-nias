@@ -10,6 +10,7 @@ import { useListFilter } from '@/composables/useListFilter'
 import NginxEditor from '@/components/nginx/NginxEditor.vue'
 import SearchSelect from '@/components/ui/SearchSelect.vue'
 import SortIcon from '@/components/ui/SortIcon.vue'
+import ActionIcon from '@/components/ui/ActionIcon.vue'
 
 type NginxTab = 'config' | 'sites' | 'logs' | 'map' | 'certs' | 'status'
 interface NginxCert {
@@ -85,6 +86,11 @@ const toast = useToast()
 const { confirm } = useConfirm()
 const { hasAnyPermission } = useAuth()
 const canManage = computed(() => hasAnyPermission(['nginx.manage']))
+
+function copyPath(path: string) {
+  navigator.clipboard?.writeText(path)
+  toast.success('Path copied')
+}
 const canReload = computed(() => hasAnyPermission(['nginx.reload']))
 
 const hosts = ref<SshHost[]>([])
@@ -966,11 +972,21 @@ onBeforeUnmount(() => {
             </div>
             <div class="ng-set ng-set--grow">
               <label>Config root</label>
-              <input v-model="configRoot" class="base-input" spellcheck="false" />
+              <div class="ng-pathrow">
+                <input v-model="configRoot" class="base-input" spellcheck="false" />
+                <button class="icon-btn" title="Copy path" @click="copyPath(configRoot)">
+                  <ActionIcon name="copy" />
+                </button>
+              </div>
             </div>
             <div class="ng-set ng-set--grow">
               <label>Log directory</label>
-              <input v-model="logDir" class="base-input" spellcheck="false" />
+              <div class="ng-pathrow">
+                <input v-model="logDir" class="base-input" spellcheck="false" />
+                <button class="icon-btn" title="Copy path" @click="copyPath(logDir)">
+                  <ActionIcon name="copy" />
+                </button>
+              </div>
             </div>
             <div class="ng-set" title="If nginx runs inside a Docker container, name it here — logs are then read via `docker exec` instead of directly on the SSH host, since a container's own filesystem usually isn't visible over SFTP/SSH">
               <label>Log container <span class="ng-optional">optional</span></label>
@@ -1010,7 +1026,12 @@ onBeforeUnmount(() => {
                 @click="openFile(f.path)"
               >
                 <span class="ng-fname">{{ f.path }}</span>
-                <span class="ng-fsize">{{ formatBytes(f.size) }}</span>
+                <span class="ng-fileitem-end">
+                  <span class="ng-fsize">{{ formatBytes(f.size) }}</span>
+                  <span class="icon-btn ng-fileitem-copy" title="Copy path" @click.stop="copyPath(f.path)">
+                    <ActionIcon name="copy" />
+                  </span>
+                </span>
               </button>
             </div>
             <div class="ng-editor">
@@ -1167,7 +1188,12 @@ onBeforeUnmount(() => {
                       {{ c.expired ? 'EXPIRED' : c.days_left + 'd' }}
                     </span>
                   </td>
-                  <td class="ng-mono ng-cert" :title="c.error || c.path">{{ c.path }}</td>
+                  <td class="ng-mono ng-cert" :title="c.error || c.path">
+                    <span>{{ c.path }}</span>
+                    <span v-if="c.path" class="icon-btn ng-fileitem-copy" title="Copy path" @click.stop="copyPath(c.path)">
+                      <ActionIcon name="copy" />
+                    </span>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -1202,6 +1228,9 @@ onBeforeUnmount(() => {
                 placeholder="Select a log…"
                 @update:model-value="openLog(String($event))"
               />
+              <button v-if="activeLog" class="icon-btn" title="Copy log path" @click="copyPath(`${logDir}/${activeLog}`)">
+                <ActionIcon name="copy" />
+              </button>
               <button
                 class="base-btn base-btn--sm"
                 :class="following ? 'base-btn--danger' : 'base-btn--primary'"
@@ -1297,6 +1326,10 @@ onBeforeUnmount(() => {
 .ng-set label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); font-weight: 600; }
 .ng-set .base-input { width: 100%; font-family: var(--mono); font-size: 12px; }
 .ng-optional { text-transform: none; letter-spacing: normal; font-weight: 400; opacity: 0.7; }
+.ng-pathrow { display: flex; align-items: center; gap: 4px; }
+.ng-pathrow .base-input { flex: 1; }
+.ng-fileitem-end { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.ng-fileitem-copy { width: 22px; height: 22px; }
 .ng-logcontainer { width: 150px; }
 .ng-sudo { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); white-space: nowrap; cursor: pointer; padding-bottom: 6px; }
 .ng-sudo input { cursor: pointer; }
@@ -1371,7 +1404,7 @@ onBeforeUnmount(() => {
 .ng-count { display: inline-block; background: var(--bg-hover); color: var(--text-muted); border-radius: 99px; padding: 1px 8px; font-size: 11px; margin-left: 4px; }
 .ng-mono { font-family: var(--mono); font-size: 12px; color: var(--text-secondary); word-break: break-all; }
 .ng-proxy { display: block; color: var(--brand); }
-.ng-cert { color: var(--text-muted); }
+.ng-cert { color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
 
 /* Cert pill */
 .ng-pill--err2 { background: var(--danger); color: #fff; }
