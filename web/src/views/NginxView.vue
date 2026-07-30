@@ -122,10 +122,83 @@ const cmdOutput = ref('')
 const cmdOk = ref(true)
 const busy = ref(false)
 
-// Config
-const files = ref<NginxFile[]>([])
-const loadingTree = ref(false)
+// Config — a JumpServer/VS Code style workbench: the tree on the left shows
+// every host at once (each lazily expandable to its own file list), and any
+// file from any host can be opened as a tab. Clicking a host's name (not a
+// file) makes it the "focused" host, driving the toolbar above and the
+// Sites/Certs/Logs/Map/Status tabs, which are host-wide rather than per-file.
+interface HostTreeEntry {
+  files: NginxFile[]
+  loading: boolean
+  loaded: boolean
+  root: string
+  bin: string
+  sudo: boolean
+}
+const hostTree = ref<Record<number, HostTreeEntry>>({})
+const expandedHostIds = ref(new Set<number>())
 const editorFullscreen = ref(false)
+
+function isHostExpanded(id: number) {
+  return expandedHostIds.value.has(id)
+}
+function toggleHostExpand(id: number) {
+  const s = new Set(expandedHostIds.value)
+  if (s.has(id)) s.delete(id)
+  else {
+    s.add(id)
+    loadHostTreeEntry(id)
+  }
+  expandedHostIds.value = s
+}
+function focusHost(id: number) {
+  if (id !== hostId.value) selectHost(id)
+  if (!isHostExpanded(id)) toggleHostExpand(id)
+}
+
+// Loads (once) a host's config root/binary/sudo + file list independent of
+// the toolbar above — the toolbar only ever reflects the focused host, but
+// the tree shows every host's files at once, so each keeps its own cache
+// entry. The focused host's entry is kept in sync by loadTree() below
+// instead, since its root/bin/sudo can change live via the toolbar inputs.
+async function loadHostTreeEntry(id: number) {
+  if (hostTree.value[id]?.loaded || hostTree.value[id]?.loading) return
+  hostTree.value[id] = { files: [], loading: true, loaded: false, root: '/etc/nginx', bin: 'nginx', sudo: false }
+  let root = '/etc/nginx'
+  let binv = 'nginx'
+  let sudov = false
+  try {
+    const { data } = await axios.get(`/api/nginx/hosts/${id}/settings`)
+    if (data.exists) {
+      if (data.config_root) root = data.config_root
+      if (data.bin) binv = data.bin
+      sudov = !!data.use_sudo
+    } else {
+      const { data: info } = await axios.get<NginxInfo>(`/api/nginx/hosts/${id}/info`)
+      root = info.config_root || root
+      binv = info.bin || binv
+    }
+  } catch {
+    /* fall back to defaults above — the tree request below surfaces any real error */
+  }
+  await fetchHostTreeFiles(id, root, binv, sudov)
+}
+async function fetchHostTreeFiles(id: number, root: string, binv: string, sudov: boolean) {
+  hostTree.value[id] = { files: hostTree.value[id]?.files || [], loading: true, loaded: false, root, bin: binv, sudo: sudov }
+  try {
+    const { data } = await axios.get<{ files: NginxFile[] }>(`/api/nginx/hosts/${id}/config/tree`, {
+      params: { root, bin: binv, sudo: sudov ? '1' : undefined },
+    })
+    hostTree.value[id] = { files: data.files || [], loading: false, loaded: true, root, bin: binv, sudo: sudov }
+  } catch (e: any) {
+    if (!sudov && isPermDenied(e)) {
+      await fetchHostTreeFiles(id, root, binv, true)
+      return
+    }
+    toast.error(e?.response?.data?.error || 'Failed to list config')
+    hostTree.value[id] = { files: [], loading: false, loaded: true, root, bin: binv, sudo: sudov }
+  }
+}
 
 // Open editor tabs live in a single flat list shared across all hosts, so you
 // can have files open from several different hosts at once. Each tab carries
@@ -161,15 +234,12 @@ function tabParams(t: EditorTab) {
 }
 const tabs = ref<EditorTab[]>([])
 const activeTabId = ref('')
-// The tab strip only ever shows tabs for the currently selected host — mixing
-// every host's tabs into one strip made it look "broken" whenever you
-// switched hosts and none of the visible tabs matched (empty editor, nothing
-// showing as active, no visible reason why). Switch hosts, the strip switches
-// with it; nothing lingers from a host you've since navigated away from.
-const currentHostTabs = computed(() => tabs.value.filter((t) => t.hostId === hostId.value))
-// Second, independent pane for side-by-side viewing — populated only via the
-// explicit "Compare with another host" picker, never by clicking a tab, so
-// there's no ambiguity about which host a given click will affect.
+// The tab strip shows every open tab regardless of host — each one is
+// labeled with its host name (tabHostName below), and since the host TREE
+// (not a single-host dropdown) is the primary navigation now, there's no
+// "switch hosts and everything vanishes" ambiguity like there was before.
+// Second, independent pane for side-by-side viewing — populated from the
+// tree's per-file split icon.
 const rightTabId = ref('')
 const splitView = computed(() => rightTabId.value !== '')
 // Remembers the last active tab per host so switching the host dropdown
@@ -180,6 +250,9 @@ const rightTab = computed<EditorTab | undefined>(() => tabs.value.find((t) => t.
 const activeFile = computed(() => activeTab.value?.path ?? '')
 function tabHostName(t: EditorTab): string {
   return hosts.value.find((h) => h.id === t.hostId)?.name || `host ${t.hostId}`
+}
+function hostEntry(id: number): HostTreeEntry | undefined {
+  return hostTree.value[id]
 }
 const fileContent = computed<string>({
   get: () => activeTab.value?.content ?? '',
@@ -202,84 +275,30 @@ const rightContent = computed<string>({
   set: (v) => { if (rightTab.value) rightTab.value.content = v },
 })
 
-// "Compare with another host" picker — the only way into split view. Loads
-// its own copy of that host's settings/file tree independent of the toolbar
-// above, since the toolbar always reflects the host you're actually on.
-const showComparePicker = ref(false)
-const compareHostId = ref<number | null>(null)
-const compareRoot = ref('/etc/nginx')
-const compareBin = ref('nginx')
-const compareSudo = ref(false)
-const compareFiles = ref<NginxFile[]>([])
-const compareLoadingFiles = ref(false)
-const compareHostOptions = computed(() => hosts.value.map((h) => ({ value: h.id, label: `${h.name} (${h.ssh_host})` })))
-
-function openComparePicker() {
-  showComparePicker.value = true
-  compareHostId.value = null
-  compareFiles.value = []
-}
-function closeComparePicker() {
-  showComparePicker.value = false
-}
-async function selectCompareHost(id: number) {
-  compareHostId.value = id
-  compareRoot.value = '/etc/nginx'
-  compareBin.value = 'nginx'
-  compareSudo.value = false
-  try {
-    const { data } = await axios.get(`/api/nginx/hosts/${id}/settings`)
-    if (data.exists) {
-      if (data.config_root) compareRoot.value = data.config_root
-      if (data.bin) compareBin.value = data.bin
-      compareSudo.value = !!data.use_sudo
-    } else {
-      const { data: info } = await axios.get<NginxInfo>(`/api/nginx/hosts/${id}/info`)
-      compareRoot.value = info.config_root || compareRoot.value
-      compareBin.value = info.bin || compareBin.value
-    }
-  } catch {
-    /* fall back to defaults above — the tree request below will surface any real error */
-  }
-  await loadCompareTree()
-}
-async function loadCompareTree() {
-  if (compareHostId.value === null) return
-  compareLoadingFiles.value = true
-  try {
-    const { data } = await axios.get<{ files: NginxFile[] }>(`/api/nginx/hosts/${compareHostId.value}/config/tree`, {
-      params: { root: compareRoot.value, bin: compareBin.value, sudo: compareSudo.value ? '1' : undefined },
-    })
-    compareFiles.value = data.files || []
-  } catch (e: any) {
-    if (!compareSudo.value && isPermDenied(e)) {
-      compareSudo.value = true
-      return loadCompareTree()
-    }
-    toast.error(e?.response?.data?.error || 'Failed to list config')
-    compareFiles.value = []
-  } finally {
-    compareLoadingFiles.value = false
-  }
-}
-async function openCompareFile(p: string) {
-  if (compareHostId.value === null) return
-  const hid = compareHostId.value
-  const root = compareRoot.value
-  const binv = compareBin.value
-  const sudov = compareSudo.value
+// Opens a tree file as a tab, in either the primary (left) or split (right)
+// pane. Every tree row — focused host or not — goes through this, using that
+// host's own cached root/bin/sudo rather than the toolbar's live values, so
+// it works correctly regardless of which host currently has toolbar focus.
+async function openTabFor(hid: number, root: string, binv: string, sudov: boolean, p: string, target: 'primary' | 'split') {
   const key = tabKey(hid, p)
   const existing = tabs.value.find((t) => t.id === key)
   if (existing) {
-    rightTabId.value = existing.id
-    showComparePicker.value = false
+    if (target === 'primary') activateTab(existing)
+    else rightTabId.value = existing.id
     return
   }
   tabs.value.push({ id: key, hostId: hid, path: p, content: '', origContent: '', loading: true, backups: [], root, bin: binv, sudo: sudov })
-  rightTabId.value = key
-  showComparePicker.value = false
-  // Re-read the tab back out of `tabs` — see the comment in openFile() for
-  // why mutating the pre-push object directly would silently never render.
+  if (target === 'primary') {
+    activeTabId.value = key
+    lastActiveTabByHost[hid] = key
+  } else {
+    rightTabId.value = key
+  }
+  // Re-read the tab back out of `tabs` (rather than keep the plain object we
+  // just pushed) so every mutation below goes through Vue's reactive proxy —
+  // mutating the pre-push object directly updates the data but never
+  // triggers a re-render, which is why the editor could stay blank forever
+  // on first open even though the fetch succeeded.
   const t = tabs.value.find((x) => x.id === key)!
   try {
     const { data } = await axios.get(`${tabBase(t)}/config/file`, { params: { ...tabParams(t), path: p } })
@@ -290,12 +309,15 @@ async function openCompareFile(p: string) {
     const idx = tabs.value.findIndex((x) => x.id === key)
     if (!sudov && isPermDenied(e)) {
       if (idx !== -1) tabs.value.splice(idx, 1)
-      compareSudo.value = true
-      return openCompareFile(p)
+      return openTabFor(hid, root, binv, true, p, target)
     }
     toast.error(e?.response?.data?.error || 'Failed to read file')
     if (idx !== -1) tabs.value.splice(idx, 1)
-    if (rightTabId.value === key) rightTabId.value = ''
+    if (target === 'primary' && activeTabId.value === key) {
+      const sameHost = tabs.value.filter((x) => x.hostId === hid)
+      activeTabId.value = sameHost.length ? sameHost[sameHost.length - 1].id : ''
+    }
+    if (target === 'split' && rightTabId.value === key) rightTabId.value = ''
   } finally {
     t.loading = false
   }
@@ -310,6 +332,10 @@ function tabDirty(t: EditorTab) {
 function activateTab(t: EditorTab) {
   activeTabId.value = t.id
   lastActiveTabByHost[t.hostId] = t.id
+  // Tabs can be from any host now, so switch the page's focused host to
+  // match — Sites/Certs/Logs/Map/toolbar always reflect whatever file you're
+  // actually looking at.
+  if (t.hostId !== hostId.value) selectHost(t.hostId)
 }
 
 function closeSplit() {
@@ -513,7 +539,6 @@ async function disconnectHost() {
   version.value = ''
   active.value = ''
   cmdOutput.value = ''
-  files.value = []
   sites.value = []
   logFiles.value = []
   activeLog.value = ''
@@ -815,73 +840,15 @@ async function reload(force = false) {
 }
 
 // ── Config ──────────────────────────────────────────────────────
+// Refreshes the FOCUSED host's tree entry using the live toolbar values
+// (configRoot/bin/useSudo can be hand-edited or auto-detected there, unlike
+// every other host's entry which is fetched once and cached).
 async function loadTree() {
   if (hostId.value === null) return
-  loadingTree.value = true
-  try {
-    const { data } = await axios.get<{ files: NginxFile[] }>(`${base.value}/config/tree`, { params: cfgParams.value })
-    files.value = data.files || []
-  } catch (e: any) {
-    if (!useSudo.value && isPermDenied(e)) {
-      useSudo.value = true
-      toast.info('Permission denied — retrying with sudo')
-      loadingTree.value = false
-      return loadTree()
-    }
-    toast.error(e?.response?.data?.error || 'Failed to list config')
-    files.value = []
-  } finally {
-    loadingTree.value = false
-  }
-}
-
-// Opening a file switches to its tab if already open on this host (preserving
-// whatever edits are sitting in it) or creates a new tab tagged with the
-// current host and fetches its content — other open tabs, on this host or
-// any other, are never touched or discarded.
-async function openFile(p: string) {
-  if (hostId.value === null) return
   const hid = hostId.value
-  const key = tabKey(hid, p)
-  const existing = tabs.value.find((t) => t.id === key)
-  if (existing) {
-    activateTab(existing)
-    return
-  }
-  tabs.value.push({
-    id: key, hostId: hid, path: p, content: '', origContent: '', loading: true, backups: [],
-    root: configRoot.value, bin: bin.value, sudo: useSudo.value,
-  })
-  activeTabId.value = key
-  lastActiveTabByHost[hid] = key
-  // Re-read the tab back out of `tabs` (rather than keep the plain object we
-  // just pushed) so every mutation below goes through Vue's reactive proxy —
-  // mutating the pre-push object directly updates the data but never
-  // triggers a re-render, which is why the editor could stay blank forever
-  // on first open even though the fetch succeeded.
-  const t = tabs.value.find((x) => x.id === key)!
-  try {
-    const { data } = await axios.get(`${tabBase(t)}/config/file`, { params: { ...tabParams(t), path: p } })
-    t.content = data.content || ''
-    t.origContent = t.content
-    loadBackups(t)
-  } catch (e: any) {
-    const idx = tabs.value.findIndex((x) => x.id === key)
-    if (!useSudo.value && isPermDenied(e)) {
-      useSudo.value = true
-      toast.info('Permission denied — retrying with sudo')
-      if (idx !== -1) tabs.value.splice(idx, 1)
-      return openFile(p)
-    }
-    toast.error(e?.response?.data?.error || 'Failed to read file')
-    if (idx !== -1) tabs.value.splice(idx, 1)
-    if (activeTabId.value === key) {
-      const sameHost = tabs.value.filter((x) => x.hostId === hid)
-      activeTabId.value = sameHost.length ? sameHost[sameHost.length - 1].id : ''
-    }
-  } finally {
-    t.loading = false
-  }
+  expandedHostIds.value.add(hid)
+  await fetchHostTreeFiles(hid, configRoot.value, bin.value, useSudo.value)
+  if (hostTree.value[hid]?.sudo && !useSudo.value) useSudo.value = true
 }
 
 // Closes a tab, prompting first if it has unsaved edits. When it was the
@@ -1292,40 +1259,64 @@ onBeforeUnmount(() => {
 
           <!-- CONFIG -->
           <div v-if="tab === 'config'" class="page-card ng-split">
-            <div class="ng-filelist">
-              <div class="ng-filelist-head">{{ loadingTree ? 'Loading…' : files.length + ' files · ' + configRoot }}</div>
-              <button
-                v-for="f in files"
-                :key="f.path"
-                class="ng-fileitem"
-                :class="{ 'ng-fileitem--active': f.path === activeFile }"
-                @click="openFile(f.path)"
-              >
-                <span class="ng-fname">{{ f.path }}</span>
-                <span class="ng-fileitem-end">
-                  <span class="ng-fsize">{{ formatBytes(f.size) }}</span>
-                  <span class="icon-btn ng-fileitem-copy" title="Copy path" @click.stop="copyPath(f.path)">
-                    <ActionIcon name="copy" />
-                  </span>
-                </span>
-              </button>
+            <div class="ng-hosttree">
+              <div class="ng-hosttree-head">{{ hosts.length }} host{{ hosts.length === 1 ? '' : 's' }}</div>
+              <div v-for="h in hosts" :key="h.id" class="ng-hostrow">
+                <button
+                  class="ng-hostrow-btn"
+                  :class="{ 'ng-hostrow-btn--focused': h.id === hostId }"
+                  :title="h.ssh_host"
+                  @click="focusHost(h.id)"
+                >
+                  <span
+                    class="ng-hostrow-chevron"
+                    :class="{ 'ng-hostrow-chevron--open': isHostExpanded(h.id) }"
+                    @click.stop="toggleHostExpand(h.id)"
+                  >▸</span>
+                  <span class="ng-hostrow-name">{{ h.name }}</span>
+                </button>
+                <div v-if="isHostExpanded(h.id)" class="ng-hostfiles">
+                  <div v-if="hostEntry(h.id)?.loading" class="ng-hostfiles-msg">Loading…</div>
+                  <div v-else-if="hostEntry(h.id)?.loaded && !hostEntry(h.id)?.files.length" class="ng-hostfiles-msg">No files found.</div>
+                  <button
+                    v-for="f in (hostEntry(h.id)?.files || [])"
+                    :key="f.path"
+                    class="ng-fileitem"
+                    :class="{ 'ng-fileitem--active': !!activeTab && activeTab.hostId === h.id && activeTab.path === f.path }"
+                    @click="openTabFor(h.id, hostEntry(h.id)!.root, hostEntry(h.id)!.bin, hostEntry(h.id)!.sudo, f.path, 'primary')"
+                  >
+                    <span class="ng-fname">{{ f.path }}</span>
+                    <span class="ng-fileitem-end">
+                      <span class="ng-fsize">{{ formatBytes(f.size) }}</span>
+                      <span
+                        class="icon-btn ng-fileitem-copy"
+                        title="Open in split view (side by side)"
+                        @click.stop="openTabFor(h.id, hostEntry(h.id)!.root, hostEntry(h.id)!.bin, hostEntry(h.id)!.sudo, f.path, 'split')"
+                      >
+                        <ActionIcon name="split" />
+                      </span>
+                      <span class="icon-btn ng-fileitem-copy" title="Copy path" @click.stop="copyPath(f.path)">
+                        <ActionIcon name="copy" />
+                      </span>
+                    </span>
+                  </button>
+                </div>
+              </div>
             </div>
             <div class="ng-editor" :class="{ 'ng-editor--full': editorFullscreen }">
-              <div v-if="currentHostTabs.length || splitView" class="ng-tabstrip">
+              <div v-if="tabs.length" class="ng-tabstrip">
                 <button
-                  v-for="t in currentHostTabs"
+                  v-for="t in tabs"
                   :key="t.id"
                   class="ng-tabchip"
                   :class="{ 'ng-tabchip--active': t.id === activeTabId }"
-                  :title="t.path"
+                  :title="`${tabHostName(t)}: ${t.path}`"
                   @click="activateTab(t)"
                 >
                   <span class="ng-tabchip-name">{{ t.path.split('/').pop() }}</span>
+                  <span class="ng-tabchip-host">{{ tabHostName(t) }}</span>
                   <span v-if="tabDirty(t)" class="ng-tabchip-dot">●</span>
                   <span class="ng-tabchip-close" title="Close tab" @click.stop="closeTab(t.id)">×</span>
-                </button>
-                <button class="base-btn base-btn--sm ng-compare-btn" title="Open a file from another host side by side" @click="openComparePicker">
-                  <ActionIcon name="split" /> Compare with another host
                 </button>
               </div>
               <div class="ng-panes" :class="{ 'ng-panes--split': splitView }">
@@ -1404,41 +1395,6 @@ onBeforeUnmount(() => {
                     />
                   </template>
                 </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Compare-with-another-host picker (the only way into split view) -->
-          <div v-if="showComparePicker" class="ng-modal-backdrop" @click.self="closeComparePicker">
-            <div class="ng-modal ng-modal--compare page-card">
-              <div class="ng-modal-head">
-                <h3>Compare with another host</h3>
-                <button class="icon-btn" @click="closeComparePicker"><ActionIcon name="close" /></button>
-              </div>
-              <div class="ng-modal-body">
-                <label class="ng-modal-label">Host</label>
-                <SearchSelect
-                  :model-value="compareHostId"
-                  :options="compareHostOptions"
-                  placeholder="Select a host…"
-                  @update:model-value="selectCompareHost(Number($event))"
-                />
-                <template v-if="compareHostId !== null">
-                  <label class="ng-modal-label">File</label>
-                  <div class="ng-compare-files">
-                    <div v-if="compareLoadingFiles" class="ng-editor-empty">Loading files…</div>
-                    <div v-else-if="!compareFiles.length" class="ng-editor-empty">No files found.</div>
-                    <button
-                      v-for="f in compareFiles"
-                      :key="f.path"
-                      class="ng-fileitem"
-                      @click="openCompareFile(f.path)"
-                    >
-                      <span class="ng-fname">{{ f.path }}</span>
-                      <span class="ng-fsize">{{ formatBytes(f.size) }}</span>
-                    </button>
-                  </div>
-                </template>
               </div>
             </div>
           </div>
@@ -1734,9 +1690,16 @@ onBeforeUnmount(() => {
 .ng-tab--active { color: var(--brand); border-bottom-color: var(--brand); font-weight: 600; }
 
 .ng-split { display: grid; grid-template-columns: 300px 1fr; gap: 0; padding: 0; overflow: hidden; min-height: 460px; }
-.ng-filelist { border-right: 1px solid var(--border); overflow-y: auto; max-height: 70vh; }
-.ng-filelist-head { padding: 9px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; word-break: break-all; }
-.ng-fileitem { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; background: none; border: none; border-bottom: 1px solid var(--border); padding: 8px 12px; font-size: 12px; color: var(--text-secondary); cursor: pointer; text-align: left; }
+.ng-hosttree { border-right: 1px solid var(--border); overflow-y: auto; max-height: 70vh; }
+.ng-hosttree-head { padding: 9px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+.ng-hostrow-btn { display: flex; align-items: center; gap: 6px; width: 100%; background: none; border: none; border-bottom: 1px solid var(--border); padding: 8px 12px; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); cursor: pointer; text-align: left; }
+.ng-hostrow-btn:hover { background: var(--bg-hover); }
+.ng-hostrow-btn--focused { color: var(--brand); }
+.ng-hostrow-chevron { display: inline-flex; align-items: center; justify-content: center; width: 14px; flex-shrink: 0; color: var(--text-muted); transition: transform var(--dur) var(--ease); }
+.ng-hostrow-chevron--open { transform: rotate(90deg); }
+.ng-hostrow-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ng-hostfiles-msg { padding: 8px 12px 8px 32px; font-size: 12px; color: var(--text-muted); }
+.ng-fileitem { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; background: none; border: none; border-bottom: 1px solid var(--border); padding: 8px 12px 8px 32px; font-size: 12px; color: var(--text-secondary); cursor: pointer; text-align: left; }
 .ng-fileitem:hover { background: var(--bg-hover); }
 .ng-fileitem--active { background: var(--brand-dim); color: var(--brand); }
 .ng-fname { font-family: var(--mono); word-break: break-all; }
@@ -1756,7 +1719,6 @@ onBeforeUnmount(() => {
 .ng-tabchip-dot { color: var(--brand); font-size: 8px; }
 .ng-tabchip-close { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: var(--r-sm); font-size: 14px; line-height: 1; color: var(--text-muted); }
 .ng-tabchip-close:hover { background: var(--bg-hover); color: var(--danger); }
-.ng-compare-btn { display: inline-flex; align-items: center; gap: 6px; margin: 4px 4px 4px auto; flex-shrink: 0; white-space: nowrap; }
 .ng-panes { display: flex; flex: 1; min-height: 0; }
 .ng-panes--split .ng-pane { border-right: 1px solid var(--border); }
 .ng-panes--split .ng-pane:last-child { border-right: none; }
@@ -1825,10 +1787,5 @@ onBeforeUnmount(() => {
 .ng-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--text-secondary); }
 .ng-modal-head code { font-family: var(--mono); color: var(--brand); }
 .ng-modal-editor { flex: 1; min-height: 0; }
-.ng-modal--compare { width: 480px; height: auto; max-height: 80vh; }
-.ng-modal-body { display: flex; flex-direction: column; gap: 6px; padding: 16px; overflow-y: auto; }
-.ng-modal-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); font-weight: 600; margin-top: 8px; }
-.ng-modal-label:first-child { margin-top: 0; }
-.ng-compare-files { border: 1px solid var(--border); border-radius: var(--r-md); overflow-y: auto; max-height: 320px; }
 .ng-editor-bar-spacer { flex: 1; }
 </style>
