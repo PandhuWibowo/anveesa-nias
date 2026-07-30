@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
+import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
@@ -208,6 +209,18 @@ function browseHost(h: DockerHost) {
   router.push({ name: 'sftp', query: { host: h.id } })
 }
 
+function cardActions(h: DockerHost): RowAction[] {
+  const actions: RowAction[] = [
+    { key: 'browse', label: 'Browse files', icon: 'arrow-right', primary: true, onClick: () => browseHost(h) },
+    { key: 'check', label: pingingId.value === h.id ? 'Checking…' : 'Check', icon: 'check', primary: true, disabled: pingingId.value === h.id, onClick: () => pingHost(h) },
+  ]
+  if (canManage.value) {
+    actions.push({ key: 'edit', label: 'Edit', icon: 'edit', onClick: () => openEditHost(h) })
+    actions.push({ key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => deleteHost(h) })
+  }
+  return actions
+}
+
 onMounted(async () => {
   await loadHosts()
   pingAll()
@@ -267,14 +280,7 @@ onMounted(async () => {
             </div>
 
             <div class="sfh-actions">
-              <button class="base-btn base-btn--primary base-btn--xs" @click="browseHost(h)">Browse files →</button>
-              <button
-                class="base-btn base-btn--xs"
-                :disabled="pingingId === h.id"
-                @click="pingHost(h)"
-              >{{ pingingId === h.id ? 'Checking…' : 'Check' }}</button>
-              <button v-if="canManage" class="base-btn base-btn--xs" @click="openEditHost(h)">Edit</button>
-              <button v-if="canManage" class="base-btn base-btn--danger base-btn--xs" @click="deleteHost(h)">Delete</button>
+              <RowActionsMenu :actions="cardActions(h)" />
             </div>
           </div>
           </div>

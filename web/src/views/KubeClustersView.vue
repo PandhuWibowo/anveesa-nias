@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
+import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
@@ -154,6 +155,18 @@ function openCluster(c: KubeCluster) {
   router.push({ name: 'kubernetes', query: { cluster: c.id } })
 }
 
+function cardActions(c: KubeCluster): RowAction[] {
+  const actions: RowAction[] = [
+    { key: 'open', label: 'Open', icon: 'arrow-right', primary: true, onClick: () => openCluster(c) },
+    { key: 'test', label: pingingId.value === c.id ? 'Testing…' : 'Test', icon: 'check', primary: true, disabled: pingingId.value === c.id, onClick: () => pingCluster(c) },
+  ]
+  if (canManage.value) {
+    actions.push({ key: 'edit', label: 'Edit', icon: 'edit', onClick: () => openEdit(c) })
+    actions.push({ key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => remove(c) })
+  }
+  return actions
+}
+
 function onKubeconfigFile(ev: Event) {
   const input = ev.target as HTMLInputElement
   const file = input.files?.[0]
@@ -227,12 +240,7 @@ onMounted(async () => {
             </div>
 
             <div class="k8s-actions">
-              <button class="base-btn base-btn--primary base-btn--xs" @click="openCluster(c)">Open →</button>
-              <button class="base-btn base-btn--xs" :disabled="pingingId === c.id" @click="pingCluster(c)">
-                {{ pingingId === c.id ? 'Testing…' : 'Test' }}
-              </button>
-              <button v-if="canManage" class="base-btn base-btn--xs" @click="openEdit(c)">Edit</button>
-              <button v-if="canManage" class="base-btn base-btn--danger base-btn--xs" @click="remove(c)">Delete</button>
+              <RowActionsMenu :actions="cardActions(c)" />
             </div>
           </div>
           </div>

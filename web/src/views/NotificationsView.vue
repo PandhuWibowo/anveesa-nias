@@ -4,6 +4,7 @@ import axios from 'axios'
 import { useAuth } from '@/composables/useAuth'
 import { useToast } from '@/composables/useToast'
 import { useListFilter } from '@/composables/useListFilter'
+import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
 
 interface ConnectionOption {
   id: number
@@ -504,6 +505,21 @@ async function deleteRule(id: number) {
   }
 }
 
+function targetActions(target: NotificationTarget): RowAction[] {
+  return [
+    { key: 'test', label: 'Test', icon: 'check', primary: true, onClick: () => testTarget(target.id) },
+    { key: 'edit', label: 'Edit', icon: 'edit', onClick: () => editTarget(target) },
+    { key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => deleteTarget(target.id) },
+  ]
+}
+
+function ruleActions(rule: NotificationRule): RowAction[] {
+  return [
+    { key: 'edit', label: 'Edit', icon: 'edit', onClick: () => editRule(rule) },
+    { key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => deleteRule(rule.id) },
+  ]
+}
+
 onMounted(loadAll)
 </script>
 
@@ -639,9 +655,7 @@ onMounted(loadAll)
                 <div v-if="Object.keys(target.config || {}).length" class="notif-card__template">Config: {{ JSON.stringify(target.config) }}</div>
               </div>
               <div class="notif-card__actions">
-                <button class="base-btn base-btn--ghost base-btn--xs" @click="editTarget(target)">Edit</button>
-                <button class="base-btn base-btn--ghost base-btn--xs" @click="testTarget(target.id)">Test</button>
-                <button class="base-btn base-btn--ghost base-btn--xs notif-btn-del" @click="deleteTarget(target.id)">Delete</button>
+                <RowActionsMenu :actions="targetActions(target)" />
               </div>
             </article>
           </div>
@@ -782,8 +796,7 @@ onMounted(loadAll)
                 </div>
               </div>
               <div class="notif-card__actions">
-                <button class="base-btn base-btn--ghost base-btn--xs" @click="editRule(rule)">Edit</button>
-                <button class="base-btn base-btn--ghost base-btn--xs notif-btn-del" @click="deleteRule(rule.id)">Delete</button>
+                <RowActionsMenu :actions="ruleActions(rule)" />
               </div>
             </article>
           </div>
@@ -1112,14 +1125,6 @@ onMounted(loadAll)
   margin-top: 8px;
   color: #e74c3c;
   font-size: 12px;
-}
-
-.notif-btn-del {
-  color: var(--danger) !important;
-}
-
-.notif-btn-del:hover {
-  background: rgba(239, 68, 68, 0.1) !important;
 }
 
 .notif-empty {

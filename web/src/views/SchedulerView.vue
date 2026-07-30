@@ -6,6 +6,7 @@ import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
 import { readableError } from '@/utils/httpError'
 import { useListFilter } from '@/composables/useListFilter'
+import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
 
 interface Schedule {
   id: number; name: string; conn_id: number; sql: string
@@ -154,6 +155,17 @@ function editSchedule(s: Schedule) {
   showForm.value = true
 }
 
+function rowActions(s: Schedule): RowAction[] {
+  return [
+    { key: 'run', label: 'Run now', icon: 'play', primary: true, onClick: () => runNow(s) },
+    { key: 'toggle', label: s.enabled ? 'Disable' : 'Enable', icon: 'power', primary: true, onClick: () => toggle(s) },
+    { key: 'history', label: 'History', icon: 'history', onClick: () => viewRuns(s) },
+    { key: 'edit', label: 'Edit', icon: 'edit', onClick: () => editSchedule(s) },
+    { key: 'goto', label: s.kind === 'dashboard_report' ? 'Go to Dashboard' : 'Go to Query', icon: 'external-link', onClick: () => goToScheduleSource(s) },
+    { key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => del(s) },
+  ]
+}
+
 function resetForm() {
   form.value = { name: '', conn_id: 0, dashboard_id: 0, sql: '', kind: 'query', ai_prompt: '', interval_min: 60, alert_condition: '', alert_threshold: 0, enabled: true }
 }
@@ -265,16 +277,7 @@ onMounted(() => { load(); fetchSchedulerStatus() })
               <span v-if="s.next_run_at" class="sc-time">Next: {{ new Date(s.next_run_at).toLocaleString() }}</span>
             </div>
             <div class="sc-item-actions">
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="runNow(s)" title="Run now">▶</button>
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="viewRuns(s)" title="View runs">History</button>
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="toggle(s)">
-                {{ s.enabled ? 'Disable' : 'Enable' }}
-              </button>
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="editSchedule(s)">Edit</button>
-              <button class="base-btn base-btn--ghost base-btn--sm sc-goto-btn" @click="goToScheduleSource(s)" :title="s.kind === 'dashboard_report' ? 'Go to Dashboard' : 'Go to Query'">
-                {{ s.kind === 'dashboard_report' ? '↗ Dashboard' : '↗ Query' }}
-              </button>
-              <button class="base-btn base-btn--ghost base-btn--sm" style="color:var(--danger)" @click="del(s)">Delete</button>
+              <RowActionsMenu :actions="rowActions(s)" />
             </div>
           </div>
           <pre v-if="s.kind !== 'dashboard_report'" class="sc-sql">{{ s.sql }}</pre>
@@ -399,7 +402,6 @@ onMounted(() => { load(); fetchSchedulerStatus() })
 .sc-item-times { display:flex; flex-direction:column; gap:2px; }
 .sc-time { font-size:10.5px; color:var(--text-muted); }
 .sc-item-actions { display:flex; gap:4px; flex-wrap:wrap; }
-.sc-goto-btn { color:var(--brand); }
 .sc-sql { margin:0; padding:8px 14px; background:var(--bg-body); border-top:1px solid var(--border); font-family:var(--mono,monospace); font-size:11.5px; color:var(--text-secondary); white-space:pre-wrap; word-break:break-all; }
 .sc-dashboard-target { padding:10px 14px; border-top:1px solid var(--border); background:var(--bg-body); font-size:12px; color:var(--text-secondary); }
 .sc-helper { padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--bg-body); font-size:12px; line-height:1.6; color:var(--text-secondary); }

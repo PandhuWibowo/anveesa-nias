@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import axios from 'axios'
 import SearchSelect from '@/components/ui/SearchSelect.vue'
 import SortIcon from '@/components/ui/SortIcon.vue'
+import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
@@ -435,6 +436,25 @@ async function extract(entry: SftpEntry) {
   }
 }
 
+// ── Row actions (View/Download inline; the rest in the "⋯" menu) ──
+function rowActions(e: SftpEntry): RowAction[] {
+  const actions: RowAction[] = []
+  if (!e.isDir) {
+    actions.push({ key: 'view', label: 'View', icon: 'view', primary: true, onClick: () => view(e) })
+    actions.push({ key: 'download', label: 'Download', icon: 'download', primary: true, onClick: () => download(e) })
+  }
+  if (canManage.value) {
+    if (e.isDir) {
+      actions.push({ key: 'compress', label: 'Compress', icon: 'archive', onClick: () => compress(e) })
+    } else if (isArchive(e.name)) {
+      actions.push({ key: 'extract', label: 'Extract', icon: 'unarchive', onClick: () => extract(e) })
+    }
+    actions.push({ key: 'rename', label: 'Rename', icon: 'edit', onClick: () => rename(e) })
+    actions.push({ key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => del(e) })
+  }
+  return actions
+}
+
 // ── Formatting ──────────────────────────────────────────────────
 function formatBytes(n: number): string {
   if (!n) return '0 B'
@@ -554,12 +574,7 @@ onMounted(loadHosts)
                   <td class="sf-mode">{{ e.mode }}</td>
                   <td class="sf-time">{{ formatTime(e.modTime) }}</td>
                   <td class="sf-act">
-                    <button v-if="!e.isDir" class="base-btn base-btn--xs" @click.stop="view(e)">View</button>
-                    <button v-if="!e.isDir" class="base-btn base-btn--xs" @click.stop="download(e)">Download</button>
-                    <button v-if="canManage && e.isDir" class="base-btn base-btn--xs" @click.stop="compress(e)">Compress</button>
-                    <button v-if="canManage && !e.isDir && isArchive(e.name)" class="base-btn base-btn--xs" @click.stop="extract(e)">Extract</button>
-                    <button v-if="canManage" class="base-btn base-btn--xs" @click.stop="rename(e)">Rename</button>
-                    <button v-if="canManage" class="base-btn base-btn--xs base-btn--danger" @click.stop="del(e)">Delete</button>
+                    <RowActionsMenu :actions="rowActions(e)" />
                   </td>
                 </tr>
               </tbody>
@@ -711,7 +726,6 @@ onMounted(loadHosts)
 .sf-mode { font-family: var(--mono); font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 .sf-time { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .sf-act { text-align: right; white-space: nowrap; }
-.sf-act .base-btn { margin-left: 5px; }
 .sf-col-size, .sf-col-mode, .sf-col-time { width: 1%; }
 .sf-col-name, .sf-col-size, .sf-col-time { cursor: pointer; user-select: none; }
 

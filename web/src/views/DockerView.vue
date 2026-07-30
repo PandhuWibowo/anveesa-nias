@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import axios from 'axios'
 import SearchSelect from '@/components/ui/SearchSelect.vue'
 import SortIcon from '@/components/ui/SortIcon.vue'
+import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -1945,6 +1946,67 @@ onBeforeUnmount(() => {
   disposeTerminal()
 })
 
+// ── Row actions (state-toggle + terminal inline; the rest in the "⋯" menu) ──
+function containerActions(c: DockerContainer): RowAction[] {
+  const actions: RowAction[] = []
+  if (canManage.value) {
+    if (c.state !== 'running') {
+      actions.push({ key: 'start', label: 'Start', icon: 'play', primary: true, disabled: busyAction.value === `${c.id}:start`, onClick: () => containerAction(c, 'start') })
+    }
+    if (c.state === 'running') {
+      actions.push({ key: 'restart', label: 'Restart', icon: 'refresh', primary: true, disabled: busyAction.value === `${c.id}:restart`, onClick: () => containerAction(c, 'restart') })
+      actions.push({ key: 'pause', label: 'Pause', icon: 'pause', primary: true, disabled: busyAction.value === `${c.id}:pause`, onClick: () => containerAction(c, 'pause') })
+    }
+    if (c.state === 'paused') {
+      actions.push({ key: 'unpause', label: 'Unpause', icon: 'play', primary: true, disabled: busyAction.value === `${c.id}:unpause`, onClick: () => containerAction(c, 'unpause') })
+    }
+    if (c.state === 'running' || c.state === 'paused') {
+      actions.push({ key: 'stop', label: 'Stop', icon: 'stop', primary: true, danger: true, disabled: busyAction.value === `${c.id}:stop`, onClick: () => containerAction(c, 'stop') })
+    }
+  }
+  if (canExec.value && c.state === 'running') {
+    actions.push({ key: 'terminal', label: 'Terminal', icon: 'terminal', primary: true, onClick: () => openTerminal(c) })
+  }
+  actions.push({ key: 'details', label: 'Details', icon: 'view', onClick: () => openInspect(c) })
+  actions.push({ key: 'logs', label: 'Logs', icon: 'logs', onClick: () => openLogs(c) })
+  if (c.state === 'running') {
+    actions.push({ key: 'files', label: 'Files', icon: 'folder', onClick: () => openFiles(c) })
+  }
+  if (canManage.value) {
+    actions.push({ key: 'rename', label: 'Rename', icon: 'edit', onClick: () => openRename(c) })
+    actions.push({ key: 'remove', label: 'Remove', icon: 'delete', danger: true, onClick: () => removeContainer(c) })
+  }
+  return actions
+}
+function imageActions(img: DockerImage): RowAction[] {
+  const actions: RowAction[] = [
+    { key: 'layers', label: 'Layers', icon: 'layers', onClick: () => openHistory(img) },
+    { key: 'export', label: 'Export', icon: 'download', onClick: () => saveImage(img) },
+  ]
+  if (canManage.value) {
+    actions.push({ key: 'remove', label: 'Remove', icon: 'delete', danger: true, onClick: () => removeImage(img) })
+  }
+  return actions
+}
+function volumeActions(v: DockerVolume): RowAction[] {
+  const actions: RowAction[] = [
+    { key: 'details', label: 'Details', icon: 'view', onClick: () => openVolInspect(v) },
+  ]
+  if (canManage.value) {
+    actions.push({ key: 'remove', label: 'Remove', icon: 'delete', danger: true, onClick: () => removeVolume(v) })
+  }
+  return actions
+}
+function networkActions(n: DockerNetwork): RowAction[] {
+  const actions: RowAction[] = [
+    { key: 'details', label: 'Details', icon: 'view', onClick: () => openNetInspect(n) },
+  ]
+  if (canManage.value && !['bridge', 'host', 'none'].includes(n.name)) {
+    actions.push({ key: 'remove', label: 'Remove', icon: 'delete', danger: true, onClick: () => removeNetwork(n) })
+  }
+  return actions
+}
+
 onMounted(loadHosts)
 </script>
 
@@ -2190,47 +2252,7 @@ onMounted(loadHosts)
                       <span v-for="(p, i) in c.ports" :key="i" class="dk-port">{{ portLabel(p) }}</span>
                     </td>
                     <td class="dk-actions-col">
-                      <button class="base-btn base-btn--xs" @click="openInspect(c)">Details</button>
-                      <button class="base-btn base-btn--xs" @click="openLogs(c)">Logs</button>
-                      <button v-if="canExec && c.state === 'running'" class="base-btn base-btn--xs" @click="openTerminal(c)">Terminal</button>
-                      <button v-if="c.state === 'running'" class="base-btn base-btn--xs" @click="openFiles(c)">Files</button>
-                      <template v-if="canManage">
-                        <button
-                          v-if="c.state !== 'running'"
-                          class="base-btn base-btn--xs base-btn--primary"
-                          :disabled="busyAction === `${c.id}:start`"
-                          @click="containerAction(c, 'start')"
-                        >Start</button>
-                        <button
-                          v-if="c.state === 'running'"
-                          class="base-btn base-btn--xs"
-                          :disabled="busyAction === `${c.id}:restart`"
-                          @click="containerAction(c, 'restart')"
-                        >Restart</button>
-                        <button
-                          v-if="c.state === 'running'"
-                          class="base-btn base-btn--xs"
-                          :disabled="busyAction === `${c.id}:pause`"
-                          @click="containerAction(c, 'pause')"
-                        >Pause</button>
-                        <button
-                          v-if="c.state === 'paused'"
-                          class="base-btn base-btn--xs base-btn--primary"
-                          :disabled="busyAction === `${c.id}:unpause`"
-                          @click="containerAction(c, 'unpause')"
-                        >Unpause</button>
-                        <button
-                          v-if="c.state === 'running' || c.state === 'paused'"
-                          class="base-btn base-btn--xs base-btn--danger"
-                          :disabled="busyAction === `${c.id}:stop`"
-                          @click="containerAction(c, 'stop')"
-                        >Stop</button>
-                        <button class="base-btn base-btn--xs" @click="openRename(c)">Rename</button>
-                        <button
-                          class="base-btn base-btn--xs base-btn--danger"
-                          @click="removeContainer(c)"
-                        >Remove</button>
-                      </template>
+                      <RowActionsMenu :actions="containerActions(c)" />
                     </td>
                   </tr>
                   <tr v-if="expanded[c.id]" class="dk-stats-row">
@@ -2318,9 +2340,7 @@ onMounted(loadHosts)
                   <td>{{ formatBytes(img.size) }}</td>
                   <td class="dk-status">{{ formatRelative(img.created) }}</td>
                   <td class="dk-actions-col">
-                    <button class="base-btn base-btn--xs" @click="openHistory(img)">Layers</button>
-                    <button class="base-btn base-btn--xs" @click="saveImage(img)">Export</button>
-                    <button v-if="canManage" class="base-btn base-btn--xs base-btn--danger" @click="removeImage(img)">Remove</button>
+                    <RowActionsMenu :actions="imageActions(img)" />
                   </td>
                 </tr>
               </tbody>
@@ -2354,8 +2374,7 @@ onMounted(loadHosts)
                   </td>
                   <td class="dk-mono dk-id">{{ v.mountpoint }}</td>
                   <td class="dk-actions-col">
-                    <button class="base-btn base-btn--xs" @click="openVolInspect(v)">Details</button>
-                    <button v-if="canManage" class="base-btn base-btn--xs base-btn--danger" @click="removeVolume(v)">Remove</button>
+                    <RowActionsMenu :actions="volumeActions(v)" />
                   </td>
                 </tr>
               </tbody>
@@ -2395,12 +2414,7 @@ onMounted(loadHosts)
                     <td class="dk-mono">{{ n.subnet || '—' }}</td>
                     <td class="dk-status">{{ n.containers }}</td>
                     <td class="dk-actions-col">
-                      <button class="base-btn base-btn--xs" @click="openNetInspect(n)">Details</button>
-                      <button
-                        v-if="canManage && !['bridge', 'host', 'none'].includes(n.name)"
-                        class="base-btn base-btn--xs base-btn--danger"
-                        @click="removeNetwork(n)"
-                      >Remove</button>
+                      <RowActionsMenu :actions="networkActions(n)" />
                     </td>
                   </tr>
                   <tr v-if="netExpanded[n.id]" class="dk-stats-row">
@@ -3126,7 +3140,6 @@ onMounted(loadHosts)
 .dk-image { font-family: var(--mono); font-size: 12px; color: var(--text-secondary); }
 .dk-status { color: var(--text-muted); font-size: 12px; }
 .dk-actions-col { text-align: right; white-space: nowrap; }
-.dk-actions-col .base-btn { margin-left: 5px; }
 
 .dk-port { display: inline-block; font-family: var(--mono); font-size: 11px; background: var(--bg-hover); border-radius: var(--r-xs); padding: 1px 5px; margin: 1px 3px 1px 0; color: var(--text-secondary); }
 
