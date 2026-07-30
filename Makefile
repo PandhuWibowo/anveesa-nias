@@ -130,6 +130,7 @@ backup:
 secrets:
 	@echo "JWT_SECRET=$$(openssl rand -hex 32)"
 	@echo "NIAS_ENCRYPTION_KEY=$$(openssl rand -hex 16)"
+	@echo "DEFAULT_ADMIN_PASSWORD=$$(openssl rand -base64 18)"
 
 # Clean build artifacts
 clean:
