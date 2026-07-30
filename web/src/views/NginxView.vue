@@ -121,23 +121,35 @@ const files = ref<NginxFile[]>([])
 const loadingTree = ref(false)
 const editorFullscreen = ref(false)
 
-// Open editor tabs, kept per-host so switching hosts doesn't lose or mix up
-// what's open elsewhere — each host has its own independent tab strip.
+// Open editor tabs live in a single flat list shared across all hosts, so you
+// can have files open from several different hosts at once. Each tab carries
+// its own hostId; activating a tab from a different host than the one
+// currently selected flips the whole page (toolbar, Sites/Certs/Logs/Map) to
+// that host, so the editor and the rest of the page never disagree about
+// which server is "current". Keyed by `${hostId}:${path}` since the same
+// relative path can exist open on two different hosts at once.
 interface EditorTab {
+  id: string
+  hostId: number
   path: string
   content: string
   origContent: string
   loading: boolean
   backups: NginxBackup[]
 }
-const tabsByHost = ref<Record<number, EditorTab[]>>({})
-const activePathByHost = ref<Record<number, string>>({})
-const openTabs = computed<EditorTab[]>(() => (hostId.value !== null ? tabsByHost.value[hostId.value] || [] : []))
-const activeFile = computed<string>({
-  get: () => (hostId.value !== null ? activePathByHost.value[hostId.value] || '' : ''),
-  set: (v) => { if (hostId.value !== null) activePathByHost.value[hostId.value] = v },
-})
-const activeTab = computed<EditorTab | undefined>(() => openTabs.value.find((t) => t.path === activeFile.value))
+function tabKey(hid: number, p: string) {
+  return `${hid}:${p}`
+}
+const tabs = ref<EditorTab[]>([])
+const activeTabId = ref('')
+// Remembers the last active tab per host so switching the host dropdown
+// (without clicking a tab directly) restores what you were last looking at.
+const lastActiveTabByHost: Record<number, string> = {}
+const activeTab = computed<EditorTab | undefined>(() => tabs.value.find((t) => t.id === activeTabId.value))
+const activeFile = computed(() => activeTab.value?.path ?? '')
+function tabHostName(t: EditorTab): string {
+  return hosts.value.find((h) => h.id === t.hostId)?.name || `host ${t.hostId}`
+}
 const fileContent = computed<string>({
   get: () => activeTab.value?.content ?? '',
   set: (v) => { if (activeTab.value) activeTab.value.content = v },
@@ -157,6 +169,13 @@ const backups = computed<NginxBackup[]>({
 const dirty = computed(() => fileContent.value !== origContent.value)
 function tabDirty(t: EditorTab) {
   return t.content !== t.origContent
+}
+
+// Activates a tab, switching the whole page to its host first if needed.
+async function activateTab(t: EditorTab) {
+  activeTabId.value = t.id
+  lastActiveTabByHost[t.hostId] = t.id
+  if (t.hostId !== hostId.value) await selectHost(t.hostId)
 }
 
 function toggleEditorFullscreen() {
@@ -319,6 +338,16 @@ async function selectHost(id: number) {
   hostId.value = id
   hostStatus.value = 'unknown'
   localStorage.setItem(LAST_HOST_KEY, String(id))
+  // Restore whichever tab was last active for this host (if still open);
+  // otherwise fall back to any other open tab for it, or none at all. Tabs
+  // for other hosts stay exactly as they were — nothing here touches `tabs`.
+  const remembered = lastActiveTabByHost[id]
+  if (remembered && tabs.value.some((t) => t.id === remembered)) {
+    activeTabId.value = remembered
+  } else {
+    const anyForHost = tabs.value.find((t) => t.hostId === id)
+    activeTabId.value = anyForHost ? anyForHost.id : ''
+  }
   await onHostChange()
   await pingHost()
 }
@@ -341,8 +370,8 @@ async function disconnectHost() {
   hostStatus.value = 'unknown'
   localStorage.setItem(LAST_HOST_KEY, 'disconnected')
   // Clear all content so stale data isn't shown after disconnect. Open editor
-  // tabs are intentionally left in tabsByHost/activePathByHost so they're
-  // still there if this host is reconnected to later.
+  // tabs are intentionally left in `tabs` so they're still there if this (or
+  // any other) host is reconnected to or switched back to later.
   version.value = ''
   active.value = ''
   cmdOutput.value = ''
@@ -391,8 +420,9 @@ async function onHostChange() {
   stopFollow()
   stopStub()
   cmdOutput.value = ''
-  // Editor tabs are per-host (tabsByHost/activePathByHost), so switching to
-  // this host restores whatever it already had open rather than clearing it.
+  // Editor tabs live in the flat `tabs` list (not keyed by host), and which
+  // one is active was already resolved by the caller (selectHost/activateTab)
+  // before this runs — nothing to clear here.
   activeLog.value = ''
   logLines.value = []
   logQuery.value = ''
@@ -667,73 +697,76 @@ async function loadTree() {
   }
 }
 
-// Opening a file switches to its tab if already open (preserving whatever
-// edits are sitting in it) or creates a new tab and fetches its content —
-// other open tabs for this host are never touched or discarded.
+// Opening a file switches to its tab if already open on this host (preserving
+// whatever edits are sitting in it) or creates a new tab tagged with the
+// current host and fetches its content — other open tabs, on this host or
+// any other, are never touched or discarded.
 async function openFile(p: string) {
   if (hostId.value === null) return
-  if (openTabs.value.some((t) => t.path === p)) {
-    activeFile.value = p
+  const hid = hostId.value
+  const key = tabKey(hid, p)
+  const existing = tabs.value.find((t) => t.id === key)
+  if (existing) {
+    activateTab(existing)
     return
   }
-  const hid = hostId.value
-  const list = tabsByHost.value[hid] ?? (tabsByHost.value[hid] = [])
-  const newTab: EditorTab = { path: p, content: '', origContent: '', loading: true, backups: [] }
-  list.push(newTab)
-  activeFile.value = p
+  const newTab: EditorTab = { id: key, hostId: hid, path: p, content: '', origContent: '', loading: true, backups: [] }
+  tabs.value.push(newTab)
+  activeTabId.value = key
+  lastActiveTabByHost[hid] = key
   try {
     const { data } = await axios.get(`${base.value}/config/file`, { params: { ...cfgParams.value, path: p } })
     newTab.content = data.content || ''
     newTab.origContent = newTab.content
-    loadBackups(p)
+    loadBackups(newTab)
   } catch (e: any) {
-    const idx = list.indexOf(newTab)
+    const idx = tabs.value.indexOf(newTab)
     if (!useSudo.value && isPermDenied(e)) {
       useSudo.value = true
       toast.info('Permission denied — retrying with sudo')
-      if (idx !== -1) list.splice(idx, 1)
+      if (idx !== -1) tabs.value.splice(idx, 1)
       return openFile(p)
     }
     toast.error(e?.response?.data?.error || 'Failed to read file')
-    if (idx !== -1) list.splice(idx, 1)
-    if (activePathByHost.value[hid] === p) {
-      activePathByHost.value[hid] = list.length ? list[list.length - 1].path : ''
+    if (idx !== -1) tabs.value.splice(idx, 1)
+    if (activeTabId.value === key) {
+      const sameHost = tabs.value.filter((t) => t.hostId === hid)
+      activeTabId.value = sameHost.length ? sameHost[sameHost.length - 1].id : ''
     }
   } finally {
     newTab.loading = false
   }
 }
 
-// Closes a tab, prompting first if it has unsaved edits. Other hosts' tabs
-// and other tabs on this host are unaffected.
-async function closeTab(path: string) {
-  if (hostId.value === null) return
-  const hid = hostId.value
-  const list = tabsByHost.value[hid]
-  if (!list) return
-  const idx = list.findIndex((t) => t.path === path)
+// Closes a tab, prompting first if it has unsaved edits. When it was the
+// active tab, prefers another tab on the same host next (so closing a tab
+// doesn't unexpectedly flip the page to a different host); only falls back
+// to a tab from another host — switching the page to match it — if that's
+// all that's left.
+async function closeTab(id: string) {
+  const idx = tabs.value.findIndex((t) => t.id === id)
   if (idx === -1) return
-  if (tabDirty(list[idx]) && !(await confirm(`Discard unsaved changes to ${path}?`, 'Discard'))) return
-  list.splice(idx, 1)
-  if (activePathByHost.value[hid] === path) {
-    activePathByHost.value[hid] = list.length ? list[Math.min(idx, list.length - 1)].path : ''
-  }
+  const t = tabs.value[idx]
+  if (tabDirty(t) && !(await confirm(`Discard unsaved changes to ${t.path}?`, 'Discard'))) return
+  tabs.value.splice(idx, 1)
+  if (activeTabId.value !== id) return
+  const sameHost = tabs.value.filter((t2) => t2.hostId === t.hostId)
+  const fallback = sameHost.length ? sameHost[Math.min(idx, sameHost.length - 1)] : tabs.value[Math.min(idx, tabs.value.length - 1)]
+  if (fallback) await activateTab(fallback)
+  else activeTabId.value = ''
 }
 
-// loadBackups lists the *.bak.<unix> snapshots saved for the open file. Looks
-// the tab up by path (rather than "whichever tab is active") so a slow
-// request can't land its results in a different tab if the user switches
-// while it's in flight.
-async function loadBackups(p: string) {
+// loadBackups lists the *.bak.<unix> snapshots saved for the open file,
+// writing directly into the given tab object so a slow request can't land
+// its results on the wrong tab if the user has since switched away.
+async function loadBackups(t: EditorTab) {
   try {
     const { data } = await axios.get<{ backups: NginxBackup[] }>(`${base.value}/config/backups`, {
-      params: { ...cfgParams.value, path: p },
+      params: { ...cfgParams.value, path: t.path },
     })
-    const t = openTabs.value.find((x) => x.path === p)
-    if (t) t.backups = data.backups || []
+    t.backups = data.backups || []
   } catch {
-    const t = openTabs.value.find((x) => x.path === p)
-    if (t) t.backups = []
+    t.backups = []
   }
 }
 
@@ -767,7 +800,7 @@ async function saveFile() {
     })
     origContent.value = fileContent.value
     toast.success('Saved — run Test config before reloading')
-    loadBackups(activeFile.value)
+    if (activeTab.value) loadBackups(activeTab.value)
   } catch (e: any) {
     toast.error(e?.response?.data?.error || 'Save failed')
   } finally {
@@ -1115,18 +1148,19 @@ onBeforeUnmount(() => {
               </button>
             </div>
             <div class="ng-editor" :class="{ 'ng-editor--full': editorFullscreen }">
-              <div v-if="openTabs.length" class="ng-tabstrip">
+              <div v-if="tabs.length" class="ng-tabstrip">
                 <button
-                  v-for="t in openTabs"
-                  :key="t.path"
+                  v-for="t in tabs"
+                  :key="t.id"
                   class="ng-tabchip"
-                  :class="{ 'ng-tabchip--active': t.path === activeFile }"
-                  :title="t.path"
-                  @click="activeFile = t.path"
+                  :class="{ 'ng-tabchip--active': t.id === activeTabId }"
+                  :title="`${tabHostName(t)}: ${t.path}`"
+                  @click="activateTab(t)"
                 >
                   <span class="ng-tabchip-name">{{ t.path.split('/').pop() }}</span>
+                  <span class="ng-tabchip-host">{{ tabHostName(t) }}</span>
                   <span v-if="tabDirty(t)" class="ng-tabchip-dot">●</span>
-                  <span class="ng-tabchip-close" title="Close tab" @click.stop="closeTab(t.path)">×</span>
+                  <span class="ng-tabchip-close" title="Close tab" @click.stop="closeTab(t.id)">×</span>
                 </button>
               </div>
               <div v-if="!activeFile" class="ng-editor-empty">Select a config file to view or edit.</div>
@@ -1156,7 +1190,9 @@ onBeforeUnmount(() => {
                     class="icon-btn"
                     :title="editorFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'"
                     @click="toggleEditorFullscreen"
-                  >{{ editorFullscreen ? '🗗' : '⛶' }}</button>
+                  >
+                    <ActionIcon :name="editorFullscreen ? 'collapse' : 'expand'" />
+                  </button>
                 </div>
                 <NginxEditor
                   v-model="fileContent"
@@ -1466,6 +1502,7 @@ onBeforeUnmount(() => {
 .ng-tabchip:hover { color: var(--text-primary); }
 .ng-tabchip--active { color: var(--text-primary); background: var(--bg-surface); border-bottom: 2px solid var(--brand); }
 .ng-tabchip-name { font-family: var(--mono); }
+.ng-tabchip-host { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; opacity: 0.8; }
 .ng-tabchip-dot { color: var(--brand); font-size: 8px; }
 .ng-tabchip-close { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: var(--r-sm); font-size: 14px; line-height: 1; color: var(--text-muted); }
 .ng-tabchip-close:hover { background: var(--bg-hover); color: var(--danger); }

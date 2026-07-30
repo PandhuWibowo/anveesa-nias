@@ -91,6 +91,18 @@ defineProps<{ name: string }>()
     <template v-else-if="name === 'sparkle'">
       <path d="M12 2l1.9 5.8L20 9l-5.8 1.9L12 17l-1.9-5.8L4 9l5.8-1.9L12 2z" />
     </template>
+    <template v-else-if="name === 'expand'">
+      <polyline points="15 3 21 3 21 9" />
+      <polyline points="9 21 3 21 3 15" />
+      <line x1="21" y1="3" x2="14" y2="10" />
+      <line x1="3" y1="21" x2="10" y2="14" />
+    </template>
+    <template v-else-if="name === 'collapse'">
+      <polyline points="4 14 10 14 10 20" />
+      <polyline points="20 10 14 10 14 4" />
+      <line x1="14" y1="10" x2="21" y2="3" />
+      <line x1="10" y1="14" x2="3" y2="21" />
+    </template>
     <template v-else-if="name === 'move'">
       <polyline points="5 9 2 12 5 15" />
       <polyline points="9 5 12 2 15 5" />
