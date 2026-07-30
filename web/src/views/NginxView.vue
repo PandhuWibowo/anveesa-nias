@@ -11,6 +11,7 @@ import NginxEditor from '@/components/nginx/NginxEditor.vue'
 import SearchSelect from '@/components/ui/SearchSelect.vue'
 import SortIcon from '@/components/ui/SortIcon.vue'
 import ActionIcon from '@/components/ui/ActionIcon.vue'
+import SftpFolderPicker from '@/components/ui/SftpFolderPicker.vue'
 
 type NginxTab = 'config' | 'sites' | 'logs' | 'map' | 'certs' | 'status'
 interface NginxCert {
@@ -92,6 +93,11 @@ function copyPath(path: string) {
   toast.success('Path copied')
 }
 const canReload = computed(() => hasAnyPermission(['nginx.reload']))
+// The "Browse…" folder picker reuses the SFTP directory-listing API against
+// this same SSH host, so it needs SFTP read access too — hide it rather than
+// show a button that 403s for users who only have Nginx permissions.
+const canBrowseFs = computed(() => hasAnyPermission(['sftp.access', 'sftp.manage']))
+const showConfigRootPicker = ref(false)
 
 const hosts = ref<SshHost[]>([])
 const hostId = ref<number | null>(null)
@@ -269,17 +275,19 @@ async function openCompareFile(p: string) {
     showComparePicker.value = false
     return
   }
-  const newTab: EditorTab = { id: key, hostId: hid, path: p, content: '', origContent: '', loading: true, backups: [], root, bin: binv, sudo: sudov }
-  tabs.value.push(newTab)
+  tabs.value.push({ id: key, hostId: hid, path: p, content: '', origContent: '', loading: true, backups: [], root, bin: binv, sudo: sudov })
   rightTabId.value = key
   showComparePicker.value = false
+  // Re-read the tab back out of `tabs` — see the comment in openFile() for
+  // why mutating the pre-push object directly would silently never render.
+  const t = tabs.value.find((x) => x.id === key)!
   try {
-    const { data } = await axios.get(`${tabBase(newTab)}/config/file`, { params: { ...tabParams(newTab), path: p } })
-    newTab.content = data.content || ''
-    newTab.origContent = newTab.content
-    loadBackups(newTab)
+    const { data } = await axios.get(`${tabBase(t)}/config/file`, { params: { ...tabParams(t), path: p } })
+    t.content = data.content || ''
+    t.origContent = t.content
+    loadBackups(t)
   } catch (e: any) {
-    const idx = tabs.value.indexOf(newTab)
+    const idx = tabs.value.findIndex((x) => x.id === key)
     if (!sudov && isPermDenied(e)) {
       if (idx !== -1) tabs.value.splice(idx, 1)
       compareSudo.value = true
@@ -289,7 +297,7 @@ async function openCompareFile(p: string) {
     if (idx !== -1) tabs.value.splice(idx, 1)
     if (rightTabId.value === key) rightTabId.value = ''
   } finally {
-    newTab.loading = false
+    t.loading = false
   }
 }
 const dirty = computed(() => fileContent.value !== origContent.value)
@@ -840,20 +848,25 @@ async function openFile(p: string) {
     activateTab(existing)
     return
   }
-  const newTab: EditorTab = {
+  tabs.value.push({
     id: key, hostId: hid, path: p, content: '', origContent: '', loading: true, backups: [],
     root: configRoot.value, bin: bin.value, sudo: useSudo.value,
-  }
-  tabs.value.push(newTab)
+  })
   activeTabId.value = key
   lastActiveTabByHost[hid] = key
+  // Re-read the tab back out of `tabs` (rather than keep the plain object we
+  // just pushed) so every mutation below goes through Vue's reactive proxy —
+  // mutating the pre-push object directly updates the data but never
+  // triggers a re-render, which is why the editor could stay blank forever
+  // on first open even though the fetch succeeded.
+  const t = tabs.value.find((x) => x.id === key)!
   try {
-    const { data } = await axios.get(`${tabBase(newTab)}/config/file`, { params: { ...tabParams(newTab), path: p } })
-    newTab.content = data.content || ''
-    newTab.origContent = newTab.content
-    loadBackups(newTab)
+    const { data } = await axios.get(`${tabBase(t)}/config/file`, { params: { ...tabParams(t), path: p } })
+    t.content = data.content || ''
+    t.origContent = t.content
+    loadBackups(t)
   } catch (e: any) {
-    const idx = tabs.value.indexOf(newTab)
+    const idx = tabs.value.findIndex((x) => x.id === key)
     if (!useSudo.value && isPermDenied(e)) {
       useSudo.value = true
       toast.info('Permission denied — retrying with sudo')
@@ -863,11 +876,11 @@ async function openFile(p: string) {
     toast.error(e?.response?.data?.error || 'Failed to read file')
     if (idx !== -1) tabs.value.splice(idx, 1)
     if (activeTabId.value === key) {
-      const sameHost = tabs.value.filter((t) => t.hostId === hid)
+      const sameHost = tabs.value.filter((x) => x.hostId === hid)
       activeTabId.value = sameHost.length ? sameHost[sameHost.length - 1].id : ''
     }
   } finally {
-    newTab.loading = false
+    t.loading = false
   }
 }
 
@@ -1228,6 +1241,15 @@ onBeforeUnmount(() => {
               <label>Config root</label>
               <div class="ng-pathrow">
                 <input v-model="configRoot" class="base-input" spellcheck="false" />
+                <button
+                  v-if="canBrowseFs"
+                  class="icon-btn"
+                  title="Browse for the config root folder"
+                  :disabled="hostId === null"
+                  @click="showConfigRootPicker = true"
+                >
+                  <ActionIcon name="folder" />
+                </button>
                 <button class="icon-btn" title="Copy path" @click="copyPath(configRoot)">
                   <ActionIcon name="copy" />
                 </button>
@@ -1634,6 +1656,16 @@ onBeforeUnmount(() => {
         <NginxEditor v-else v-model="effectiveContent" :readonly="true" class="ng-modal-editor" />
       </div>
     </div>
+
+    <SftpFolderPicker
+      :show="showConfigRootPicker"
+      :host-id="hostId"
+      :start-path="configRoot"
+      source-dir=""
+      title="Choose the config root folder"
+      @close="showConfigRootPicker = false"
+      @pick="(p) => { configRoot = p; showConfigRootPicker = false }"
+    />
   </div>
 </template>
 
