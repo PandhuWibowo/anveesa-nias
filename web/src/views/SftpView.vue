@@ -244,11 +244,32 @@ function newFolder() {
   folderName.value = ''
   showNewFolder.value = true
 }
+// A permission/sudo error means the SSH user lacks direct access to read the
+// source or write into the destination directory (e.g. a root-owned system
+// path) — the fix is to elevate. We retry once with sudo, transparently.
+function isPermDenied(msg: string): boolean {
+  const m = msg.toLowerCase()
+  return m.includes('permission denied') || m.includes('not permitted') || m.includes('sudo')
+}
+async function withSudoRetry<T>(run: (sudo: boolean) => Promise<T>): Promise<T> {
+  try {
+    return await run(false)
+  } catch (e: any) {
+    if (!isPermDenied(e?.response?.data?.error || '')) throw e
+    toast.info('Permission denied — retrying with sudo')
+    return run(true)
+  }
+}
+function sudoParams(sudo: boolean) {
+  return sudo ? { sudo: '1' } : {}
+}
+
 async function submitNewFolder() {
   const name = folderName.value.trim()
   if (!name) return
   try {
-    await axios.post(`/api/sftp/hosts/${hostId.value}/mkdir`, { path: joinPath(cwd.value, name) })
+    await withSudoRetry((sudo) => axios.post(`/api/sftp/hosts/${hostId.value}/mkdir`,
+      { path: joinPath(cwd.value, name) }, { params: sudoParams(sudo) }))
     toast.success('Folder created')
     showNewFolder.value = false
     await loadDir(cwd.value)
@@ -269,10 +290,10 @@ async function submitRename() {
     return
   }
   try {
-    await axios.post(`/api/sftp/hosts/${hostId.value}/rename`, {
+    await withSudoRetry((sudo) => axios.post(`/api/sftp/hosts/${hostId.value}/rename`, {
       from: joinPath(cwd.value, entry.name),
       to: joinPath(cwd.value, name),
-    })
+    }, { params: sudoParams(sudo) }))
     toast.success('Renamed')
     showRename.value = false
     await loadDir(cwd.value)
@@ -285,35 +306,16 @@ function compress(entry: SftpEntry) {
   compressFormat.value = 'zip'
   showCompress.value = true
 }
-// A permission/sudo error means the SSH user lacks direct access to read the
-// source or write into the destination directory (e.g. root-owned /etc/ssl)
-// — the fix is to elevate. We retry once with sudo, transparently.
-function isPermDenied(msg: string): boolean {
-  const m = msg.toLowerCase()
-  return m.includes('permission denied') || m.includes('not permitted') || m.includes('sudo')
-}
-async function runCompress(entry: SftpEntry, sudo: boolean) {
-  const { data } = await axios.post<{ name: string }>(
-    `/api/sftp/hosts/${hostId.value}/compress`,
-    { path: joinPath(cwd.value, entry.name), format: compressFormat.value },
-    { params: sudo ? { sudo: '1' } : {} },
-  )
-  return data
-}
 async function submitCompress() {
   const entry = compressTarget.value
   if (!entry) return
   compressing.value = true
   try {
-    let data: { name: string }
-    try {
-      data = await runCompress(entry, false)
-    } catch (e: any) {
-      const msg = e?.response?.data?.error || ''
-      if (!isPermDenied(msg)) throw e
-      toast.info('Permission denied — retrying with sudo')
-      data = await runCompress(entry, true)
-    }
+    const { data } = await withSudoRetry((sudo) => axios.post<{ name: string }>(
+      `/api/sftp/hosts/${hostId.value}/compress`,
+      { path: joinPath(cwd.value, entry.name), format: compressFormat.value },
+      { params: sudoParams(sudo) },
+    ))
     toast.success(`Created ${data.name}`)
     showCompress.value = false
     await loadDir(cwd.value)
@@ -330,7 +332,8 @@ async function del(entry: SftpEntry) {
   )
   if (!ok) return
   try {
-    await axios.post(`/api/sftp/hosts/${hostId.value}/delete`, { path: joinPath(cwd.value, entry.name) })
+    await withSudoRetry((sudo) => axios.post(`/api/sftp/hosts/${hostId.value}/delete`,
+      { path: joinPath(cwd.value, entry.name) }, { params: sudoParams(sudo) }))
     toast.success('Deleted')
     await loadDir(cwd.value)
   } catch (e: any) {

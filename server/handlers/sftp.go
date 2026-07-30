@@ -317,6 +317,24 @@ func SftpMkdir() http.HandlerFunc {
 			http.Error(w, jsonError("path is required"), http.StatusBadRequest)
 			return
 		}
+		if nginxUseSudo(r) {
+			h, err := loadDockerHost(id)
+			if err != nil {
+				http.Error(w, jsonError("host not found"), http.StatusBadRequest)
+				return
+			}
+			stdout, stderr, exitCode, err := runShellMaybeSudo(h, r, "mkdir -p "+shellQuote(body.Path), 30)
+			if err != nil {
+				http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+				return
+			}
+			if exitCode != 0 {
+				http.Error(w, jsonError(shellFailureMessage(stdout, stderr, exitCode)), http.StatusBadGateway)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+			return
+		}
 		client, cleanup, err := sftpSession(id)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
@@ -346,6 +364,24 @@ func SftpDelete() http.HandlerFunc {
 		json.NewDecoder(r.Body).Decode(&body)
 		if strings.TrimSpace(body.Path) == "" || body.Path == "/" {
 			http.Error(w, jsonError("invalid path"), http.StatusBadRequest)
+			return
+		}
+		if nginxUseSudo(r) {
+			h, err := loadDockerHost(id)
+			if err != nil {
+				http.Error(w, jsonError("host not found"), http.StatusBadRequest)
+				return
+			}
+			stdout, stderr, exitCode, err := runShellMaybeSudo(h, r, "rm -rf "+shellQuote(body.Path), 60)
+			if err != nil {
+				http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+				return
+			}
+			if exitCode != 0 {
+				http.Error(w, jsonError(shellFailureMessage(stdout, stderr, exitCode)), http.StatusBadGateway)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 			return
 		}
 		client, cleanup, err := sftpSession(id)
@@ -430,38 +466,49 @@ func SftpCompress() http.HandlerFunc {
 		innerCmd := fmt.Sprintf("cd %s && %s && chmod 644 %s; ec=$?; if [ $ec -ne 0 ]; then rm -f %s; fi; exit $ec",
 			shellQuote(dir), buildCmd, shellQuote(archiveName), shellQuote(archiveName))
 
-		// Reuses the same sudo convention as Nginx config management: ?sudo=1
-		// elevates via `sudo -S` (password auth, password piped on stdin) or
-		// `sudo -n` (key auth, requires NOPASSWD) — for paths the SSH user
-		// can't read/write directly, like root-owned /etc/ssl.
-		cmd := innerCmd
-		stdin := ""
-		if nginxUseSudo(r) {
-			if h.SSHPassword != "" {
-				cmd = "sudo -S -p '' sh -c " + shellQuote(innerCmd)
-				stdin = h.SSHPassword + "\n"
-			} else {
-				cmd = "sudo -n sh -c " + shellQuote(innerCmd)
-			}
-		}
-		stdout, stderr, exitCode, err := runSSHCommand(h, cmd, stdin, 300)
+		stdout, stderr, exitCode, err := runShellMaybeSudo(h, r, innerCmd, 300)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
 		}
 		if exitCode != 0 {
-			msg := strings.TrimSpace(stderr)
-			if msg == "" {
-				msg = strings.TrimSpace(stdout)
-			}
-			if msg == "" {
-				msg = fmt.Sprintf("command exited with code %d", exitCode)
-			}
-			http.Error(w, jsonError(msg), http.StatusBadGateway)
+			http.Error(w, jsonError(shellFailureMessage(stdout, stderr, exitCode)), http.StatusBadGateway)
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "name": archiveName, "path": archivePath})
 	}
+}
+
+// runShellMaybeSudo runs shellCmd on h over SSH, elevating with sudo when the
+// request asks for it (?sudo=1 — same convention as Nginx config management):
+// `sudo -S -p ”` with the SSH password piped on stdin for password-auth
+// hosts, or `sudo -n` (requires NOPASSWD) for key auth. Used for paths the
+// SSH user can't read/write directly, like root-owned /etc/ssl.
+func runShellMaybeSudo(h *DockerHost, r *http.Request, shellCmd string, timeoutSec int) (stdout, stderr string, exitCode int, err error) {
+	cmd := shellCmd
+	stdin := ""
+	if nginxUseSudo(r) {
+		if h.SSHPassword != "" {
+			cmd = "sudo -S -p '' sh -c " + shellQuote(shellCmd)
+			stdin = h.SSHPassword + "\n"
+		} else {
+			cmd = "sudo -n sh -c " + shellQuote(shellCmd)
+		}
+	}
+	return runSSHCommand(h, cmd, stdin, timeoutSec)
+}
+
+// shellFailureMessage picks the most useful text to surface from a failed
+// shell command.
+func shellFailureMessage(stdout, stderr string, exitCode int) string {
+	msg := strings.TrimSpace(stderr)
+	if msg == "" {
+		msg = strings.TrimSpace(stdout)
+	}
+	if msg == "" {
+		msg = fmt.Sprintf("command exited with code %d", exitCode)
+	}
+	return msg
 }
 
 // SftpRename renames/moves a file or directory.
@@ -480,6 +527,25 @@ func SftpRename() http.HandlerFunc {
 		json.NewDecoder(r.Body).Decode(&body)
 		if strings.TrimSpace(body.From) == "" || strings.TrimSpace(body.To) == "" {
 			http.Error(w, jsonError("from and to are required"), http.StatusBadRequest)
+			return
+		}
+		if nginxUseSudo(r) {
+			h, err := loadDockerHost(id)
+			if err != nil {
+				http.Error(w, jsonError("host not found"), http.StatusBadRequest)
+				return
+			}
+			cmd := "mv " + shellQuote(body.From) + " " + shellQuote(body.To)
+			stdout, stderr, exitCode, err := runShellMaybeSudo(h, r, cmd, 60)
+			if err != nil {
+				http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+				return
+			}
+			if exitCode != 0 {
+				http.Error(w, jsonError(shellFailureMessage(stdout, stderr, exitCode)), http.StatusBadGateway)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 			return
 		}
 		client, cleanup, err := sftpSession(id)
