@@ -2,6 +2,8 @@
 import { ref, computed, onMounted } from 'vue'
 import axios from 'axios'
 import { formatServerTimestamp, parseServerTimestamp } from '@/utils/datetime'
+import SortIcon from '@/components/ui/SortIcon.vue'
+import { useSort } from '@/composables/useSort'
 
 interface AuditEntry {
   id: number
@@ -34,8 +36,12 @@ type ColumnKey = 'time' | 'type' | 'user' | 'connection' | 'sql' | 'duration' | 
 const allColumns: ColumnKey[] = ['time', 'type', 'user', 'connection', 'sql', 'duration', 'rows', 'status']
 const visibleColumns = ref<Set<ColumnKey>>(new Set(allColumns))
 const showColumnMenu = ref(false)
-const sortKey = ref<keyof AuditEntry | ''>('')
-const sortDir = ref<'asc' | 'desc'>('desc')
+
+function auditSortValue(e: AuditEntry, key: string): unknown {
+  if (key === 'executed_at') return parseServerTimestamp(e.executed_at).getTime()
+  return e[key as keyof AuditEntry]
+}
+const { sortKey, sortDir, toggleSort, sort } = useSort<AuditEntry>(auditSortValue)
 
 const columnMap: Record<ColumnKey, { label: string; key: keyof AuditEntry }> = {
   time: { label: 'Time', key: 'executed_at' },
@@ -57,33 +63,7 @@ function toggleColumn(col: ColumnKey) {
   visibleColumns.value = new Set(visibleColumns.value)
 }
 
-function sortBy(key: keyof AuditEntry) {
-  if (sortKey.value === key) {
-    sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
-  } else {
-    sortKey.value = key
-    sortDir.value = 'asc'
-  }
-}
-
-const sortedEntries = computed(() => {
-  if (!sortKey.value) return entries.value
-  const sorted = [...entries.value]
-  sorted.sort((a, b) => {
-    let aVal = a[sortKey.value as keyof AuditEntry]
-    let bVal = b[sortKey.value as keyof AuditEntry]
-    if (sortKey.value === 'executed_at') {
-      aVal = parseServerTimestamp(String(aVal)).getTime()
-      bVal = parseServerTimestamp(String(bVal)).getTime()
-    }
-    if (aVal === bVal) return 0
-    if (aVal == null) return sortDir.value === 'asc' ? -1 : 1
-    if (bVal == null) return sortDir.value === 'asc' ? 1 : -1
-    const cmp = aVal > bVal ? 1 : -1
-    return sortDir.value === 'asc' ? cmp : -cmp
-  })
-  return sorted
-})
+const sortedEntries = computed(() => sort(entries.value))
 
 async function load() {
   loading.value = true
@@ -191,33 +171,33 @@ onMounted(load)
         <table v-else class="al-table">
           <thead>
             <tr>
-              <th v-if="visibleColumns.has('time')" class="al-th-sort" @click="sortBy('executed_at')">
+              <th v-if="visibleColumns.has('time')" class="al-th-sort" :class="{ sorted: sortKey === 'executed_at' }" @click="toggleSort('executed_at')">
                 Time
-                <span class="sort-icon">{{ sortKey === 'executed_at' ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}</span>
+                <SortIcon :active="sortKey === 'executed_at'" :dir="sortDir" />
               </th>
-              <th v-if="visibleColumns.has('user')" class="al-th-sort" @click="sortBy('username')">
+              <th v-if="visibleColumns.has('user')" class="al-th-sort" :class="{ sorted: sortKey === 'username' }" @click="toggleSort('username')">
                 User
-                <span class="sort-icon">{{ sortKey === 'username' ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}</span>
+                <SortIcon :active="sortKey === 'username'" :dir="sortDir" />
               </th>
-              <th v-if="visibleColumns.has('type')" class="al-th-sort" @click="sortBy('event_type')">
+              <th v-if="visibleColumns.has('type')" class="al-th-sort" :class="{ sorted: sortKey === 'event_type' }" @click="toggleSort('event_type')">
                 Type
-                <span class="sort-icon">{{ sortKey === 'event_type' ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}</span>
+                <SortIcon :active="sortKey === 'event_type'" :dir="sortDir" />
               </th>
-              <th v-if="visibleColumns.has('connection')" class="al-th-sort" @click="sortBy('conn_name')">
+              <th v-if="visibleColumns.has('connection')" class="al-th-sort" :class="{ sorted: sortKey === 'conn_name' }" @click="toggleSort('conn_name')">
                 Connection
-                <span class="sort-icon">{{ sortKey === 'conn_name' ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}</span>
+                <SortIcon :active="sortKey === 'conn_name'" :dir="sortDir" />
               </th>
-              <th v-if="visibleColumns.has('sql')" class="al-th-sort" @click="sortBy('sql')">
+              <th v-if="visibleColumns.has('sql')" class="al-th-sort" :class="{ sorted: sortKey === 'sql' }" @click="toggleSort('sql')">
                 SQL
-                <span class="sort-icon">{{ sortKey === 'sql' ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}</span>
+                <SortIcon :active="sortKey === 'sql'" :dir="sortDir" />
               </th>
-              <th v-if="visibleColumns.has('duration')" class="al-th-right al-th-sort" @click="sortBy('duration_ms')">
+              <th v-if="visibleColumns.has('duration')" class="al-th-right al-th-sort" :class="{ sorted: sortKey === 'duration_ms' }" @click="toggleSort('duration_ms')">
                 Duration
-                <span class="sort-icon">{{ sortKey === 'duration_ms' ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}</span>
+                <SortIcon :active="sortKey === 'duration_ms'" :dir="sortDir" />
               </th>
-              <th v-if="visibleColumns.has('rows')" class="al-th-right al-th-sort" @click="sortBy('row_count')">
+              <th v-if="visibleColumns.has('rows')" class="al-th-right al-th-sort" :class="{ sorted: sortKey === 'row_count' }" @click="toggleSort('row_count')">
                 Rows
-                <span class="sort-icon">{{ sortKey === 'row_count' ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }}</span>
+                <SortIcon :active="sortKey === 'row_count'" :dir="sortDir" />
               </th>
               <th v-if="visibleColumns.has('status')">Status</th>
             </tr>
@@ -317,11 +297,6 @@ onMounted(load)
 .al-th-sort:hover {
   color: var(--text-primary);
   background: var(--bg-hover);
-}
-.sort-icon {
-  margin-left: 4px;
-  font-size: 10px;
-  color: var(--text-muted);
 }
 .al-table td { padding: 7px 14px; border-bottom: 1px solid var(--border); color: var(--text-primary); }
 .al-row { cursor: pointer; transition: background 0.1s; }

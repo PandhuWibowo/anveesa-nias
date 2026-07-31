@@ -121,10 +121,62 @@ const bucketForm = reactive({
 })
 
 const bucketRunning = ref(false)
-const bucketResult = ref<{ ok: boolean; object_key: string; bucket: string; size_bytes: number; uploaded_at: string } | null>(null)
+const bucketCancelled = ref(false)
+const bucketAbortController = ref<AbortController | null>(null)
+const bucketResult = ref<{ ok: boolean; object_key: string; bucket: string; size_bytes: number; uncompressed_bytes?: number; uploaded_at: string } | null>(null)
 const bucketError = ref('')
+const bucketErrorDetail = ref<{ message: string; stage: string; status: number | null; time: string; hint: string } | null>(null)
+const bucketProgress = ref(0)
+const bucketStage = ref('')
+const bucketLogOpen = ref(false)
+const bucketStageIdx = ref(-1)
+const bucketStageTimes = ref<string[]>([])
 const bucketHistory = ref<BucketObject[]>([])
 const historyLoading = ref(false)
+
+function cancelBucketBackup() {
+  bucketAbortController.value?.abort()
+  bucketCancelled.value = true
+}
+
+const BACKUP_STAGES = [
+  { at: 5,  label: 'Connecting to source database' },
+  { at: 20, label: 'Generating SQL dump' },
+  { at: 55, label: 'Processing tables' },
+  { at: 75, label: 'Compressing dump' },
+  { at: 90, label: 'Uploading to bucket' },
+]
+
+function nowTime() {
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+function stageFromError(msg: string): string {
+  if (msg.includes('source connection') || msg.includes('connection error')) return 'Database connection'
+  if (msg.includes('backup generation') || msg.includes('dump')) return 'SQL dump generation'
+  if (msg.includes('compress')) return 'Compression'
+  if (msg.includes('upload')) return 'Upload to bucket'
+  if (msg.includes('permission')) return 'Authorization'
+  if (msg.includes('bucket connection') || msg.includes('secret key') || msg.includes('object storage')) return 'Bucket configuration'
+  return 'Backup operation'
+}
+
+function hintFromError(msg: string): string {
+  if (msg.includes('permission denied')) return 'Check that your account has the required permissions on this connection.'
+  if (msg.includes('source connection') || msg.includes('connection error')) return 'Verify the source connection credentials and network access.'
+  if (msg.includes('secret key') || msg.includes('decrypt')) return 'The bucket connection credentials may be corrupted — re-enter them.'
+  if (msg.includes('object storage')) return 'The destination connection must be an S3-compatible storage provider.'
+  if (msg.includes('upload')) return 'Check bucket name, access key, and secret key. Ensure the bucket exists.'
+  if (msg.includes('compress')) return 'Unexpected error during gzip compression. Try disabling compression.'
+  return 'Check the server logs for more detail.'
+}
+
+function copyErrorToClipboard() {
+  if (!bucketErrorDetail.value) return
+  const d = bucketErrorDetail.value
+  const text = `Backup Error\nStage: ${d.stage}\nStatus: ${d.status ?? 'N/A'}\nTime: ${d.time}\nMessage: ${d.message}`
+  navigator.clipboard.writeText(text)
+}
 
 async function onSourceConnChange() {
   bucketForm.database = ''
@@ -140,10 +192,42 @@ async function runBucketBackup() {
     return
   }
   bucketRunning.value = true
+  bucketCancelled.value = false
   bucketResult.value = null
   bucketError.value = ''
+  bucketErrorDetail.value = null
+  bucketProgress.value = 0
+  bucketStageIdx.value = 0
+  bucketStageTimes.value = [nowTime()]
+  bucketStage.value = BACKUP_STAGES[0].label + '…'
+
+  let activeJobId: string | null = null
+
+  // Advance through simulated stages while the job is running
+  let stageIdx = 0
+  const progressTimer = setInterval(() => {
+    if (stageIdx < BACKUP_STAGES.length - 1) {
+      stageIdx++
+      bucketProgress.value = BACKUP_STAGES[stageIdx].at
+      bucketStage.value = BACKUP_STAGES[stageIdx].label + '…'
+      bucketStageIdx.value = stageIdx
+      bucketStageTimes.value[stageIdx] = nowTime()
+    }
+  }, 1800)
+
+  // Store cancel function so the UI cancel button can call it
+  bucketAbortController.value = {
+    abort: () => {
+      bucketCancelled.value = true
+      if (activeJobId) {
+        axios.delete(`/api/backup/jobs/${activeJobId}`).catch(() => {})
+      }
+    },
+  } as any
+
   try {
-    const { data } = await axios.post('/api/backup/to-bucket', {
+    // POST returns immediately with a job_id (HTTP 202)
+    const { data: jobData } = await axios.post('/api/backup/to-bucket', {
       source_conn_id: bucketForm.source_conn_id,
       database: bucketForm.database,
       dest_conn_id: bucketForm.dest_conn_id,
@@ -151,13 +235,76 @@ async function runBucketBackup() {
       subfolder: bucketForm.subfolder,
       options: toBackupOptionsPayload(),
     })
-    bucketResult.value = data
-    toast.success(`Backup uploaded → ${data.object_key}`)
-    loadBucketHistory()
+    activeJobId = jobData.job_id
+
+    // Poll for completion
+    while (true) {
+      if (bucketCancelled.value) break
+      await new Promise(r => setTimeout(r, 2500))
+      if (bucketCancelled.value) break
+
+      const { data: status } = await axios.get(`/api/backup/jobs/${activeJobId}`)
+
+      // Show live upload progress when in uploading stage
+      if (status.stage === 'uploading' && status.uploaded_bytes > 0) {
+        const mb = (status.uploaded_bytes / 1024 / 1024).toFixed(1)
+        bucketStage.value = `Uploading to bucket… ${mb} MB uploaded`
+      }
+
+      if (status.status === 'done') {
+        clearInterval(progressTimer)
+        bucketProgress.value = 100
+        bucketStageIdx.value = BACKUP_STAGES.length
+        bucketStage.value = 'Upload complete!'
+        bucketResult.value = { ok: true, ...status }
+        toast.success(`Backup uploaded → ${status.object_key}`)
+        loadBucketHistory()
+        return
+      }
+
+      if (status.status === 'failed') {
+        throw new Error(status.error || 'Backup job failed')
+      }
+
+      if (status.status === 'canceled') {
+        break
+      }
+    }
+
+    if (bucketCancelled.value) {
+      clearInterval(progressTimer)
+      bucketProgress.value = 0
+      bucketStage.value = ''
+      bucketStageIdx.value = -1
+      toast.info('Backup cancelled')
+      return
+    }
   } catch (err: any) {
-    bucketError.value = err?.response?.data?.error ?? 'Backup to bucket failed'
+    clearInterval(progressTimer)
+
+    if (bucketCancelled.value) {
+      bucketProgress.value = 0
+      bucketStage.value = ''
+      bucketStageIdx.value = -1
+      toast.info('Backup cancelled')
+      return
+    }
+
+    const message = err?.response?.data?.error ?? err?.message ?? 'Backup to bucket failed'
+    bucketError.value = message
+    bucketErrorDetail.value = {
+      message,
+      stage: stageFromError(message),
+      status: err?.response?.status ?? null,
+      time: new Date().toLocaleString(),
+      hint: hintFromError(message),
+    }
+    bucketProgress.value = 0
+    bucketStage.value = ''
   } finally {
+    clearInterval(progressTimer)
     bucketRunning.value = false
+    bucketAbortController.value = null
   }
 }
 
@@ -368,6 +515,79 @@ function downloadDirectBackup() {
     .catch((error: any) => toast.error(error.response?.data?.error || 'Failed to download backup'))
 }
 
+// ── Download from Bucket ──────────────────────────────────────────────
+const dlBucketConnId = ref<number | null>(null)
+const dlBucketSubfolder = ref('')
+const dlBucketFiles = ref<BucketObject[]>([])
+const dlBucketLoading = ref(false)
+const dlBucketBrowsed = ref(false)
+const dlBucketDownloading = ref<Set<string>>(new Set())
+
+async function loadDlBucketFiles() {
+  if (!dlBucketConnId.value) return
+  dlBucketLoading.value = true
+  dlBucketFiles.value = []
+  try {
+    const { data } = await axios.get('/api/backup/bucket-list', {
+      params: {
+        dest_conn_id: dlBucketConnId.value,
+        subfolder: dlBucketSubfolder.value.trim(),
+      },
+    })
+    dlBucketFiles.value = (data.objects ?? [])
+      .filter((o: BucketObject) => o.key.endsWith('.sql') || o.key.endsWith('.sql.gz'))
+      .sort((a: BucketObject, b: BucketObject) => b.last_modified.localeCompare(a.last_modified))
+    dlBucketBrowsed.value = true
+  } catch (err: any) {
+    toast.error(err?.response?.data?.error || 'Failed to list bucket files')
+  } finally {
+    dlBucketLoading.value = false
+  }
+}
+
+async function downloadFromBucket(key: string) {
+  if (dlBucketDownloading.value.has(key)) return
+  dlBucketDownloading.value = new Set([...dlBucketDownloading.value, key])
+  const params = new URLSearchParams({
+    dest_conn_id: String(dlBucketConnId.value),
+    object_key: key,
+  })
+  const filename = key.split('/').pop() ?? key
+  try {
+    // Try presigned URL first — browser downloads directly from bucket, no proxying.
+    const { data } = await axios.get<{ url: string }>(`/api/backup/presign?${params}`)
+    const a = document.createElement('a')
+    a.href = data.url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  } catch {
+    // Fall back to server-proxied download.
+    try {
+      const a = document.createElement('a')
+      a.href = `/api/backup/bucket-download?${params}`
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+    } catch (err: any) {
+      toast.error('Download failed')
+    }
+  } finally {
+    setTimeout(() => {
+      dlBucketDownloading.value = new Set([...dlBucketDownloading.value].filter(k => k !== key))
+    }, 1500)
+  }
+}
+
+watch(dlBucketConnId, () => {
+  dlBucketFiles.value = []
+  dlBucketSubfolder.value = ''
+  dlBucketBrowsed.value = false
+  if (dlBucketConnId.value) loadDlBucketFiles()
+})
+
 // ── Restore (existing) ────────────────────────────────────────────────
 const restoreConnId = ref<number | null>(null)
 const restoreSQL = ref('')
@@ -428,10 +648,6 @@ onMounted(async () => {
           <button class="page-tab" :class="{ 'is-active': activeTab === 'bucket' }" @click="activeTab = 'bucket'">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             Backup to Bucket
-          </button>
-          <button class="page-tab" :class="{ 'is-active': activeTab === 'request' }" @click="activeTab = 'request'">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            Request Download
           </button>
           <button v-if="canDirectBackup" class="page-tab" :class="{ 'is-active': activeTab === 'direct' }" @click="activeTab = 'direct'">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -725,8 +941,20 @@ onMounted(async () => {
                   <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                   {{ bucketRunning ? 'Running backup…' : 'Run Backup Now' }}
                 </button>
+
+                <!-- Cancel — only shown while backup is running -->
                 <button
-                  v-if="bucketForm.dest_conn_id"
+                  v-if="bucketRunning"
+                  class="base-btn bv-cancel-btn"
+                  @click="cancelBucketBackup"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  Cancel
+                </button>
+
+                <!-- Refresh history — hidden while backup is running -->
+                <button
+                  v-if="bucketForm.dest_conn_id && !bucketRunning"
                   class="base-btn base-btn--ghost"
                   :disabled="historyLoading"
                   @click="loadBucketHistory"
@@ -737,7 +965,53 @@ onMounted(async () => {
                 </button>
               </div>
 
-              <!-- Result / error -->
+              <!-- Progress bar (shown while running) -->
+              <div v-if="bucketRunning" class="bv-progress-wrap">
+                <div class="bv-progress-bar">
+                  <div class="bv-progress-bar__fill" :style="{ width: bucketProgress + '%' }"></div>
+                </div>
+                <div class="bv-progress-meta">
+                  <span class="bv-progress-stage">
+                    <svg class="spin" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                    {{ bucketStage }}
+                  </span>
+                  <div class="bv-progress-right">
+                    <span class="bv-progress-pct">{{ bucketProgress }}%</span>
+                    <button class="bv-log-toggle" @click="bucketLogOpen = !bucketLogOpen">
+                      <svg :style="{ transform: bucketLogOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                      {{ bucketLogOpen ? 'Hide details' : 'Show details' }}
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Collapsible step log -->
+                <div v-if="bucketLogOpen" class="bv-log">
+                  <div
+                    v-for="(stage, i) in BACKUP_STAGES"
+                    :key="i"
+                    class="bv-log-row"
+                    :class="{
+                      'bv-log-row--done':    i < bucketStageIdx,
+                      'bv-log-row--active':  i === bucketStageIdx,
+                      'bv-log-row--pending': i > bucketStageIdx,
+                    }"
+                  >
+                    <!-- Status icon -->
+                    <span class="bv-log-icon">
+                      <!-- done -->
+                      <svg v-if="i < bucketStageIdx" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                      <!-- active -->
+                      <svg v-else-if="i === bucketStageIdx" class="spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                      <!-- pending -->
+                      <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/></svg>
+                    </span>
+                    <span class="bv-log-label">{{ stage.label }}</span>
+                    <span class="bv-log-time">{{ bucketStageTimes[i] ?? '' }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Result card -->
               <div v-if="bucketResult" class="bv-result-card">
                 <div class="bv-result-card__head">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -754,7 +1028,15 @@ onMounted(async () => {
                   </div>
                   <div class="bv-result-row">
                     <span class="bv-result-row__label">Size</span>
-                    <span class="bv-result-row__val">{{ formatBytes(bucketResult.size_bytes) }}</span>
+                    <span class="bv-result-row__val bv-result-size">
+                      {{ formatBytes(bucketResult.size_bytes) }}
+                      <template v-if="bucketResult.uncompressed_bytes && bucketResult.uncompressed_bytes > bucketResult.size_bytes">
+                        <span class="bv-result-size__orig">from {{ formatBytes(bucketResult.uncompressed_bytes) }}</span>
+                        <span class="bv-result-size__ratio">
+                          {{ Math.round((1 - bucketResult.size_bytes / bucketResult.uncompressed_bytes) * 100) }}% smaller
+                        </span>
+                      </template>
+                    </span>
                   </div>
                   <div class="bv-result-row">
                     <span class="bv-result-row__label">Uploaded at</span>
@@ -762,9 +1044,38 @@ onMounted(async () => {
                   </div>
                 </div>
               </div>
-              <div v-if="bucketError" class="notice notice--error">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                {{ bucketError }}
+
+              <!-- Detailed error card -->
+              <div v-if="bucketErrorDetail" class="bv-error-card">
+                <div class="bv-error-card__head">
+                  <div class="bv-error-card__head-left">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                    Backup failed
+                    <span v-if="bucketErrorDetail.status" class="bv-error-badge">HTTP {{ bucketErrorDetail.status }}</span>
+                  </div>
+                  <button class="bv-error-copy" title="Copy error details" @click="copyErrorToClipboard">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    Copy
+                  </button>
+                </div>
+                <div class="bv-error-card__rows">
+                  <div class="bv-error-row bv-error-row--message">
+                    <span class="bv-error-row__label">Error</span>
+                    <span class="bv-error-row__val">{{ bucketErrorDetail.message }}</span>
+                  </div>
+                  <div class="bv-error-row">
+                    <span class="bv-error-row__label">Failed at</span>
+                    <span class="bv-error-row__val">{{ bucketErrorDetail.stage }}</span>
+                  </div>
+                  <div class="bv-error-row">
+                    <span class="bv-error-row__label">Time</span>
+                    <span class="bv-error-row__val">{{ bucketErrorDetail.time }}</span>
+                  </div>
+                  <div class="bv-error-row bv-error-row--hint">
+                    <span class="bv-error-row__label">Hint</span>
+                    <span class="bv-error-row__val">{{ bucketErrorDetail.hint }}</span>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -815,7 +1126,7 @@ onMounted(async () => {
         </div>
 
         <!-- ══ REQUEST DOWNLOAD ══════════════════════════════════════════ -->
-        <section v-if="activeTab === 'request'" class="bv-request-layout">
+        <section v-if="false && activeTab === 'request'" class="bv-request-layout">
           <div class="page-card bv-card">
             <div class="page-card__head">
               <div>
@@ -881,98 +1192,111 @@ onMounted(async () => {
                 <div v-else class="bv-detail-card">
                   <div class="bv-detail__head">
                     <div>
-                      <div class="bv-detail__title">{{ selectedRequest.title }}</div>
-                      <div class="bv-detail__sub">{{ selectedRequest.connection }} · {{ selectedRequest.database_name || 'default' }}</div>
+                      <div class="bv-detail__title">{{ selectedRequest?.title }}</div>
+                      <div class="bv-detail__sub">{{ selectedRequest?.connection }} · {{ selectedRequest?.database_name || 'default' }}</div>
                     </div>
-                    <span class="bv-status" :data-status="selectedRequest.status">{{ formatStatus(selectedRequest.status) }}</span>
+                    <span class="bv-status" :data-status="selectedRequest?.status">{{ formatStatus(selectedRequest?.status ?? '') }}</span>
                   </div>
                   <div class="bv-meta">
-                    <span>Requested by {{ selectedRequest.creator_name || 'unknown' }}</span>
-                    <span>Reviewer {{ selectedRequest.reviewer_name || '—' }}</span>
-                    <span>{{ formatDate(selectedRequest.created_at) }}</span>
+                    <span>Requested by {{ selectedRequest?.creator_name || 'unknown' }}</span>
+                    <span>Reviewer {{ selectedRequest?.reviewer_name || '—' }}</span>
+                    <span>{{ formatDate(selectedRequest?.created_at ?? '') }}</span>
                   </div>
-                  <div v-if="selectedRequest.description" class="bv-description">{{ selectedRequest.description }}</div>
+                  <div v-if="selectedRequest?.description" class="bv-description">{{ selectedRequest?.description }}</div>
                   <textarea v-model="reviewNote" class="base-input bv-note" rows="3" placeholder="Review note or rejection reason…" />
                   <div class="bv-actions">
-                    <button v-if="canApprove" class="base-btn base-btn--ghost base-btn--sm" :disabled="reviewLoading || selectedRequest.status !== 'pending_review'" @click="reviewRequest('rejected')">Reject</button>
-                    <button v-if="canApprove" class="base-btn base-btn--primary base-btn--sm" :disabled="reviewLoading || selectedRequest.status !== 'pending_review'" @click="reviewRequest('approved')">Approve</button>
-                    <button class="base-btn base-btn--primary base-btn--sm" :disabled="selectedRequest.status !== 'approved' && selectedRequest.status !== 'done'" @click="downloadApprovedRequest">Download Dump</button>
+                    <button v-if="canApprove" class="base-btn base-btn--ghost base-btn--sm" :disabled="reviewLoading || selectedRequest?.status !== 'pending_review'" @click="reviewRequest('rejected')">Reject</button>
+                    <button v-if="canApprove" class="base-btn base-btn--primary base-btn--sm" :disabled="reviewLoading || selectedRequest?.status !== 'pending_review'" @click="reviewRequest('approved')">Approve</button>
+                    <button class="base-btn base-btn--primary base-btn--sm" :disabled="selectedRequest?.status !== 'approved' && selectedRequest?.status !== 'done'" @click="downloadApprovedRequest">Download Dump</button>
                   </div>
-                  <div v-if="selectedRequest.review_note" class="notice notice--info"><strong>Review note:</strong> {{ selectedRequest.review_note }}</div>
-                  <div v-if="selectedRequest.execute_error" class="notice notice--error"><strong>Error:</strong> {{ selectedRequest.execute_error }}</div>
+                  <div v-if="selectedRequest?.review_note" class="notice notice--info"><strong>Review note:</strong> {{ selectedRequest?.review_note }}</div>
+                  <div v-if="selectedRequest?.execute_error" class="notice notice--error"><strong>Error:</strong> {{ selectedRequest?.execute_error }}</div>
                 </div>
               </div>
             </div>
           </div>
         </section>
 
-        <!-- ══ DIRECT DOWNLOAD ══════════════════════════════════════════ -->
+        <!-- ══ DOWNLOAD FROM BUCKET ════════════════════════════════════ -->
         <div v-if="activeTab === 'direct' && canDirectBackup" class="page-card bv-card">
           <div class="page-card__head">
             <div>
-              <div class="page-card__title">Direct SQL Dump</div>
-              <div class="page-card__sub">Immediate backup download. Backup options above apply here too.</div>
+              <div class="page-card__title">Download from Bucket</div>
+              <div class="page-card__sub">Browse your object storage and download an existing backup file to your browser.</div>
             </div>
           </div>
           <div class="page-card__body bv-card-body">
-            <select class="base-input" v-model.number="directConnId" @change="onDirectConnChange">
-              <option :value="null">Select connection…</option>
-              <option v-for="c in dbConnections" :key="c.id" :value="c.id">{{ c.name }}</option>
-            </select>
-            <select class="base-input" v-model="directDatabase" :disabled="!directConnId || databasesLoading">
-              <option value="">Default database/schema</option>
-              <option v-for="db in databases" :key="db" :value="db">{{ db }}</option>
-            </select>
 
-            <!-- reuse shared opts panel -->
-            <div class="bv-opts-header" @click="showAdvanced = !showAdvanced">
-              <div class="bv-section-label" style="border:none;padding:0;margin:0">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93A10 10 0 0 0 5 5.07M4.93 19.07A10 10 0 0 0 19 18.93"/></svg>
-                Backup Options
-              </div>
-              <div class="bv-opts-header__right">
-                <span class="bv-opts-summary">{{ backupOpts.sections === 'all' ? 'Full dump' : backupOpts.sections }}</span>
-                <svg :style="{ transform: showAdvanced ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-              </div>
+            <div class="bv-section-label">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+              Storage Provider
             </div>
 
-            <div v-if="showAdvanced" class="bv-opts-panel">
-              <div class="bv-opts-group">
-                <div class="bv-opts-group__label">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                  Output
-                </div>
-                <div class="bv-toggle-list">
-                  <label class="bv-toggle-row">
-                    <div>
-                      <span class="bv-toggle-row__name">Compress output (gzip)</span>
-                      <span class="bv-toggle-row__desc">Download as .sql.gz instead of plain .sql</span>
-                    </div>
-                    <div class="bv-switch" :class="{ 'is-on': backupOpts.compress }" @click="backupOpts.compress = !backupOpts.compress"><div class="bv-switch__knob"/></div>
-                  </label>
-                </div>
-              </div>
-              <div class="bv-opts-group">
-                <div class="bv-opts-group__label">Sections</div>
-                <div class="bv-sections-grid">
-                  <label v-for="s in [
-                    { v: 'all', label: 'All', sub: 'Schema + data + constraints' },
-                    { v: 'pre-data', label: 'Pre-data', sub: 'CREATE TABLE, sequences' },
-                    { v: 'data', label: 'Data', sub: 'INSERT statements only' },
-                    { v: 'post-data', label: 'Post-data', sub: 'Indexes, FK constraints' },
-                  ]" :key="s.v" class="bv-section-card" :class="{ 'is-active': backupOpts.sections === s.v }">
-                    <input type="radio" v-model="backupOpts.sections" :value="s.v" style="display:none" />
-                    <span class="bv-section-card__label">{{ s.label }}</span>
-                    <span class="bv-section-card__sub">{{ s.sub }}</span>
-                  </label>
-                </div>
-              </div>
+            <div v-if="bucketConnections.length === 0" class="bv-empty-hint">
+              No bucket connections found. <a href="/connections" style="color:var(--brand)">Add one →</a>
             </div>
+            <template v-else>
+              <div class="bv-conn-grid">
+                <button
+                  v-for="c in bucketConnections"
+                  :key="c.id"
+                  class="bv-conn-card"
+                  :class="{ 'is-active': dlBucketConnId === c.id }"
+                  @click="dlBucketConnId = c.id"
+                >
+                  <div class="bv-conn-card__badge" :class="`conn-badge--${c.driver}`">
+                    <DriverIcon :driver="c.driver" :size="14" />
+                  </div>
+                  <div class="bv-conn-card__info">
+                    <span class="bv-conn-card__name">{{ c.name }}</span>
+                    <span class="bv-conn-card__driver">{{ driverLabel(c.driver) }}</span>
+                  </div>
+                  <svg v-if="dlBucketConnId === c.id" class="bv-conn-card__check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                </button>
+              </div>
 
-            <button class="base-btn base-btn--primary" :disabled="!directConnId" @click="downloadDirectBackup">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              Download {{ backupOpts.compress ? '.sql.gz' : '.sql' }}
-            </button>
+              <div v-if="dlBucketConnId" class="bv-dl-path-row">
+                <input
+                  class="base-input"
+                  v-model="dlBucketSubfolder"
+                  placeholder="Path / subfolder (e.g. database/prod)"
+                  style="flex:1"
+                  @keydown.enter="loadDlBucketFiles"
+                />
+                <button class="base-btn base-btn--secondary" :disabled="dlBucketLoading" @click="loadDlBucketFiles">
+                  <svg v-if="dlBucketLoading" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                  <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  {{ dlBucketLoading ? 'Loading…' : 'Browse' }}
+                </button>
+              </div>
+
+              <div v-if="dlBucketFiles.length > 0" class="bv-dl-files">
+                <div class="bv-dl-files__header">
+                  <span>File</span>
+                  <span>Size</span>
+                  <span>Last Modified</span>
+                  <span></span>
+                </div>
+                <div v-for="f in dlBucketFiles" :key="f.key" class="bv-dl-files__row">
+                  <span class="bv-dl-files__name" :title="f.key">{{ f.key.split('/').pop() }}</span>
+                  <span class="bv-dl-files__meta">{{ formatBytes(f.size) }}</span>
+                  <span class="bv-dl-files__meta">{{ formatDate(f.last_modified) }}</span>
+                  <button
+                    class="base-btn base-btn--primary base-btn--sm bv-dl-btn"
+                    :disabled="dlBucketDownloading.has(f.key)"
+                    @click="downloadFromBucket(f.key)"
+                  >
+                    <svg v-if="!dlBucketDownloading.has(f.key)" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                    {{ dlBucketDownloading.has(f.key) ? 'Downloading…' : 'Download' }}
+                  </button>
+                </div>
+              </div>
+
+              <div v-else-if="dlBucketConnId && !dlBucketLoading && dlBucketBrowsed" class="bv-empty-hint">
+                No backup files (.sql / .sql.gz) found in this path.
+              </div>
+            </template>
           </div>
         </div>
 
@@ -1359,6 +1683,26 @@ onMounted(async () => {
   align-items: center;
 }
 
+.bv-cancel-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--error, #e05252) 40%, transparent);
+  background: color-mix(in srgb, var(--error, #e05252) 8%, transparent);
+  color: var(--error, #e05252);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.bv-cancel-btn:hover {
+  background: color-mix(in srgb, var(--error, #e05252) 16%, transparent);
+  border-color: color-mix(in srgb, var(--error, #e05252) 60%, transparent);
+}
+
 /* ── Result card ── */
 .bv-result-card {
   border: 1px solid var(--success);
@@ -1410,6 +1754,244 @@ onMounted(async () => {
   font-family: var(--mono);
   font-size: 11.5px;
   word-break: break-all;
+}
+
+.bv-result-size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.bv-result-size__orig {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+}
+
+.bv-result-size__ratio {
+  padding: 1px 7px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  color: var(--success);
+  font-size: 10.5px;
+  font-weight: 600;
+  font-family: var(--sans-serif, inherit);
+  letter-spacing: 0.02em;
+}
+
+/* ── Progress bar ── */
+.bv-progress-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bv-progress-bar {
+  height: 6px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--brand) 15%, transparent);
+  overflow: hidden;
+}
+
+.bv-progress-bar__fill {
+  height: 100%;
+  border-radius: 99px;
+  background: var(--brand);
+  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.bv-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.bv-progress-stage {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.bv-progress-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.bv-progress-pct {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--brand);
+  font-family: var(--mono);
+}
+
+.bv-log-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: transparent;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.bv-log-toggle:hover {
+  background: color-mix(in srgb, var(--border) 40%, transparent);
+  color: var(--text-primary);
+}
+
+/* ── Step log ── */
+.bv-log {
+  margin-top: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: 8px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bg-secondary, #1a1a1a) 60%, transparent);
+}
+
+.bv-log-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  font-size: 12px;
+  transition: background 0.15s;
+}
+.bv-log-row:last-child { border-bottom: none; }
+
+.bv-log-row--done   { color: var(--text-muted); }
+.bv-log-row--active { color: var(--text-primary); background: color-mix(in srgb, var(--brand) 6%, transparent); }
+.bv-log-row--pending { color: color-mix(in srgb, var(--text-muted) 50%, transparent); }
+
+.bv-log-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.bv-log-row--done   .bv-log-icon { color: var(--success, #4caf8a); }
+.bv-log-row--active .bv-log-icon { color: var(--brand); }
+.bv-log-row--pending .bv-log-icon { color: color-mix(in srgb, var(--text-muted) 40%, transparent); }
+
+.bv-log-label {
+  flex: 1;
+  font-size: 12px;
+}
+.bv-log-row--done .bv-log-label {
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--text-muted) 40%, transparent);
+}
+
+.bv-log-time {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  opacity: 0.7;
+  min-width: 70px;
+  text-align: right;
+}
+
+/* ── Error card ── */
+.bv-error-card {
+  border: 1px solid color-mix(in srgb, var(--error, #e05252) 35%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--error, #e05252) 6%, transparent);
+  overflow: hidden;
+}
+
+.bv-error-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--error, #e05252) 20%, transparent);
+}
+
+.bv-error-card__head-left {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--error, #e05252);
+}
+
+.bv-error-badge {
+  padding: 1px 7px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--error, #e05252) 15%, transparent);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.bv-error-copy {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: transparent;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.bv-error-copy:hover {
+  background: color-mix(in srgb, var(--border) 40%, transparent);
+  color: var(--text-primary);
+}
+
+.bv-error-card__rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.bv-error-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  font-size: 12px;
+}
+.bv-error-row:last-child { border-bottom: none; }
+
+.bv-error-row__label {
+  min-width: 75px;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.bv-error-row__val {
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.bv-error-row--message .bv-error-row__val {
+  color: var(--error, #e05252);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.bv-error-row--hint .bv-error-row__val {
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 /* ── History ── */
@@ -1717,6 +2299,64 @@ onMounted(async () => {
     scroll-snap-align: start;
   }
 }
+
+/* ── Download from Bucket ──────────────────────────────────────── */
+.bv-dl-path-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.bv-dl-files {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.bv-dl-files__header {
+  display: grid;
+  grid-template-columns: 1fr 90px 1fr 110px;
+  gap: 12px;
+  padding: 8px 14px;
+  background: var(--bg-2);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.bv-dl-files__row {
+  display: grid;
+  grid-template-columns: 1fr 90px 1fr 110px;
+  gap: 12px;
+  padding: 10px 14px;
+  align-items: center;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  transition: background 0.15s;
+}
+
+.bv-dl-files__row:hover { background: var(--bg-2); }
+
+.bv-dl-files__name {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bv-dl-files__meta {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.bv-dl-btn { min-width: 104px; justify-content: center; }
+
+@keyframes bv-spin { to { transform: rotate(360deg); } }
+.bv-spin { animation: bv-spin 0.8s linear infinite; }
 
 @media (max-width: 480px) {
   .bv-run-row { flex-direction: column; align-items: stretch; }

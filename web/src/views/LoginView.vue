@@ -62,7 +62,7 @@ function back() {
       </div>
 
       <h1 class="auth-title">{{ requires2fa ? 'Two-Factor Authentication' : 'Sign in' }}</h1>
-      <p class="auth-sub">{{ requires2fa ? 'Enter the 6-digit code from your authenticator app.' : 'Enter your credentials to access the database studio.' }}</p>
+      <p class="auth-sub">{{ requires2fa ? 'Enter the 6-digit code from your authenticator app.' : 'Enter your credentials to access the internal developer platform.' }}</p>
 
       <form class="auth-form" @submit.prevent="handleLogin">
         <div v-if="!requires2fa">

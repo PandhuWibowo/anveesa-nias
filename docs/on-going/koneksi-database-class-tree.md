@@ -217,6 +217,18 @@ router/index.ts
         └── usePermissions()                                          [composables/usePermissions.ts]
 ```
 
+### Connection Templates (frontend)
+```
+views/ConnectionsView.vue
+├── useConnectionTemplates()                                          [composables/useConnectionTemplates.ts]
+│   ├── axios.get('/api/connection-templates')
+│   ├── axios.post('/api/connection-templates', input)
+│   └── axios.delete('/api/connection-templates/{id}')
+├── applyTemplate(t) — fills form.driver/host/port/database/ssl/tags/ssh_* from template
+├── handleSaveAsTemplate() — saves current form (minus credentials) as a new template
+└── handleDeleteTemplate(id, name)
+```
+
 ### Router guard
 ```
 router.beforeEach()                                                   [router/index.ts]
@@ -225,3 +237,63 @@ router.beforeEach()                                                   [router/in
 router.afterEach()                                                    [router/index.ts]
 └── axios.post('/api/audit/access', { action, target, details })
 ```
+
+---
+
+## Connection Templates API
+
+### GET /api/connection-templates
+```
+└── Middleware: mw.InjectUserContext → mw.RequireAnyAppPermission(PermConnectionsView)
+    └── handlers.ListConnectionTemplates()                             [handlers/connection_templates.go]
+        ├── r.Header.Get("X-User-Role"), r.Header.Get("X-User-ID")
+        ├── [admin] appdb.DB.Query(SELECT * FROM connection_templates ORDER BY name)
+        └── [non-admin] appdb.DB.Query(SELECT * WHERE visibility='shared' OR owner_id=?)
+```
+
+### POST /api/connection-templates
+```
+└── Middleware: mw.InjectUserContext → mw.RequireAnyAppPermission(PermConnectionsCreate)
+    └── handlers.CreateConnectionTemplate()                            [handlers/connection_templates.go]
+        ├── json.NewDecoder(r.Body).Decode(ConnectionTemplateInput)
+        ├── validate: name required, allowedDrivers[driver]
+        ├── appdb.DB.QueryRow/Exec(INSERT INTO connection_templates ...)  [db/db.go]
+        └── json.NewEncoder(w).Encode(ConnectionTemplate)
+```
+
+### PUT /api/connection-templates/{id}
+```
+└── Middleware: mw.InjectUserContext → mw.RequireAnyAppPermission(PermConnectionsEdit)
+    └── handlers.UpdateConnectionTemplate()                            [handlers/connection_templates.go]
+        ├── SELECT owner_id — non-admins can only update own templates
+        └── appdb.DB.Exec(UPDATE connection_templates SET ...)         [db/db.go]
+```
+
+### DELETE /api/connection-templates/{id}
+```
+└── Middleware: mw.InjectUserContext → mw.RequireAnyAppPermission(PermConnectionsEdit)
+    └── handlers.DeleteConnectionTemplate()                            [handlers/connection_templates.go]
+        ├── SELECT owner_id — non-admins can only delete own templates
+        └── appdb.DB.Exec(DELETE FROM connection_templates WHERE id=?) [db/db.go]
+```
+
+### DB table: connection_templates
+```
+id          INTEGER PRIMARY KEY AUTOINCREMENT
+name        TEXT NOT NULL
+driver      TEXT NOT NULL
+host        TEXT NOT NULL DEFAULT ''
+port        INTEGER NOT NULL DEFAULT 0
+database    TEXT NOT NULL DEFAULT ''
+ssl         INTEGER NOT NULL DEFAULT 0
+tags        TEXT NOT NULL DEFAULT ''
+ssh_host    TEXT NOT NULL DEFAULT ''
+ssh_port    INTEGER NOT NULL DEFAULT 22
+ssh_user    TEXT NOT NULL DEFAULT ''
+description TEXT NOT NULL DEFAULT ''
+visibility  TEXT NOT NULL DEFAULT 'shared'   -- 'shared' | 'private'
+owner_id    INTEGER NOT NULL DEFAULT 0
+created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+```
+Note: No username/password fields — templates store infrastructure, not credentials.

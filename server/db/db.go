@@ -913,10 +913,10 @@ func migrate() error {
 		// Seed system roles
 		`INSERT OR IGNORE INTO roles (name, description, permissions, is_system) VALUES
 			('admin', 'Full system access',
-			 '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage"]',
+			 '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage","docker.view","docker.manage","docker.exec","sftp.access","sftp.manage","data.export","data.import","dbusers.manage","discover.view","observability.view","uptime.view","pipelines.view","pipelines.manage","pipelines.run","settings.alerts"]',
 			 1),
 			('poweruser', 'Non-admin full access for testing',
-			 '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage"]',
+			 '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage","docker.view","docker.manage","docker.exec","sftp.access","sftp.manage","data.export","data.import","dbusers.manage","discover.view","observability.view","uptime.view","pipelines.view","pipelines.manage","pipelines.run","settings.alerts"]',
 			 1),
 			('user', 'Standard user access',
 			 '["connections.view","analytics.view","dashboards.manage","query.execute","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","er.view","redis.view","queues.view","mongodb.view","mongodb.export","cassandra.view","operations.view","watchers.manage","ai.use","security.self","notifications.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view"]',
@@ -929,8 +929,8 @@ func migrate() error {
 
 		// Set existing users to active
 		`UPDATE users SET is_active = 1 WHERE is_active IS NULL`,
-		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage"]' WHERE name = 'admin'`,
-		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage"]' WHERE name = 'poweruser'`,
+		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage","docker.view","docker.manage","docker.exec","sftp.access","sftp.manage","data.export","data.import","dbusers.manage","discover.view","observability.view","uptime.view","pipelines.view","pipelines.manage","pipelines.run","settings.alerts"]' WHERE name = 'admin'`,
+		`UPDATE roles SET permissions = '["connections.view","connections.create","connections.edit","connections.delete","analytics.view","dashboards.manage","query.execute","query.approve","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","schema.diff.view","er.view","redis.view","queues.view","kafka.view","kafka.produce","kafka.manage","mongodb.view","mongodb.write","mongodb.admin","mongodb.export","mongodb.import","cassandra.view","audit.view","operations.view","performance.view","databaseaudit.view","watchers.manage","ai.use","ai.manage","security.self","notifications.view","notifications.manage","backups.manage","schedules.manage","health.view","rowhistory.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view","users.manage","folders.manage","roles.manage","workflows.manage","docker.view","docker.manage","docker.exec","sftp.access","sftp.manage","data.export","data.import","dbusers.manage","discover.view","observability.view","uptime.view","pipelines.view","pipelines.manage","pipelines.run","settings.alerts"]' WHERE name = 'poweruser'`,
 		`UPDATE roles SET permissions = '["connections.view","analytics.view","dashboards.manage","query.execute","sqlstudio.access","savedqueries.manage","snippets.manage","schema.browse","er.view","redis.view","queues.view","mongodb.view","mongodb.export","cassandra.view","operations.view","watchers.manage","ai.use","security.self","notifications.view","approvals.view","changesets.manage","datascripts.manage","scriptrequests.view"]' WHERE name = 'user'`,
 		`ALTER TABLE query_approval_request ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE query_approval ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
@@ -956,9 +956,11 @@ func migrate() error {
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			name        TEXT NOT NULL,
 			description TEXT NOT NULL DEFAULT '',
+			pipeline_type TEXT NOT NULL DEFAULT 'custom',
 			created_by  INTEGER REFERENCES users(id),
 			status      TEXT NOT NULL DEFAULT 'draft',
 			schedule    TEXT,
+			api_enabled INTEGER NOT NULL DEFAULT 0,
 			last_run_at DATETIME,
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -985,6 +987,10 @@ func migrate() error {
 			pipeline_id    INTEGER NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
 			triggered_by   TEXT NOT NULL DEFAULT 'manual',
 			status         TEXT NOT NULL DEFAULT 'running',
+			business_date  TEXT NOT NULL DEFAULT '',
+			run_params     TEXT NOT NULL DEFAULT '{}',
+			parent_run_id  INTEGER DEFAULT NULL,
+			return_payload TEXT NOT NULL DEFAULT '{}',
 			started_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
 			finished_at    DATETIME,
 			rows_processed INTEGER NOT NULL DEFAULT 0,
@@ -1004,11 +1010,26 @@ func migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_pipeline_edges_pipeline ON pipeline_edges(pipeline_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_pipeline_runs_pipeline ON pipeline_runs(pipeline_id, started_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_pipeline_run_logs_run ON pipeline_run_logs(run_id)`,
+		`ALTER TABLE pipelines ADD COLUMN pipeline_type TEXT NOT NULL DEFAULT 'custom'`,
+		`ALTER TABLE pipelines ADD COLUMN api_enabled INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE pipeline_runs ADD COLUMN business_date TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE pipeline_runs ADD COLUMN run_params TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE pipeline_runs ADD COLUMN parent_run_id INTEGER DEFAULT NULL`,
+		`ALTER TABLE pipeline_runs ADD COLUMN return_payload TEXT NOT NULL DEFAULT '{}'`,
 
 		// Grant pipeline permissions to admin/poweruser roles
-		`UPDATE roles SET permissions = JSON_SET(permissions, '$[#]', 'pipelines.view') WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.view%'`,
-		`UPDATE roles SET permissions = JSON_SET(permissions, '$[#]', 'pipelines.manage') WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.manage%'`,
-		`UPDATE roles SET permissions = JSON_SET(permissions, '$[#]', 'pipelines.run') WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.run%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"pipelines.view"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.view%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"pipelines.manage"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.manage%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"pipelines.run"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%pipelines.run%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"observability.view"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%observability.view%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"discover.view"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%discover.view%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"uptime.view"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%uptime.view%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"data.export"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%data.export%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"data.import"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%data.import%'`,
+		// Grant Kubernetes permissions to admin/poweruser roles
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"kube.view"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%kube.view%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"kube.manage"]' WHERE (name = 'admin' OR name = 'poweruser') AND permissions NOT LIKE '%kube.manage%'`,
+		`UPDATE roles SET permissions = SUBSTR(permissions, 1, LENGTH(permissions)-1) || ',"kube.exec"]' WHERE name = 'admin' AND permissions NOT LIKE '%kube.exec%'`,
 
 		// ── Cloud Provider Configs (Huawei RDS, AWS RDS log integration) ──
 		`CREATE TABLE IF NOT EXISTS cloud_provider_configs (
@@ -1039,6 +1060,123 @@ func migrate() error {
 			updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_cloud_provider_instances_conn ON cloud_provider_instances(conn_id, is_active)`,
+		`CREATE TABLE IF NOT EXISTS infra_alert_rules (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			conn_id    INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+			name       TEXT NOT NULL,
+			metric_field TEXT NOT NULL,
+			group_field  TEXT NOT NULL DEFAULT 'host.name',
+			index_pattern TEXT NOT NULL DEFAULT 'metricbeat-*',
+			threshold    REAL NOT NULL,
+			comparison   TEXT NOT NULL DEFAULT 'gt',
+			duration_min INTEGER NOT NULL DEFAULT 5,
+			enabled      INTEGER NOT NULL DEFAULT 1,
+			created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_infra_alert_rules_conn ON infra_alert_rules(conn_id)`,
+		`CREATE TABLE IF NOT EXISTS infra_annotations (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			conn_id     INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+			title       TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			color       TEXT NOT NULL DEFAULT '#6366f1',
+			event_time  DATETIME NOT NULL,
+			created_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_infra_annotations_conn ON infra_annotations(conn_id, event_time DESC)`,
+		`CREATE TABLE IF NOT EXISTS alert_log (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel      TEXT NOT NULL DEFAULT '',
+			target_name  TEXT NOT NULL DEFAULT '',
+			status       TEXT NOT NULL DEFAULT 'ok',
+			error_msg    TEXT NOT NULL DEFAULT '',
+			triggered_by TEXT NOT NULL DEFAULT 'manual',
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_alert_log_created ON alert_log(created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS laravel_failed_job_alerts (
+			id                INTEGER PRIMARY KEY AUTOINCREMENT,
+			conn_id           INTEGER NOT NULL UNIQUE REFERENCES connections(id) ON DELETE CASCADE,
+			enabled           INTEGER NOT NULL DEFAULT 0,
+			last_seen_id      INTEGER NOT NULL DEFAULT 0,
+			poll_interval_min INTEGER NOT NULL DEFAULT 5,
+			queues_filter     TEXT NOT NULL DEFAULT '',
+			updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		// Fix pipeline_run_logs.node_id FK to cascade SET NULL on node deletion
+		`ALTER TABLE pipeline_run_logs DROP CONSTRAINT IF EXISTS pipeline_run_logs_node_id_fkey`,
+		`ALTER TABLE pipeline_run_logs ADD CONSTRAINT pipeline_run_logs_node_id_fkey FOREIGN KEY (node_id) REFERENCES pipeline_nodes(id) ON DELETE SET NULL`,
+
+		// Docker hosts — reached over SSH; credentials AES-encrypted at rest
+		`CREATE TABLE IF NOT EXISTS docker_hosts (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			name         TEXT NOT NULL,
+			ssh_host     TEXT NOT NULL,
+			ssh_port     INTEGER NOT NULL DEFAULT 22,
+			ssh_user     TEXT NOT NULL,
+			ssh_password TEXT DEFAULT '',
+			ssh_key      TEXT DEFAULT '',
+			socket_path  TEXT NOT NULL DEFAULT '/var/run/docker.sock',
+			owner_id     INTEGER,
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		// Per-host nginx UI settings — remembers sudo/paths/binary per docker host
+		`CREATE TABLE IF NOT EXISTS nginx_host_settings (
+			host_id     INTEGER PRIMARY KEY,
+			use_sudo    INTEGER NOT NULL DEFAULT 0,
+			config_root TEXT NOT NULL DEFAULT '',
+			log_dir     TEXT NOT NULL DEFAULT '',
+			bin         TEXT NOT NULL DEFAULT 'nginx',
+			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		// When nginx runs inside a Docker container (log_dir isn't a path on the
+		// SSH host's own filesystem at all), log operations run via
+		// `docker exec <log_container> ...` instead of directly over SSH/SFTP.
+		`ALTER TABLE nginx_host_settings ADD COLUMN log_container TEXT NOT NULL DEFAULT ''`,
+
+		// Connection templates — reusable host/port/database presets (no credentials)
+		`CREATE TABLE IF NOT EXISTS connection_templates (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			name        TEXT NOT NULL,
+			driver      TEXT NOT NULL,
+			host        TEXT NOT NULL DEFAULT '',
+			port        INTEGER NOT NULL DEFAULT 0,
+			database    TEXT NOT NULL DEFAULT '',
+			ssl         INTEGER NOT NULL DEFAULT 0,
+			tags        TEXT NOT NULL DEFAULT '',
+			ssh_host    TEXT NOT NULL DEFAULT '',
+			ssh_port    INTEGER NOT NULL DEFAULT 22,
+			ssh_user    TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
+			visibility  TEXT NOT NULL DEFAULT 'shared',
+			owner_id    INTEGER NOT NULL DEFAULT 0,
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_connection_templates_owner ON connection_templates(owner_id)`,
+
+		// Kubernetes clusters — connected via kubeconfig (AES-encrypted at rest).
+		// Works for Alibaba ACK, Huawei CCE, or any standard kubeconfig. The
+		// provider field is informational (labels/icons) and lets us layer
+		// cloud-API cluster discovery on later without a schema change.
+		`CREATE TABLE IF NOT EXISTS kube_clusters (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			name        TEXT NOT NULL,
+			provider    TEXT NOT NULL DEFAULT 'other',
+			kubeconfig  TEXT NOT NULL DEFAULT '',
+			context     TEXT NOT NULL DEFAULT '',
+			owner_id    INTEGER,
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_kube_clusters_owner ON kube_clusters(owner_id)`,
+
+		// Cron scheduler manages each host's *native* crontab live over SSH
+		// (crontab -l / crontab -), so no cron tables are stored here.
 	}
 	for _, s := range stmts {
 		convertedSQL := convertSQL(s)
@@ -1113,11 +1251,11 @@ func seedDefaultAdmin() error {
 
 	// Get default credentials from environment
 	username := getEnvOrDefault("DEFAULT_ADMIN_USERNAME", "admin")
-	password := getEnvOrDefault("DEFAULT_ADMIN_PASSWORD", "<CHANGE_ME_ADMIN_PASSWORD>")
+	password := getEnvOrDefault("DEFAULT_ADMIN_PASSWORD", "admin123")
 
 	// Skip if using default insecure password in production
 	env := getEnvOrDefault("NIAS_ENV", "development")
-	if env == "production" && password == "<CHANGE_ME_ADMIN_PASSWORD>" {
+	if env == "production" && password == "admin123" {
 		return fmt.Errorf("DEFAULT_ADMIN_PASSWORD must be set in production")
 	}
 
@@ -1142,7 +1280,7 @@ func seedDefaultAdmin() error {
 
 	fmt.Printf("✓ Default admin account created: %s\n", username)
 	fmt.Printf("  Username: %s\n", username)
-	if password == "<CHANGE_ME_ADMIN_PASSWORD>" {
+	if password == "admin123" {
 		fmt.Printf("  Password: %s (CHANGE THIS IMMEDIATELY!)\n", password)
 	} else {
 		fmt.Printf("  Password: %s\n", password)

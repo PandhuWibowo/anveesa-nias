@@ -30,7 +30,7 @@ const props = defineProps<{ activeConnId?: number | null }>()
 const { connections } = useConnections()
 const { fetchHistory, clearHistory } = useQuery()
 const { mode } = useTheme()
-const { getCompletionSource } = useSchemaCompletion()
+const { getCompletionSource, invalidateCache: invalidateSchemaCompletionCache } = useSchemaCompletion()
 const { queries: savedQueries, fetchAll: fetchSaved, save: saveQuery, remove: removeQuery } = useSavedQueries()
 const { databases, error: databaseError, fetchDatabases } = useDatabases()
 
@@ -104,6 +104,7 @@ async function txCommit() {
   try {
     await axios.post(`/api/connections/${connId.value}/transaction/commit`)
     txActive.value = false
+    await refreshSchema()
   } catch (e) {
     if (activeTab.value) activeTab.value.error = readableError(e, { action: 'Commit transaction', fallback: 'Failed to commit transaction' })
   }
@@ -201,6 +202,7 @@ async function runQuery() {
       sql: tab.sql, duration_ms: data.duration_ms, row_count: data.row_count,
     }).catch(() => {})
     historyItems.value.unshift({ sql: tab.sql, time: new Date(), connId: connId.value!, duration_ms: data.duration_ms, row_count: data.row_count })
+    await refreshSchemaAfterDDL(buildParamSQL(tab.sql))
   } catch (e: unknown) {
     const err = e as { code?: string; response?: { data?: { error?: string } } }
     if (err.code === 'ERR_CANCELED') {
@@ -293,6 +295,24 @@ watch(selectedDatabase, async (db) => {
 
 // ── Schema panel ──────────────────────────────────────────────────
 const schemaVisible = ref(true)
+const schemaRefreshKey = ref(0)
+
+function isSchemaChangingSQL(sql: string) {
+  return /^\s*(?:\/\*[\s\S]*?\*\/\s*)*(?:create|alter|drop|truncate|rename|comment)\b/i.test(sql)
+}
+
+async function refreshSchema() {
+  if (!connId.value) return
+  schemaRefreshKey.value += 1
+  invalidateSchemaCompletionCache(connId.value)
+  const db = selectedDatabase.value || 'public'
+  schemaCompletion.value = await getCompletionSource(connId.value, db)
+}
+
+async function refreshSchemaAfterDDL(sql: string) {
+  if (!isSchemaChangingSQL(sql)) return
+  await refreshSchema()
+}
 
 function onSchemaSelect(payload: { db: string; table: string }) {
   if (activeTab.value) {
@@ -319,6 +339,9 @@ async function runScript() {
       { sql: buildParamSQL(activeTab.value.sql), database: selectedDatabase.value || undefined }
     )
     scriptResults.value = data
+    if (data.some((item) => !item.error && isSchemaChangingSQL(item.sql))) {
+      await refreshSchemaAfterDDL(data.find((item) => !item.error && isSchemaChangingSQL(item.sql))?.sql ?? activeTab.value.sql)
+    }
   } catch (e: unknown) {
     const msg = readableError(e, { action: 'Run script', fallback: 'Script failed' })
     if (activeTab.value) activeTab.value.error = msg
@@ -334,6 +357,87 @@ const lastQueryError = ref('')
 // ── Diff between pinned results ───────────────────────────────────
 const diffLeft = ref<string>('')
 const diffRight = ref<string>('')
+
+// ── Result filter (client-side, no re-query) ──────────────────────
+type FilterOp = 'contains' | 'not_contains' | 'eq' | 'neq' | 'gt' | 'lt' | 'gte' | 'lte' | 'starts' | 'ends' | 'null' | 'not_null'
+interface FilterRow { id: string; column: string; op: FilterOp; value: string }
+
+const FILTER_OPS: { value: FilterOp; label: string; needsValue: boolean }[] = [
+  { value: 'contains',     label: 'contains',     needsValue: true },
+  { value: 'not_contains', label: 'not contains', needsValue: true },
+  { value: 'eq',           label: '=',            needsValue: true },
+  { value: 'neq',          label: '≠',            needsValue: true },
+  { value: 'gt',           label: '>',            needsValue: true },
+  { value: 'gte',          label: '≥',            needsValue: true },
+  { value: 'lt',           label: '<',            needsValue: true },
+  { value: 'lte',          label: '≤',            needsValue: true },
+  { value: 'starts',       label: 'starts with',  needsValue: true },
+  { value: 'ends',         label: 'ends with',    needsValue: true },
+  { value: 'null',         label: 'is null',      needsValue: false },
+  { value: 'not_null',     label: 'is not null',  needsValue: false },
+]
+
+const resultFilters = ref<FilterRow[]>([])
+const filterLogic = ref<'AND' | 'OR'>('AND')
+const showFilterBar = ref(false)
+
+function addFilter() {
+  const cols = activeTab.value?.result?.columns ?? []
+  resultFilters.value.push({ id: crypto.randomUUID(), column: cols[0] ?? '', op: 'contains', value: '' })
+  showFilterBar.value = true
+}
+
+function removeFilter(id: string) {
+  resultFilters.value = resultFilters.value.filter(f => f.id !== id)
+}
+
+function clearFilters() {
+  resultFilters.value = []
+}
+
+const filteredRows = computed((): unknown[][] => {
+  const result = activeTab.value?.result
+  if (!result) return []
+  const rows = result.rows as unknown[][]
+  const cols = result.columns
+  const active = resultFilters.value.filter(f => {
+    if (!f.column) return false
+    const meta = FILTER_OPS.find(o => o.value === f.op)
+    return meta && (!meta.needsValue || f.value !== '')
+  })
+  if (active.length === 0) return rows
+  return rows.filter(row => {
+    const matches = active.map(f => {
+      const ci = cols.indexOf(f.column)
+      if (ci === -1) return true
+      const raw = row[ci]
+      const cell = raw === null || raw === undefined ? '' : String(raw)
+      const lo = cell.toLowerCase()
+      const vlo = f.value.toLowerCase()
+      switch (f.op) {
+        case 'contains':     return lo.includes(vlo)
+        case 'not_contains': return !lo.includes(vlo)
+        case 'eq':           return cell === f.value
+        case 'neq':          return cell !== f.value
+        case 'gt':           return Number(cell) > Number(f.value)
+        case 'gte':          return Number(cell) >= Number(f.value)
+        case 'lt':           return Number(cell) < Number(f.value)
+        case 'lte':          return Number(cell) <= Number(f.value)
+        case 'starts':       return lo.startsWith(vlo)
+        case 'ends':         return lo.endsWith(vlo)
+        case 'null':         return raw === null || raw === undefined || cell === ''
+        case 'not_null':     return raw !== null && raw !== undefined && cell !== ''
+        default:             return true
+      }
+    })
+    return filterLogic.value === 'AND' ? matches.every(Boolean) : matches.some(Boolean)
+  })
+})
+
+watch(() => activeTab.value?.result, () => {
+  resultFilters.value = []
+  showFilterBar.value = false
+})
 
 // ── History / Saved queries / Explain panel ───────────────────────
 type ResultTab = 'results' | 'history' | 'saved' | 'explain' | 'chart' | 'script' | 'diff'
@@ -696,10 +800,25 @@ function exportResults(format: 'csv' | 'json') {
       <!-- Schema panel -->
       <Transition name="schema-slide">
         <div v-if="schemaVisible" class="query-schema-panel">
-          <div class="panel-header">Schema</div>
-          <SchemaTree :connId="connId" @select-table="onSchemaSelect" />
+          <div class="panel-header">
+            Schema
+            <button class="schema-close-btn" @click="schemaVisible = false" title="Hide sidebar">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <SchemaTree :connId="connId" :active="true" :refresh-key="schemaRefreshKey" @select-table="onSchemaSelect" />
         </div>
       </Transition>
+
+      <!-- Show-sidebar tab (visible when panel is hidden) -->
+      <button
+        v-if="!schemaVisible"
+        class="schema-show-tab"
+        @click="schemaVisible = true"
+        title="Show sidebar"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </button>
 
       <!-- Editor + Results column (per active tab) -->
       <div class="query-main" ref="splitRef">
@@ -808,6 +927,17 @@ function exportResults(format: 'csv' | 'json') {
               Diff
             </button>
             <div style="flex:1" />
+            <button
+              class="base-btn base-btn--ghost base-btn--xs"
+              :class="{ 'is-active': showFilterBar && activeResultTab === 'results' }"
+              :disabled="!activeTab?.result"
+              @click="showFilterBar = !showFilterBar; if (showFilterBar && resultFilters.length === 0) addFilter()"
+              title="Filter results"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+              Filter
+              <span v-if="resultFilters.length" class="result-tab__badge">{{ resultFilters.length }}</span>
+            </button>
             <button class="base-btn base-btn--ghost base-btn--xs" @click="openSaveDialog" :disabled="!activeTab?.sql.trim()" title="Save current query">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
               Save
@@ -844,10 +974,51 @@ function exportResults(format: 'csv' | 'json') {
               </template>
               <!-- Regular results -->
               <template v-else>
+                <!-- Filter bar -->
+                <Transition name="filter-slide">
+                  <div v-if="showFilterBar && activeTab?.result" class="filter-bar">
+                    <div class="filter-bar-header">
+                      <span class="filter-bar-title">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+                        Filter
+                      </span>
+                      <template v-if="resultFilters.length > 1">
+                        <div class="filter-logic-toggle">
+                          <button class="filter-logic-btn" :class="{ 'is-active': filterLogic === 'AND' }" @click="filterLogic = 'AND'">AND</button>
+                          <button class="filter-logic-btn" :class="{ 'is-active': filterLogic === 'OR' }" @click="filterLogic = 'OR'">OR</button>
+                        </div>
+                      </template>
+                      <span class="filter-count" :class="{ 'filter-count-active': resultFilters.some(f => f.value || f.op === 'null' || f.op === 'not_null') }">
+                        {{ filteredRows.length.toLocaleString() }} / {{ activeTab.result.rows.length.toLocaleString() }} rows
+                      </span>
+                      <div style="flex:1" />
+                      <button class="base-btn base-btn--ghost base-btn--xs" @click="addFilter">+ Add</button>
+                      <button class="base-btn base-btn--ghost base-btn--xs" @click="clearFilters(); showFilterBar = false" style="color:var(--text-muted)">Clear</button>
+                    </div>
+                    <div class="filter-conditions">
+                      <div v-for="f in resultFilters" :key="f.id" class="filter-condition">
+                        <select class="filter-select" v-model="f.column">
+                          <option v-for="col in activeTab.result.columns" :key="col" :value="col">{{ col }}</option>
+                        </select>
+                        <select class="filter-select filter-op-select" v-model="f.op">
+                          <option v-for="op in FILTER_OPS" :key="op.value" :value="op.value">{{ op.label }}</option>
+                        </select>
+                        <input
+                          v-if="FILTER_OPS.find(o => o.value === f.op)?.needsValue"
+                          class="filter-input"
+                          v-model="f.value"
+                          placeholder="value…"
+                          @keydown.enter.prevent
+                        />
+                        <button class="filter-rm-btn" @click="removeFilter(f.id)" title="Remove filter">×</button>
+                      </div>
+                    </div>
+                  </div>
+                </Transition>
                 <VirtualTable
                   v-if="activeTab?.result"
                   :columns="activeTab.result.columns"
-                  :rows="(activeTab.result.rows as unknown[][])"
+                  :rows="filteredRows"
                   :loading="activeTab?.running"
                   :selectable="true"
                   @profile-column="openProfiler"
@@ -1209,7 +1380,23 @@ function exportResults(format: 'csv' | 'json') {
   padding: 8px 12px; border-bottom: 1px solid var(--border);
   font-size: 10.5px; font-weight: 600; text-transform: uppercase;
   letter-spacing: 0.6px; color: var(--text-muted); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between;
 }
+.schema-close-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border: none; background: transparent;
+  border-radius: 4px; cursor: pointer; color: var(--text-muted);
+  padding: 0; flex-shrink: 0;
+}
+.schema-close-btn:hover { background: var(--bg-hover); color: var(--text); }
+.schema-show-tab {
+  display: flex; align-items: center; justify-content: center;
+  width: 18px; flex-shrink: 0; align-self: stretch;
+  border: none; border-right: 1px solid var(--border);
+  background: var(--bg-surface); cursor: pointer; color: var(--text-muted);
+  padding: 0;
+}
+.schema-show-tab:hover { background: var(--bg-hover); color: var(--text); }
 
 /* Main: editor + results stacked vertically */
 .query-main {
@@ -1476,4 +1663,113 @@ function exportResults(format: 'csv' | 'json') {
   transition: border-color 0.15s;
 }
 .sdlg-input:focus { border-color: var(--brand); }
+
+/* ── Result filter bar ── */
+.filter-bar {
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.filter-bar-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.filter-bar-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+.filter-logic-toggle {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.filter-logic-btn {
+  padding: 2px 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background var(--dur), color var(--dur);
+}
+.filter-logic-btn.is-active { background: var(--brand); color: #fff; }
+.filter-count {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.filter-count-active { color: var(--brand); font-weight: 600; }
+.filter-conditions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.filter-condition {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  height: 26px;
+}
+.filter-select {
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+  padding: 0 6px;
+  height: 100%;
+}
+.filter-op-select { color: var(--brand); font-weight: 600; }
+.filter-input {
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: var(--mono, monospace);
+  outline: none;
+  padding: 0 7px;
+  min-width: 80px;
+  max-width: 180px;
+  height: 100%;
+}
+.filter-input::placeholder { color: var(--text-muted); opacity: 0.6; }
+.filter-rm-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 7px;
+  height: 100%;
+  transition: color var(--dur), background var(--dur);
+}
+.filter-rm-btn:hover { color: var(--danger); background: rgba(249,127,79,0.1); }
+
+.filter-slide-enter-active, .filter-slide-leave-active { transition: max-height 0.18s ease, opacity 0.15s; overflow: hidden; }
+.filter-slide-enter-from, .filter-slide-leave-to { max-height: 0 !important; opacity: 0; }
+.filter-slide-enter-to, .filter-slide-leave-from { max-height: 160px; }
 </style>

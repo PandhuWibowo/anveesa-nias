@@ -5,6 +5,11 @@ import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConnections } from '@/composables/useConnections'
 import { useAuth } from '@/composables/useAuth'
+import { useListFilter } from '@/composables/useListFilter'
+import { useSort } from '@/composables/useSort'
+import { usePagination } from '@/composables/usePagination'
+import Pagination from '@/components/ui/Pagination.vue'
+import SortIcon from '@/components/ui/SortIcon.vue'
 import { readableError } from '@/utils/httpError'
 
 const toast = useToast()
@@ -305,6 +310,7 @@ interface User {
   role_id: number
   is_active: boolean
   permissions: string[]
+  effective_permissions: string[]
   created_at: string
 }
 
@@ -335,6 +341,8 @@ interface GroupedConnection {
   selected: boolean
   permissions: string[]
 }
+
+const groupConnectionAssignments = ref<Array<{ conn_id: number; source: string; permissions: string[] }>>([])
 
 const groupedConnections = computed(() => {
   const grouped: Record<string, GroupedConnection[]> = {}
@@ -397,6 +405,18 @@ function updateConnectionPermissions(connId: number, perms: string[]) {
   }
 }
 
+function getGroupSource(connId: number): string | null {
+  const ga = groupConnectionAssignments.value.find(a => a.conn_id === connId)
+  return ga ? ga.source : null
+}
+
+function isGroupAssigned(connId: number): boolean {
+  return (
+    !!getGroupSource(connId) &&
+    !userForm.connection_assignments.some(a => a.conn_id === connId)
+  )
+}
+
 async function fetchUsers() {
   usersLoading.value = true
   try {
@@ -404,6 +424,7 @@ async function fetchUsers() {
     users.value = (data || []).map((user: any) => ({
       ...user,
       permissions: normalizePermissionList(user.permissions),
+      effective_permissions: normalizePermissionList(user.effective_permissions),
     }))
   } catch (error: any) {
     toast.error(error.response?.data || 'Failed to load users')
@@ -424,16 +445,25 @@ async function openUserForm(user: User | null = null) {
     // Load user's direct connection assignments
     try {
       const { data } = await axios.get(`/api/users/${user.id}/connections`)
-      userForm.connection_assignments = (data || [])
+      const all = data || []
+      userForm.connection_assignments = all
         .filter((a: any) => a.source === 'direct')
         .map((a: any) => ({
           conn_id: a.conn_id,
+          permissions: Array.isArray(a.permissions) ? a.permissions : []
+        }))
+      groupConnectionAssignments.value = all
+        .filter((a: any) => a.source !== 'direct')
+        .map((a: any) => ({
+          conn_id: a.conn_id,
+          source: a.source,
           permissions: Array.isArray(a.permissions) ? a.permissions : []
         }))
     } catch (error: any) {
       // If endpoint doesn't exist yet, just start with empty
       if (error.response?.status === 404 || error.response?.status === 501) {
         userForm.connection_assignments = []
+        groupConnectionAssignments.value = []
       } else {
         toast.error(readableError(error, { action: 'Load user connection assignments', fallback: 'Failed to load user connections' }))
         editingUser.value = null
@@ -447,6 +477,7 @@ async function openUserForm(user: User | null = null) {
     userForm.is_active = true
     userForm.permissions = []
     userForm.connection_assignments = []
+    groupConnectionAssignments.value = []
   }
   showUserForm.value = true
 }
@@ -564,13 +595,136 @@ function getPermissionLabel(permKey: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
+function getUserEffectivePermissions(user: User): string[] {
+  const effective = user.effective_permissions.length ? user.effective_permissions : user.permissions
+  const knownOrder = permissions.value.map((permission) => permission.key)
+  return [...new Set(effective)].sort((a, b) => {
+    const ai = knownOrder.indexOf(a)
+    const bi = knownOrder.indexOf(b)
+    if (ai === -1 && bi === -1) return a.localeCompare(b)
+    if (ai === -1) return 1
+    if (bi === -1) return -1
+    return ai - bi
+  })
+}
+
+function hasDirectPermission(user: User, permission: string): boolean {
+  return user.permissions.includes(permission)
+}
+
+function isRoleInherited(permKey: string): boolean {
+  if (!editingUser.value) return false
+  return (
+    editingUser.value.effective_permissions.includes(permKey) &&
+    !userForm.permissions.includes(permKey)
+  )
+}
+
+function toggleDirectPermission(permKey: string) {
+  const idx = userForm.permissions.indexOf(permKey)
+  if (idx >= 0) {
+    userForm.permissions.splice(idx, 1)
+  } else {
+    userForm.permissions.push(permKey)
+  }
+}
+
+// ── Filter / Sort / Pagination / Custom Fields ─────────────────
+
+// ROLES tab
+const { search: roleSearch, filtered: roleSearchFiltered } = useListFilter(roles, (r, q) =>
+  r.name.toLowerCase().includes(q) || r.description.toLowerCase().includes(q)
+)
+const { sortKey: roleSortKey, sortDir: roleSortDir, toggleSort: setRoleSort, sort: sortRoles } = useSort<Role>((r, key) => {
+  if (key === 'name') return r.name.toLowerCase()
+  if (key === 'user_count') return r.user_count
+  return (r.permissions || []).length
+}, 'name')
+
+const filteredRoles = computed(() => sortRoles(roleSearchFiltered.value))
+const { page: rolePage, pageSize: rolePageSize, totalPages: roleTotalPages, paged: pagedRoles, setPage: setRolePage } = usePagination(filteredRoles, 10)
+
+const visibleRoleColumns = ref({ name: true, description: true, user_count: true, permissions: true })
+const showRoleColMenu = ref(false)
+const roleColDefs = [
+  { key: 'name' as const, label: 'Role Name' },
+  { key: 'description' as const, label: 'Description' },
+  { key: 'user_count' as const, label: 'Users' },
+  { key: 'permissions' as const, label: 'Permissions' },
+]
+
+// GROUPS tab
+const { search: groupSearch, filtered: groupSearchFiltered } = useListFilter(groups, (g, q) => g.name.toLowerCase().includes(q))
+const { sortKey: groupSortKey, sortDir: groupSortDir, toggleSort: setGroupSort, sort: sortGroups } = useSort<AccessGroup>((g, key) => {
+  if (key === 'name') return g.name.toLowerCase()
+  if (key === 'visibility') return g.visibility
+  return g.is_active ? 0 : 1
+}, 'name')
+
+const filteredGroups = computed(() => sortGroups(groupSearchFiltered.value))
+const { page: groupPage, pageSize: groupPageSize, totalPages: groupTotalPages, paged: pagedGroups, setPage: setGroupPage } = usePagination(filteredGroups, 10)
+
+const visibleGroupColumns = ref({ name: true, visibility: true, role_restrict: true, is_active: true })
+const showGroupColMenu = ref(false)
+const groupColDefs = [
+  { key: 'name' as const, label: 'Group Name' },
+  { key: 'visibility' as const, label: 'Visibility' },
+  { key: 'role_restrict' as const, label: 'Role Restriction' },
+  { key: 'is_active' as const, label: 'Status' },
+]
+
+// USERS tab
+const userFilterRole = ref('')
+const userFilterStatus = ref('')
+
+const userRoleStatusFiltered = computed(() => {
+  let list = users.value
+  if (userFilterRole.value) list = list.filter(u => u.role === userFilterRole.value)
+  if (userFilterStatus.value) {
+    const active = userFilterStatus.value === 'active'
+    list = list.filter(u => u.is_active === active)
+  }
+  return list
+})
+
+const { search: userSearch, filtered: userSearchFiltered } = useListFilter(userRoleStatusFiltered, (u, q) => u.username.toLowerCase().includes(q))
+
+const { sortKey: userSortKeyPerm, sortDir: userSortDirPerm, toggleSort: setUserSortPerm, sort: sortUsersPerm } = useSort<User>((u, key) => {
+  if (key === 'username') return u.username.toLowerCase()
+  if (key === 'role') return u.role
+  if (key === 'is_active') return u.is_active ? 0 : 1
+  return u.created_at
+}, 'username')
+
+const filteredUsers = computed(() => sortUsersPerm(userSearchFiltered.value))
+const { page: userPage, pageSize: userPageSize, totalPages: userTotalPages, paged: pagedUsers, setPage: setUserPage } = usePagination(filteredUsers, 10)
+
+const availableUserRoles = computed(() => [...new Set(users.value.map(u => u.role))].sort())
+const hasUserFilters = computed(() => userSearch.value || userFilterRole.value || userFilterStatus.value)
+
+const visibleUserColumns = ref({ username: true, role: true, effective_access: true, is_active: true, created_at: true })
+const showUserColMenu = ref(false)
+const userColDefs = [
+  { key: 'username' as const, label: 'Username' },
+  { key: 'role' as const, label: 'Role' },
+  { key: 'effective_access' as const, label: 'Effective Access' },
+  { key: 'is_active' as const, label: 'Status' },
+  { key: 'created_at' as const, label: 'Created' },
+]
+
+function closeAllColMenus() {
+  showRoleColMenu.value = false
+  showGroupColMenu.value = false
+  showUserColMenu.value = false
+}
+
 // ── Init ──
 
 onMounted(async () => {
   syncActiveTabFromRoute()
 
   const tasks: Promise<unknown>[] = []
-  if (canManageRoles.value) {
+  if (canManageRoles.value || canManageUsers.value || canManageGroups.value) {
     tasks.push(fetchRoles())
   }
   if (canManageRoles.value || canManageUsers.value) {
@@ -594,7 +748,7 @@ watch(() => route.query.tab, () => {
 </script>
 
 <template>
-  <div class="page-shell perm-root">
+  <div class="page-shell perm-root" @click="closeAllColMenus">
     <div class="page-scroll perm-scroll">
       <div class="page-stack">
       <section class="page-hero">
@@ -663,6 +817,32 @@ watch(() => route.query.tab, () => {
           </button>
         </div>
 
+        <!-- Roles filter bar -->
+        <div class="perm-filter-bar" @click.stop>
+          <div class="perm-filter-search">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input class="perm-filter-input" v-model="roleSearch" placeholder="Search roles…" />
+          </div>
+          <div class="perm-col-toggle" @click.stop>
+            <button class="base-btn base-btn--ghost base-btn--xs" @click="showRoleColMenu = !showRoleColMenu">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18"/></svg>
+              Columns
+            </button>
+            <div v-if="showRoleColMenu" class="perm-col-menu">
+              <div class="perm-col-menu-title">Visible Columns</div>
+              <label v-for="col in roleColDefs" :key="col.key" class="perm-col-item">
+                <input type="checkbox" v-model="visibleRoleColumns[col.key]" /> {{ col.label }}
+              </label>
+            </div>
+          </div>
+          <select class="perm-filter-sel" v-model="rolePageSize">
+            <option :value="10">10 / page</option>
+            <option :value="25">25 / page</option>
+            <option :value="50">50 / page</option>
+          </select>
+          <span class="perm-filter-count">{{ filteredRoles.length }} of {{ roles.length }}</span>
+        </div>
+
         <div v-if="rolesLoading" class="perm-loading">
           <svg class="spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
         </div>
@@ -671,28 +851,34 @@ watch(() => route.query.tab, () => {
           <table class="perm-table">
             <thead>
               <tr>
-                <th>Role Name</th>
-                <th>Description</th>
-                <th>Users</th>
-                <th>Permissions</th>
+                <th v-if="visibleRoleColumns.name" class="perm-th-sort" :class="{ sorted: roleSortKey === 'name' }" @click="setRoleSort('name')">
+                  Role Name <SortIcon :active="roleSortKey === 'name'" :dir="roleSortDir" />
+                </th>
+                <th v-if="visibleRoleColumns.description">Description</th>
+                <th v-if="visibleRoleColumns.user_count" class="perm-th-sort" :class="{ sorted: roleSortKey === 'user_count' }" @click="setRoleSort('user_count')">
+                  Users <SortIcon :active="roleSortKey === 'user_count'" :dir="roleSortDir" />
+                </th>
+                <th v-if="visibleRoleColumns.permissions" class="perm-th-sort" :class="{ sorted: roleSortKey === 'permissions' }" @click="setRoleSort('permissions')">
+                  Permissions <SortIcon :active="roleSortKey === 'permissions'" :dir="roleSortDir" />
+                </th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="role in roles" :key="role.id">
-                <td>
+              <tr v-for="role in pagedRoles" :key="role.id">
+                <td v-if="visibleRoleColumns.name">
                   <div class="perm-role-name">
                     {{ role.name }}
                     <span v-if="role.is_system" class="perm-badge perm-badge--system">System</span>
                   </div>
                 </td>
-                <td class="perm-td-desc">{{ role.description }}</td>
-                <td class="perm-td-count">{{ role.user_count }}</td>
-                <td class="perm-td-perms">
+                <td v-if="visibleRoleColumns.description" class="perm-td-desc">{{ role.description }}</td>
+                <td v-if="visibleRoleColumns.user_count" class="perm-td-count">{{ role.user_count }}</td>
+                <td v-if="visibleRoleColumns.permissions" class="perm-td-perms">
                   <div class="perm-perms-display">
-                    <span 
-                      v-for="perm in (role.permissions || [])" 
-                      :key="perm" 
+                    <span
+                      v-for="perm in (role.permissions || [])"
+                      :key="perm"
                       class="perm-perm-badge"
                       :title="getPermissionLabel(perm)"
                     >
@@ -715,12 +901,24 @@ watch(() => route.query.tab, () => {
                   </div>
                 </td>
               </tr>
-              <tr v-if="roles.length === 0">
-                <td colspan="5" class="perm-empty">No roles found</td>
+              <tr v-if="pagedRoles.length === 0">
+                <td :colspan="Object.values(visibleRoleColumns).filter(Boolean).length + 1" class="perm-empty">
+                  {{ roleSearch ? 'No roles match the search' : 'No roles found' }}
+                </td>
               </tr>
             </tbody>
           </table>
         </div>
+
+        <!-- Roles pagination -->
+        <Pagination
+          v-if="!rolesLoading && roleTotalPages > 1"
+          :page="rolePage"
+          :total-pages="roleTotalPages"
+          :total="filteredRoles.length"
+          item-label="roles"
+          @update:page="setRolePage"
+        />
       </div>
 
       <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -740,6 +938,32 @@ watch(() => route.query.tab, () => {
           </button>
         </div>
 
+        <!-- Groups filter bar -->
+        <div class="perm-filter-bar" @click.stop>
+          <div class="perm-filter-search">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input class="perm-filter-input" v-model="groupSearch" placeholder="Search groups…" />
+          </div>
+          <div class="perm-col-toggle" @click.stop>
+            <button class="base-btn base-btn--ghost base-btn--xs" @click="showGroupColMenu = !showGroupColMenu">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18"/></svg>
+              Columns
+            </button>
+            <div v-if="showGroupColMenu" class="perm-col-menu">
+              <div class="perm-col-menu-title">Visible Columns</div>
+              <label v-for="col in groupColDefs" :key="col.key" class="perm-col-item">
+                <input type="checkbox" v-model="visibleGroupColumns[col.key]" /> {{ col.label }}
+              </label>
+            </div>
+          </div>
+          <select class="perm-filter-sel" v-model="groupPageSize">
+            <option :value="10">10 / page</option>
+            <option :value="25">25 / page</option>
+            <option :value="50">50 / page</option>
+          </select>
+          <span class="perm-filter-count">{{ filteredGroups.length }} of {{ groups.length }}</span>
+        </div>
+
         <div v-if="groupsLoading" class="perm-loading">
           <svg class="spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
         </div>
@@ -748,27 +972,33 @@ watch(() => route.query.tab, () => {
           <table class="perm-table">
             <thead>
               <tr>
-                <th>Group Name</th>
-                <th>Visibility</th>
-                <th>Role Restriction</th>
-                <th>Status</th>
+                <th v-if="visibleGroupColumns.name" class="perm-th-sort" :class="{ sorted: groupSortKey === 'name' }" @click="setGroupSort('name')">
+                  Group Name <SortIcon :active="groupSortKey === 'name'" :dir="groupSortDir" />
+                </th>
+                <th v-if="visibleGroupColumns.visibility" class="perm-th-sort" :class="{ sorted: groupSortKey === 'visibility' }" @click="setGroupSort('visibility')">
+                  Visibility <SortIcon :active="groupSortKey === 'visibility'" :dir="groupSortDir" />
+                </th>
+                <th v-if="visibleGroupColumns.role_restrict">Role Restriction</th>
+                <th v-if="visibleGroupColumns.is_active" class="perm-th-sort" :class="{ sorted: groupSortKey === 'is_active' }" @click="setGroupSort('is_active')">
+                  Status <SortIcon :active="groupSortKey === 'is_active'" :dir="groupSortDir" />
+                </th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="group in groups" :key="group.id">
-                <td>
+              <tr v-for="group in pagedGroups" :key="group.id">
+                <td v-if="visibleGroupColumns.name">
                   <div class="perm-group-name">
                     <div class="perm-group-color" :style="{ backgroundColor: group.color }"></div>
                     {{ group.name }}
                   </div>
                 </td>
-                <td class="perm-td-desc">{{ group.visibility }}</td>
-                <td class="perm-td-desc">
+                <td v-if="visibleGroupColumns.visibility" class="perm-td-desc">{{ group.visibility }}</td>
+                <td v-if="visibleGroupColumns.role_restrict" class="perm-td-desc">
                   <span v-if="group.role_restrict" class="perm-badge">{{ group.role_restrict }}</span>
                   <span v-else class="perm-td-dim">All roles</span>
                 </td>
-                <td>
+                <td v-if="visibleGroupColumns.is_active">
                   <span class="perm-status" :class="{ 'perm-status--active': group.is_active }">
                     {{ group.is_active ? 'Active' : 'Inactive' }}
                   </span>
@@ -780,12 +1010,24 @@ watch(() => route.query.tab, () => {
                   </div>
                 </td>
               </tr>
-              <tr v-if="groups.length === 0">
-                <td colspan="5" class="perm-empty">No access groups found</td>
+              <tr v-if="pagedGroups.length === 0">
+                <td :colspan="Object.values(visibleGroupColumns).filter(Boolean).length + 1" class="perm-empty">
+                  {{ groupSearch ? 'No groups match the search' : 'No access groups found' }}
+                </td>
               </tr>
             </tbody>
           </table>
         </div>
+
+        <!-- Groups pagination -->
+        <Pagination
+          v-if="!groupsLoading && groupTotalPages > 1"
+          :page="groupPage"
+          :total-pages="groupTotalPages"
+          :total="filteredGroups.length"
+          item-label="groups"
+          @update:page="setGroupPage"
+        />
       </div>
 
       <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -805,6 +1047,42 @@ watch(() => route.query.tab, () => {
           </button>
         </div>
 
+        <!-- Users filter bar -->
+        <div class="perm-filter-bar" @click.stop>
+          <div class="perm-filter-search">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input class="perm-filter-input" v-model="userSearch" placeholder="Search username…" />
+          </div>
+          <select class="perm-filter-sel" v-model="userFilterRole">
+            <option value="">All roles</option>
+            <option v-for="r in availableUserRoles" :key="r" :value="r">{{ r }}</option>
+          </select>
+          <select class="perm-filter-sel" v-model="userFilterStatus">
+            <option value="">All status</option>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+          </select>
+          <button v-if="hasUserFilters" class="perm-filter-clear" @click="userSearch = ''; userFilterRole = ''; userFilterStatus = ''">Clear</button>
+          <div class="perm-col-toggle" @click.stop>
+            <button class="base-btn base-btn--ghost base-btn--xs" @click="showUserColMenu = !showUserColMenu">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18"/></svg>
+              Columns
+            </button>
+            <div v-if="showUserColMenu" class="perm-col-menu">
+              <div class="perm-col-menu-title">Visible Columns</div>
+              <label v-for="col in userColDefs" :key="col.key" class="perm-col-item">
+                <input type="checkbox" v-model="visibleUserColumns[col.key]" /> {{ col.label }}
+              </label>
+            </div>
+          </div>
+          <select class="perm-filter-sel" v-model="userPageSize">
+            <option :value="10">10 / page</option>
+            <option :value="25">25 / page</option>
+            <option :value="50">50 / page</option>
+          </select>
+          <span class="perm-filter-count">{{ filteredUsers.length }} of {{ users.length }}</span>
+        </div>
+
         <div v-if="usersLoading" class="perm-loading">
           <svg class="spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
         </div>
@@ -813,44 +1091,51 @@ watch(() => route.query.tab, () => {
           <table class="perm-table">
             <thead>
               <tr>
-                <th>Username</th>
-                <th>Role</th>
-                <th>Direct Grants</th>
-                <th>Status</th>
-                <th>Created</th>
+                <th v-if="visibleUserColumns.username" class="perm-th-sort" :class="{ sorted: userSortKeyPerm === 'username' }" @click="setUserSortPerm('username')">
+                  Username <SortIcon :active="userSortKeyPerm === 'username'" :dir="userSortDirPerm" />
+                </th>
+                <th v-if="visibleUserColumns.role" class="perm-th-sort" :class="{ sorted: userSortKeyPerm === 'role' }" @click="setUserSortPerm('role')">
+                  Role <SortIcon :active="userSortKeyPerm === 'role'" :dir="userSortDirPerm" />
+                </th>
+                <th v-if="visibleUserColumns.effective_access">Effective Access</th>
+                <th v-if="visibleUserColumns.is_active" class="perm-th-sort" :class="{ sorted: userSortKeyPerm === 'is_active' }" @click="setUserSortPerm('is_active')">
+                  Status <SortIcon :active="userSortKeyPerm === 'is_active'" :dir="userSortDirPerm" />
+                </th>
+                <th v-if="visibleUserColumns.created_at" class="perm-th-sort" :class="{ sorted: userSortKeyPerm === 'created_at' }" @click="setUserSortPerm('created_at')">
+                  Created <SortIcon :active="userSortKeyPerm === 'created_at'" :dir="userSortDirPerm" />
+                </th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="user in users" :key="user.id">
-                <td><strong>{{ user.username }}</strong></td>
-                <td>
+              <tr v-for="user in pagedUsers" :key="user.id">
+                <td v-if="visibleUserColumns.username"><strong>{{ user.username }}</strong></td>
+                <td v-if="visibleUserColumns.role">
                   <span class="perm-role-badge" :style="{ borderColor: getRoleColor(user.role), color: getRoleColor(user.role) }">
                     {{ user.role }}
                   </span>
                 </td>
-                <td class="perm-td-perms">
-                  <div v-if="user.permissions.length" class="perm-perms-display">
+                <td v-if="visibleUserColumns.effective_access" class="perm-td-perms">
+                  <div v-if="getUserEffectivePermissions(user).length" class="perm-perms-display perm-perms-display--dense">
                     <span
-                      v-for="perm in user.permissions.slice(0, 3)"
+                      v-for="perm in getUserEffectivePermissions(user)"
                       :key="perm"
                       class="perm-perm-badge"
-                      :title="getPermissionLabel(perm)"
+                      :class="{ 'perm-perm-badge--direct': hasDirectPermission(user, perm) }"
+                      :title="hasDirectPermission(user, perm) ? `${getPermissionLabel(perm)} - direct grant` : `${getPermissionLabel(perm)} - from role or inherited access`"
                     >
                       {{ getPermissionLabel(perm) }}
-                    </span>
-                    <span v-if="user.permissions.length > 3" class="perm-perm-badge">
-                      +{{ user.permissions.length - 3 }}
+                      <span v-if="hasDirectPermission(user, perm)" class="perm-perm-source">Direct</span>
                     </span>
                   </div>
-                  <span v-else class="perm-td-dim">Role only</span>
+                  <span v-else class="perm-td-dim">No permissions</span>
                 </td>
-                <td>
+                <td v-if="visibleUserColumns.is_active">
                   <span class="perm-status" :class="{ 'perm-status--active': user.is_active }">
                     {{ user.is_active ? 'Active' : 'Inactive' }}
                   </span>
                 </td>
-                <td class="perm-td-dim">{{ new Date(user.created_at).toLocaleDateString() }}</td>
+                <td v-if="visibleUserColumns.created_at" class="perm-td-dim">{{ new Date(user.created_at).toLocaleDateString() }}</td>
                 <td>
                   <div class="perm-row-actions">
                     <button class="base-btn base-btn--ghost base-btn--xs" @click="openUserForm(user)">Edit</button>
@@ -858,12 +1143,24 @@ watch(() => route.query.tab, () => {
                   </div>
                 </td>
               </tr>
-              <tr v-if="users.length === 0">
-                <td colspan="6" class="perm-empty">No users found</td>
+              <tr v-if="pagedUsers.length === 0">
+                <td :colspan="Object.values(visibleUserColumns).filter(Boolean).length + 1" class="perm-empty">
+                  {{ hasUserFilters ? 'No users match the current filters' : 'No users found' }}
+                </td>
               </tr>
             </tbody>
           </table>
         </div>
+
+        <!-- Users pagination -->
+        <Pagination
+          v-if="!usersLoading && userTotalPages > 1"
+          :page="userPage"
+          :total-pages="userTotalPages"
+          :total="filteredUsers.length"
+          item-label="users"
+          @update:page="setUserPage"
+        />
       </div>
       </div>
     </div>
@@ -1020,9 +1317,17 @@ watch(() => route.query.tab, () => {
               <div v-for="(perms, group) in groupedPermissions" :key="group" class="perm-perm-group">
                 <div class="perm-perm-group-header">{{ group }}</div>
                 <div class="perm-perm-group-items">
-                  <label v-for="perm in perms" :key="perm.key" class="perm-checkbox">
-                    <input type="checkbox" :value="perm.key" v-model="userForm.permissions" />
-                    <span class="perm-checkbox-label">{{ perm.label }}</span>
+                  <label v-for="perm in perms" :key="perm.key" class="perm-checkbox" :class="{ 'perm-checkbox--role-active': isRoleInherited(perm.key), 'perm-checkbox--direct-active': userForm.permissions.includes(perm.key) }">
+                    <input
+                      type="checkbox"
+                      :class="{ 'perm-cb--inherited': isRoleInherited(perm.key) }"
+                      :checked="userForm.permissions.includes(perm.key) || isRoleInherited(perm.key)"
+                      @change="toggleDirectPermission(perm.key)"
+                    />
+                    <span class="perm-checkbox-label">
+                      {{ perm.label }}
+                      <span v-if="isRoleInherited(perm.key)" class="perm-role-badge">via role</span>
+                    </span>
                   </label>
                 </div>
               </div>
@@ -1041,20 +1346,25 @@ watch(() => route.query.tab, () => {
                   {{ folderName }}
                 </div>
                 <div class="perm-conn-list">
-                  <div v-for="conn in conns" :key="conn.conn_id" class="perm-conn-item">
+                  <div v-for="conn in conns" :key="conn.conn_id" class="perm-conn-item" :class="{ 'perm-conn-item--group-active': isGroupAssigned(conn.conn_id), 'perm-conn-item--direct-active': conn.selected }">
                     <label class="perm-conn-checkbox">
-                      <input 
-                        type="checkbox" 
-                        :checked="conn.selected"
+                      <input
+                        type="checkbox"
+                        :class="{ 'perm-cb--inherited': isGroupAssigned(conn.conn_id) }"
+                        :checked="conn.selected || isGroupAssigned(conn.conn_id)"
                         @change="toggleConnectionSelection(conn.conn_id)"
                       />
                       <span class="perm-conn-name">
                         <span class="perm-conn-driver">{{ conn.driver.toUpperCase() }}</span>
                         {{ conn.name }}
                       </span>
+                      <span class="perm-conn-status-badges">
+                        <span v-if="conn.selected" class="perm-conn-assigned-badge">Assigned</span>
+                        <span v-if="isGroupAssigned(conn.conn_id)" class="perm-role-badge">via {{ getGroupSource(conn.conn_id) }}</span>
+                      </span>
                     </label>
-                    
-                    <div v-if="conn.selected" class="perm-conn-perms">
+
+                    <div v-if="conn.selected || isGroupAssigned(conn.conn_id)" class="perm-conn-perms">
                       <label v-for="perm in dbPermissions" :key="perm.key" class="perm-perm-checkbox">
                         <input 
                           type="checkbox"
@@ -1514,6 +1824,49 @@ watch(() => route.query.tab, () => {
   font-size: 13px;
   color: var(--text-primary);
   line-height: 1.4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.perm-checkbox--role-active {
+  background: color-mix(in srgb, var(--brand) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--brand) 50%, transparent);
+}
+
+.perm-checkbox--role-active:hover {
+  background: color-mix(in srgb, var(--brand) 15%, transparent);
+}
+
+.perm-cb--inherited {
+  accent-color: var(--text-muted);
+  opacity: 0.65;
+}
+
+.perm-checkbox--direct-active {
+  background: color-mix(in srgb, var(--brand) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 45%, transparent);
+  border-left: 3px solid var(--brand);
+}
+
+.perm-checkbox--direct-active:hover {
+  background: color-mix(in srgb, var(--brand) 20%, transparent);
+}
+
+.perm-role-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: color-mix(in srgb, var(--brand) 15%, transparent);
+  color: var(--brand);
+  border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent);
+  flex-shrink: 0;
 }
 
 /* ─────────────────────────────────────────────────────────────── */
@@ -1561,8 +1914,22 @@ watch(() => route.query.tab, () => {
 .perm-conn-item {
   background: var(--bg-surface);
   border: 1px solid var(--border);
+  border-left: 3px solid transparent;
   border-radius: 6px;
   padding: 12px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.perm-conn-item--group-active {
+  background: color-mix(in srgb, var(--brand) 8%, var(--bg-surface));
+  border-color: color-mix(in srgb, var(--brand) 25%, var(--border));
+  border-left-color: color-mix(in srgb, var(--brand) 55%, transparent);
+}
+
+.perm-conn-item--direct-active {
+  background: color-mix(in srgb, var(--brand) 12%, var(--bg-surface));
+  border-color: color-mix(in srgb, var(--brand) 50%, var(--border));
+  border-left: 3px solid var(--brand);
 }
 
 .perm-conn-checkbox {
@@ -1571,6 +1938,34 @@ watch(() => route.query.tab, () => {
   gap: 10px;
   cursor: pointer;
   user-select: none;
+  width: 100%;
+}
+
+.perm-conn-status-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.perm-conn-assigned-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: var(--brand);
+  color: var(--brand-fg, #0d1117);
+}
+
+.perm-conn-assigned-badge::before {
+  content: '✓';
+  font-size: 10px;
 }
 
 .perm-conn-checkbox input[type="checkbox"] {
@@ -1644,7 +2039,8 @@ watch(() => route.query.tab, () => {
 /* ─────────────────────────────────────────────────────────────── */
 
 .perm-td-perms {
-  max-width: 400px;
+  min-width: 360px;
+  max-width: 560px;
 }
 
 .perm-perms-display {
@@ -1652,6 +2048,12 @@ watch(() => route.query.tab, () => {
   flex-wrap: wrap;
   gap: 4px;
   align-items: flex-start;
+}
+
+.perm-perms-display--dense {
+  max-height: 116px;
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .perm-perm-badge {
@@ -1664,6 +2066,21 @@ watch(() => route.query.tab, () => {
   color: var(--text-primary);
   border: 1px solid var(--border);
   white-space: nowrap;
+}
+
+.perm-perm-badge--direct {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-hover));
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+}
+
+.perm-perm-source {
+  display: inline-block;
+  margin-left: 6px;
+  padding-left: 6px;
+  border-left: 1px solid color-mix(in srgb, currentColor 24%, transparent);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
 }
 
 /* ─────────────────────────────────────────────────────────────── */
@@ -1689,4 +2106,61 @@ watch(() => route.query.tab, () => {
 .spin {
   animation: spin 1s linear infinite;
 }
+
+/* Filter bar */
+.perm-filter-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 20px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.perm-filter-search {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--bg-body); border: 1px solid var(--border);
+  border-radius: 5px; padding: 5px 10px; flex: 1; min-width: 160px;
+}
+.perm-filter-search svg { color: var(--text-muted); flex-shrink: 0; }
+.perm-filter-input {
+  border: none; outline: none; background: transparent;
+  color: var(--text-primary); font-size: 13px; width: 100%;
+  font-family: inherit;
+}
+.perm-filter-input::placeholder { color: var(--text-muted); }
+.perm-filter-sel {
+  padding: 5px 8px; border: 1px solid var(--border);
+  border-radius: 5px; background: var(--bg-body); color: var(--text-primary);
+  font-size: 12px; font-family: inherit; outline: none; cursor: pointer;
+}
+.perm-filter-clear {
+  padding: 5px 10px; border: 1px solid var(--border);
+  border-radius: 5px; background: transparent; color: var(--text-muted);
+  font-size: 12px; cursor: pointer; font-family: inherit;
+  transition: color 0.15s, border-color 0.15s;
+}
+.perm-filter-clear:hover { color: var(--danger); border-color: var(--danger); }
+.perm-filter-count { font-size: 12px; color: var(--text-muted); margin-left: auto; white-space: nowrap; }
+
+/* Sortable table headers */
+.perm-th-sort { cursor: pointer; user-select: none; white-space: nowrap; }
+.perm-th-sort:hover { color: var(--text-primary); }
+.perm-th-sort.sorted { color: var(--brand); }
+
+/* Column toggle */
+.perm-col-toggle { position: relative; }
+.perm-col-menu {
+  position: absolute; top: calc(100% + 6px); right: 0;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 7px; padding: 10px 12px; min-width: 170px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3); z-index: 200;
+}
+.perm-col-menu-title {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--text-muted); margin-bottom: 8px;
+}
+.perm-col-item {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text-primary);
+  padding: 4px 0; cursor: pointer;
+}
+.perm-col-item input { cursor: pointer; }
 </style>

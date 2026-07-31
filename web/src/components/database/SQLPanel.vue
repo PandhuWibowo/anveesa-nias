@@ -4,6 +4,7 @@ import type { CompletionSource } from '@codemirror/autocomplete'
 import axios from 'axios'
 import QueryEditor from '@/components/database/QueryEditor.vue'
 import ParamPanel from '@/components/ui/ParamPanel.vue'
+import DatabasePicker from '@/components/ui/DatabasePicker.vue'
 import AIAssistant from '@/components/ui/AIAssistant.vue'
 import SnippetLibrary from '@/components/ui/SnippetLibrary.vue'
 import ShortcutsModal from '@/components/ui/ShortcutsModal.vue'
@@ -14,7 +15,7 @@ import { useDatabases } from '@/composables/useDatabases'
 import { useSchemaCompletion } from '@/composables/useSchemaCompletion'
 import { useConnections } from '@/composables/useConnections'
 import { formatSQL } from '@/utils/sqlFormat'
-import { downloadCSV, downloadJSON, downloadExcel } from '@/utils/export'
+import { downloadCSV, downloadJSON, downloadExcel, downloadSQL } from '@/utils/export'
 import { readableError, readableFetchError } from '@/utils/httpError'
 
 // ── Result payload type (emitted up to DataView) ──────────────────
@@ -41,12 +42,13 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   result: [payload: SQLPanelPayload]
+  schemaChanged: []
   close: []
 }>()
 
 const { connections } = useConnections()
 const { fetchHistory, clearHistory } = useQuery()
-const { getCompletionSource } = useSchemaCompletion()
+const { getCompletionSource, invalidateCache: invalidateSchemaCompletionCache } = useSchemaCompletion()
 const { queries: savedQueries, fetchAll: fetchSaved, save: saveQuery, remove: removeQuery } = useSavedQueries()
 const { databases, error: databaseError, fetchDatabases } = useDatabases()
 
@@ -54,6 +56,18 @@ const activeConn = computed(() =>
   props.connId ? connections.value.find(c => c.id === props.connId) ?? null : null
 )
 const selectedDatabase = ref(props.defaultDb ?? '')
+const editorRefs = ref<Record<string, InstanceType<typeof QueryEditor>>>({})
+
+function setEditorRef(tabId: string, el: InstanceType<typeof QueryEditor> | null) {
+  if (el) editorRefs.value[tabId] = el
+  else delete editorRefs.value[tabId]
+}
+
+function getActiveSQLFromEditor(): string {
+  const tab = activeTab.value
+  if (!tab) return ''
+  return editorRefs.value[tab.id]?.getActiveSQL() ?? tab.sql
+}
 
 // ── Tabs ──────────────────────────────────────────────────────────
 interface QueryTab {
@@ -129,6 +143,23 @@ watch(selectedDatabase, async (db) => {
   schemaCompletion.value = await getCompletionSource(props.connId, db)
 })
 
+function isSchemaChangingSQL(sql: string) {
+  return /^\s*(?:\/\*[\s\S]*?\*\/\s*)*(?:create|alter|drop|truncate|rename|comment)\b/i.test(sql)
+}
+
+async function refreshSchemaAfterDDL(sql: string) {
+  if (!isSchemaChangingSQL(sql)) return
+  await refreshSchema()
+}
+
+async function refreshSchema() {
+  if (!props.connId) return
+  invalidateSchemaCompletionCache(props.connId)
+  const db = selectedDatabase.value || 'public'
+  schemaCompletion.value = await getCompletionSource(props.connId, db)
+  emit('schemaChanged')
+}
+
 // ── Transaction controls ──────────────────────────────────────────
 const txActive = ref(false)
 
@@ -146,6 +177,7 @@ async function txCommit() {
   try {
     await axios.post(`/api/connections/${props.connId}/transaction/commit`)
     txActive.value = false
+    await refreshSchema()
   } catch (e) {
     setActiveError(readableError(e, { action: 'Commit transaction', fallback: 'Failed to commit transaction' }))
   }
@@ -233,9 +265,11 @@ async function handleApprovalRequired(sql: string, responseData: any) {
   return false
 }
 
-async function runQuery() {
+async function runQuery(sqlOverride?: string) {
   if (!props.connId || !activeTab.value) return
   const tab = activeTab.value
+  const sql = sqlOverride ?? getActiveSQLFromEditor()
+  if (!sql.trim()) return
   const ctrl = new AbortController()
   abortControllers.set(tab.id, ctrl)
   tab.running = true
@@ -244,7 +278,7 @@ async function runQuery() {
   try {
     const { data } = await axios.post<QueryResult>(
       `/api/connections/${props.connId}/query`,
-      { sql: buildParamSQL(tab.sql), database: selectedDatabase.value || undefined },
+      { sql: buildParamSQL(sql), database: selectedDatabase.value || undefined },
       { signal: ctrl.signal }
     )
     emit('result', {
@@ -254,33 +288,34 @@ async function runQuery() {
       duration_ms: data.duration_ms,
       row_count: data.row_count,
       affected_rows: data.affected_rows ?? 0,
-      sql: tab.sql,
+      sql,
       database: selectedDatabase.value || undefined,
     })
     // Record in history
     axios.post(`/api/connections/${props.connId}/history`, {
-      sql: tab.sql, duration_ms: data.duration_ms, row_count: data.row_count,
+      sql, duration_ms: data.duration_ms, row_count: data.row_count,
     }).catch(() => {})
+    await refreshSchemaAfterDDL(buildParamSQL(sql))
   } catch (e: unknown) {
     const err = e as { code?: string; response?: { data?: { error?: string } } }
     if (err.code !== 'ERR_CANCELED') {
       const responseData = (err as any)?.response?.data
       if (responseData?.approval_required) {
         try {
-          await handleApprovalRequired(tab.sql, responseData)
+          await handleApprovalRequired(sql, responseData)
           return
         } catch (submitErr) {
           tab.error = readableError(submitErr, { action: 'Submit approval request', fallback: 'Failed to submit approval request' })
           tab.notice = ''
           tab.noticeTone = 'error'
-          emit('result', { kind: 'error', error: tab.error, sql: tab.sql })
+          emit('result', { kind: 'error', error: tab.error, sql })
           return
         }
       }
       tab.error = readableError(e, { action: 'Run query', fallback: 'Query failed' })
       tab.notice = ''
       tab.noticeTone = 'error'
-      emit('result', { kind: 'error', error: tab.error, sql: tab.sql })
+      emit('result', { kind: 'error', error: tab.error, sql })
     }
   } finally {
     tab.running = false
@@ -307,12 +342,13 @@ async function submitApprovalRequest() {
 // ── Explain ───────────────────────────────────────────────────────
 async function runExplainPlan() {
   if (!props.connId || !activeTab.value?.sql) return
+  const sql = getActiveSQLFromEditor()
   activeTab.value.running = true
   try {
     const { data } = await axios.post(`/api/connections/${props.connId}/explain`, {
-      sql: activeTab.value.sql
+      sql
     })
-    emit('result', { kind: 'explain', data, sql: activeTab.value.sql })
+    emit('result', { kind: 'explain', data, sql })
   } catch (e) {
     setActiveError(readableError(e, { action: 'Explain query', fallback: 'Explain failed' }), activeTab.value.sql)
   } finally {
@@ -324,9 +360,11 @@ async function runExplainPlan() {
 const streamMode = ref(false)
 let streamAbort: AbortController | null = null
 
-async function runStreamQuery() {
-  if (!props.connId || !activeTab.value?.sql) return
+async function runStreamQuery(sqlOverride?: string) {
+  if (!props.connId || !activeTab.value) return
   const tab = activeTab.value
+  const sql = sqlOverride ?? getActiveSQLFromEditor()
+  if (!sql.trim()) return
   tab.running = true
   const cols: string[] = []
   const rows: unknown[][] = []
@@ -337,7 +375,7 @@ async function runStreamQuery() {
     const resp = await fetch(`/api/connections/${props.connId}/query/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sql: tab.sql, database: selectedDatabase.value || undefined }),
+      body: JSON.stringify({ sql, database: selectedDatabase.value || undefined }),
       signal: streamAbort.signal,
     })
     if (!resp.ok) throw new Error(await readableFetchError(resp, 'Stream query failed'))
@@ -395,6 +433,8 @@ async function runScript() {
       { sql: buildParamSQL(activeTab.value.sql), database: selectedDatabase.value || undefined }
     )
     emit('result', { kind: 'script', results: data })
+    const schemaChangingResult = data.find((item) => !item.error && isSchemaChangingSQL(item.sql))
+    if (schemaChangingResult) await refreshSchemaAfterDDL(schemaChangingResult.sql)
   } catch (e: any) {
     const responseData = e?.response?.data
     if (activeTab.value && responseData?.approval_required) {
@@ -469,9 +509,10 @@ async function showSaved() {
 watch(() => props.connId, id => { if (id) fetchSaved() }, { immediate: true })
 
 // ── Export ────────────────────────────────────────────────────────
-function exportCurrentResult(format: 'csv' | 'json' | 'excel', columns: string[], rows: unknown[][]) {
+function exportCurrentResult(format: 'csv' | 'json' | 'excel' | 'sql', columns: string[], rows: unknown[][], tableName?: string) {
   if (format === 'csv') downloadCSV(columns, rows, 'query-results')
   else if (format === 'json') downloadJSON(columns, rows, 'query-results')
+  else if (format === 'sql') downloadSQL(columns, rows, 'query-results', tableName, activeConn.value?.driver)
   else downloadExcel(columns, rows, 'query-results')
 }
 
@@ -588,6 +629,17 @@ defineExpose({ loadSQL, currentSQL, exportCurrentResult })
 
       <div class="sp-divider" />
 
+      <!-- Database picker -->
+      <DatabasePicker
+        v-if="databases.length > 0"
+        :model-value="selectedDatabase"
+        :databases="databases"
+        direction="up"
+        @update:model-value="selectedDatabase = $event"
+      />
+
+      <div class="sp-divider" />
+
       <!-- Stream toggle -->
       <label class="sp-stream" title="Stream rows as they arrive">
         <input type="checkbox" v-model="streamMode" />
@@ -599,7 +651,7 @@ defineExpose({ loadSQL, currentSQL, exportCurrentResult })
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
         Stop
       </button>
-      <button v-else class="base-btn base-btn--primary base-btn--sm" :disabled="!connId || !activeTab?.sql.trim()" @click="streamMode ? runStreamQuery() : runQuery()">
+      <button v-else class="base-btn base-btn--primary base-btn--sm" :disabled="!connId || !activeTab?.sql.trim()" @click="streamMode ? runStreamQuery(getActiveSQLFromEditor()) : runQuery(getActiveSQLFromEditor())">
         <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
         {{ streamMode ? 'Stream' : 'Run' }}
       </button>
@@ -625,11 +677,12 @@ defineExpose({ loadSQL, currentSQL, exportCurrentResult })
     <template v-for="tab in tabs" :key="tab.id">
       <div v-show="tab.id === activeTabId" style="flex:1;min-height:0;display:flex;flex-direction:column;">
         <QueryEditor
+          :ref="(el: any) => setEditorRef(tab.id, el)"
           v-model="tab.sql"
           :dark-mode="darkMode"
           :schema-completion="schemaCompletion"
           placeholder="Write SQL here… (Cmd/Ctrl+Enter run, Cmd/Ctrl+Space suggest)"
-          @run="runQuery"
+          @run="(sql) => streamMode ? runStreamQuery(sql) : runQuery(sql)"
         />
       </div>
     </template>

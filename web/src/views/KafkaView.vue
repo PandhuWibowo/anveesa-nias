@@ -4,6 +4,9 @@ import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
 import { useAuth } from '@/composables/useAuth'
+import { useListFilter } from '@/composables/useListFilter'
+import { useSort } from '@/composables/useSort'
+import SortIcon from '@/components/ui/SortIcon.vue'
 
 const props = defineProps<{ activeConnId?: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -84,7 +87,6 @@ const topics = ref<KafkaTopic[]>([])
 const groups = ref<KafkaGroup[]>([])
 const loadingTopics = ref(false)
 const loadingGroups = ref(false)
-const topicFilter = ref('')
 const showInternalTopics = ref(false)
 const activeTab = ref<'topics' | 'messages' | 'jobs' | 'produce' | 'groups' | 'health' | 'manage'>('topics')
 const selectedTopic = ref<KafkaTopic | null>(null)
@@ -112,7 +114,6 @@ const updatePartitionCount = ref(0)
 const managingTopic = ref(false)
 const lastKafkaError = ref<KafkaDiagnosticError | null>(null)
 const kafkaActivity = ref<KafkaActivityItem[]>([])
-const traceQuery = ref('')
 const traceDlqTopics = ref('')
 const traceSearching = ref(false)
 const traceResults = ref<Array<{ topic: string; messages: KafkaMessage[]; kind: 'primary' | 'dlq' }>>([])
@@ -175,24 +176,36 @@ const activeConn = computed(() => {
   return kafkaConnections.value[0] ?? null
 })
 
+const visibleTopics = computed(() => showInternalTopics.value ? topics.value : topics.value.filter(topic => !isKafkaInternalTopic(topic.name)))
+const { search: topicFilter, filtered: topicSearchResults } = useListFilter(visibleTopics, (topic, query) => topic.name.toLowerCase().includes(query))
+function topicSortValue(topic: KafkaTopic, key: string): string | number {
+  if (key === 'name') return topic.name.toLowerCase()
+  if (key === 'partitions') return topic.partitions
+  if (key === 'replication_factor') return topic.replication_factor
+  if (key === 'leader_count') return topic.leader_count
+  return ''
+}
+const { sortKey: topicSortKey, sortDir: topicSortDir, toggleSort: toggleTopicSort, sort: sortTopics } = useSort<KafkaTopic>(topicSortValue)
 const filteredTopics = computed(() => {
-  const query = topicFilter.value.trim().toLowerCase()
-  const visibleTopics = showInternalTopics.value ? topics.value : topics.value.filter(topic => !isKafkaInternalTopic(topic.name))
-  const filtered = query ? visibleTopics.filter(topic => topic.name.toLowerCase().includes(query)) : visibleTopics
-  return [...filtered].sort((a, b) => {
+  const defaultOrdered = [...topicSearchResults.value].sort((a, b) => {
     const aInternal = isKafkaInternalTopic(a.name)
     const bInternal = isKafkaInternalTopic(b.name)
     if (aInternal !== bInternal) return aInternal ? 1 : -1
     return a.name.localeCompare(b.name)
   })
+  return sortTopics(defaultOrdered)
 })
 const selectedTopicIsInternal = computed(() => !!selectedTopic.value && isKafkaInternalTopic(selectedTopic.value.name))
+function groupSortValue(group: KafkaGroup, key: string): string | number {
+  if (key === 'group_id') return group.group_id.toLowerCase()
+  if (key === 'coordinator') return group.coordinator
+  if (key === 'protocol_type') return (group.protocol_type || '').toLowerCase()
+  return ''
+}
+const { sortKey: groupSortKey, sortDir: groupSortDir, toggleSort: toggleGroupSort, sort: sortGroups } = useSort<KafkaGroup>(groupSortValue)
+const sortedGroups = computed(() => sortGroups(groups.value))
+const { search: traceQuery, filtered: filteredMessages } = useListFilter(messages, messageMatchesTrace)
 const normalizedTraceQuery = computed(() => traceQuery.value.trim().toLowerCase())
-const filteredMessages = computed(() => {
-  const query = normalizedTraceQuery.value
-  if (!query) return messages.value
-  return messages.value.filter(message => messageMatchesTrace(message, query))
-})
 const filteredKafkaActivity = computed(() => {
   const query = normalizedTraceQuery.value
   if (!query) return kafkaActivity.value
@@ -1372,6 +1385,11 @@ watch(selectedTopic, (topic) => {
                   <span>Show internal topics</span>
                 </label>
               </div>
+              <div class="kafka-topic-sort">
+                <button type="button" :class="{ sorted: topicSortKey === 'name' }" @click="toggleTopicSort('name')">Name <SortIcon :active="topicSortKey === 'name'" :dir="topicSortDir" /></button>
+                <button type="button" :class="{ sorted: topicSortKey === 'partitions' }" @click="toggleTopicSort('partitions')">Partitions <SortIcon :active="topicSortKey === 'partitions'" :dir="topicSortDir" /></button>
+                <button type="button" :class="{ sorted: topicSortKey === 'leader_count' }" @click="toggleTopicSort('leader_count')">Leaders <SortIcon :active="topicSortKey === 'leader_count'" :dir="topicSortDir" /></button>
+              </div>
               <div v-if="loadingTopics" class="kafka-muted">Loading topics...</div>
               <template v-else>
                 <button
@@ -2097,13 +2115,13 @@ watch(selectedTopic, (topic) => {
                 <table v-else class="kafka-table">
                   <thead>
                     <tr>
-                      <th>Group ID</th>
-                      <th>Coordinator</th>
-                      <th>Protocol</th>
+                      <th class="kafka-th-sort" :class="{ sorted: groupSortKey === 'group_id' }" @click="toggleGroupSort('group_id')">Group ID <SortIcon :active="groupSortKey === 'group_id'" :dir="groupSortDir" /></th>
+                      <th class="kafka-th-sort" :class="{ sorted: groupSortKey === 'coordinator' }" @click="toggleGroupSort('coordinator')">Coordinator <SortIcon :active="groupSortKey === 'coordinator'" :dir="groupSortDir" /></th>
+                      <th class="kafka-th-sort" :class="{ sorted: groupSortKey === 'protocol_type' }" @click="toggleGroupSort('protocol_type')">Protocol <SortIcon :active="groupSortKey === 'protocol_type'" :dir="groupSortDir" /></th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="group in groups" :key="group.group_id" class="kafka-click-row" :class="{ active: selectedGroupId === group.group_id }" @click="loadGroupDetail(group.group_id)">
+                    <tr v-for="group in sortedGroups" :key="group.group_id" class="kafka-click-row" :class="{ active: selectedGroupId === group.group_id }" @click="loadGroupDetail(group.group_id)">
                       <td>{{ group.group_id }}</td>
                       <td>{{ group.coordinator }}</td>
                       <td>{{ group.protocol_type || 'unknown' }}</td>
@@ -3089,6 +3107,34 @@ watch(selectedTopic, (topic) => {
 
 .kafka-toggle-row input {
   accent-color: var(--brand);
+}
+
+.kafka-topic-sort {
+  display: flex;
+  gap: 4px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.kafka-topic-sort button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--r-xs);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.kafka-topic-sort button:hover {
+  background: var(--bg-hover);
+}
+
+.kafka-topic-sort button.sorted {
+  color: var(--brand);
 }
 
 .kafka-topic-row {
@@ -4119,6 +4165,11 @@ watch(selectedTopic, (topic) => {
 
 .kafka-click-row {
   cursor: pointer;
+}
+
+.kafka-th-sort {
+  cursor: pointer;
+  user-select: none;
 }
 
 .kafka-click-row:hover,

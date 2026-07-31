@@ -5,6 +5,9 @@ import { useConnections } from '@/composables/useConnections'
 import { useDatabases } from '@/composables/useDatabases'
 import { useSchema, type SchemaObjectItem, type SchemaObjectDetail } from '@/composables/useSchema'
 import { pendingSQL } from '@/composables/usePendingSQL'
+import { useListFilter } from '@/composables/useListFilter'
+import { useSort } from '@/composables/useSort'
+import SortIcon from '@/components/ui/SortIcon.vue'
 
 const props = defineProps<{ activeConnId?: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -17,7 +20,6 @@ const { fetchMetadata, fetchObjectDetail, metadata } = useSchema()
 const connId = ref<number | null>(null)
 const activeDb = ref('')
 const activeTab = ref('indexes')
-const search = ref('')
 const selectedItem = ref<SchemaObjectItem | null>(null)
 const detail = ref<SchemaObjectDetail | null>(null)
 const detailLoading = ref(false)
@@ -64,16 +66,21 @@ const currentGroup = computed(() => {
   return metadata.value.groups.find(g => g.key === activeTab.value) ?? null
 })
 
-const filteredItems = computed(() => {
-  const items = currentGroup.value?.items ?? []
-  const q = search.value.toLowerCase().trim()
-  if (!q) return items
-  return items.filter(i =>
-    i.name.toLowerCase().includes(q) ||
-    (i.parent_name ?? '').toLowerCase().includes(q) ||
-    (i.summary ?? '').toLowerCase().includes(q)
-  )
-})
+const groupItems = computed(() => currentGroup.value?.items ?? [])
+
+const { search, filtered: searchedItems } = useListFilter(groupItems, (i, q) =>
+  i.name.toLowerCase().includes(q) ||
+  (i.parent_name ?? '').toLowerCase().includes(q) ||
+  (i.summary ?? '').toLowerCase().includes(q)
+)
+
+function dboSortValue(item: SchemaObjectItem, key: string): string {
+  if (key === 'name') return item.name.toLowerCase()
+  if (key === 'meta') return (item.parent_name ?? item.summary ?? '').toLowerCase()
+  return ''
+}
+const { sortKey, sortDir, toggleSort, sort } = useSort<SchemaObjectItem>(dboSortValue)
+const filteredItems = computed(() => sort(searchedItems.value))
 
 // Sync with parent's activeConnId
 watch(() => props.activeConnId, async (id) => {
@@ -245,6 +252,10 @@ function countForTab(key: string): number {
 
       <!-- Object list -->
       <div class="dbo-list">
+        <div class="dbo-list__sort">
+          <button class="dbo-sort-btn" :class="{ sorted: sortKey === 'name' }" @click="toggleSort('name')">Name <SortIcon :active="sortKey === 'name'" :dir="sortDir" /></button>
+          <button class="dbo-sort-btn" :class="{ sorted: sortKey === 'meta' }" @click="toggleSort('meta')">Details <SortIcon :active="sortKey === 'meta'" :dir="sortDir" /></button>
+        </div>
         <div v-if="filteredItems.length === 0" class="dbo-list__empty">
           {{ search ? 'No matches for "' + search + '"' : 'No objects in this category.' }}
         </div>
@@ -515,6 +526,18 @@ function countForTab(key: string): number {
   width: 260px; flex-shrink: 0; border-right: 1px solid var(--border);
   overflow-y: auto; display: flex; flex-direction: column; padding: 6px 4px;
 }
+.dbo-list__sort {
+  display: flex; gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.dbo-sort-btn {
+  display: flex; align-items: center; gap: 2px; background: none; border: none;
+  cursor: pointer; font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.4px; color: var(--text-muted); padding: 3px 6px; border-radius: 4px;
+}
+.dbo-sort-btn:hover { color: var(--text-primary); background: var(--bg-elevated); }
+.dbo-sort-btn.sorted { color: var(--brand, #5b8dee); }
+.dbo-sort-btn.sorted .sort-icon { opacity: 1; }
 .dbo-list__empty {
   padding: 24px 16px; text-align: center; font-size: 12.5px; color: var(--text-muted);
 }

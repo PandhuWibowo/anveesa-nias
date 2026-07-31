@@ -20,8 +20,14 @@ const valueType = computed(() => {
   if (props.value === null || props.value === undefined) return 'null'
   if (typeof props.value === 'number') return 'number'
   if (typeof props.value === 'boolean') return 'boolean'
-  const str = String(props.value)
-  try { JSON.parse(str); return 'json' } catch { /* */ }
+  const str = String(props.value).trim()
+  // Only treat it as JSON if it looks like an object/array — a bare numeric
+  // string (e.g. an 18-digit reference number) also parses via JSON.parse,
+  // but re-serializing it would round-trip through a JS number and silently
+  // lose precision past Number.MAX_SAFE_INTEGER.
+  if (str.startsWith('{') || str.startsWith('[')) {
+    try { JSON.parse(str); return 'json' } catch { /* */ }
+  }
   return 'text'
 })
 

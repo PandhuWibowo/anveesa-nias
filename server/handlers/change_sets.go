@@ -577,8 +577,9 @@ func ExecuteChangeSet() http.HandlerFunc {
 		res, execErr := db.ExecContext(r.Context(), cs.Statement)
 		durationMs := time.Since(start).Milliseconds()
 		if execErr != nil {
-			markChangeSetExecution(id, QueryApprovalStatusFailed, sanitizeDBError(execErr))
-			http.Error(w, jsonError(sanitizeDBError(execErr)), http.StatusBadRequest)
+			msg := sanitizeDBError(execErr)
+			markChangeSetExecution(id, QueryApprovalStatusFailed, msg)
+			http.Error(w, jsonError(msg), dbErrorStatus(msg))
 			return
 		}
 

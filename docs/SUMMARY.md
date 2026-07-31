@@ -1,6 +1,6 @@
 # Project Summary
 
-Anveesa Nias is an open-source database studio with a Go backend and Vue frontend.
+Anveesa Nias is an open-source internal developer platform with a Go backend and Vue frontend.
 
 Current public-facing project setup includes:
 

@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
+import Pagination from '@/components/ui/Pagination.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -210,25 +211,32 @@ const pageAfterCursors = ref(new Map<number, any[]>())
 const totalPages  = computed(() => Math.max(1, Math.ceil(totalHits.value / pageSize.value)))
 const pageTo      = computed(() => Math.min(currentPage.value * pageSize.value, totalHits.value))
 
+// Elasticsearch rejects from + size > index.max_result_window (default 10,000).
+// Any page whose last result sits within that window can be jumped to directly
+// via from:; deeper pages still require stepping through search_after cursors.
+const MAX_RESULT_WINDOW = 10000
+const maxJumpablePage = computed(() => Math.max(1, Math.floor(MAX_RESULT_WINDOW / pageSize.value)))
+const jumpTarget = computed(() => Math.min(totalPages.value, maxJumpablePage.value))
+const jumpPageInput = ref<number | null>(null)
+
 function canGoToPage(p: number): boolean {
   if (p === 1) return true
-  return pageAfterCursors.value.has(p)
+  if (p < 1 || p > totalPages.value) return false
+  // Reachable directly (within the from window) or already cursor-cached.
+  return p <= maxJumpablePage.value || pageAfterCursors.value.has(p)
 }
 
-// Visible page window (up to 7 buttons)
-const pageWindow = computed(() => {
-  const total = totalPages.value
-  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
-  const cur = currentPage.value
-  const pages: (number | '…')[] = [1]
-  const lo = Math.max(2, cur - 2)
-  const hi = Math.min(total - 1, cur + 2)
-  if (lo > 2) pages.push('…')
-  for (let p = lo; p <= hi; p++) pages.push(p)
-  if (hi < total - 1) pages.push('…')
-  pages.push(total)
-  return pages
-})
+function jumpToInputPage() {
+  const p = Math.trunc(Number(jumpPageInput.value))
+  if (!Number.isFinite(p) || p < 1) return
+  const target = Math.min(p, totalPages.value)
+  if (!canGoToPage(target)) {
+    toast.error(`Page ${target.toLocaleString()} is beyond the ${MAX_RESULT_WINDOW.toLocaleString()}-result jump window — use Next to step further, or narrow the filters/time range.`)
+    return
+  }
+  jumpPageInput.value = null
+  goToPage(target)
+}
 
 // Chips: active filters the user can individually remove
 const activeFilters = computed(() => {
@@ -247,7 +255,10 @@ function clearAllFilters() {
 
 function goToPage(p: number | '…') {
   if (p === '…' || typeof p !== 'number') return
-  if (!canGoToPage(p)) return
+  if (!canGoToPage(p)) {
+    toast.error(`Page ${p.toLocaleString()} is beyond the ${MAX_RESULT_WINDOW.toLocaleString()}-result jump window — use Next to step further, or narrow the filters/time range.`)
+    return
+  }
   currentPage.value = p; run(true)
 }
 
@@ -378,6 +389,20 @@ function toggleApp(name: string) {
   run()
 }
 
+// Filter by an app name typed manually — works even if it wasn't auto-discovered
+// (e.g. outside the time range, or a brand-new app).
+function addManualApp() {
+  const v = appSearch.value.trim()
+  if (!v) return
+  if (!appFilter.value.has(v)) {
+    appFilter.value = new Set([...appFilter.value, v])
+  }
+  if (!appNames.value.includes(v)) appNames.value = [...appNames.value, v].sort((a, b) => a.localeCompare(b))
+  appSearch.value = ''
+  showAppMenu.value = false
+  run()
+}
+
 function onDocClick(e: MouseEvent) {
   if (showTimePicker.value && timeWrapEl.value && !timeWrapEl.value.contains(e.target as Node)) {
     showTimePicker.value = false
@@ -411,9 +436,9 @@ function resetAll() {
   currentPage.value = 1
 }
 
-function buildQuery(): any {
+function buildQuery(opts: { ignoreApp?: boolean; ignoreTime?: boolean } = {}): any {
   const clauses: any[] = []
-  const timeClause = buildTimeClause()
+  const timeClause = opts.ignoreTime ? null : buildTimeClause()
   if (timeClause) clauses.push({ range: { [timestampField.value]: timeClause } })
   if (searchText.value.trim())
     clauses.push({ query_string: { query: searchText.value.trim(), lenient: true } })
@@ -424,7 +449,7 @@ function buildQuery(): any {
       { term:         { environment: envFilter.value } },
       { match_phrase: { environment: envFilter.value } },
     ], minimum_should_match: 1 } })
-  if (appFilter.value.size) {
+  if (!opts.ignoreApp && appFilter.value.size) {
     const apps = [...appFilter.value]
     clauses.push({ bool: { should: apps.flatMap(a => [
       { term:         { 'app_name.keyword': a } },
@@ -468,11 +493,10 @@ function buildQuery(): any {
 // Same as buildQuery but without the appFilter clause — used for the app
 // aggregation so the dropdown always shows all available apps.
 function buildQueryWithoutApp(): any {
-  const saved = appFilter.value
-  appFilter.value = new Set()
-  const q = buildQuery()
-  appFilter.value = saved
-  return q
+  // App discovery ignores the app filter AND the time range, so the dropdown
+  // lists every app ever seen — not just those that logged in the current
+  // window (a newly-deployed or low-volume app would otherwise be hidden).
+  return buildQuery({ ignoreApp: true, ignoreTime: true })
 }
 
 // Convert a datetime-local string ("YYYY-MM-DDTHH:mm") — which the browser
@@ -1021,7 +1045,7 @@ function hitKey(hit: Hit, idx: number): string {
               </div>
             </div>
 
-            <div v-if="appNames.length" class="disc-filter-group">
+            <div v-if="activeConn" class="disc-filter-group">
               <span class="disc-filter-label">APP</span>
               <div class="disc-app-picker" ref="appMenuEl">
                 <button class="disc-app-trigger"
@@ -1034,13 +1058,17 @@ function hitKey(hit: Hit, idx: number): string {
                 </button>
                 <div v-if="showAppMenu" class="disc-app-menu">
                   <div class="disc-app-search-wrap">
-                    <input v-model="appSearch" class="disc-app-search" placeholder="Search apps…" @click.stop />
+                    <input v-model="appSearch" class="disc-app-search" placeholder="Search or type an app name…" @click.stop @keyup.enter="addManualApp" />
                   </div>
+                  <button
+                    v-if="appSearch.trim() && !visibleAppNames.some(a => a.toLowerCase() === appSearch.trim().toLowerCase())"
+                    class="disc-app-add"
+                    @click="addManualApp">
+                    + Filter by “{{ appSearch.trim() }}”
+                  </button>
                   <div class="disc-app-list">
                     <div v-if="appSearchLoading" class="disc-app-state">Searching…</div>
-                    <div v-else-if="!visibleAppNames.length" class="disc-app-state">
-                      {{ appSearch.trim() ? 'No apps match — try the main filter: app_name:"your-app"' : 'No apps in this time range' }}
-                    </div>
+                    <div v-else-if="!visibleAppNames.length && !appSearch.trim()" class="disc-app-state">No apps found.</div>
                     <label v-for="app in visibleAppNames"
                       :key="app" class="disc-app-item"
                       :class="{ selected: appFilter.has(app) }">
@@ -1122,25 +1150,19 @@ function hitKey(hit: Hit, idx: number): string {
 
       <!-- ── Pagination ──────────────────────────────────── -->
       <div v-if="totalPages > 1" class="disc-pagination">
-        <button class="disc-pg-btn disc-pg-nav"
-          :disabled="currentPage === 1"
-          @click="goToPage(currentPage - 1)">‹ Prev</button>
+        <Pagination :page="currentPage" :total-pages="totalPages" :total="totalHits" item-label="results" @update:page="goToPage" />
 
-        <template v-for="p in pageWindow" :key="String(p)">
-          <span v-if="p === '…'" class="disc-pg-ellipsis">…</span>
-          <button v-else class="disc-pg-btn"
-            :class="{ active: p === currentPage }"
-            :disabled="!canGoToPage(p)"
-            :title="!canGoToPage(p) ? 'Navigate page by page to reach this page' : undefined"
-            @click="goToPage(p)">{{ p }}</button>
-        </template>
-
-        <button class="disc-pg-btn disc-pg-nav"
-          :disabled="currentPage === totalPages || !canGoToPage(currentPage + 1)"
-          @click="goToPage(currentPage + 1)">Next ›</button>
-
-        <span class="disc-pg-info">
-          Page {{ currentPage }} of {{ totalPages.toLocaleString() }}
+        <span class="disc-pg-jump">
+          <input
+            v-model.number="jumpPageInput"
+            class="base-input disc-pg-jump-input"
+            type="number"
+            min="1"
+            :max="totalPages"
+            :placeholder="`1–${jumpTarget.toLocaleString()}`"
+            :title="`Jump directly to any page up to ${jumpTarget.toLocaleString()} (first ${MAX_RESULT_WINDOW.toLocaleString()} results). Use Next to step deeper.`"
+            @keyup.enter="jumpToInputPage" />
+          <button class="base-btn base-btn--ghost base-btn--xs" :disabled="jumpPageInput == null" @click="jumpToInputPage">Go</button>
         </span>
       </div>
 
@@ -1456,6 +1478,12 @@ export { flatSource }
 }
 .disc-app-search:focus { border-color:var(--accent,#3b82f6); }
 .disc-app-state { padding:8px 12px; font-size:11.5px; color:var(--text-muted); }
+.disc-app-add {
+  display:block; width:calc(100% - 16px); margin:2px 8px 4px; text-align:left;
+  border:1px dashed var(--brand); border-radius:6px; background:var(--brand-dim);
+  color:var(--brand); font-size:12px; padding:6px 9px; cursor:pointer;
+}
+.disc-app-add:hover { background:var(--brand); color:var(--brand-fg); }
 .disc-app-list { max-height:220px; overflow-y:auto; padding:4px 0; }
 .disc-app-item {
   display:flex; align-items:center; gap:8px;
@@ -1776,16 +1804,13 @@ export { flatSource }
   display: flex; align-items: center; justify-content: center;
   gap: 4px; padding: 10px 0 4px; flex-shrink: 0; flex-wrap: wrap;
 }
-.disc-pg-btn {
-  min-width: 32px; height: 28px; padding: 0 8px;
-  border: 1px solid var(--border); border-radius: 6px;
-  background: var(--bg-elevated); color: var(--text-secondary);
-  font-size: 12.5px; cursor: pointer; transition: all .12s;
+.disc-pg-jump { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; }
+.disc-pg-jump-input {
+  width: 78px; height: 28px; padding: 0 8px;
+  font-size: 12.5px; text-align: center;
 }
-.disc-pg-btn:hover:not(:disabled) { border-color:#00bfb3; color:#00bfb3; }
-.disc-pg-btn.active { background:#00bfb3; border-color:#00bfb3; color:#fff; font-weight:700; }
-.disc-pg-btn:disabled { opacity:.35; cursor:not-allowed; }
-.disc-pg-nav { padding: 0 12px; font-size: 13px; }
-.disc-pg-ellipsis { color: var(--text-muted); font-size: 13px; padding: 0 4px; line-height: 28px; }
-.disc-pg-info { font-size: 11.5px; color: var(--text-muted); margin-left: 8px; white-space: nowrap; }
+/* Hide number spinners for a cleaner jump box */
+.disc-pg-jump-input::-webkit-outer-spin-button,
+.disc-pg-jump-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.disc-pg-jump-input { -moz-appearance: textfield; appearance: textfield; }
 </style>

@@ -149,16 +149,33 @@ const (
 	PermFoldersManage       = "folders.manage"
 	PermRolesManage         = "roles.manage"
 	PermWorkflowsManage     = "workflows.manage"
-	PermPipelinesView   = "pipelines.view"
-	PermPipelinesManage = "pipelines.manage"
-	PermPipelinesRun    = "pipelines.run"
+	PermPipelinesView       = "pipelines.view"
+	PermPipelinesManage     = "pipelines.manage"
+	PermPipelinesRun        = "pipelines.run"
 	// Observability
 	PermObservabilityView = "observability.view"
 	PermDiscoverView      = "discover.view"
 	PermUptimeView        = "uptime.view"
 	// Data
-	PermDataExport = "data.export"
-	PermDataImport = "data.import"
+	PermDataExport     = "data.export"
+	PermDataImport     = "data.import"
+	PermDBUsersManage  = "dbusers.manage"
+	PermSettingsAlerts = "settings.alerts"
+	// Infrastructure
+	PermDockerView   = "docker.view"
+	PermDockerManage = "docker.manage"
+	PermDockerExec   = "docker.exec"
+	PermSftpAccess   = "sftp.access"
+	PermSftpManage   = "sftp.manage"
+	PermNginxView    = "nginx.view"
+	PermNginxManage  = "nginx.manage"
+	PermNginxReload  = "nginx.reload"
+	PermKubeView     = "kube.view"
+	PermKubeManage   = "kube.manage"
+	PermKubeExec     = "kube.exec"
+	PermCronView     = "cron.view"
+	PermCronManage   = "cron.manage"
+	PermCronExec     = "cron.exec"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -191,6 +208,7 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermMongoImport, Label: "Import MongoDB Data", Group: "Document Database"},
 	{Key: PermCassandraView, Label: "Use Cassandra Workbench", Group: "Wide-column Database"},
 	{Key: PermAuditView, Label: "View Audit Logs", Group: "Audit"},
+	{Key: PermOperationsView, Label: "View Operations Dashboard", Group: "Operations"},
 	{Key: PermPerformanceView, Label: "View Query Performance", Group: "Operations"},
 	{Key: PermDatabaseAuditView, Label: "View Database Audit", Group: "Operations"},
 	{Key: PermWatchersManage, Label: "Manage Watchers", Group: "Operations"},
@@ -219,6 +237,23 @@ var AllAppPermissions = []PermissionDef{
 	// Data
 	{Key: PermDataExport, Label: "Export Data (CSV / JSON / Excel)", Group: "Data"},
 	{Key: PermDataImport, Label: "Import Data", Group: "Data"},
+	{Key: PermDBUsersManage, Label: "Manage Database Users & Grants", Group: "Administration"},
+	{Key: PermSettingsAlerts, Label: "Manage Alert Settings", Group: "Administration"},
+	// Infrastructure
+	{Key: PermDockerView, Label: "View Docker Hosts & Containers", Group: "Infrastructure"},
+	{Key: PermDockerManage, Label: "Manage Docker Hosts & Container Lifecycle", Group: "Infrastructure"},
+	{Key: PermDockerExec, Label: "Run Commands Inside Containers (high-risk)", Group: "Infrastructure"},
+	{Key: PermSftpAccess, Label: "Browse & Download Files (SFTP)", Group: "Infrastructure"},
+	{Key: PermSftpManage, Label: "Upload, Rename & Delete Files (SFTP)", Group: "Infrastructure"},
+	{Key: PermNginxView, Label: "View Nginx Config & Logs", Group: "Infrastructure"},
+	{Key: PermNginxManage, Label: "Edit Nginx Config & Toggle Sites", Group: "Infrastructure"},
+	{Key: PermNginxReload, Label: "Test & Reload Nginx", Group: "Infrastructure"},
+	{Key: PermKubeView, Label: "View Kubernetes Clusters & Workloads", Group: "Infrastructure"},
+	{Key: PermKubeManage, Label: "Manage Kubernetes Cluster Connections", Group: "Infrastructure"},
+	{Key: PermKubeExec, Label: "Exec Into Kubernetes Pods (high-risk)", Group: "Infrastructure"},
+	{Key: PermCronView, Label: "View Cron Hosts, Jobs & Run History", Group: "Infrastructure"},
+	{Key: PermCronManage, Label: "Manage Cron Hosts & Jobs", Group: "Infrastructure"},
+	{Key: PermCronExec, Label: "Run Cron Jobs On-Demand (high-risk)", Group: "Infrastructure"},
 }
 
 // PermissionDef describes a single permission for the UI.

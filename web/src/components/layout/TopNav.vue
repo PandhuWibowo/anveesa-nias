@@ -102,8 +102,9 @@ const allMenuGroups: MenuGroup[] = [
     label: 'Observability',
     icon: 'observability',
     items: [
-        { name: 'discover', label: 'Discover', desc: 'Explore and trace logs — filter by level, app, environment with a live log stream', icon: 'discover', permissionsAny: ['discover.view', 'observability.view', 'connections.view'] },
-                { name: 'uptime', label: 'Uptime', desc: 'Heartbeat monitor status, response times, TLS expiry, and 24h timeline per endpoint', icon: 'uptime', permissionsAny: ['uptime.view', 'observability.view', 'connections.view'] },
+      { name: 'discover', label: 'Discover', desc: 'Explore and trace logs — filter by level, app, environment with a live log stream', icon: 'discover', permissionsAny: ['discover.view', 'observability.view', 'connections.view'] },
+      { name: 'uptime', label: 'Uptime', desc: 'Heartbeat monitor status, response times, TLS expiry, and 24h timeline per endpoint', icon: 'uptime', permissionsAny: ['uptime.view', 'observability.view', 'connections.view'] },
+      { name: 'infra-metrics', label: 'Infra Metrics', desc: 'Cluster health, node CPU/RAM/heap/disk, index throughput and time-series charts from Elasticsearch or OpenSearch', icon: 'performance', permissionsAny: ['observability.view', 'connections.view'] },
     ],
   },
   {
@@ -147,6 +148,20 @@ const allMenuGroups: MenuGroup[] = [
     ],
   },
   {
+    id: 'infrastructure',
+    label: 'Infrastructure',
+    icon: 'docker',
+    items: [
+      { name: 'ssh-hosts', label: 'SSH Hosts', desc: 'Manage server connections shared by Docker, SFTP, and Nginx', icon: 'docker', section: 'Servers', permissionsAny: ['docker.view', 'docker.manage', 'sftp.access', 'sftp.manage'] },
+      { name: 'docker', label: 'Docker', desc: 'Browse and control containers and images across your servers over SSH', icon: 'docker', section: 'Servers', permissionsAny: ['docker.view', 'docker.manage'] },
+      { name: 'sftp', label: 'SFTP', desc: 'Browse, upload, and download files on your servers over SSH', icon: 'sftp', section: 'Servers', permissionsAny: ['sftp.access', 'sftp.manage'] },
+      { name: 'nginx', label: 'Nginx', desc: 'Edit configs, toggle sites, and follow access & error logs across your servers over SSH', icon: 'nginx', section: 'Servers', permissionsAny: ['nginx.view', 'nginx.manage', 'nginx.reload'] },
+      { name: 'cron', label: 'Cron Scheduler', desc: 'View and edit the native crontab on each of your SSH Hosts', icon: 'scheduler', section: 'Servers', permissionsAny: ['cron.view', 'cron.manage'] },
+      { name: 'kube-clusters', label: 'K8s Clusters', desc: 'Manage Kubernetes cluster connections (Alibaba ACK, Huawei CCE) via kubeconfig', icon: 'kube', section: 'Kubernetes', permissionsAny: ['kube.view', 'kube.manage'] },
+      { name: 'kubernetes', label: 'Kubernetes', desc: 'Browse nodes, workloads, services, events, and pod logs across your clusters', icon: 'kube', section: 'Kubernetes', permissionsAny: ['kube.view', 'kube.manage'] },
+    ],
+  },
+  {
     id: 'admin',
     label: 'Admin',
     icon: 'settings',
@@ -154,6 +169,9 @@ const allMenuGroups: MenuGroup[] = [
       { name: 'connections', label: 'Connections', desc: 'Manage environments and database access points', icon: 'plug', permissionsAny: ['connections.view'] },
       { name: 'permissions', label: 'Roles & Permissions', desc: 'Define roles and application permission policy', icon: 'rbac', permissionsAny: ['roles.manage'] },
       { name: 'permissions', label: 'Access Groups', desc: 'Manage folder-based connection access groups', icon: 'rbac', permissionsAny: ['folders.manage'], query: { tab: 'groups' } },
+      { name: 'db-users', label: 'DB User Manager', desc: 'Create database-level users and manage their privileges and grants', icon: 'users', permissionsAny: ['dbusers.manage'] },
+      { name: 'alert-settings', label: 'Alert Settings', desc: 'Configure global alert channels — Telegram, Discord, Slack, and webhooks', icon: 'notification', permissionsAny: ['settings.alerts'] },
+      { name: 'alerts', label: 'Alert Log', desc: 'History of every alert delivery across all configured channels', icon: 'audit', permissionsAny: ['settings.alerts'] },
     ],
   },
 ]
@@ -242,6 +260,11 @@ const ICON_PATHS: Record<string, string> = {
   'service-health': '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   uptime: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/><path d="M12 22v-2"/><path d="M12 4V2"/><path d="M4.93 4.93l1.41 1.41"/><path d="M17.66 17.66l1.41 1.41"/>',
   layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
+  notification: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+  docker: '<rect x="3" y="10" width="3" height="3"/><rect x="7" y="10" width="3" height="3"/><rect x="11" y="10" width="3" height="3"/><rect x="7" y="6" width="3" height="3"/><rect x="11" y="6" width="3" height="3"/><path d="M3 13h13c2.5 0 4-1 4.5-3 1 .3 2 .2 2.5-.3-.3 1.8-1.7 3.3-3.5 3.3H3z"/>',
+  sftp: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5"/><path d="M9.5 13.5 12 11l2.5 2.5"/>',
+  nginx: '<path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M9 16V9l6 7V9"/>',
+  kube: '<path d="M12 2 3 7v10l9 5 9-5V7z"/><circle cx="12" cy="12" r="2.5"/><path d="M12 9.5V5.5"/><path d="m14.2 13.4 3.3 1.9"/><path d="m9.8 13.4-3.3 1.9"/>',
 }
 
 function iconPath(icon: string): string {

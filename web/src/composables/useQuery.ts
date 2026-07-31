@@ -22,6 +22,10 @@ export interface HistoryItem {
   error?: string
 }
 
+// Query execution can legitimately run longer than the global axios timeout,
+// so these calls opt into a larger per-request deadline.
+const QUERY_TIMEOUT_MS = 120_000
+
 // In-memory list — merged with backend history on load
 const localHistory = ref<HistoryItem[]>([])
 
@@ -37,7 +41,7 @@ export function useQuery() {
     result.value = null
 
     try {
-      const { data } = await axios.post<QueryResult>(`/api/connections/${connId}/query`, { sql })
+      const { data } = await axios.post<QueryResult>(`/api/connections/${connId}/query`, { sql }, { timeout: QUERY_TIMEOUT_MS })
       result.value = data
 
       const item: HistoryItem = {
@@ -87,7 +91,7 @@ export function useQuery() {
     try {
       const { data } = await axios.post<QueryResult>(`/api/connections/${connId}/query`, {
         sql: `EXPLAIN ${sql}`,
-      })
+      }, { timeout: QUERY_TIMEOUT_MS })
       result.value = data
     } catch (e: unknown) {
       const msg = readableError(e, { action: 'Explain query', fallback: 'Explain failed' })

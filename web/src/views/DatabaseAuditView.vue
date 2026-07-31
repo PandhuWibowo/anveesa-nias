@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
+import { useListFilter } from '@/composables/useListFilter'
 import { formatServerTimestamp, parseServerTimestamp } from '@/utils/datetime'
 
 interface NativeAccessSession {
@@ -72,7 +73,6 @@ const historyNotices = ref<NativeAuditHistoryNotice[]>([])
 const loading = ref(false)
 const autoRefresh = ref(true)
 const selectedConnId = ref<number | 'all'>('all')
-const search = ref('')
 let timer: ReturnType<typeof setInterval>
 
 function truncateText(value: string, max = 220): string {
@@ -102,35 +102,41 @@ async function load() {
   }
 }
 
-const filteredSessions = computed(() => {
-  const term = search.value.trim().toLowerCase()
-  return [...sessions.value]
-    .filter((session) => {
-      if (selectedConnId.value !== 'all' && session.conn_id !== selectedConnId.value) return false
-      if (!term) return true
-      const haystack = [
-        session.conn_name,
-        session.username,
-        session.client_addr,
-        session.application_name,
-        session.database_name,
-        session.query_text,
-        session.session_state,
-      ].join(' ').toLowerCase()
-      return haystack.includes(term)
-    })
-    .sort((a, b) => {
-      const aTs = parseServerTimestamp(a.query_started_at || a.started_at).getTime()
-      const bTs = parseServerTimestamp(b.query_started_at || b.started_at).getTime()
-      return bTs - aTs
-    })
+const connFilteredSessions = computed(() =>
+  selectedConnId.value === 'all' ? sessions.value : sessions.value.filter((s) => s.conn_id === selectedConnId.value)
+)
+
+// The single search box drives both the sessions and history lists below; useListFilter
+// owns `search` (bound to the input) and the sessions match, history reuses the same ref.
+const { search, filtered: matchedSessions } = useListFilter(connFilteredSessions, (session, term) => {
+  const haystack = [
+    session.conn_name,
+    session.username,
+    session.client_addr,
+    session.application_name,
+    session.database_name,
+    session.query_text,
+    session.session_state,
+  ].join(' ').toLowerCase()
+  return haystack.includes(term)
 })
+
+const filteredSessions = computed(() =>
+  [...matchedSessions.value].sort((a, b) => {
+    const aTs = parseServerTimestamp(a.query_started_at || a.started_at).getTime()
+    const bTs = parseServerTimestamp(b.query_started_at || b.started_at).getTime()
+    return bTs - aTs
+  })
+)
+
+const connFilteredHistory = computed(() =>
+  selectedConnId.value === 'all' ? historyEntries.value : historyEntries.value.filter((e) => e.conn_id === selectedConnId.value)
+)
 
 const filteredHistory = computed(() => {
   const term = search.value.trim().toLowerCase()
-  return [...historyEntries.value]
+  return connFilteredHistory.value
     .filter((entry) => {
-      if (selectedConnId.value !== 'all' && entry.conn_id !== selectedConnId.value) return false
       if (!term) return true
       const haystack = [
         entry.conn_name,
@@ -207,7 +213,7 @@ watch(selectedConnId, () => { void load() })
             </label>
             <label class="dba-field dba-field--wide">
               <span>Search</span>
-              <input v-model="search" type="text" placeholder="Filter by user, host, app, database, or SQL" />
+              <input v-model="search" class="base-input dba-search" type="text" placeholder="Filter by user, host, app, database, or SQL" />
             </label>
           </div>
         </section>

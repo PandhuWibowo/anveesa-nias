@@ -4,6 +4,9 @@ import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
+import { useListFilter } from '@/composables/useListFilter'
+import { useSort } from '@/composables/useSort'
+import SortIcon from '@/components/ui/SortIcon.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -57,13 +60,17 @@ const execResult = ref<any>(null)
 const execLoading = ref(false)
 
 // History filter
-const historyWatchFilter = ref('')
-
-const filteredHistory = computed(() => {
-  const q = historyWatchFilter.value.trim().toLowerCase()
-  if (!q) return history.value
-  return history.value.filter(h => h._source?.watch_id?.toLowerCase().includes(q))
-})
+const { search: historyWatchFilter, filtered: textFilteredHistory } = useListFilter(history, (h, q) => h._source?.watch_id?.toLowerCase().includes(q) ?? false)
+function historySortValue(h: HistoryEntry, key: string): string | number {
+  if (key === 'watch_id') return h._source?.watch_id?.toLowerCase() ?? ''
+  if (key === 'state') return h._source?.state ?? ''
+  if (key === 'met') return h._source?.result?.condition?.met ? 1 : 0
+  if (key === 'triggered') return h._source?.trigger_event?.triggered_time ?? ''
+  if (key === 'execution') return h._source?.result?.execution_time ?? ''
+  return ''
+}
+const { sortKey, sortDir, toggleSort, sort } = useSort<HistoryEntry>(historySortValue)
+const filteredHistory = computed(() => sort(textFilteredHistory.value))
 
 const DEFAULT_WATCH = JSON.stringify({
   trigger: { schedule: { interval: '1h' } },
@@ -401,11 +408,11 @@ function formatJSON(v: any): string {
             <table class="sw-table">
               <thead>
                 <tr>
-                  <th>Watch ID</th>
-                  <th>State</th>
-                  <th>Condition Met</th>
-                  <th>Triggered At</th>
-                  <th>Execution Time</th>
+                  <th class="sw-th-sort" :class="{ sorted: sortKey === 'watch_id' }" @click="toggleSort('watch_id')">Watch ID <SortIcon :active="sortKey === 'watch_id'" :dir="sortDir" /></th>
+                  <th class="sw-th-sort" :class="{ sorted: sortKey === 'state' }" @click="toggleSort('state')">State <SortIcon :active="sortKey === 'state'" :dir="sortDir" /></th>
+                  <th class="sw-th-sort" :class="{ sorted: sortKey === 'met' }" @click="toggleSort('met')">Condition Met <SortIcon :active="sortKey === 'met'" :dir="sortDir" /></th>
+                  <th class="sw-th-sort" :class="{ sorted: sortKey === 'triggered' }" @click="toggleSort('triggered')">Triggered At <SortIcon :active="sortKey === 'triggered'" :dir="sortDir" /></th>
+                  <th class="sw-th-sort" :class="{ sorted: sortKey === 'execution' }" @click="toggleSort('execution')">Execution Time <SortIcon :active="sortKey === 'execution'" :dir="sortDir" /></th>
                 </tr>
               </thead>
               <tbody>
@@ -516,6 +523,7 @@ function formatJSON(v: any): string {
 .sw-table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
 .sw-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .sw-table th { background: var(--bg-elevated); color: var(--text-muted); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; padding: 8px 12px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--border); }
+.sw-table th.sw-th-sort { cursor: pointer; user-select: none; }
 .sw-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--text-primary); vertical-align: middle; }
 .sw-table tr:last-child td { border-bottom: none; }
 .sw-table tbody tr:hover td { background: var(--bg-elevated); }

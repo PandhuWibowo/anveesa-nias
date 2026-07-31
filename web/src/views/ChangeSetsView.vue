@@ -72,6 +72,7 @@ interface ConnectionOption {
   id: number
   name: string
   environment?: string
+  disconnected?: boolean
 }
 
 interface WorkflowOption {
@@ -122,7 +123,7 @@ const canSubmit = computed(() => !!selected.value && (selected.value.status === 
 async function fetchConnections() {
   try {
     const { data } = await axios.get<ConnectionOption[]>('/api/connections')
-    connections.value = data || []
+    connections.value = (data || []).filter(c => !c.disconnected)
   } catch (error: any) {
     toast.error(error.response?.data?.error || 'Failed to load connections')
   }

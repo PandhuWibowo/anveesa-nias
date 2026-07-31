@@ -4,6 +4,7 @@ import DataSessionPane from '@/components/database/DataSessionPane.vue'
 import { useConnections } from '@/composables/useConnections'
 import { useTheme } from '@/composables/useTheme'
 import { pendingSQL } from '@/composables/usePendingSQL'
+import { useListFilter } from '@/composables/useListFilter'
 
 const props = defineProps<{ activeConnId?: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -60,7 +61,12 @@ const activeSessionId = ref<string>(
     : (sessions.value[0]?.id ?? '')
 )
 
-watch(sessions, persistState, { deep: true })
+// Watch only the fields that actually get persisted — avoids firing on every SQL keystroke.
+watch(
+  () => sessions.value.map(s => ({ id: s.id, connId: s.connId, db: s.initialDb, table: s.initialTable, tab: s.initialTab })),
+  persistState,
+  { deep: true }
+)
 watch(activeSessionId, persistState)
 
 onMounted(() => { window.addEventListener('beforeunload', persistState) })
@@ -100,7 +106,6 @@ function closeSession(id: string) {
 
 // Picker for new sessions
 const pickerOpen = ref(false)
-const pickerSearch = ref('')
 const pickerRef = ref<HTMLElement | null>(null)
 const addBtnRef = ref<HTMLButtonElement | null>(null)
 const pickerPos = ref({ top: 0, left: 0, width: 300, maxHeight: 380 })
@@ -121,11 +126,7 @@ function isNonSqlDriver(driver: string) {
 
 const sqlConns = computed(() => connections.value.filter(c => !isNonSqlDriver(c.driver)))
 
-const filteredConns = computed(() =>
-  pickerSearch.value
-    ? sqlConns.value.filter(c => c.name.toLowerCase().includes(pickerSearch.value.toLowerCase()))
-    : sqlConns.value
-)
+const { search: pickerSearch, filtered: filteredConns } = useListFilter(sqlConns, (c, q) => c.name.toLowerCase().includes(q))
 
 function togglePicker() {
   if (pickerOpen.value) { pickerOpen.value = false; return }
@@ -525,20 +526,24 @@ function handleTabSelected(sessionId: string, tab: DataSessionTab) {
 /* ── Landing page ─────────────────────────────────────────────── */
 .dv-landing {
   flex: 1;
+  min-height: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
   overflow-y: auto;
   padding: 40px 24px;
   background: var(--bg-body);
 }
 
 .dv-landing__inner {
+  /* margin:auto centers the column when it fits, but still lets the top
+     overflow scroll into view when the list is taller than the viewport
+     (align-items/justify-content:center would clip the top, unscrollable). */
+  margin: auto;
   width: 100%;
-  max-width: 580px;
+  max-width: 940px;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 18px;
 }
 
 .dv-landing__redis-hint {
@@ -579,29 +584,48 @@ function handleTabSelected(sessionId: string, tab: DataSessionTab) {
 }
 
 .dv-landing__grid {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
 }
 
 .dv-conn-card {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 11px;
   width: 100%;
-  padding: 14px 16px;
+  padding: 11px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg-surface);
   cursor: pointer;
   text-align: left;
+  overflow: hidden;
   transition: border-color 0.15s, background 0.15s, transform 0.12s, box-shadow 0.15s;
+}
+/* accent rail that reveals on hover/active */
+.dv-conn-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--brand);
+  transform: scaleY(0);
+  transform-origin: center;
+  transition: transform 0.15s var(--ease, ease);
 }
 .dv-conn-card:hover {
   border-color: var(--brand);
   background: color-mix(in srgb, var(--brand) 5%, var(--bg-surface));
   transform: translateY(-1px);
-  box-shadow: 0 4px 16px rgba(0,0,0,.08);
+  box-shadow: 0 6px 18px rgba(0,0,0,.10);
+}
+.dv-conn-card:hover::before,
+.dv-conn-card--active::before {
+  transform: scaleY(1);
 }
 .dv-conn-card--active {
   border-color: var(--brand);
@@ -612,14 +636,15 @@ function handleTabSelected(sessionId: string, tab: DataSessionTab) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 28px;
-  border-radius: 6px;
-  font-size: 10px;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  font-size: 10.5px;
   font-weight: 700;
   color: #fff;
   flex-shrink: 0;
   letter-spacing: 0.3px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
 }
 
 .dv-conn-card__info {
@@ -628,7 +653,7 @@ function handleTabSelected(sessionId: string, tab: DataSessionTab) {
 }
 
 .dv-conn-card__name {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
@@ -637,10 +662,10 @@ function handleTabSelected(sessionId: string, tab: DataSessionTab) {
 }
 
 .dv-conn-card__host {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text-muted);
   font-family: var(--mono, monospace);
-  margin-top: 2px;
+  margin-top: 1px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -650,16 +675,20 @@ function handleTabSelected(sessionId: string, tab: DataSessionTab) {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: 6px;
   background: var(--bg-elevated);
   color: var(--text-muted);
   flex-shrink: 0;
-  transition: background 0.12s, color 0.12s;
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: background 0.12s, color 0.12s, opacity 0.15s, transform 0.15s;
 }
 .dv-conn-card:hover .dv-conn-card__open {
   background: var(--brand);
   color: #fff;
+  opacity: 1;
+  transform: translateX(0);
 }
 </style>

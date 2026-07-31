@@ -13,12 +13,22 @@ export default defineConfig(({ mode }) => {
         '@': resolve(__dirname, 'src'),
       },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            monaco: ['monaco-editor/editor/editor.api.js'],
+          },
+        },
+      },
+    },
     server: {
       port: 5173,
       proxy: {
         '/api': {
           target: apiProxyTarget,
           changeOrigin: true,
+          ws: true,
           configure: (proxy) => {
             proxy.on('error', () => {})
           },

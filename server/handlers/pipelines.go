@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -13,17 +14,19 @@ import (
 // ── Models ───────────────────────────────────────────────────────────────────
 
 type Pipeline struct {
-	ID          int64      `json:"id"`
-	Name        string     `json:"name"`
-	Description string     `json:"description"`
-	CreatedBy   *int64     `json:"created_by"`
-	Status      string     `json:"status"`
-	Schedule    *string    `json:"schedule"`
-	LastRunAt   *time.Time `json:"last_run_at"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	Nodes       []PipelineNode `json:"nodes,omitempty"`
-	Edges       []PipelineEdge `json:"edges,omitempty"`
+	ID           int64          `json:"id"`
+	Name         string         `json:"name"`
+	Description  string         `json:"description"`
+	PipelineType string         `json:"pipeline_type"`
+	CreatedBy    *int64         `json:"created_by"`
+	Status       string         `json:"status"`
+	Schedule     *string        `json:"schedule"`
+	APIEnabled   bool           `json:"api_enabled"`
+	LastRunAt    *time.Time     `json:"last_run_at"`
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
+	Nodes        []PipelineNode `json:"nodes,omitempty"`
+	Edges        []PipelineEdge `json:"edges,omitempty"`
 }
 
 type PipelineNode struct {
@@ -45,14 +48,18 @@ type PipelineEdge struct {
 }
 
 type PipelineRun struct {
-	ID            int64      `json:"id"`
-	PipelineID    int64      `json:"pipeline_id"`
-	TriggeredBy   string     `json:"triggered_by"`
-	Status        string     `json:"status"`
-	StartedAt     time.Time  `json:"started_at"`
-	FinishedAt    *time.Time `json:"finished_at"`
-	RowsProcessed int64      `json:"rows_processed"`
-	ErrorMessage  *string    `json:"error_message"`
+	ID            int64          `json:"id"`
+	PipelineID    int64          `json:"pipeline_id"`
+	TriggeredBy   string         `json:"triggered_by"`
+	Status        string         `json:"status"`
+	BusinessDate  string         `json:"business_date"`
+	RunParams     map[string]any `json:"run_params"`
+	ParentRunID   *int64         `json:"parent_run_id"`
+	ReturnPayload map[string]any `json:"return_payload"`
+	StartedAt     time.Time      `json:"started_at"`
+	FinishedAt    *time.Time     `json:"finished_at"`
+	RowsProcessed int64          `json:"rows_processed"`
+	ErrorMessage  *string        `json:"error_message"`
 }
 
 type PipelineRunLog struct {
@@ -82,10 +89,25 @@ func scanPipelineRun(rows interface{ Scan(...any) error }) (PipelineRun, error) 
 	var run PipelineRun
 	var finishedAt *string
 	var errMsg *string
+	var paramsJSON string
+	var payloadJSON string
+	var parentRunID sql.NullInt64
 	err := rows.Scan(&run.ID, &run.PipelineID, &run.TriggeredBy, &run.Status,
+		&run.BusinessDate, &paramsJSON, &parentRunID, &payloadJSON,
 		&run.StartedAt, &finishedAt, &run.RowsProcessed, &errMsg)
 	if err != nil {
 		return run, err
+	}
+	if run.RunParams == nil {
+		run.RunParams = map[string]any{}
+	}
+	_ = json.Unmarshal([]byte(paramsJSON), &run.RunParams)
+	if run.ReturnPayload == nil {
+		run.ReturnPayload = map[string]any{}
+	}
+	_ = json.Unmarshal([]byte(payloadJSON), &run.ReturnPayload)
+	if parentRunID.Valid {
+		run.ParentRunID = &parentRunID.Int64
 	}
 	if finishedAt != nil {
 		t, _ := time.Parse("2006-01-02 15:04:05", *finishedAt)
@@ -102,7 +124,7 @@ func ListPipelines() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 
 		rows, err := appdb.DB.QueryContext(r.Context(), appdb.ConvertQuery(
-			`SELECT id, name, description, created_by, status, schedule, last_run_at, created_at, updated_at
+			`SELECT id, name, description, COALESCE(pipeline_type,'custom'), created_by, status, schedule, COALESCE(api_enabled,0), last_run_at, created_at, updated_at
 			 FROM pipelines ORDER BY created_at DESC`))
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
@@ -114,10 +136,12 @@ func ListPipelines() http.HandlerFunc {
 		for rows.Next() {
 			var p Pipeline
 			var lastRunAt *string
-			if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.CreatedBy, &p.Status,
-				&p.Schedule, &lastRunAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			var apiEnabled int
+			if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.PipelineType, &p.CreatedBy, &p.Status,
+				&p.Schedule, &apiEnabled, &lastRunAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
 				continue
 			}
+			p.APIEnabled = apiEnabled == 1
 			if lastRunAt != nil {
 				t, _ := time.Parse("2006-01-02 15:04:05", *lastRunAt)
 				p.LastRunAt = &t
@@ -134,12 +158,17 @@ func CreatePipeline() http.HandlerFunc {
 		username := r.Header.Get("X-Username")
 
 		var body struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
+			Name         string `json:"name"`
+			Description  string `json:"description"`
+			PipelineType string `json:"pipeline_type"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
 			http.Error(w, jsonError("name required"), http.StatusBadRequest)
 			return
+		}
+
+		if strings.TrimSpace(body.PipelineType) == "" {
+			body.PipelineType = "custom"
 		}
 
 		var userID *int64
@@ -150,8 +179,8 @@ func CreatePipeline() http.HandlerFunc {
 		}
 
 		id, err := insertRowReturningID(appdb.ConvertQuery(
-			`INSERT INTO pipelines (name, description, created_by, status) VALUES (?, ?, ?, 'draft')`),
-			body.Name, body.Description, userID)
+			`INSERT INTO pipelines (name, description, pipeline_type, created_by, status) VALUES (?, ?, ?, ?, 'draft')`),
+			body.Name, body.Description, body.PipelineType, userID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
@@ -172,15 +201,17 @@ func GetPipeline() http.HandlerFunc {
 
 		var p Pipeline
 		var lastRunAt *string
+		var apiEnabled int
 		err := appdb.DB.QueryRowContext(r.Context(), appdb.ConvertQuery(
-			`SELECT id, name, description, created_by, status, schedule, last_run_at, created_at, updated_at
+			`SELECT id, name, description, COALESCE(pipeline_type,'custom'), created_by, status, schedule, COALESCE(api_enabled,0), last_run_at, created_at, updated_at
 			 FROM pipelines WHERE id = ?`), id).Scan(
-			&p.ID, &p.Name, &p.Description, &p.CreatedBy, &p.Status,
-			&p.Schedule, &lastRunAt, &p.CreatedAt, &p.UpdatedAt)
+			&p.ID, &p.Name, &p.Description, &p.PipelineType, &p.CreatedBy, &p.Status,
+			&p.Schedule, &apiEnabled, &lastRunAt, &p.CreatedAt, &p.UpdatedAt)
 		if err != nil {
 			http.Error(w, jsonError("pipeline not found"), http.StatusNotFound)
 			return
 		}
+		p.APIEnabled = apiEnabled == 1
 		if lastRunAt != nil {
 			t, _ := time.Parse("2006-01-02 15:04:05", *lastRunAt)
 			p.LastRunAt = &t
@@ -238,21 +269,30 @@ func UpdatePipeline() http.HandlerFunc {
 		}
 
 		var body struct {
-			Name        string         `json:"name"`
-			Description string         `json:"description"`
-			Status      string         `json:"status"`
-			Schedule    *string        `json:"schedule"`
-			Nodes       []PipelineNode `json:"nodes"`
-			Edges       []PipelineEdge `json:"edges"`
+			Name         string         `json:"name"`
+			Description  string         `json:"description"`
+			PipelineType string         `json:"pipeline_type"`
+			Status       string         `json:"status"`
+			Schedule     *string        `json:"schedule"`
+			APIEnabled   bool           `json:"api_enabled"`
+			Nodes        []PipelineNode `json:"nodes"`
+			Edges        []PipelineEdge `json:"edges"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, jsonError("invalid body"), http.StatusBadRequest)
 			return
 		}
 
+		if strings.TrimSpace(body.PipelineType) == "" {
+			body.PipelineType = "custom"
+		}
+		apiEnabled := 0
+		if body.APIEnabled {
+			apiEnabled = 1
+		}
 		if _, err := appdb.DB.ExecContext(r.Context(), appdb.ConvertQuery(
-			`UPDATE pipelines SET name=?, description=?, status=?, schedule=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`),
-			body.Name, body.Description, body.Status, body.Schedule, id); err != nil {
+			`UPDATE pipelines SET name=?, description=?, pipeline_type=?, status=?, schedule=?, api_enabled=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`),
+			body.Name, body.Description, body.PipelineType, body.Status, body.Schedule, apiEnabled, id); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
 		}
@@ -298,6 +338,12 @@ func DeletePipeline() http.HandlerFunc {
 			return
 		}
 
+		// Nullify node_id in run logs before deleting — pipeline_run_logs.node_id
+		// has no ON DELETE cascade, so it must be cleared before pipeline_nodes are removed.
+		appdb.DB.ExecContext(r.Context(), appdb.ConvertQuery(`
+			UPDATE pipeline_run_logs SET node_id = NULL
+			WHERE run_id IN (SELECT id FROM pipeline_runs WHERE pipeline_id = ?)`), id)
+
 		if _, err := appdb.DB.ExecContext(r.Context(), appdb.ConvertQuery(`DELETE FROM pipelines WHERE id=?`), id); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
@@ -324,10 +370,26 @@ func TriggerPipelineRun() http.HandlerFunc {
 		}
 
 		username := r.Header.Get("X-Username")
+		var body struct {
+			BusinessDate string         `json:"business_date"`
+			Params       map[string]any `json:"params"`
+			ParentRunID  *int64         `json:"parent_run_id"`
+			TriggeredBy  string         `json:"triggered_by"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Params == nil {
+			body.Params = map[string]any{}
+		}
+		paramsJSON, _ := json.Marshal(body.Params)
+		triggeredBy := "manual"
+		if body.TriggeredBy != "" {
+			triggeredBy = body.TriggeredBy
+		}
 
 		runID, err := insertRowReturningID(appdb.ConvertQuery(
-			`INSERT INTO pipeline_runs (pipeline_id, triggered_by, status) VALUES (?, 'manual', 'running')`),
-			pipelineID)
+			`INSERT INTO pipeline_runs (pipeline_id, triggered_by, status, business_date, run_params, parent_run_id)
+			 VALUES (?, ?, 'running', ?, ?, ?)`),
+			pipelineID, triggeredBy, body.BusinessDate, string(paramsJSON), body.ParentRunID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
@@ -335,6 +397,62 @@ func TriggerPipelineRun() http.HandlerFunc {
 
 		go RunPipeline(pipelineID, runID, username)
 
+		json.NewEncoder(w).Encode(map[string]any{"run_id": runID})
+	}
+}
+
+func RerunPipelineRun() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		path := strings.TrimPrefix(r.URL.Path, "/api/pipelines/")
+		parts := strings.Split(path, "/")
+		if len(parts) < 4 {
+			http.Error(w, jsonError("invalid path"), http.StatusBadRequest)
+			return
+		}
+		pipelineID, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			http.Error(w, jsonError("invalid id"), http.StatusBadRequest)
+			return
+		}
+		parentRunID, err := strconv.ParseInt(parts[2], 10, 64)
+		if err != nil {
+			http.Error(w, jsonError("invalid run id"), http.StatusBadRequest)
+			return
+		}
+
+		var businessDate, paramsJSON string
+		if err := appdb.DB.QueryRowContext(r.Context(), appdb.ConvertQuery(
+			`SELECT COALESCE(business_date,''), COALESCE(run_params,'{}')
+			 FROM pipeline_runs WHERE id=? AND pipeline_id=?`), parentRunID, pipelineID).Scan(&businessDate, &paramsJSON); err != nil {
+			http.Error(w, jsonError("run not found"), http.StatusNotFound)
+			return
+		}
+
+		var body struct {
+			BusinessDate string         `json:"business_date"`
+			Params       map[string]any `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if strings.TrimSpace(body.BusinessDate) != "" {
+			businessDate = body.BusinessDate
+		}
+		if body.Params != nil {
+			b, _ := json.Marshal(body.Params)
+			paramsJSON = string(b)
+		}
+
+		runID, err := insertRowReturningID(appdb.ConvertQuery(
+			`INSERT INTO pipeline_runs (pipeline_id, triggered_by, status, business_date, run_params, parent_run_id)
+			 VALUES (?, 'rerun', 'running', ?, ?, ?)`),
+			pipelineID, businessDate, paramsJSON, parentRunID)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
+			return
+		}
+
+		go RunPipeline(pipelineID, runID, r.Header.Get("X-Username"))
 		json.NewEncoder(w).Encode(map[string]any{"run_id": runID})
 	}
 }
@@ -353,7 +471,7 @@ func ListPipelineRuns() http.HandlerFunc {
 		}
 
 		rows, err := appdb.DB.QueryContext(r.Context(), appdb.ConvertQuery(
-			`SELECT id, pipeline_id, triggered_by, status, started_at, finished_at, rows_processed, error_message
+			`SELECT id, pipeline_id, triggered_by, status, COALESCE(business_date,''), COALESCE(run_params,'{}'), parent_run_id, COALESCE(return_payload,'{}'), started_at, finished_at, rows_processed, error_message
 			 FROM pipeline_runs WHERE pipeline_id = ? ORDER BY started_at DESC LIMIT 50`), pipelineID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
@@ -430,14 +548,25 @@ func GetPipelineRunStatus() http.HandlerFunc {
 		var run PipelineRun
 		var finishedAt *string
 		var errMsg *string
+		var paramsJSON string
+		var payloadJSON string
+		var parentRunID sql.NullInt64
 		err = appdb.DB.QueryRowContext(r.Context(), appdb.ConvertQuery(
-			`SELECT id, pipeline_id, triggered_by, status, started_at, finished_at, rows_processed, error_message
+			`SELECT id, pipeline_id, triggered_by, status, COALESCE(business_date,''), COALESCE(run_params,'{}'), parent_run_id, COALESCE(return_payload,'{}'), started_at, finished_at, rows_processed, error_message
 			 FROM pipeline_runs WHERE id = ?`), runID).Scan(
 			&run.ID, &run.PipelineID, &run.TriggeredBy, &run.Status,
+			&run.BusinessDate, &paramsJSON, &parentRunID, &payloadJSON,
 			&run.StartedAt, &finishedAt, &run.RowsProcessed, &errMsg)
 		if err != nil {
 			http.Error(w, jsonError("run not found"), http.StatusNotFound)
 			return
+		}
+		run.RunParams = map[string]any{}
+		_ = json.Unmarshal([]byte(paramsJSON), &run.RunParams)
+		run.ReturnPayload = map[string]any{}
+		_ = json.Unmarshal([]byte(payloadJSON), &run.ReturnPayload)
+		if parentRunID.Valid {
+			run.ParentRunID = &parentRunID.Int64
 		}
 		if finishedAt != nil {
 			t, _ := time.Parse("2006-01-02 15:04:05", *finishedAt)

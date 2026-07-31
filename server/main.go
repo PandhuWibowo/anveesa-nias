@@ -22,7 +22,7 @@ import (
 )
 
 var (
-	version   = "0.1.0"
+	version   = "1.2.0"
 	buildTime = "unknown"
 	startTime time.Time
 )
@@ -85,6 +85,7 @@ func main() {
 		go startAutoBackup(backupCtx, cfg)
 	}
 	handlers.StartNotificationWorker()
+	handlers.StartFailedJobAlertWorker()
 
 	// Create router
 	mux := http.NewServeMux()
@@ -254,6 +255,28 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 
 	mux.HandleFunc("/api/connections/test", handlers.TestConnection())
 
+	// ── Connection Templates ──────────────────────────────────────
+	mux.HandleFunc("/api/connection-templates", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermConnectionsView)(handlers.ListConnectionTemplates())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermConnectionsCreate)(handlers.CreateConnectionTemplate())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/connection-templates/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			requireAny(handlers.PermConnectionsEdit)(handlers.UpdateConnectionTemplate())(w, r)
+		case http.MethodDelete:
+			requireAny(handlers.PermConnectionsEdit)(handlers.DeleteConnectionTemplate())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
 	// ── Per-connection routes ─────────────────────────────────────
 	mux.HandleFunc("/api/connections/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/connections/")
@@ -327,6 +350,14 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.RedisGenerateScript())(w, r)
 			case sub == "redis" && len(parts) >= 3 && parts[2] == "script" && r.Method == http.MethodPost:
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.RedisExecuteScript())(w, r)
+			case sub == "redis" && len(parts) >= 3 && parts[2] == "ttl" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.RedisSetTTL())(w, r)
+			case sub == "redis" && len(parts) >= 3 && parts[2] == "info" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.RedisInfo())(w, r)
+			case sub == "redis" && len(parts) >= 3 && parts[2] == "slowlog" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.RedisSlowlog())(w, r)
+			case sub == "redis" && len(parts) >= 3 && parts[2] == "monitor" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.RedisMonitor())(w, r)
 			case sub == "memcache" && len(parts) >= 3 && parts[2] == "ping" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.MemcachePing())(w, r)
 			case sub == "memcache" && len(parts) >= 3 && parts[2] == "stats" && r.Method == http.MethodGet:
@@ -339,12 +370,30 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueQueues())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "jobs" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueJobs())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "active-jobs" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueActiveJobs())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "release-stale" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.LaravelQueueReleaseStale())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "failed-jobs" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueFailedJobs())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 4 && parts[2] == "horizon" && parts[3] == "jobs" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueHorizonJobs())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "horizon" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueHorizon())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "ops-settings" && (r.Method == http.MethodGet || r.Method == http.MethodPut):
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueOpsSettings())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 4 && parts[2] == "failed-job-alert" && parts[3] == "mark-seen" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsEdit)(handlers.MarkFailedJobsAsSeen())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 4 && parts[2] == "failed-job-alert" && parts[3] == "send-selected" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsView)(handlers.SendSelectedFailedJobAlerts())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 4 && parts[2] == "failed-job-alert" && parts[3] == "test" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsView)(handlers.TestFailedJobAlertConfig())(w, r)
+			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "failed-job-alert" && (r.Method == http.MethodGet || r.Method == http.MethodPost):
+				if r.Method == http.MethodGet {
+					requireAny(handlers.PermConnectionsView)(handlers.GetFailedJobAlertConfig())(w, r)
+				} else {
+					requireAny(handlers.PermConnectionsEdit)(handlers.SaveFailedJobAlertConfig())(w, r)
+				}
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "audit" && r.Method == http.MethodGet:
 				requireAny(handlers.PermAuditView, handlers.PermConnectionsView)(handlers.LaravelQueueAudit())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "quarantine" && (r.Method == http.MethodGet || r.Method == http.MethodPost):
@@ -355,7 +404,7 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.LaravelQueueAlerts())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 3 && parts[2] == "agent" && r.Method == http.MethodPost:
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.LaravelQueueAgentAction())(w, r)
-			case sub == "laravel-queue" && len(parts) >= 4 && (parts[3] == "retry-failed" || parts[3] == "delete-failed") && r.Method == http.MethodPost:
+			case sub == "laravel-queue" && len(parts) >= 3 && (parts[2] == "retry-failed" || parts[2] == "delete-failed") && r.Method == http.MethodPost:
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.LaravelQueueFailedJobAction())(w, r)
 			case sub == "laravel-queue" && len(parts) >= 4 && r.Method == http.MethodPost:
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.LaravelQueueAction())(w, r)
@@ -509,6 +558,47 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsEdit, handlers.PermSchemaBrowse)(handlers.SearchDeactivateWatch())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "watch-history" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchWatchHistory())(w, r)
+
+			// ── Infra Metrics ──────────────────────────────────────────────
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-nodes" && r.Method == http.MethodGet:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsNodes())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-cluster" && r.Method == http.MethodGet:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsCluster())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-index-stats" && r.Method == http.MethodGet:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsIndexStats())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-timeseries" && r.Method == http.MethodPost:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsTimeSeries())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-inventory" && r.Method == http.MethodPost:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsInventory())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-host-detail" && r.Method == http.MethodGet:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsHostDetail())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-process-list" && r.Method == http.MethodGet:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsProcessList())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-sparklines" && r.Method == http.MethodPost:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsSparklines())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "metrics-correlation" && r.Method == http.MethodGet:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.SearchMetricsCorrelation())(w, r)
+
+			// ── Infra Alert Rules ──────────────────────────────────────────────
+			case sub == "infra-alert-rules" && r.Method == http.MethodGet:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.ListInfraAlertRules())(w, r)
+			case sub == "infra-alert-rules" && r.Method == http.MethodPost:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.CreateInfraAlertRule())(w, r)
+			case len(parts) >= 3 && parts[1] == "infra-alert-rules" && r.Method == http.MethodPut:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.UpdateInfraAlertRule())(w, r)
+			case len(parts) >= 3 && parts[1] == "infra-alert-rules" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.DeleteInfraAlertRule())(w, r)
+			case len(parts) >= 4 && parts[1] == "infra-alert-rules" && parts[3] == "toggle" && r.Method == http.MethodPatch:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.ToggleInfraAlertRule())(w, r)
+
+			// ── Infra Annotations ──────────────────────────────────────────────
+			case sub == "infra-annotations" && r.Method == http.MethodGet:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.ListInfraAnnotations())(w, r)
+			case sub == "infra-annotations" && r.Method == http.MethodPost:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.CreateInfraAnnotation())(w, r)
+			case len(parts) >= 3 && parts[1] == "infra-annotations" && r.Method == http.MethodDelete:
+				requireAny(handlers.PermObservabilityView, handlers.PermConnectionsView)(handlers.DeleteInfraAnnotation())(w, r)
+
 			case sub == "backup" && r.Method == http.MethodGet:
 				requireAny(handlers.PermBackupsManage)(handlers.GetBackup())(w, r)
 			case sub == "restore" && r.Method == http.MethodPost:
@@ -585,6 +675,39 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermRowHistoryView)(handlers.ListRowHistory())(w, r)
 			case sub == "row-history" && r.Method == http.MethodPost:
 				requireAny(handlers.PermRowHistoryView)(handlers.UndoRowChange())(w, r)
+
+			// ── DB User Management ────────────────────────────────────
+			case sub == "db-users" && r.Method == http.MethodGet:
+				requireAny(handlers.PermDBUsersManage)(handlers.ListDBUsers())(w, r)
+			case sub == "db-users" && r.Method == http.MethodPost:
+				requireAny(handlers.PermDBUsersManage)(handlers.CreateDBUser())(w, r)
+			case sub == "db-users-dbs" && r.Method == http.MethodGet:
+				requireAny(handlers.PermDBUsersManage)(handlers.ListDBsForGrantPicker())(w, r)
+			case sub == "db-users-schemas" && r.Method == http.MethodGet:
+				requireAny(handlers.PermDBUsersManage)(handlers.ListSchemasForGrantPicker())(w, r)
+			case sub == "db-users-tables" && r.Method == http.MethodGet:
+				requireAny(handlers.PermDBUsersManage)(handlers.ListTablesForGrantPicker())(w, r)
+			case sub == "db-users-sequences" && r.Method == http.MethodGet:
+				requireAny(handlers.PermDBUsersManage)(handlers.ListSequencesForGrantPicker())(w, r)
+			case sub == "db-users-functions" && r.Method == http.MethodGet:
+				requireAny(handlers.PermDBUsersManage)(handlers.ListFunctionsForGrantPicker())(w, r)
+
+			// Routes with username segment: /api/connections/{id}/db-users/{username}[/...]
+			case len(parts) >= 3 && parts[1] == "db-users":
+				lastSeg := parts[len(parts)-1]
+				switch {
+				case lastSeg == "password" && r.Method == http.MethodPatch:
+					requireAny(handlers.PermDBUsersManage)(handlers.ChangeDBUserPassword())(w, r)
+				case lastSeg == "grants" && r.Method == http.MethodGet:
+					requireAny(handlers.PermDBUsersManage)(handlers.GetDBUserGrants())(w, r)
+				case lastSeg == "grants" && r.Method == http.MethodPut:
+					requireAny(handlers.PermDBUsersManage)(handlers.ApplyDBUserGrants())(w, r)
+				case r.Method == http.MethodDelete:
+					requireAny(handlers.PermDBUsersManage)(handlers.DropDBUser())(w, r)
+				default:
+					http.NotFound(w, r)
+				}
+
 			default:
 				http.NotFound(w, r)
 			}
@@ -669,6 +792,383 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			requireAny(handlers.PermSavedQueriesManage)(handlers.UpdateAnalyticsDashboard())(w, r)
 		case r.Method == http.MethodDelete:
 			requireAny(handlers.PermSavedQueriesManage)(handlers.DeleteAnalyticsDashboard())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	// ── Infrastructure: Docker ────────────────────────────────────
+	mux.HandleFunc("/api/docker/overview", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			requireAny(handlers.PermDockerView, handlers.PermDockerManage)(handlers.DockerOverview())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	// ── Cron scheduler (native crontab management over SSH) ─────────────────
+	// Cron reuses the shared SSH Hosts (docker_hosts) and reads/writes each
+	// host's native crontab; host management lives under SSH Hosts.
+	mux.HandleFunc("/api/cron/hosts", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			requireAny(handlers.PermCronView, handlers.PermCronManage)(handlers.ListCronHosts())(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/api/cron/hosts/", func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/cron/hosts/"), "/")
+		parts := strings.Split(rest, "/")
+		view := requireAny(handlers.PermCronView, handlers.PermCronManage)
+		manage := requireAny(handlers.PermCronManage)
+		exec := requireAny(handlers.PermCronExec)
+		switch {
+		// /api/cron/hosts/{id}/crontab
+		case len(parts) == 2 && parts[1] == "crontab" && r.Method == http.MethodGet:
+			view(handlers.GetHostCrontab())(w, r)
+		case len(parts) == 2 && parts[1] == "crontab" && r.Method == http.MethodPut:
+			manage(handlers.PutHostCrontab())(w, r)
+		// /api/cron/hosts/{id}/run  — run a command now
+		case len(parts) == 2 && parts[1] == "run" && r.Method == http.MethodPost:
+			exec(handlers.RunHostCommand())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	mux.HandleFunc("/api/docker/hosts", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermDockerView, handlers.PermDockerManage)(handlers.ListDockerHosts())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermDockerManage)(handlers.CreateDockerHost())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/docker/hosts/", func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/docker/hosts/"), "/")
+		parts := strings.Split(rest, "/")
+		view := requireAny(handlers.PermDockerView, handlers.PermDockerManage)
+		manage := requireAny(handlers.PermDockerManage)
+		exec := requireAny(handlers.PermDockerExec)
+		switch {
+		// /api/docker/hosts/test  — validate unsaved credentials
+		case len(parts) == 1 && parts[0] == "test" && r.Method == http.MethodPost:
+			manage(handlers.TestDockerHost())(w, r)
+		// /api/docker/hosts/{id}
+		case len(parts) == 1 && r.Method == http.MethodPut:
+			manage(handlers.UpdateDockerHost())(w, r)
+		case len(parts) == 1 && r.Method == http.MethodDelete:
+			manage(handlers.DeleteDockerHost())(w, r)
+		// /api/docker/hosts/{id}/ping
+		case len(parts) == 2 && parts[1] == "ping" && r.Method == http.MethodGet:
+			view(handlers.DockerPing())(w, r)
+		// /api/docker/hosts/{id}/df  (disk usage)
+		case len(parts) == 2 && parts[1] == "df" && r.Method == http.MethodGet:
+			view(handlers.DockerSystemDF())(w, r)
+		// /api/docker/hosts/{id}/topology
+		case len(parts) == 2 && parts[1] == "topology" && r.Method == http.MethodGet:
+			view(handlers.DockerTopology())(w, r)
+		// /api/docker/hosts/{id}/containers
+		case len(parts) == 2 && parts[1] == "containers" && r.Method == http.MethodGet:
+			view(handlers.DockerContainers())(w, r)
+		// /api/docker/hosts/{id}/containers  (create + run)
+		case len(parts) == 2 && parts[1] == "containers" && r.Method == http.MethodPost:
+			manage(handlers.DockerContainerRun())(w, r)
+		// /api/docker/hosts/{id}/images
+		case len(parts) == 2 && parts[1] == "images" && r.Method == http.MethodGet:
+			view(handlers.DockerImages())(w, r)
+		// /api/docker/hosts/{id}/volumes
+		case len(parts) == 2 && parts[1] == "volumes" && r.Method == http.MethodGet:
+			view(handlers.DockerVolumes())(w, r)
+		case len(parts) == 2 && parts[1] == "volumes" && r.Method == http.MethodPost:
+			manage(handlers.DockerVolumeCreate())(w, r)
+		case len(parts) == 3 && parts[1] == "volumes" && parts[2] == "inspect" && r.Method == http.MethodGet:
+			view(handlers.DockerVolumeInspect())(w, r)
+		case len(parts) == 3 && parts[1] == "volumes" && parts[2] == "remove" && r.Method == http.MethodPost:
+			manage(handlers.DockerVolumeRemove())(w, r)
+		// /api/docker/hosts/{id}/networks
+		case len(parts) == 2 && parts[1] == "networks" && r.Method == http.MethodGet:
+			view(handlers.DockerNetworks())(w, r)
+		case len(parts) == 2 && parts[1] == "networks" && r.Method == http.MethodPost:
+			manage(handlers.DockerNetworkCreate())(w, r)
+		case len(parts) == 3 && parts[1] == "networks" && parts[2] == "inspect" && r.Method == http.MethodGet:
+			view(handlers.DockerNetworkInspect())(w, r)
+		case len(parts) == 3 && parts[1] == "networks" && parts[2] == "remove" && r.Method == http.MethodPost:
+			manage(handlers.DockerNetworkRemove())(w, r)
+		case len(parts) == 3 && parts[1] == "networks" && parts[2] == "connect" && r.Method == http.MethodPost:
+			manage(handlers.DockerNetworkConnect())(w, r)
+		case len(parts) == 3 && parts[1] == "networks" && parts[2] == "disconnect" && r.Method == http.MethodPost:
+			manage(handlers.DockerNetworkDisconnect())(w, r)
+		// /api/docker/hosts/{id}/prune/{volumes|networks}
+		case len(parts) == 3 && parts[1] == "prune" && parts[2] == "volumes" && r.Method == http.MethodPost:
+			manage(handlers.DockerVolumesPrune())(w, r)
+		case len(parts) == 3 && parts[1] == "prune" && parts[2] == "networks" && r.Method == http.MethodPost:
+			manage(handlers.DockerNetworksPrune())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/terminal  (WebSocket; self-authed)
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "terminal" && r.Method == http.MethodGet:
+			handlers.DockerContainerTerminal()(w, r)
+		// /api/docker/hosts/{id}/images/pull
+		case len(parts) == 3 && parts[1] == "images" && parts[2] == "pull" && r.Method == http.MethodPost:
+			manage(handlers.DockerImagePull())(w, r)
+		// /api/docker/hosts/{id}/images/build
+		case len(parts) == 3 && parts[1] == "images" && parts[2] == "build" && r.Method == http.MethodPost:
+			manage(handlers.DockerImageBuild())(w, r)
+		// /api/docker/hosts/{id}/images/save  (export)
+		case len(parts) == 3 && parts[1] == "images" && parts[2] == "save" && r.Method == http.MethodGet:
+			view(handlers.DockerImageSave())(w, r)
+		// /api/docker/hosts/{id}/images/history?ref=
+		case len(parts) == 3 && parts[1] == "images" && parts[2] == "history" && r.Method == http.MethodGet:
+			view(handlers.DockerImageHistory())(w, r)
+		// /api/docker/hosts/{id}/images/load  (import)
+		case len(parts) == 3 && parts[1] == "images" && parts[2] == "load" && r.Method == http.MethodPost:
+			manage(handlers.DockerImageLoad())(w, r)
+		// /api/docker/hosts/{id}/compose  (up) and /compose/down
+		case len(parts) == 2 && parts[1] == "compose" && r.Method == http.MethodPost:
+			manage(handlers.DockerComposeUp())(w, r)
+		case len(parts) == 3 && parts[1] == "compose" && parts[2] == "down" && r.Method == http.MethodPost:
+			manage(handlers.DockerComposeDown())(w, r)
+		// /api/docker/hosts/{id}/events
+		case len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet:
+			view(handlers.DockerEvents())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/{ls|download|upload}
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "ls" && r.Method == http.MethodGet:
+			view(handlers.DockerContainerLs())(w, r)
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "download" && r.Method == http.MethodGet:
+			view(handlers.DockerContainerDownload())(w, r)
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "upload" && r.Method == http.MethodPost:
+			manage(handlers.DockerContainerUpload())(w, r)
+		// /api/docker/hosts/{id}/images/remove
+		case len(parts) == 3 && parts[1] == "images" && parts[2] == "remove" && r.Method == http.MethodPost:
+			manage(handlers.DockerImageRemove())(w, r)
+		// /api/docker/hosts/{id}/prune/containers
+		case len(parts) == 3 && parts[1] == "prune" && parts[2] == "containers" && r.Method == http.MethodPost:
+			manage(handlers.DockerContainersPrune())(w, r)
+		// /api/docker/hosts/{id}/prune/images
+		case len(parts) == 3 && parts[1] == "prune" && parts[2] == "images" && r.Method == http.MethodPost:
+			manage(handlers.DockerImagesPrune())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}  (remove)
+		case len(parts) == 3 && parts[1] == "containers" && r.Method == http.MethodDelete:
+			manage(handlers.DockerContainerRemove())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/inspect
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "inspect" && r.Method == http.MethodGet:
+			view(handlers.DockerContainerInspect())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/logs
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "logs" && r.Method == http.MethodGet:
+			view(handlers.DockerContainerLogs())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/stats
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "stats" && r.Method == http.MethodGet:
+			view(handlers.DockerContainerStats())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/logstream  (WebSocket; self-authed)
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "logstream" && r.Method == http.MethodGet:
+			handlers.DockerLogsStream()(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/statstream  (WebSocket; self-authed)
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "statstream" && r.Method == http.MethodGet:
+			handlers.DockerStatsStream()(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/top
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "top" && r.Method == http.MethodGet:
+			view(handlers.DockerContainerTop())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/changes
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "changes" && r.Method == http.MethodGet:
+			view(handlers.DockerContainerChanges())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/commit
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "commit" && r.Method == http.MethodPost:
+			manage(handlers.DockerContainerCommit())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/exec  (separate docker.exec gate)
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "exec" && r.Method == http.MethodPost:
+			exec(handlers.DockerContainerExec())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/rename
+		case len(parts) == 4 && parts[1] == "containers" && parts[3] == "rename" && r.Method == http.MethodPost:
+			manage(handlers.DockerContainerRename())(w, r)
+		// /api/docker/hosts/{id}/containers/{cid}/{start|stop|restart}
+		case len(parts) == 4 && parts[1] == "containers" && r.Method == http.MethodPost:
+			manage(handlers.DockerContainerAction())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	// ── Infrastructure: Kubernetes ────────────────────────────────
+	mux.HandleFunc("/api/kube/overview", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			requireAny(handlers.PermKubeView, handlers.PermKubeManage)(handlers.KubeOverview())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/kube/clusters", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermKubeView, handlers.PermKubeManage)(handlers.ListKubeClusters())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermKubeManage)(handlers.CreateKubeCluster())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/kube/clusters/", func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/kube/clusters/"), "/")
+		parts := strings.Split(rest, "/")
+		view := requireAny(handlers.PermKubeView, handlers.PermKubeManage)
+		manage := requireAny(handlers.PermKubeManage)
+		switch {
+		// /api/kube/clusters/test — validate an unsaved kubeconfig
+		case len(parts) == 1 && parts[0] == "test" && r.Method == http.MethodPost:
+			manage(handlers.TestKubeCluster())(w, r)
+		// /api/kube/clusters/{id}
+		case len(parts) == 1 && r.Method == http.MethodPut:
+			manage(handlers.UpdateKubeCluster())(w, r)
+		case len(parts) == 1 && r.Method == http.MethodDelete:
+			manage(handlers.DeleteKubeCluster())(w, r)
+		// /api/kube/clusters/{id}/ping
+		case len(parts) == 2 && parts[1] == "ping" && r.Method == http.MethodGet:
+			view(handlers.KubePing())(w, r)
+		// /api/kube/clusters/{id}/nodes|namespaces|pods|deployments|services|events
+		case len(parts) == 2 && parts[1] == "nodes" && r.Method == http.MethodGet:
+			view(handlers.KubeNodes())(w, r)
+		case len(parts) == 2 && parts[1] == "namespaces" && r.Method == http.MethodGet:
+			view(handlers.KubeNamespaces())(w, r)
+		case len(parts) == 2 && parts[1] == "pods" && r.Method == http.MethodGet:
+			view(handlers.KubePods())(w, r)
+		case len(parts) == 2 && parts[1] == "deployments" && r.Method == http.MethodGet:
+			view(handlers.KubeDeployments())(w, r)
+		case len(parts) == 2 && parts[1] == "services" && r.Method == http.MethodGet:
+			view(handlers.KubeServices())(w, r)
+		case len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet:
+			view(handlers.KubeEvents())(w, r)
+		// additional read-only resource kinds
+		case len(parts) == 2 && parts[1] == "statefulsets" && r.Method == http.MethodGet:
+			view(handlers.KubeStatefulSets())(w, r)
+		case len(parts) == 2 && parts[1] == "daemonsets" && r.Method == http.MethodGet:
+			view(handlers.KubeDaemonSets())(w, r)
+		case len(parts) == 2 && parts[1] == "jobs" && r.Method == http.MethodGet:
+			view(handlers.KubeJobs())(w, r)
+		case len(parts) == 2 && parts[1] == "cronjobs" && r.Method == http.MethodGet:
+			view(handlers.KubeCronJobs())(w, r)
+		case len(parts) == 2 && parts[1] == "configmaps" && r.Method == http.MethodGet:
+			view(handlers.KubeConfigMaps())(w, r)
+		case len(parts) == 2 && parts[1] == "secrets" && r.Method == http.MethodGet:
+			view(handlers.KubeSecrets())(w, r)
+		case len(parts) == 2 && parts[1] == "ingresses" && r.Method == http.MethodGet:
+			view(handlers.KubeIngresses())(w, r)
+		case len(parts) == 2 && parts[1] == "pvcs" && r.Method == http.MethodGet:
+			view(handlers.KubePVCs())(w, r)
+		// /api/kube/clusters/{id}/describe?kind=&namespace=&name=
+		case len(parts) == 2 && parts[1] == "describe" && r.Method == http.MethodGet:
+			view(handlers.KubeDescribe())(w, r)
+		// /api/kube/clusters/{id}/metrics/{nodes|pods}  (metrics-server usage)
+		case len(parts) == 3 && parts[1] == "metrics" && parts[2] == "nodes" && r.Method == http.MethodGet:
+			view(handlers.KubeNodeMetrics())(w, r)
+		case len(parts) == 3 && parts[1] == "metrics" && parts[2] == "pods" && r.Method == http.MethodGet:
+			view(handlers.KubePodMetrics())(w, r)
+		// /api/kube/clusters/{id}/pods/{ns}/{pod}/detail
+		case len(parts) == 5 && parts[1] == "pods" && parts[4] == "detail" && r.Method == http.MethodGet:
+			view(handlers.KubePodDetail())(w, r)
+		// /api/kube/clusters/{id}/pods/{ns}/{pod}/logs
+		case len(parts) == 5 && parts[1] == "pods" && parts[4] == "logs" && r.Method == http.MethodGet:
+			view(handlers.KubePodLogs())(w, r)
+		// /api/kube/clusters/{id}/pods/{ns}/{pod}/logstream  (WebSocket; self-authed)
+		case len(parts) == 5 && parts[1] == "pods" && parts[4] == "logstream" && r.Method == http.MethodGet:
+			handlers.KubePodLogStream()(w, r)
+		// /api/kube/clusters/{id}/pods/{ns}/{pod}/exec  (WebSocket; self-authed, kube.exec)
+		case len(parts) == 5 && parts[1] == "pods" && parts[4] == "exec" && r.Method == http.MethodGet:
+			handlers.KubePodExec()(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	// ── Infrastructure: SFTP ──────────────────────────────────────
+	mux.HandleFunc("/api/sftp/hosts/", func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/sftp/hosts/"), "/")
+		parts := strings.Split(rest, "/")
+		access := requireAny(handlers.PermSftpAccess, handlers.PermSftpManage)
+		manage := requireAny(handlers.PermSftpManage)
+		switch {
+		case len(parts) == 2 && parts[1] == "list" && r.Method == http.MethodGet:
+			access(handlers.SftpList())(w, r)
+		case len(parts) == 2 && parts[1] == "read" && r.Method == http.MethodGet:
+			access(handlers.SftpRead())(w, r)
+		case len(parts) == 2 && parts[1] == "archive" && r.Method == http.MethodGet:
+			access(handlers.SftpArchiveList())(w, r)
+		case len(parts) == 2 && parts[1] == "extract" && r.Method == http.MethodPost:
+			manage(handlers.SftpExtract())(w, r)
+		// download self-authenticates via ?token= (browser-native streaming)
+		case len(parts) == 2 && parts[1] == "download" && r.Method == http.MethodGet:
+			handlers.SftpDownload()(w, r)
+		case len(parts) == 2 && parts[1] == "upload" && r.Method == http.MethodPost:
+			manage(handlers.SftpUpload())(w, r)
+		case len(parts) == 2 && parts[1] == "mkdir" && r.Method == http.MethodPost:
+			manage(handlers.SftpMkdir())(w, r)
+		case len(parts) == 2 && parts[1] == "delete" && r.Method == http.MethodPost:
+			manage(handlers.SftpDelete())(w, r)
+		case len(parts) == 2 && parts[1] == "rename" && r.Method == http.MethodPost:
+			manage(handlers.SftpRename())(w, r)
+		case len(parts) == 2 && parts[1] == "compress" && r.Method == http.MethodPost:
+			manage(handlers.SftpCompress())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	// ── Infrastructure: Nginx ─────────────────────────────────────
+	// Rides on the same SSH hosts as Docker/SFTP (GET /api/docker/hosts
+	// supplies the host list to the frontend).
+	mux.HandleFunc("/api/nginx/fleet", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		requireAny(handlers.PermNginxView, handlers.PermNginxManage, handlers.PermNginxReload)(handlers.NginxFleet())(w, r)
+	})
+	mux.HandleFunc("/api/nginx/hosts/", func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/nginx/hosts/"), "/")
+		parts := strings.Split(rest, "/")
+		view := requireAny(handlers.PermNginxView, handlers.PermNginxManage, handlers.PermNginxReload)
+		manage := requireAny(handlers.PermNginxManage)
+		reload := requireAny(handlers.PermNginxReload)
+		switch {
+		// logs/stream self-authenticates via ?token= (browser EventSource)
+		case len(parts) == 3 && parts[1] == "logs" && parts[2] == "stream" && r.Method == http.MethodGet:
+			handlers.NginxLogStream()(w, r)
+		case len(parts) == 2 && parts[1] == "info" && r.Method == http.MethodGet:
+			view(handlers.NginxInfo())(w, r)
+		case len(parts) == 2 && parts[1] == "settings" && r.Method == http.MethodGet:
+			view(handlers.NginxGetSettings())(w, r)
+		case len(parts) == 2 && parts[1] == "settings" && r.Method == http.MethodPut:
+			view(handlers.NginxSaveSettings())(w, r)
+		case len(parts) == 3 && parts[1] == "config" && parts[2] == "tree" && r.Method == http.MethodGet:
+			view(handlers.NginxConfigTree())(w, r)
+		case len(parts) == 3 && parts[1] == "config" && parts[2] == "file" && r.Method == http.MethodGet:
+			view(handlers.NginxConfigRead())(w, r)
+		case len(parts) == 3 && parts[1] == "config" && parts[2] == "file" && r.Method == http.MethodPost:
+			manage(handlers.NginxConfigWrite())(w, r)
+		case len(parts) == 3 && parts[1] == "config" && parts[2] == "backups" && r.Method == http.MethodGet:
+			view(handlers.NginxConfigBackups())(w, r)
+		case len(parts) == 3 && parts[1] == "config" && parts[2] == "effective" && r.Method == http.MethodGet:
+			view(handlers.NginxEffectiveConfig())(w, r)
+		case len(parts) == 2 && parts[1] == "certs" && r.Method == http.MethodGet:
+			view(handlers.NginxCerts())(w, r)
+		case len(parts) == 2 && parts[1] == "map" && r.Method == http.MethodGet:
+			view(handlers.NginxMap())(w, r)
+		case len(parts) == 2 && parts[1] == "stub_status" && r.Method == http.MethodGet:
+			view(handlers.NginxStubStatus())(w, r)
+		case len(parts) == 2 && parts[1] == "sites" && r.Method == http.MethodGet:
+			view(handlers.NginxSites())(w, r)
+		case len(parts) == 3 && parts[1] == "sites" && parts[2] == "toggle" && r.Method == http.MethodPost:
+			manage(handlers.NginxSiteToggle())(w, r)
+		case len(parts) == 2 && parts[1] == "test" && r.Method == http.MethodPost:
+			reload(handlers.NginxTest())(w, r)
+		case len(parts) == 2 && parts[1] == "reload" && r.Method == http.MethodPost:
+			reload(handlers.NginxReload())(w, r)
+		case len(parts) == 2 && parts[1] == "status" && r.Method == http.MethodGet:
+			view(handlers.NginxStatus())(w, r)
+		case len(parts) == 2 && parts[1] == "logs" && r.Method == http.MethodGet:
+			view(handlers.NginxLogList())(w, r)
+		case len(parts) == 3 && parts[1] == "logs" && parts[2] == "tail" && r.Method == http.MethodGet:
+			view(handlers.NginxLogTail())(w, r)
+		case len(parts) == 3 && parts[1] == "logs" && parts[2] == "search" && r.Method == http.MethodGet:
+			view(handlers.NginxLogSearch())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -806,12 +1306,36 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 		requireAny(handlers.PermBackupsManage)(handlers.BackupToBucket())(w, r)
 	})
+	mux.HandleFunc("/api/backup/jobs/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermBackupsManage)(handlers.GetBackupJobStatus())(w, r)
+		case http.MethodDelete:
+			requireAny(handlers.PermBackupsManage)(handlers.CancelBackupJob())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
 	mux.HandleFunc("/api/backup/bucket-list", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.NotFound(w, r)
 			return
 		}
 		requireAny(handlers.PermBackupsManage)(handlers.ListBucketBackups())(w, r)
+	})
+	mux.HandleFunc("/api/backup/presign", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		requireAny(handlers.PermBackupsManage)(handlers.PresignDownload())(w, r)
+	})
+	mux.HandleFunc("/api/backup/bucket-download", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		requireAny(handlers.PermBackupsManage)(handlers.DownloadFromBucket())(w, r)
 	})
 	mux.HandleFunc("/api/backup-download-requests", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -993,6 +1517,8 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			requireAny(handlers.PermPipelinesView)(handlers.ListPipelineRuns())(w, r)
 		case len(parts) == 3 && parts[1] == "runs" && r.Method == http.MethodGet:
 			requireAny(handlers.PermPipelinesView)(handlers.GetPipelineRunStatus())(w, r)
+		case len(parts) == 4 && parts[1] == "runs" && parts[3] == "rerun" && r.Method == http.MethodPost:
+			requireAny(handlers.PermPipelinesRun)(handlers.RerunPipelineRun())(w, r)
 		case len(parts) == 4 && parts[1] == "runs" && parts[3] == "logs" && r.Method == http.MethodGet:
 			requireAny(handlers.PermPipelinesView)(handlers.GetRunLogs())(w, r)
 		default:
@@ -1024,6 +1550,7 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 
 	// ── Health ping ───────────────────────────────────────────────
 	mux.HandleFunc("/api/health", requireAny(handlers.PermHealthView)(handlers.PingAllConnections()))
+	mux.HandleFunc("/api/scheduler/status", requireAny(handlers.PermHealthView)(handlers.SchedulerStatus()))
 
 	// ── Notifications ─────────────────────────────────────────────
 	mux.HandleFunc("/api/notifications", func(w http.ResponseWriter, r *http.Request) {
@@ -1131,7 +1658,7 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	// ── RBAC: Permissions ─────────────────────────────────────────
 	mux.HandleFunc("/api/app-permissions", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			requireAny(handlers.PermRolesManage)(handlers.ListAppPermissions())(w, r)
+			requireAny(handlers.PermRolesManage, handlers.PermUsersManage)(handlers.ListAppPermissions())(w, r)
 		} else {
 			http.NotFound(w, r)
 		}
@@ -1159,6 +1686,56 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		if r.Method == http.MethodDelete {
 			handlers.DeletePermission()(w, r)
 		} else {
+			http.NotFound(w, r)
+		}
+	})
+
+	// ── Alert settings ────────────────────────────────────────────
+	mux.HandleFunc("/api/settings/alerts", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermSettingsAlerts)(handlers.GetAlertSettings())(w, r)
+		case http.MethodPost:
+			requireAny(handlers.PermSettingsAlerts)(handlers.SaveAlertSettings())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/settings/alerts/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			requireAny(handlers.PermSettingsAlerts)(handlers.AlertSettingsStatus())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/settings/alerts/test", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			requireAny(handlers.PermSettingsAlerts)(handlers.TestAlertChannel())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/settings/alerts/telegram/create-topic", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			requireAny(handlers.PermSettingsAlerts)(handlers.CreateTelegramTopic())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/alerts/log/stats", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			requireAny(handlers.PermSettingsAlerts)(handlers.AlertLogStats())(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/alerts/log", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermSettingsAlerts)(handlers.ListAlertLog())(w, r)
+		case http.MethodDelete:
+			requireAny(handlers.PermSettingsAlerts)(handlers.ClearAlertLog())(w, r)
+		default:
 			http.NotFound(w, r)
 		}
 	})

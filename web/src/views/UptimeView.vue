@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
 import { useObsSettings, fetchIndices, UPTIME_DEFAULTS } from '@/composables/useObsSettings'
+import { useListFilter } from '@/composables/useListFilter'
 import IndexPicker from '@/components/ui/IndexPicker.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
@@ -69,8 +70,10 @@ const avgLatency = computed(() => {
   return Math.round(list.reduce((s, m) => s + m.durationMs, 0) / list.length)
 })
 
+const { search: monitorSearch, filtered: searchedMonitors } = useListFilter(monitors, (m, q) => m.name.toLowerCase().includes(q) || m.url.toLowerCase().includes(q))
+
 const filteredMonitors = computed(() => {
-  let list = monitors.value
+  let list = searchedMonitors.value
   if (tabFilter.value === 'up')   list = list.filter(m => m.status === 'up')
   if (tabFilter.value === 'down') list = list.filter(m => m.status === 'down')
   if (activeTag.value) list = list.filter(m => m.tags.includes(activeTag.value))
@@ -395,6 +398,7 @@ const tlMax = computed(() => Math.max(...detailTimeline.value.map(b => b.avgMs),
           <button class="up-seg-btn up-seg-up" :class="{ active: tabFilter === 'up' }" @click="tabFilter = 'up'">Up</button>
           <button class="up-seg-btn up-seg-down" :class="{ active: tabFilter === 'down' }" @click="tabFilter = 'down'">Down</button>
         </div>
+        <input v-model="monitorSearch" class="base-input up-search" type="search" placeholder="Filter monitors…" />
         <div v-if="availableTags.length" class="up-tag-strip">
           <button class="up-chip" :class="{ 'up-chip-active': activeTag === '' }" @click="activeTag = ''">All</button>
           <button v-for="tag in availableTags" :key="tag"
@@ -480,6 +484,10 @@ const tlMax = computed(() => Math.max(...detailTimeline.value.map(b => b.avgMs),
             </div>
           </div>
         </section>
+      </div>
+
+      <div v-else-if="!loading && monitors.length" class="up-placeholder">
+        <p>No monitors match your filters.</p>
       </div>
 
       <div v-else-if="!loading" class="up-placeholder">
@@ -625,6 +633,7 @@ const tlMax = computed(() => Math.max(...detailTimeline.value.map(b => b.avgMs),
 .up-seg-btn.active { background:var(--text-primary); color:var(--bg-body); }
 .up-seg-up.active  { background:var(--success); color:#fff; }
 .up-seg-down.active{ background:var(--danger);  color:#fff; }
+.up-search { width:200px; max-width:100%; }
 .up-tag-strip { display:flex; align-items:center; gap:5px; flex-wrap:wrap; }
 
 /* ── Chips ─────────────────────────────────────────────────── */

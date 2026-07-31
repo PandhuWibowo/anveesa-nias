@@ -1,8 +1,13 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { readableError } from '@/utils/httpError'
+import { useListFilter } from '@/composables/useListFilter'
+import { useSort } from '@/composables/useSort'
+import { usePagination } from '@/composables/usePagination'
+import Pagination from '@/components/ui/Pagination.vue'
+import SortIcon from '@/components/ui/SortIcon.vue'
 
 const toast = useToast()
 
@@ -54,7 +59,67 @@ onMounted(async () => {
   await Promise.all([loadUsers(), loadRoles()])
 })
 
-// Edit modal
+// ── Filter ──────────────────────────────────────────────────────
+const filterRole = ref('')
+const filterStatus = ref('')
+
+const roleStatusFilteredUsers = computed(() => {
+  let list = users.value
+  if (filterRole.value) {
+    list = list.filter(u => u.role === filterRole.value)
+  }
+  if (filterStatus.value) {
+    const active = filterStatus.value === 'active'
+    list = list.filter(u => u.is_active === active)
+  }
+  return list
+})
+
+const { search: filterSearch, filtered: filteredUsers } = useListFilter(roleStatusFilteredUsers, (u, q) =>
+  u.username.toLowerCase().includes(q)
+)
+
+const availableRoles = computed(() => [...new Set(users.value.map(u => u.role))].sort())
+
+function clearFilters() {
+  filterSearch.value = ''
+  filterRole.value = ''
+  filterStatus.value = ''
+}
+
+const hasActiveFilters = computed(() => filterSearch.value || filterRole.value || filterStatus.value)
+
+// ── Sort ────────────────────────────────────────────────────────
+type SortKey = 'id' | 'username' | 'role' | 'is_active' | 'created_at'
+const { sortKey, sortDir, toggleSort: setSort, sort: sortUsers } = useSort<User>((u, key) => {
+  const v = (u as any)[key]
+  return typeof v === 'string' ? v.toLowerCase() : v
+}, 'id')
+
+const sortedUsers = computed(() => sortUsers(filteredUsers.value))
+
+// ── Pagination ──────────────────────────────────────────────────
+const { page: currentPage, pageSize, totalPages, paged: pagedUsers, setPage } = usePagination(sortedUsers, 10)
+
+// ── Custom fields (column visibility) ───────────────────────────
+const visibleColumns = ref({
+  id: true,
+  username: true,
+  role: true,
+  is_active: true,
+  created_at: true,
+})
+const showColumnMenu = ref(false)
+
+const columnDefs = [
+  { key: 'id' as const, label: 'ID' },
+  { key: 'username' as const, label: 'Username' },
+  { key: 'role' as const, label: 'Role' },
+  { key: 'is_active' as const, label: 'Status' },
+  { key: 'created_at' as const, label: 'Created' },
+]
+
+// ── Edit modal ──────────────────────────────────────────────────
 const editTarget = ref<User | null>(null)
 const editRoleId = ref<number | null>(null)
 const editPassword = ref('')
@@ -99,10 +164,12 @@ const roleColors: Record<string, string> = {
   editor: '#4ade80',
   user: '#94a3b8',
 }
+
+
 </script>
 
 <template>
-  <div class="page-shell u-root">
+  <div class="page-shell u-root" @click="showColumnMenu = false">
     <div class="page-scroll u-scroll">
       <div class="page-stack">
         <section class="page-hero">
@@ -123,7 +190,56 @@ const roleColors: Record<string, string> = {
           <div class="u-panel-head">
             <div>
               <div class="u-panel-title">Accounts</div>
-              <div class="u-panel-sub">{{ users.length }} total users</div>
+              <div class="u-panel-sub">
+                {{ filteredUsers.length }} of {{ users.length }} users
+              </div>
+            </div>
+          </div>
+
+          <!-- Filter bar -->
+          <div class="u-filter-bar">
+            <div class="u-filter-search">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input
+                class="u-filter-input"
+                v-model="filterSearch"
+                placeholder="Search username…"
+              />
+            </div>
+            <select class="u-filter-select" v-model="filterRole">
+              <option value="">All roles</option>
+              <option v-for="r in availableRoles" :key="r" :value="r">{{ r }}</option>
+            </select>
+            <select class="u-filter-select" v-model="filterStatus">
+              <option value="">All status</option>
+              <option value="active">Active</option>
+              <option value="locked">Locked</option>
+            </select>
+            <button v-if="hasActiveFilters" class="u-filter-clear" @click="clearFilters()">Clear</button>
+
+            <!-- Column visibility -->
+            <div class="u-col-toggle" @click.stop>
+              <button class="base-btn base-btn--ghost base-btn--xs u-col-btn" @click="showColumnMenu = !showColumnMenu">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18"/></svg>
+                Columns
+              </button>
+              <div v-if="showColumnMenu" class="u-col-menu">
+                <div class="u-col-menu-title">Visible Columns</div>
+                <label v-for="col in columnDefs" :key="col.key" class="u-col-item">
+                  <input type="checkbox" v-model="visibleColumns[col.key]" />
+                  {{ col.label }}
+                </label>
+              </div>
+            </div>
+
+            <!-- Page size -->
+            <div class="u-pagesize">
+              <select class="u-filter-select" v-model="pageSize">
+                <option :value="10">10 / page</option>
+                <option :value="25">25 / page</option>
+                <option :value="50">50 / page</option>
+                <option :value="100">100 / page</option>
+              </select>
             </div>
           </div>
 
@@ -135,25 +251,35 @@ const roleColors: Record<string, string> = {
           <table v-else class="u-table">
             <thead>
               <tr>
-                <th>ID</th>
-                <th>Username</th>
-                <th>Role</th>
-                <th>Status</th>
-                <th>Created</th>
+                <th v-if="visibleColumns.id" class="u-th-sort" :class="{ sorted: sortKey === 'id' }" @click="setSort('id')">
+                  ID <SortIcon :active="sortKey === 'id'" :dir="sortDir" />
+                </th>
+                <th v-if="visibleColumns.username" class="u-th-sort" :class="{ sorted: sortKey === 'username' }" @click="setSort('username')">
+                  Username <SortIcon :active="sortKey === 'username'" :dir="sortDir" />
+                </th>
+                <th v-if="visibleColumns.role" class="u-th-sort" :class="{ sorted: sortKey === 'role' }" @click="setSort('role')">
+                  Role <SortIcon :active="sortKey === 'role'" :dir="sortDir" />
+                </th>
+                <th v-if="visibleColumns.is_active" class="u-th-sort" :class="{ sorted: sortKey === 'is_active' }" @click="setSort('is_active')">
+                  Status <SortIcon :active="sortKey === 'is_active'" :dir="sortDir" />
+                </th>
+                <th v-if="visibleColumns.created_at" class="u-th-sort" :class="{ sorted: sortKey === 'created_at' }" @click="setSort('created_at')">
+                  Created <SortIcon :active="sortKey === 'created_at'" :dir="sortDir" />
+                </th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="u in users" :key="u.id">
-                <td class="u-td-dim">{{ u.id }}</td>
-                <td class="u-td-name">{{ u.username }}</td>
-                <td>
+              <tr v-for="u in pagedUsers" :key="u.id">
+                <td v-if="visibleColumns.id" class="u-td-dim">{{ u.id }}</td>
+                <td v-if="visibleColumns.username" class="u-td-name">{{ u.username }}</td>
+                <td v-if="visibleColumns.role">
                   <span class="u-role" :style="{ color: roleColors[u.role] ?? 'var(--text-muted)', borderColor: roleColors[u.role] ?? 'var(--border)' }">
                     {{ u.role }}
                   </span>
                 </td>
-                <td class="u-td-dim">{{ u.is_active ? 'Active' : 'Locked' }}</td>
-                <td class="u-td-dim">{{ new Date(u.created_at).toLocaleDateString() }}</td>
+                <td v-if="visibleColumns.is_active" class="u-td-dim">{{ u.is_active ? 'Active' : 'Locked' }}</td>
+                <td v-if="visibleColumns.created_at" class="u-td-dim">{{ new Date(u.created_at).toLocaleDateString() }}</td>
                 <td>
                   <div class="u-row-actions">
                     <button class="base-btn base-btn--ghost base-btn--xs" @click="openEdit(u)">Edit</button>
@@ -161,15 +287,27 @@ const roleColors: Record<string, string> = {
                   </div>
                 </td>
               </tr>
-              <tr v-if="users.length === 0">
-                <td colspan="6" class="u-empty">No users found</td>
+              <tr v-if="pagedUsers.length === 0">
+                <td :colspan="Object.values(visibleColumns).filter(Boolean).length + 1" class="u-empty">
+                  {{ hasActiveFilters ? 'No users match the current filters' : 'No users found' }}
+                </td>
               </tr>
             </tbody>
           </table>
+
+          <!-- Pagination -->
+          <Pagination
+            v-if="!loading && totalPages > 1"
+            :page="currentPage"
+            :total-pages="totalPages"
+            :total="sortedUsers.length"
+            item-label="users"
+            @update:page="setPage"
+          />
         </section>
       </div>
     </div>
-    
+
     <!-- Edit modal -->
     <Teleport to="body">
       <div v-if="editTarget" class="u-overlay" @click.self="editTarget=null">
@@ -219,9 +357,7 @@ const roleColors: Record<string, string> = {
   display: flex; align-items: center; justify-content: center;
   padding: 40px; color: var(--text-muted);
 }
-.u-table-wrap {
-  overflow: hidden;
-}
+.u-table-wrap { overflow: hidden; }
 .u-table {
   width: 100%; border-collapse: collapse; font-size: 13px;
 }
@@ -248,6 +384,66 @@ const roleColors: Record<string, string> = {
 .u-btn-del { color: var(--danger) !important; }
 .u-btn-del:hover { background: rgba(239, 68, 68, 0.1) !important; }
 .u-empty { text-align:center;color:var(--text-muted);font-size:13px;padding:24px; }
+
+/* Filter bar */
+.u-filter-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 20px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.u-filter-search {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--bg-body); border: 1px solid var(--border);
+  border-radius: 5px; padding: 5px 10px; flex: 1; min-width: 180px;
+}
+.u-filter-search svg { color: var(--text-muted); flex-shrink: 0; }
+.u-filter-input {
+  border: none; outline: none; background: transparent;
+  color: var(--text-primary); font-size: 13px; width: 100%;
+  font-family: inherit;
+}
+.u-filter-input::placeholder { color: var(--text-muted); }
+.u-filter-select {
+  padding: 5px 28px 5px 10px; border: 1px solid var(--border);
+  border-radius: 5px; background: var(--bg-body); color: var(--text-primary);
+  font-size: 12px; font-family: inherit; outline: none; cursor: pointer;
+  appearance: auto;
+}
+.u-filter-clear {
+  padding: 5px 10px; border: 1px solid var(--border);
+  border-radius: 5px; background: transparent; color: var(--text-muted);
+  font-size: 12px; cursor: pointer; font-family: inherit;
+  transition: color 0.15s, border-color 0.15s;
+}
+.u-filter-clear:hover { color: var(--danger); border-color: var(--danger); }
+
+/* Sort */
+.u-th-sort { cursor: pointer; user-select: none; white-space: nowrap; }
+.u-th-sort:hover { color: var(--text-primary); }
+.u-th-sort.sorted { color: var(--brand); }
+
+/* Column toggle */
+.u-col-toggle { position: relative; }
+.u-col-btn { gap: 5px; }
+.u-col-menu {
+  position: absolute; top: calc(100% + 6px); right: 0;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 7px; padding: 10px 12px; min-width: 160px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3); z-index: 100;
+}
+.u-col-menu-title {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--text-muted); margin-bottom: 8px;
+}
+.u-col-item {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text-primary);
+  padding: 4px 0; cursor: pointer;
+}
+.u-col-item input { cursor: pointer; }
+
+.u-pagesize { margin-left: auto; }
 
 /* Dialog */
 .u-overlay {

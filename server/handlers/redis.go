@@ -38,12 +38,19 @@ type redisKeysResponse struct {
 }
 
 type redisValueResponse struct {
-	Key       string `json:"key"`
-	Type      string `json:"type"`
-	TTL       int64  `json:"ttl"`
-	Length    int64  `json:"length,omitempty"`
-	Value     any    `json:"value"`
-	Truncated bool   `json:"truncated"`
+	Key         string `json:"key"`
+	Type        string `json:"type"`
+	TTL         int64  `json:"ttl"`
+	Length      int64  `json:"length,omitempty"`
+	Value       any    `json:"value"`
+	Truncated   bool   `json:"truncated"`
+	MemoryBytes int64  `json:"memory_bytes,omitempty"`
+}
+
+type redisTTLRequest struct {
+	Key string `json:"key"`
+	TTL int64  `json:"ttl"`
+	DB  *int   `json:"db"`
 }
 
 type redisWriteRequest struct {
@@ -224,7 +231,8 @@ func RedisKeyValue() http.HandlerFunc {
 			return
 		}
 
-		result, err := readRedisValue(r.Context(), client, key)
+		limit := queryInt(r, "limit", 100, 10, 5000)
+		result, err := readRedisValue(r.Context(), client, key, limit)
 		if err != nil {
 			http.Error(w, jsonError("redis read failed: "+err.Error()), http.StatusBadGateway)
 			return
@@ -410,7 +418,7 @@ func RedisGenerateScript() http.HandlerFunc {
 			if strings.TrimSpace(k) == "" {
 				continue
 			}
-			value, err := readRedisValue(r.Context(), client, k)
+			value, err := readRedisValue(r.Context(), client, k, 1000)
 			if err != nil {
 				continue
 			}
@@ -527,11 +535,271 @@ func RedisMoveKey() http.HandlerFunc {
 	}
 }
 
-func readRedisValue(ctx context.Context, client *redisClient, key string) (redisValueResponse, error) {
+func RedisSetTTL() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		connID, err := connectionIDFromPath(r.URL.Path)
+		if err != nil {
+			http.Error(w, `{"error":"invalid connection id"}`, http.StatusBadRequest)
+			return
+		}
+		var payload redisTTLRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+			return
+		}
+		payload.Key = strings.TrimSpace(payload.Key)
+		if payload.Key == "" {
+			http.Error(w, `{"error":"key is required"}`, http.StatusBadRequest)
+			return
+		}
+		client, connName, err := openRedisClient(connID, payload.DB)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		var result any
+		if payload.TTL > 0 {
+			result, err = client.command(r.Context(), "EXPIRE", payload.Key, strconv.FormatInt(payload.TTL, 10))
+		} else {
+			result, err = client.command(r.Context(), "PERSIST", payload.Key)
+		}
+		if err != nil {
+			writeRedisAudit(r, "redis_set_ttl", connID, connName, payload.Key, err.Error())
+			http.Error(w, jsonError("redis ttl update failed: "+err.Error()), http.StatusBadGateway)
+			return
+		}
+		if applied, ok := result.(int64); ok && applied == 0 {
+			http.Error(w, jsonError("redis ttl update failed: key not found"), http.StatusNotFound)
+			return
+		}
+		writeRedisAudit(r, "redis_set_ttl", connID, connName, fmt.Sprintf("%s ttl=%d", payload.Key, payload.TTL), "")
+		json.NewEncoder(w).Encode(map[string]string{"message": "TTL updated"})
+	}
+}
+
+func RedisInfo() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		connID, err := connectionIDFromPath(r.URL.Path)
+		if err != nil {
+			http.Error(w, `{"error":"invalid connection id"}`, http.StatusBadRequest)
+			return
+		}
+		client, connName, err := openRedisClient(connID, redisDBFromRequest(r))
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		resp, err := client.command(r.Context(), "INFO")
+		if err != nil {
+			http.Error(w, jsonError("redis info failed: "+err.Error()), http.StatusBadGateway)
+			return
+		}
+		raw, _ := resp.(string)
+		sections, keyspace := parseRedisInfo(raw)
+		writeRedisAudit(r, "redis_info", connID, connName, "", "")
+		json.NewEncoder(w).Encode(map[string]any{
+			"sections": sections,
+			"keyspace": keyspace,
+		})
+	}
+}
+
+func RedisSlowlog() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		connID, err := connectionIDFromPath(r.URL.Path)
+		if err != nil {
+			http.Error(w, `{"error":"invalid connection id"}`, http.StatusBadRequest)
+			return
+		}
+		client, connName, err := openRedisClient(connID, redisDBFromRequest(r))
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		count := queryInt(r, "count", 50, 1, 200)
+		resp, err := client.command(r.Context(), "SLOWLOG", "GET", strconv.Itoa(count))
+		if err != nil {
+			http.Error(w, jsonError("redis slowlog failed: "+err.Error()), http.StatusBadGateway)
+			return
+		}
+		writeRedisAudit(r, "redis_slowlog", connID, connName, "", "")
+		json.NewEncoder(w).Encode(map[string]any{"entries": parseRedisSlowlog(resp)})
+	}
+}
+
+func RedisMonitor() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		connID, err := connectionIDFromPath(r.URL.Path)
+		if err != nil {
+			http.Error(w, `{"error":"invalid connection id"}`, http.StatusBadRequest)
+			return
+		}
+		channel := strings.TrimSpace(r.URL.Query().Get("channel"))
+		if channel == "" {
+			http.Error(w, `{"error":"channel is required"}`, http.StatusBadRequest)
+			return
+		}
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, `{"error":"streaming unsupported"}`, http.StatusInternalServerError)
+			return
+		}
+		client, connName, err := openRedisClient(connID, redisDBFromRequest(r))
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+		defer cancel()
+
+		cmd := []string{"SUBSCRIBE", channel}
+		if strings.ContainsAny(channel, "*?[") {
+			cmd = []string{"PSUBSCRIBE", channel}
+		}
+		fmt.Fprintf(w, ": subscribed to %s\n\n", channel)
+		flusher.Flush()
+
+		writeRedisAudit(r, "redis_monitor", connID, connName, channel, "")
+		err = client.stream(ctx, cmd, func(parts []string) {
+			ch, payload := parsePubSubMessage(parts)
+			if payload == "" && ch == "" {
+				return
+			}
+			body, _ := json.Marshal(map[string]any{
+				"channel": ch,
+				"payload": payload,
+				"ts":      time.Now().UnixMilli(),
+			})
+			fmt.Fprintf(w, "data: %s\n\n", body)
+			flusher.Flush()
+		})
+		if err != nil && ctx.Err() == nil {
+			fmt.Fprintf(w, "event: error\ndata: %s\n\n", strings.ReplaceAll(err.Error(), "\n", " "))
+			flusher.Flush()
+		}
+	}
+}
+
+func parsePubSubMessage(parts []string) (channel, payload string) {
+	if len(parts) == 0 {
+		return "", ""
+	}
+	switch strings.ToLower(parts[0]) {
+	case "message":
+		if len(parts) >= 3 {
+			return parts[1], parts[2]
+		}
+	case "pmessage":
+		if len(parts) >= 4 {
+			return parts[2], parts[3]
+		}
+	}
+	return "", ""
+}
+
+func parseRedisInfo(raw string) (map[string]map[string]string, map[string]int64) {
+	sections := map[string]map[string]string{}
+	keyspace := map[string]int64{}
+	current := "general"
+	sections[current] = map[string]string{}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			current = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(line, "#")))
+			if _, ok := sections[current]; !ok {
+				sections[current] = map[string]string{}
+			}
+			continue
+		}
+		idx := strings.Index(line, ":")
+		if idx < 0 {
+			continue
+		}
+		field := line[:idx]
+		val := line[idx+1:]
+		sections[current][field] = val
+		if current == "keyspace" && strings.HasPrefix(field, "db") {
+			if n := parseKeyspaceKeys(val); n >= 0 {
+				keyspace[strings.TrimPrefix(field, "db")] = n
+			}
+		}
+	}
+	return sections, keyspace
+}
+
+func parseKeyspaceKeys(val string) int64 {
+	for _, part := range strings.Split(val, ",") {
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) == 2 && kv[0] == "keys" {
+			n, err := strconv.ParseInt(kv[1], 10, 64)
+			if err != nil {
+				return -1
+			}
+			return n
+		}
+	}
+	return -1
+}
+
+func parseRedisSlowlog(resp any) []map[string]any {
+	rows, ok := resp.([]any)
+	if !ok {
+		return []map[string]any{}
+	}
+	entries := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		fields, ok := row.([]any)
+		if !ok || len(fields) < 4 {
+			continue
+		}
+		id, _ := fields[0].(int64)
+		ts, _ := fields[1].(int64)
+		micros, _ := fields[2].(int64)
+		args := anySliceToStrings(fields[3])
+		entry := map[string]any{
+			"id":        id,
+			"timestamp": ts,
+			"micros":    micros,
+			"command":   strings.Join(args, " "),
+		}
+		if len(fields) >= 5 {
+			if client, ok := fields[4].(string); ok {
+				entry["client"] = client
+			}
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func readRedisValue(ctx context.Context, client *redisClient, key string, limit int) (redisValueResponse, error) {
+	if limit < 1 {
+		limit = 100
+	}
+	if limit > 5000 {
+		limit = 5000
+	}
+	last := strconv.Itoa(limit - 1)
 	resp := redisValueResponse{Key: key, Type: "none", TTL: -2}
 	if ttl, err := client.command(ctx, "TTL", key); err == nil {
 		if n, ok := ttl.(int64); ok {
 			resp.TTL = n
+		}
+	}
+	if mem, err := client.command(ctx, "MEMORY", "USAGE", key); err == nil {
+		if n, ok := mem.(int64); ok {
+			resp.MemoryBytes = n
 		}
 	}
 	rawType, err := client.command(ctx, "TYPE", key)
@@ -561,40 +829,40 @@ func readRedisValue(ctx context.Context, client *redisClient, key string) (redis
 		resp.Value = stringPairsToMap(items)
 	case "list":
 		length, _ := redisInt(client.command(ctx, "LLEN", key))
-		items, err := client.command(ctx, "LRANGE", key, "0", "99")
+		items, err := client.command(ctx, "LRANGE", key, "0", last)
 		if err != nil {
 			return resp, err
 		}
 		resp.Length = length
-		resp.Truncated = length > 100
+		resp.Truncated = length > int64(limit)
 		resp.Value = anySliceToStrings(items)
 	case "set":
 		length, _ := redisInt(client.command(ctx, "SCARD", key))
-		items, err := client.command(ctx, "SSCAN", key, "0", "COUNT", "100")
+		items, err := client.command(ctx, "SSCAN", key, "0", "COUNT", strconv.Itoa(limit))
 		if err != nil {
 			return resp, err
 		}
 		resp.Length = length
 		resp.Value = scanValues(items)
-		resp.Truncated = length > 100
+		resp.Truncated = length > int64(limit)
 	case "zset":
 		length, _ := redisInt(client.command(ctx, "ZCARD", key))
-		items, err := client.command(ctx, "ZRANGE", key, "0", "99", "WITHSCORES")
+		items, err := client.command(ctx, "ZRANGE", key, "0", last, "WITHSCORES")
 		if err != nil {
 			return resp, err
 		}
 		resp.Length = length
 		resp.Value = zsetPairs(items)
-		resp.Truncated = length > 100
+		resp.Truncated = length > int64(limit)
 	case "stream":
 		length, _ := redisInt(client.command(ctx, "XLEN", key))
-		items, err := client.command(ctx, "XRANGE", key, "-", "+", "COUNT", "50")
+		items, err := client.command(ctx, "XRANGE", key, "-", "+", "COUNT", strconv.Itoa(limit))
 		if err != nil {
 			return resp, err
 		}
 		resp.Length = length
 		resp.Value = streamEntries(items)
-		resp.Truncated = length > 50
+		resp.Truncated = length > int64(limit)
 	case "json":
 		value, err := client.command(ctx, "JSON.GET", key)
 		if err != nil {
@@ -1031,6 +1299,74 @@ func (c *redisClient) command(ctx context.Context, args ...string) (any, error) 
 		return nil, err
 	}
 	return readRedisRESP(reader)
+}
+
+// stream opens a long-lived connection, issues the given subscribe command, and
+// invokes onMessage for every RESP array pushed by the server until ctx is done
+// or the connection errors. Used for pub/sub tailing.
+func (c *redisClient) stream(ctx context.Context, subscribe []string, onMessage func(parts []string)) error {
+	conn, err := c.dial(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	// Clear the short per-command deadline; the stream stays open until ctx ends.
+	_ = conn.SetDeadline(time.Time{})
+
+	// Close the connection when the context ends so any blocking read unblocks,
+	// including during the auth/select handshake below.
+	go func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	}()
+
+	reader := bufio.NewReader(conn)
+	if c.password != "" {
+		authArgs := []string{"AUTH", c.password}
+		if c.username != "" {
+			authArgs = []string{"AUTH", c.username, c.password}
+		}
+		if err := writeRedisCommand(conn, authArgs...); err != nil {
+			return err
+		}
+		if _, err := readRedisRESP(reader); err != nil {
+			return err
+		}
+	}
+	if c.db > 0 {
+		if err := writeRedisCommand(conn, "SELECT", strconv.Itoa(c.db)); err != nil {
+			return err
+		}
+		if _, err := readRedisRESP(reader); err != nil {
+			return err
+		}
+	}
+	if err := writeRedisCommand(conn, subscribe...); err != nil {
+		return err
+	}
+
+	for {
+		resp, err := readRedisRESP(reader)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		arr, ok := resp.([]any)
+		if !ok {
+			continue
+		}
+		parts := make([]string, 0, len(arr))
+		for _, item := range arr {
+			if s, ok := item.(string); ok {
+				parts = append(parts, s)
+			} else {
+				parts = append(parts, fmt.Sprint(item))
+			}
+		}
+		onMessage(parts)
+	}
 }
 
 func (c *redisClient) dial(ctx context.Context) (net.Conn, error) {

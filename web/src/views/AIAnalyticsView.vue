@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
@@ -389,6 +389,13 @@ onMounted(() => {
   applyPendingAnalysis()
   fetchConnections()
   loadPinnedReports()
+})
+
+onBeforeUnmount(() => {
+  if (typewriterTimer) {
+    clearInterval(typewriterTimer)
+    typewriterTimer = null
+  }
 })
 </script>
 

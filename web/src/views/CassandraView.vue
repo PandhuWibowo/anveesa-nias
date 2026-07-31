@@ -4,6 +4,7 @@ import { useConnections } from '@/composables/useConnections'
 import { useCassandra, type CassandraColumnSummary, type CassandraDashboardData, type CassandraKeyspaceSummary, type CassandraResult, type CassandraTableSummary } from '@/composables/useCassandra'
 import { useToast } from '@/composables/useToast'
 import { readableError } from '@/utils/httpError'
+import { useListFilter } from '@/composables/useListFilter'
 
 const props = defineProps<{ activeConnId?: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -21,7 +22,6 @@ const tables = ref<CassandraTableSummary[]>([])
 const columns = ref<CassandraColumnSummary[]>([])
 const selectedKeyspace = ref('')
 const selectedTable = ref('')
-const tableSearch = ref('')
 const rowLimit = ref(100)
 const activeTab = ref<'data' | 'structure' | 'query'>('data')
 const result = ref<CassandraResult>({ columns: [], rows: [], row_count: 0, applied: false, duration_ms: 0 })
@@ -32,11 +32,7 @@ const cassandraConnections = computed(() => connections.value.filter(c => c.driv
 const activeConn = computed(() => connections.value.find(c => c.id === props.activeConnId) ?? null)
 const isCassandra = computed(() => activeConn.value?.driver === 'cassandra')
 const selectedTableInfo = computed(() => tables.value.find(t => t.name === selectedTable.value) ?? null)
-const filteredTables = computed(() => {
-  const q = tableSearch.value.trim().toLowerCase()
-  if (!q) return tables.value
-  return tables.value.filter(t => t.name.toLowerCase().includes(q))
-})
+const { search: tableSearch, filtered: filteredTables } = useListFilter(tables, (t, q) => t.name.toLowerCase().includes(q))
 const visibleColumns = computed(() => result.value.columns.length ? result.value.columns : columns.value.map(c => c.name))
 const systemKeyspaces = new Set(['system', 'system_auth', 'system_distributed', 'system_schema', 'system_traces', 'system_views', 'system_virtual_schema'])
 

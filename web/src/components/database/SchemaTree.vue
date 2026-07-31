@@ -6,6 +6,7 @@ const props = defineProps<{
   connId: number | null
   active?: boolean
   selectedTable?: string
+  refreshKey?: number
 }>()
 
 const emit = defineEmits<{
@@ -18,9 +19,11 @@ const expandedDbs = ref<Set<string>>(new Set())
 const activeTable = ref<string>('')
 
 watch(
-  [() => props.connId, () => props.active],
-  ([id, isActive]) => {
-    if (id && isActive) fetchSchema(id)
+  [() => props.connId, () => props.active, () => props.refreshKey],
+  ([id, isActive], oldValues) => {
+    const active = isActive !== false
+    const didRefresh = oldValues !== undefined && oldValues[2] !== props.refreshKey
+    if (id && active) fetchSchema(id, { refresh: didRefresh })
   },
   { immediate: true },
 )

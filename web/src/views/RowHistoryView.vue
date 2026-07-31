@@ -10,7 +10,7 @@
         <input v-model="selectedDb" class="rh-input" placeholder="Database (optional)" @change="load()" />
         <input v-model="selectedTable" class="rh-input" placeholder="Table name…" @keydown.enter="load()" />
         <input v-model="pkFilter" class="rh-input" placeholder="PK value (optional)" @keydown.enter="load()" />
-        <button class="rh-btn rh-btn--primary" @click="load()">Search</button>
+        <button class="base-btn base-btn--primary" @click="load()">Search</button>
       </div>
     </div>
 
@@ -37,7 +37,7 @@
             <td class="rh-mono">{{ c.pk_column }}: {{ c.pk_value }}</td>
             <td>{{ c.username || '—' }}</td>
             <td class="rh-diff-cell">
-              <button class="rh-expand-btn" @click="toggleExpand(c.id)">
+              <button class="base-btn base-btn--ghost base-btn--xs" @click="toggleExpand(c.id)">
                 {{ expanded.has(c.id) ? '▾' : '▸' }} View diff
               </button>
               <div v-if="expanded.has(c.id)" class="rh-diff">
@@ -52,7 +52,7 @@
               </div>
             </td>
             <td>
-              <button class="rh-undo-btn" @click="undo(c)"
+              <button class="base-btn base-btn--ghost base-btn--xs" @click="undo(c)"
                 :disabled="undoing === c.id"
                 :title="undoLabel(c.operation)">
                 {{ undoing === c.id ? '…' : '↩' }}
@@ -161,8 +161,6 @@ function showMsg(type: string, text: string) {
 .rh-header h2 { font-size: 20px; font-weight: 700; color: var(--text-primary); margin: 0; }
 .rh-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .rh-select, .rh-input { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-size: 13px; padding: 6px 10px; }
-.rh-btn { padding: 6px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-panel); color: var(--text-primary); font-size: 13px; cursor: pointer; }
-.rh-btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .rh-table-wrap { flex: 1; overflow: auto; min-height: 0; }
 .rh-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .rh-table th { position: sticky; top: 0; background: var(--bg-sidebar); padding: 8px 12px; text-align: left; font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
@@ -173,14 +171,10 @@ function showMsg(type: string, text: string) {
 .rh-op--update { background: rgba(249,212,79,.2); color: #c9a800; }
 .rh-op--delete { background: rgba(249,127,79,.2); color: #f97f4f; }
 .rh-diff-cell { max-width: 420px; }
-.rh-expand-btn { background: none; border: none; color: var(--accent); font-size: 12px; cursor: pointer; padding: 0; }
 .rh-diff { display: flex; gap: 8px; margin-top: 6px; }
 .rh-diff-side { flex: 1; }
 .rh-diff-label { font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 3px; }
 .rh-diff-json { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; font-size: 11px; font-family: var(--font-mono); margin: 0; overflow-x: auto; max-height: 160px; overflow-y: auto; color: var(--text-primary); }
-.rh-undo-btn { background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 2px 8px; }
-.rh-undo-btn:hover:not(:disabled) { background: rgba(249,212,79,.15); color: #c9a800; }
-.rh-undo-btn:disabled { opacity: .4; cursor: default; }
 .rh-empty { color: var(--text-muted); text-align: center; padding: 40px; font-size: 14px; }
 .rh-toast { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%); padding: 10px 20px; border-radius: 8px; font-size: 13px; z-index: 9999; }
 .rh-toast--ok    { background: #56c490; color: #fff; }

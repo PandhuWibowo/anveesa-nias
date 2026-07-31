@@ -45,6 +45,20 @@ func sanitizeDBError(err error) string {
 	return msg
 }
 
+// dbErrorStatus returns the appropriate HTTP status for a sanitized DB error message.
+// Connection-level failures are infrastructure errors (502); permission/syntax errors
+// are client errors (403/400).
+func dbErrorStatus(sanitized string) int {
+	switch sanitized {
+	case "database connection error":
+		return http.StatusBadGateway
+	case "permission denied":
+		return http.StatusForbidden
+	default:
+		return http.StatusBadRequest
+	}
+}
+
 func ExecuteQuery() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -75,32 +89,32 @@ func ExecuteQuery() http.HandlerFunc {
 			!strings.HasPrefix(upper, "EXPLAIN") &&
 			!strings.HasPrefix(upper, "PRAGMA")
 
-			if isWrite && !CheckWritePermission(r, connID) {
-				http.Error(w, `{"error":"write permission denied"}`, http.StatusForbidden)
-				return
-			}
+		if isWrite && !CheckWritePermission(r, connID) {
+			http.Error(w, `{"error":"write permission denied"}`, http.StatusForbidden)
+			return
+		}
 
-			if isWrite && isAuthEnabled() {
-				userID, _, role := currentUserFromHeaders(r)
-				if userID > 0 && role != "admin" {
-					workflows, err := findApplicableWorkflows(userID, role, connID)
-					if err != nil {
-						http.Error(w, jsonError("failed to resolve approval workflows"), http.StatusInternalServerError)
-						return
-					}
-					if len(workflows) > 0 {
-						w.WriteHeader(http.StatusConflict)
-						_ = json.NewEncoder(w).Encode(map[string]any{
-							"error":             "approval required before executing write SQL",
-							"approval_required": true,
-							"workflows":         workflows,
-						})
-						return
-					}
+		if isWrite && isAuthEnabled() {
+			userID, _, role := currentUserFromHeaders(r)
+			if userID > 0 && role != "admin" {
+				workflows, err := findApplicableWorkflows(userID, role, connID)
+				if err != nil {
+					http.Error(w, jsonError("failed to resolve approval workflows"), http.StatusInternalServerError)
+					return
+				}
+				if len(workflows) > 0 {
+					w.WriteHeader(http.StatusConflict)
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"error":             "approval required before executing write SQL",
+						"approval_required": true,
+						"workflows":         workflows,
+					})
+					return
 				}
 			}
+		}
 
-			db, driver, err := GetDB(connID)
+		db, driver, err := GetDB(connID)
 		if err != nil {
 			http.Error(w, `{"error":"database connection error"}`, http.StatusBadGateway)
 			return
@@ -155,7 +169,8 @@ func ExecuteQuery() http.HandlerFunc {
 				rows, err = db.QueryContext(r.Context(), req.SQL)
 			}
 			if err != nil {
-				http.Error(w, jsonError(sanitizeDBError(err)), http.StatusBadRequest)
+				msg := sanitizeDBError(err)
+				http.Error(w, jsonError(msg), dbErrorStatus(msg))
 				return
 			}
 			defer rows.Close()
@@ -189,19 +204,24 @@ func ExecuteQuery() http.HandlerFunc {
 			if hasTx {
 				res, err := activeTx.ExecContext(r.Context(), req.SQL)
 				if err != nil {
-					http.Error(w, jsonError(sanitizeDBError(err)), http.StatusBadRequest)
+					msg := sanitizeDBError(err)
+					http.Error(w, jsonError(msg), dbErrorStatus(msg))
 					return
 				}
 				affected, _ = res.RowsAffected()
 			} else {
 				res, err := db.ExecContext(r.Context(), req.SQL)
 				if err != nil {
-					http.Error(w, jsonError(sanitizeDBError(err)), http.StatusBadRequest)
+					msg := sanitizeDBError(err)
+					http.Error(w, jsonError(msg), dbErrorStatus(msg))
 					return
 				}
 				affected, _ = res.RowsAffected()
 			}
 			result.AffectedRows = affected
+			if isSchemaChangingSQL(req.SQL) {
+				invalidateSchemaListCache(connID)
+			}
 		}
 
 		result.DurationMs = time.Since(start).Milliseconds()
@@ -220,6 +240,43 @@ func ExecuteQuery() http.HandlerFunc {
 		}()
 
 		json.NewEncoder(w).Encode(result)
+	}
+}
+
+func isSchemaChangingSQL(sqlText string) bool {
+	switch firstSQLKeyword(sqlText) {
+	case "CREATE", "ALTER", "DROP", "TRUNCATE", "RENAME", "COMMENT":
+		return true
+	default:
+		return false
+	}
+}
+
+func firstSQLKeyword(sqlText string) string {
+	sqlText = strings.TrimSpace(sqlText)
+	for {
+		switch {
+		case strings.HasPrefix(sqlText, ";"):
+			sqlText = strings.TrimSpace(sqlText[1:])
+		case strings.HasPrefix(sqlText, "/*"):
+			end := strings.Index(sqlText, "*/")
+			if end < 0 {
+				return ""
+			}
+			sqlText = strings.TrimSpace(sqlText[end+2:])
+		case strings.HasPrefix(sqlText, "--"):
+			end := strings.IndexAny(sqlText, "\r\n")
+			if end < 0 {
+				return ""
+			}
+			sqlText = strings.TrimSpace(sqlText[end+1:])
+		default:
+			fields := strings.Fields(sqlText)
+			if len(fields) == 0 {
+				return ""
+			}
+			return strings.ToUpper(fields[0])
+		}
 	}
 }
 

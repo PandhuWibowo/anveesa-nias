@@ -2,21 +2,27 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
-import { useConnections, type DbDriver, type ConnectionForm } from '@/composables/useConnections'
+import { useConnections, type DbDriver, type ConnectionForm, type Connection } from '@/composables/useConnections'
 import { useFolders } from '@/composables/useFolders'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
+import { useConnectionTemplates, type ConnectionTemplateInput } from '@/composables/useConnectionTemplates'
+import { useListFilter } from '@/composables/useListFilter'
+import { useSort } from '@/composables/useSort'
+import { usePagination } from '@/composables/usePagination'
 import DriverIcon from '@/components/ui/DriverIcon.vue'
+import Pagination from '@/components/ui/Pagination.vue'
 import { readableError } from '@/utils/httpError'
 
 const { connections, loading, error: connectionError, testConnection, saveConnection, removeConnection, fetchConnections, disconnectConnection, reconnectConnection } = useConnections()
 const { folders, fetchFolders, moveConnection, setConnectionVisibility } = useFolders()
 const toast = useToast()
 const { confirm } = useConfirm()
+const { templates, fetchTemplates, createTemplate, deleteTemplate } = useConnectionTemplates()
 const router = useRouter()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
 
-onMounted(() => fetchFolders())
+onMounted(() => { fetchFolders(); fetchTemplates() })
 
 const showForm = ref(false)
 const editingId = ref<number | null>(null)
@@ -25,6 +31,12 @@ const saving = ref(false)
 const testResult = ref<{ ok: boolean; message: string } | null>(null)
 const showPassword = ref(false)
 const showSSHPassword = ref(false)
+
+// ── Connection templates ───────────────────────────────────────────
+const showTemplatePicker = ref(false)
+const showSaveAsTemplate = ref(false)
+const templateSaveName = ref('')
+const savingTemplate = ref(false)
 
 const defaultPorts: Record<DbDriver, number> = {
   sqlite: 0,
@@ -299,6 +311,60 @@ function resetForm() {
   testResult.value = null
   showPassword.value = false
   showSSHPassword.value = false
+  showTemplatePicker.value = false
+  showSaveAsTemplate.value = false
+  templateSaveName.value = ''
+}
+
+function applyTemplate(t: typeof templates.value[0]) {
+  form.driver = t.driver as DbDriver
+  form.host = t.host
+  form.port = t.port
+  form.database = t.database
+  form.ssl = t.ssl
+  form.tags = t.tags
+  form.ssh_host = t.ssh_host
+  form.ssh_port = t.ssh_port || 22
+  form.ssh_user = t.ssh_user
+  showTemplatePicker.value = false
+  testResult.value = null
+}
+
+async function handleSaveAsTemplate() {
+  const name = templateSaveName.value.trim()
+  if (!name) { toast.error('Template name is required'); return }
+  savingTemplate.value = true
+  const input: ConnectionTemplateInput = {
+    name,
+    driver: form.driver,
+    host: form.host,
+    port: form.port,
+    database: form.database,
+    ssl: form.ssl,
+    tags: form.tags,
+    ssh_host: form.ssh_host,
+    ssh_port: form.ssh_port || 22,
+    ssh_user: form.ssh_user,
+    description: '',
+    visibility: form.visibility ?? 'shared',
+  }
+  const saved = await createTemplate(input)
+  savingTemplate.value = false
+  if (saved) {
+    toast.success(`Template "${saved.name}" saved`)
+    showSaveAsTemplate.value = false
+    templateSaveName.value = ''
+  } else {
+    toast.error('Failed to save template')
+  }
+}
+
+async function handleDeleteTemplate(id: number, name: string) {
+  const ok = await confirm(`Delete template "${name}"?`, 'Delete Template')
+  if (!ok) return
+  const ok2 = await deleteTemplate(id)
+  if (ok2) toast.success('Template deleted')
+  else toast.error('Failed to delete template')
 }
 
 async function editConnection(id: number) {
@@ -457,11 +523,78 @@ async function handleReconnect(id: number, name: string) {
   if (success) toast.success(`"${name}" reconnected`)
   else toast.error('Failed to reconnect')
 }
+
+// ── Filter ───────────────────────────────────────────────────────
+const connFilterDriver = ref('')
+const connFilterStatus = ref('')
+
+const driverStatusFilteredConnections = computed(() => {
+  let list = connections.value
+  if (connFilterDriver.value) {
+    list = list.filter(c => c.driver === connFilterDriver.value)
+  }
+  if (connFilterStatus.value) {
+    const disconnected = connFilterStatus.value === 'offline'
+    list = list.filter(c => !!c.disconnected === disconnected)
+  }
+  return list
+})
+
+const { search: connFilterSearch, filtered: filteredConnections } = useListFilter(driverStatusFilteredConnections, (c, q) =>
+  c.name.toLowerCase().includes(q) || driverFullName(c.driver).toLowerCase().includes(q)
+)
+
+const availableDrivers = computed(() => [...new Set(connections.value.map(c => c.driver))].sort())
+const hasConnFilters = computed(() => connFilterSearch.value || connFilterDriver.value || connFilterStatus.value)
+
+function clearConnFilters() {
+  connFilterSearch.value = ''
+  connFilterDriver.value = ''
+  connFilterStatus.value = ''
+}
+
+// ── Sort ─────────────────────────────────────────────────────────
+type ConnSortKey = 'name' | 'driver' | 'status'
+const { sortKey: connSortKey, sortDir: connSortDir, toggleSort: setConnSort, sort: sortConnections } = useSort<Connection>((c, key) => {
+  if (key === 'name') return c.name.toLowerCase()
+  if (key === 'driver') return c.driver
+  return c.disconnected ? 1 : 0
+}, 'name')
+
+const sortedConnections = computed(() => sortConnections(filteredConnections.value))
+
+// ── Pagination ───────────────────────────────────────────────────
+const { page: connCurrentPage, pageSize: connPageSize, totalPages: connTotalPages, paged: pagedConnections, setPage: setConnPage } = usePagination(sortedConnections, 12)
+
+// ── Custom fields (card detail visibility) ───────────────────────
+const connShowFields = ref({
+  tags: true,
+  ssl: true,
+  ssh: true,
+  folder: true,
+  category: true,
+})
+const showConnColumnMenu = ref(false)
+
+const connFieldDefs = [
+  { key: 'category' as const, label: 'Category tag' },
+  { key: 'folder' as const, label: 'Folder' },
+  { key: 'tags' as const, label: 'Tags' },
+  { key: 'ssl' as const, label: 'SSL badge' },
+  { key: 'ssh' as const, label: 'SSH badge' },
+]
+
+// Sort pill UI
+const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
+  { key: 'name', label: 'Name' },
+  { key: 'driver', label: 'Driver' },
+  { key: 'status', label: 'Status' },
+]
 </script>
 
 <template>
   <div class="page-shell conn-page">
-    <div class="page-scroll">
+    <div class="page-scroll" @click="showConnColumnMenu = false">
       <div class="page-stack">
 
         <!-- Hero -->
@@ -484,8 +617,67 @@ async function handleReconnect(id: number, name: string) {
           <div class="conn-panel__head">
             <div>
               <div class="conn-panel__title">Saved Connections</div>
-              <div class="conn-panel__sub">{{ connections.length }} endpoint{{ connections.length !== 1 ? 's' : '' }}</div>
+              <div class="conn-panel__sub">{{ filteredConnections.length }} of {{ connections.length }} endpoint{{ connections.length !== 1 ? 's' : '' }}</div>
             </div>
+          </div>
+
+          <!-- Filter / Sort / Custom fields bar -->
+          <div class="conn-filter-bar">
+            <div class="conn-filter-search">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input
+                class="conn-filter-input"
+                v-model="connFilterSearch"
+                placeholder="Search connections…"
+              />
+            </div>
+            <select class="conn-filter-sel" v-model="connFilterDriver">
+              <option value="">All drivers</option>
+              <option v-for="d in availableDrivers" :key="d" :value="d">{{ driverFullName(d as any) }}</option>
+            </select>
+            <select class="conn-filter-sel" v-model="connFilterStatus">
+              <option value="">All status</option>
+              <option value="online">Connected</option>
+              <option value="offline">Disconnected</option>
+            </select>
+            <button v-if="hasConnFilters" class="conn-filter-clear" @click="clearConnFilters">Clear</button>
+
+            <!-- Sort pills -->
+            <div class="conn-sort-group">
+              <button
+                v-for="opt in connSortOptions"
+                :key="opt.key"
+                class="conn-sort-pill"
+                :class="{ 'conn-sort-pill--active': connSortKey === opt.key }"
+                @click="setConnSort(opt.key)"
+              >
+                {{ opt.label }}
+                <span v-if="connSortKey === opt.key">{{ connSortDir === 'asc' ? '↑' : '↓' }}</span>
+              </button>
+            </div>
+
+            <!-- Custom fields -->
+            <div class="conn-col-toggle" @click.stop>
+              <button class="base-btn base-btn--ghost base-btn--xs" @click="showConnColumnMenu = !showConnColumnMenu">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18"/></svg>
+                Fields
+              </button>
+              <div v-if="showConnColumnMenu" class="conn-col-menu">
+                <div class="conn-col-menu-title">Card Details</div>
+                <label v-for="f in connFieldDefs" :key="f.key" class="conn-col-item">
+                  <input type="checkbox" v-model="connShowFields[f.key]" />
+                  {{ f.label }}
+                </label>
+              </div>
+            </div>
+
+            <!-- Page size -->
+            <select class="conn-filter-sel" v-model="connPageSize">
+              <option :value="6">6 / page</option>
+              <option :value="12">12 / page</option>
+              <option :value="24">24 / page</option>
+              <option :value="48">48 / page</option>
+            </select>
           </div>
 
           <!-- Loading -->
@@ -494,7 +686,7 @@ async function handleReconnect(id: number, name: string) {
             Loading connections…
           </div>
 
-          <!-- Empty state -->
+          <!-- Empty state - no connections at all -->
           <div v-else-if="connections.length === 0" class="conn-empty">
             <div class="conn-empty__icon">
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4.03 3-9 3S3 13.66 3 12"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/></svg>
@@ -507,10 +699,17 @@ async function handleReconnect(id: number, name: string) {
             </button>
           </div>
 
+          <!-- Empty state - filters returned nothing -->
+          <div v-else-if="pagedConnections.length === 0" class="conn-empty">
+            <div class="conn-empty__title">No matches</div>
+            <div class="conn-empty__sub">No connections match the current filters.</div>
+            <button class="base-btn base-btn--ghost base-btn--sm" style="margin-top:4px" @click="clearConnFilters">Clear filters</button>
+          </div>
+
           <!-- Connection cards -->
           <div v-else class="conn-items">
             <div
-              v-for="conn in connections"
+              v-for="conn in pagedConnections"
               :key="conn.id"
               class="conn-card"
               :class="[`conn-card--${driverCategory(conn.driver)}`, { 'conn-card--disconnected': conn.disconnected }]"
@@ -525,22 +724,22 @@ async function handleReconnect(id: number, name: string) {
                 <div class="conn-card__title-row">
                   <span class="conn-card__name">{{ conn.name }}</span>
                   <span class="conn-card__driver-tag">{{ driverFullName(conn.driver) }}</span>
-                  <span class="conn-card__category-tag">{{ categoryLabel(conn.driver) }}</span>
+                  <span v-if="connShowFields.category" class="conn-card__category-tag">{{ categoryLabel(conn.driver) }}</span>
                   <span class="conn-card__vis" :title="conn.visibility === 'shared' ? 'Shared' : 'Private'">
                     {{ conn.visibility === 'shared' ? '🌐' : '🔒' }}
                   </span>
                 </div>
                 <div class="conn-card__detail">{{ connDetailLine(conn) }}</div>
                 <div class="conn-card__meta-row">
-                  <span v-if="conn.folder_id" class="conn-card__folder">
+                  <span v-if="connShowFields.folder && conn.folder_id" class="conn-card__folder">
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
                     {{ folders.find(f => f.id === conn.folder_id)?.name ?? 'Folder' }}
                   </span>
-                  <span v-if="conn.tags" class="conn-card__tags">
+                  <span v-if="connShowFields.tags && conn.tags" class="conn-card__tags">
                     <span v-for="tag in conn.tags.split(',').filter((t: string) => t.trim())" :key="tag" class="conn-tag">{{ tag.trim() }}</span>
                   </span>
-                  <span v-if="conn.ssl" class="conn-card__ssl-badge">SSL</span>
-                  <span v-if="conn.ssh_host" class="conn-card__ssh-badge">SSH</span>
+                  <span v-if="connShowFields.ssl && conn.ssl" class="conn-card__ssl-badge">SSL</span>
+                  <span v-if="connShowFields.ssh && conn.ssh_host" class="conn-card__ssh-badge">SSH</span>
                 </div>
               </div>
 
@@ -600,6 +799,16 @@ async function handleReconnect(id: number, name: string) {
               </div>
             </div>
           </div>
+
+          <!-- Pagination -->
+          <Pagination
+            v-if="!loading && connTotalPages > 1"
+            :page="connCurrentPage"
+            :total-pages="connTotalPages"
+            :total="sortedConnections.length"
+            item-label="connections"
+            @update:page="setConnPage"
+          />
         </section>
 
       </div>
@@ -626,12 +835,19 @@ async function handleReconnect(id: number, name: string) {
             <!-- Body -->
             <div class="conn-modal-body">
 
-              <!-- URL import -->
-              <div class="form-group">
-                <button class="base-btn base-btn--ghost base-btn--sm url-import-btn" @click="showURLImport = !showURLImport">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-                  Import from connection URL
-                </button>
+              <!-- URL import + Template picker row -->
+              <div class="form-group" style="display:flex;flex-direction:column;gap:6px">
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <button class="base-btn base-btn--ghost base-btn--sm url-import-btn" @click="showURLImport = !showURLImport; showTemplatePicker = false">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                    Import from connection URL
+                  </button>
+                  <button class="base-btn base-btn--ghost base-btn--sm" @click="showTemplatePicker = !showTemplatePicker; showURLImport = false">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+                    Load from template
+                    <span v-if="templates.length" style="font-size:10px;opacity:0.6">({{ templates.length }})</span>
+                  </button>
+                </div>
                 <div v-if="showURLImport" class="url-import-row">
                   <input
                     v-model="urlInput"
@@ -641,6 +857,30 @@ async function handleReconnect(id: number, name: string) {
                     @keydown.enter="parseConnectionURL(urlInput)"
                   />
                   <button class="base-btn base-btn--primary base-btn--sm" @click="parseConnectionURL(urlInput)">Parse</button>
+                </div>
+                <!-- Template picker panel -->
+                <div v-if="showTemplatePicker" class="tmpl-picker">
+                  <div v-if="templates.length === 0" class="tmpl-picker__empty">
+                    No templates yet. Save the current form as a template using the button below.
+                  </div>
+                  <div
+                    v-for="t in templates"
+                    :key="t.id"
+                    class="tmpl-picker__item"
+                    @click="applyTemplate(t)"
+                  >
+                    <div class="tmpl-picker__info">
+                      <span class="tmpl-picker__name">{{ t.name }}</span>
+                      <span class="tmpl-picker__detail">{{ t.driver }} · {{ t.host }}:{{ t.port }} / {{ t.database }}</span>
+                    </div>
+                    <button
+                      class="icon-btn danger"
+                      title="Delete template"
+                      @click.stop="handleDeleteTemplate(t.id, t.name)"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -1096,7 +1336,34 @@ async function handleReconnect(id: number, name: string) {
             </div>
 
             <!-- Footer -->
-            <div class="conn-modal-foot">
+            <div class="conn-modal-foot" style="flex-direction:column;gap:8px;align-items:stretch">
+              <!-- Save as template row (new connections only) -->
+              <div v-if="!editingId" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <button
+                  class="base-btn base-btn--ghost base-btn--xs"
+                  style="white-space:nowrap"
+                  @click="showSaveAsTemplate = !showSaveAsTemplate; templateSaveName = form.host && form.database ? `${form.driver} · ${form.host}/${form.database}` : ''"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+                  Save as template
+                </button>
+                <template v-if="showSaveAsTemplate">
+                  <input
+                    v-model="templateSaveName"
+                    class="base-input"
+                    style="flex:1;min-width:180px"
+                    placeholder="Template name…"
+                    @keydown.enter="handleSaveAsTemplate"
+                    @keydown.esc="showSaveAsTemplate = false"
+                  />
+                  <button class="base-btn base-btn--primary base-btn--xs" :disabled="savingTemplate" @click="handleSaveAsTemplate">
+                    {{ savingTemplate ? 'Saving…' : 'Save' }}
+                  </button>
+                  <button class="base-btn base-btn--ghost base-btn--xs" @click="showSaveAsTemplate = false">Cancel</button>
+                </template>
+              </div>
+              <!-- Main actions row -->
+              <div style="display:flex;align-items:center;justify-content:space-between">
               <button class="base-btn base-btn--ghost base-btn--sm" :disabled="testing" @click="handleTest">
                 <svg v-if="testing" class="spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
                 {{ testing ? 'Testing…' : 'Test Connection' }}
@@ -1107,6 +1374,7 @@ async function handleReconnect(id: number, name: string) {
                   <svg v-if="saving" class="spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
                   {{ saving ? (editingId ? 'Updating…' : 'Saving…') : (editingId ? 'Update Connection' : 'Save Connection') }}
                 </button>
+              </div>
               </div>
             </div>
 
@@ -1896,5 +2164,131 @@ async function handleReconnect(id: number, name: string) {
   .conn-card__category-tag {
     display: none;
   }
+}
+
+/* Filter / sort / custom fields bar */
+.conn-filter-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 20px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.conn-filter-search {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--bg-body); border: 1px solid var(--border);
+  border-radius: 5px; padding: 5px 10px; flex: 1; min-width: 180px;
+}
+.conn-filter-search svg { color: var(--text-muted); flex-shrink: 0; }
+.conn-filter-input {
+  border: none; outline: none; background: transparent;
+  color: var(--text-primary); font-size: 13px; width: 100%;
+  font-family: inherit;
+}
+.conn-filter-input::placeholder { color: var(--text-muted); }
+.conn-filter-sel {
+  padding: 5px 8px; border: 1px solid var(--border);
+  border-radius: 5px; background: var(--bg-body); color: var(--text-primary);
+  font-size: 12px; font-family: inherit; outline: none; cursor: pointer;
+}
+.conn-filter-clear {
+  padding: 5px 10px; border: 1px solid var(--border);
+  border-radius: 5px; background: transparent; color: var(--text-muted);
+  font-size: 12px; cursor: pointer; font-family: inherit;
+  transition: color 0.15s, border-color 0.15s;
+}
+.conn-filter-clear:hover { color: var(--danger); border-color: var(--danger); }
+
+/* Sort pills */
+.conn-sort-group { display: flex; gap: 4px; }
+.conn-sort-pill {
+  padding: 4px 10px; border: 1px solid var(--border);
+  border-radius: 999px; background: transparent; color: var(--text-muted);
+  font-size: 11px; cursor: pointer; font-family: inherit;
+  transition: all 0.12s;
+}
+.conn-sort-pill:hover { border-color: var(--brand); color: var(--text-primary); }
+.conn-sort-pill--active { border-color: var(--brand); color: var(--brand); background: rgba(var(--brand-rgb, 99, 102, 241), 0.08); }
+
+/* Column / field toggle */
+.conn-col-toggle { position: relative; }
+.conn-col-menu {
+  position: absolute; top: calc(100% + 6px); right: 0;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 7px; padding: 10px 12px; min-width: 160px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3); z-index: 200;
+}
+.conn-col-menu-title {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--text-muted); margin-bottom: 8px;
+}
+.conn-col-item {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text-primary);
+  padding: 4px 0; cursor: pointer;
+}
+.conn-col-item input { cursor: pointer; }
+
+/* ── Connection template picker ── */
+.tmpl-picker {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-body);
+}
+
+.tmpl-picker__empty {
+  padding: 12px 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.tmpl-picker__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.12s;
+}
+
+.tmpl-picker__item:last-child {
+  border-bottom: none;
+}
+
+.tmpl-picker__item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.tmpl-picker__info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tmpl-picker__name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tmpl-picker__detail {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── url-import-btn override (make it not full-width when next to template btn) ── */
+.url-import-btn {
+  width: auto !important;
+  justify-content: flex-start !important;
 }
 </style>

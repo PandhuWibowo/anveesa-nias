@@ -26,6 +26,16 @@ export interface LaravelQueueJob {
   raw: string
 }
 
+export interface LaravelActiveJob extends LaravelQueueJob {
+  deadline_at?: string
+  expires_in_seconds: number
+  stale: boolean
+  horizon_status?: string
+  horizon_name?: string
+  reserved_at?: string
+  running_for_seconds?: number
+}
+
 export interface LaravelFailedJob {
   id: number
   uuid?: string
@@ -46,6 +56,37 @@ export interface LaravelHorizonSummary {
   failed_jobs: number
   workload?: Record<string, number>
   sample_keys: string[]
+}
+
+export interface LaravelHorizonJob {
+  id: string
+  name: string
+  queue: string
+  connection?: string
+  status: string
+  queued_at?: string
+  reserved_at?: string
+  completed_at?: string
+  failed_at?: string
+  runtime?: number
+  attempts?: number
+  exception?: string
+}
+
+export interface LaravelHorizonStats {
+  window: number
+  completed: number
+  failed: number
+  pending: number
+  avg_runtime: number
+  max_runtime: number
+}
+
+export interface LaravelHorizonJobs {
+  detected: boolean
+  total: number
+  jobs: LaravelHorizonJob[]
+  stats: LaravelHorizonStats
 }
 
 export interface LaravelQueueFeatureFlags {
@@ -118,8 +159,15 @@ export function useLaravelQueue() {
     return data
   }
 
-  async function fetchJobs(connId: number, params: { queue: string; db?: number; prefix?: string; limit?: number }) {
+  async function fetchJobs(connId: number, params: { queue: string; db?: number; prefix?: string; limit?: number; offset?: number }) {
     const { data } = await axios.get<{ queue: string; jobs: LaravelQueueJob[] }>(`/api/connections/${connId}/laravel-queue/jobs`, {
+      params,
+    })
+    return data
+  }
+
+  async function fetchActiveJobs(connId: number, params: { db?: number; prefix?: string; limit?: number }) {
+    const { data } = await axios.get<{ jobs: LaravelActiveJob[]; horizon: boolean; total: number }>(`/api/connections/${connId}/laravel-queue/active-jobs`, {
       params,
     })
     return data
@@ -131,6 +179,10 @@ export function useLaravelQueue() {
 
   async function requeueJob(connId: number, payload: { queue: string; prefix?: string; db?: number; state: LaravelQueueJob['state']; raw: string }) {
     await axios.post(`/api/connections/${connId}/laravel-queue/requeue`, payload)
+  }
+
+  async function releaseStaleJob(connId: number, payload: { queue: string; prefix?: string; db?: number; raw: string }) {
+    await axios.post(`/api/connections/${connId}/laravel-queue/release-stale`, payload)
   }
 
   async function clearQueue(connId: number, payload: { queue: string; prefix?: string; db?: number; state?: 'all' | LaravelQueueJob['state'] | 'notify' }) {
@@ -155,6 +207,13 @@ export function useLaravelQueue() {
   async function fetchHorizon(connId: number, db?: number) {
     const { data } = await axios.get<LaravelHorizonSummary>(`/api/connections/${connId}/laravel-queue/horizon`, {
       params: { db },
+    })
+    return data
+  }
+
+  async function fetchHorizonJobs(connId: number, opts: { db?: number; limit?: number; offset?: number } = {}) {
+    const { data } = await axios.get<LaravelHorizonJobs>(`/api/connections/${connId}/laravel-queue/horizon/jobs`, {
+      params: { db: opts.db, limit: opts.limit ?? 50, offset: opts.offset ?? 0 },
     })
     return data
   }
@@ -195,9 +254,31 @@ export function useLaravelQueue() {
     await axios.post(`/api/connections/${connId}/laravel-queue/agent`, payload)
   }
 
+  async function fetchFailedJobAlertConfig(connId: number) {
+    return axios.get(`/api/connections/${connId}/laravel-queue/failed-job-alert`)
+  }
+
+  async function saveFailedJobAlertConfig(connId: number, payload: object) {
+    return axios.post(`/api/connections/${connId}/laravel-queue/failed-job-alert`, payload)
+  }
+
+  async function testFailedJobAlertConfig(connId: number) {
+    return axios.post(`/api/connections/${connId}/laravel-queue/failed-job-alert/test`)
+  }
+
+  async function sendSelectedFailedJobAlerts(connId: number, jobIds: number[]) {
+    return axios.post<{ sent: number }>(`/api/connections/${connId}/laravel-queue/failed-job-alert/send-selected`, { job_ids: jobIds })
+  }
+
+  async function markFailedJobsAsSeen(connId: number) {
+    return axios.post(`/api/connections/${connId}/laravel-queue/failed-job-alert/mark-seen`)
+  }
+
   return {
     fetchQueues,
     fetchJobs,
+    fetchActiveJobs,
+    releaseStaleJob,
     deleteJob,
     requeueJob,
     clearQueue,
@@ -205,6 +286,7 @@ export function useLaravelQueue() {
     retryFailedJob,
     deleteFailedJob,
     fetchHorizon,
+    fetchHorizonJobs,
     fetchOpsSettings,
     saveOpsSettings,
     fetchQueueAudit,
@@ -213,5 +295,10 @@ export function useLaravelQueue() {
     releaseQuarantine,
     emitQueueAlerts,
     runLaravelAgent,
+    fetchFailedJobAlertConfig,
+    saveFailedJobAlertConfig,
+    testFailedJobAlertConfig,
+    sendSelectedFailedJobAlerts,
+    markFailedJobsAsSeen,
   }
 }

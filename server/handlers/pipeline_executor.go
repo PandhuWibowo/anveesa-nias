@@ -6,6 +6,9 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,11 +23,20 @@ type execNode struct {
 	label        string
 }
 
+type pipelineRuntime struct {
+	params       map[string]any
+	businessDate string
+	payload      map[string]any
+}
+
+var pipelineTemplatePattern = regexp.MustCompile(`\{\{\s*([a-zA-Z0-9_\.\-]+)\s*\}\}`)
+
 // RunPipeline executes a pipeline asynchronously.
 // It is called in a goroutine from TriggerPipelineRun.
 func RunPipeline(pipelineID, runID int64, triggeredBy string) {
 	ctx := context.Background()
 	startedAt := time.Now()
+	rt := loadPipelineRuntime(ctx, runID)
 
 	logStep := func(nodeID *int64, label, message string, rowsAffected, durationMs int64) {
 		appdb.DB.ExecContext(ctx, appdb.ConvertQuery(
@@ -40,9 +52,10 @@ func RunPipeline(pipelineID, runID int64, triggeredBy string) {
 		if errMsg != "" {
 			errMsgPtr = &errMsg
 		}
+		payloadJSON, _ := json.Marshal(rt.payload)
 		appdb.DB.ExecContext(ctx, appdb.ConvertQuery(
-			`UPDATE pipeline_runs SET status=?, finished_at=CURRENT_TIMESTAMP, rows_processed=?, error_message=? WHERE id=?`),
-			status, rowsProcessed, errMsgPtr, runID)
+			`UPDATE pipeline_runs SET status=?, finished_at=CURRENT_TIMESTAMP, rows_processed=?, error_message=?, return_payload=? WHERE id=?`),
+			status, rowsProcessed, errMsgPtr, string(payloadJSON), runID)
 		appdb.DB.ExecContext(ctx, appdb.ConvertQuery(
 			`UPDATE pipelines SET last_run_at=CURRENT_TIMESTAMP WHERE id=?`), pipelineID)
 
@@ -62,7 +75,7 @@ func RunPipeline(pipelineID, runID int64, triggeredBy string) {
 			Message:    msg,
 			EntityType: "pipeline",
 			EntityID:   pipelineID,
-			Payload:    map[string]any{"run_id": runID, "pipeline_id": pipelineID},
+			Payload:    map[string]any{"run_id": runID, "pipeline_id": pipelineID, "business_date": rt.businessDate},
 		})
 	}
 
@@ -136,7 +149,7 @@ func RunPipeline(pipelineID, runID int64, triggeredBy string) {
 
 		switch n.nodeType {
 		case "source_query", "source_table":
-			if err := execSourceNode(ctx, n, buffers, colNames); err != nil {
+			if err := execSourceNode(ctx, n, rt, buffers, colNames); err != nil {
 				logStep(nodeIDPtr, n.label, "Error: "+err.Error(), 0, time.Since(stepStart).Milliseconds())
 				finishRun("failed", err.Error(), totalRows)
 				return
@@ -144,12 +157,29 @@ func RunPipeline(pipelineID, runID int64, triggeredBy string) {
 			logStep(nodeIDPtr, n.label, fmt.Sprintf("Fetched %d rows", len(buffers[n.id])),
 				int64(len(buffers[n.id])), time.Since(stepStart).Milliseconds())
 
+		case "transform_sql":
+			if err := execTransformSQLNode(ctx, n, rt, buffers, colNames, inEdges); err != nil {
+				logStep(nodeIDPtr, n.label, "Error: "+err.Error(), 0, time.Since(stepStart).Milliseconds())
+				finishRun("failed", err.Error(), totalRows)
+				return
+			}
+			logStep(nodeIDPtr, n.label, fmt.Sprintf("Returned %d rows, payload ready", len(buffers[n.id])),
+				int64(len(buffers[n.id])), time.Since(stepStart).Milliseconds())
+
+		case "external_http":
+			if err := execExternalHTTPNode(ctx, n, rt); err != nil {
+				logStep(nodeIDPtr, n.label, "Error: "+err.Error(), 0, time.Since(stepStart).Milliseconds())
+				finishRun("failed", err.Error(), totalRows)
+				return
+			}
+			logStep(nodeIDPtr, n.label, "HTTP/API hook completed", 0, time.Since(stepStart).Milliseconds())
+
 		case "sink_table":
 			var upstreamID int64
 			if srcs := inEdges[n.id]; len(srcs) > 0 {
 				upstreamID = srcs[0]
 			}
-			rowsWritten, err := execSinkTable(ctx, n, buffers[upstreamID], colNames[upstreamID])
+			rowsWritten, err := execSinkTable(ctx, n, rt, buffers[upstreamID], colNames[upstreamID])
 			if err != nil {
 				logStep(nodeIDPtr, n.label, "Error: "+err.Error(), 0, time.Since(stepStart).Milliseconds())
 				finishRun("failed", err.Error(), totalRows)
@@ -164,7 +194,7 @@ func RunPipeline(pipelineID, runID int64, triggeredBy string) {
 			if srcs := inEdges[n.id]; len(srcs) > 0 {
 				upstreamID = srcs[0]
 			}
-			objectKey, rowsExported, err := execSinkObjectStorage(ctx, n, buffers[upstreamID], colNames[upstreamID])
+			objectKey, rowsExported, err := execSinkObjectStorage(ctx, n, rt, buffers[upstreamID], colNames[upstreamID])
 			if err != nil {
 				logStep(nodeIDPtr, n.label, "Error: "+err.Error(), 0, time.Since(stepStart).Milliseconds())
 				finishRun("failed", err.Error(), totalRows)
@@ -182,7 +212,7 @@ func RunPipeline(pipelineID, runID int64, triggeredBy string) {
 	finishRun("success", "", totalRows)
 }
 
-func execSourceNode(ctx context.Context, n *execNode, buffers map[int64][][]any, colNames map[int64][]string) error {
+func execSourceNode(ctx context.Context, n *execNode, rt *pipelineRuntime, buffers map[int64][][]any, colNames map[int64][]string) error {
 	if n.connectionID == nil {
 		return fmt.Errorf("node %q: connection_id required", n.label)
 	}
@@ -196,6 +226,7 @@ func execSourceNode(ctx context.Context, n *execNode, buffers map[int64][][]any,
 	switch n.nodeType {
 	case "source_query":
 		s, _ := n.config["sql"].(string)
+		s = renderPipelineTemplate(s, rt)
 		if strings.TrimSpace(s) == "" {
 			return fmt.Errorf("node %q: sql required", n.label)
 		}
@@ -203,6 +234,8 @@ func execSourceNode(ctx context.Context, n *execNode, buffers map[int64][][]any,
 	case "source_table":
 		table, _ := n.config["table"].(string)
 		schema, _ := n.config["schema"].(string)
+		table = renderPipelineTemplate(table, rt)
+		schema = renderPipelineTemplate(schema, rt)
 		if table == "" {
 			return fmt.Errorf("node %q: table required", n.label)
 		}
@@ -247,10 +280,11 @@ func execSourceNode(ctx context.Context, n *execNode, buffers map[int64][][]any,
 	}
 
 	buffers[n.id] = result
+	setNodePayload(rt, n, cols, result)
 	return nil
 }
 
-func execSinkTable(ctx context.Context, n *execNode, rows [][]any, cols []string) (int64, error) {
+func execSinkTable(ctx context.Context, n *execNode, rt *pipelineRuntime, rows [][]any, cols []string) (int64, error) {
 	if n.connectionID == nil {
 		return 0, fmt.Errorf("node %q: connection_id required", n.label)
 	}
@@ -265,6 +299,8 @@ func execSinkTable(ctx context.Context, n *execNode, rows [][]any, cols []string
 
 	table, _ := n.config["table"].(string)
 	schema, _ := n.config["schema"].(string)
+	table = renderPipelineTemplate(table, rt)
+	schema = renderPipelineTemplate(schema, rt)
 	if table == "" {
 		return 0, fmt.Errorf("node %q: table required", n.label)
 	}
@@ -293,6 +329,16 @@ func execSinkTable(ctx context.Context, n *execNode, rows [][]any, cols []string
 	}
 	defer tx.Rollback()
 
+	if preSQL, _ := n.config["pre_sql"].(string); strings.TrimSpace(preSQL) != "" {
+		if _, err := tx.ExecContext(ctx, renderPipelineTemplate(preSQL, rt)); err != nil {
+			return 0, fmt.Errorf("node %q: pre_sql failed: %w", n.label, err)
+		}
+	} else if mode, _ := n.config["write_mode"].(string); mode == "replace" {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s", tableRef)); err != nil {
+			return 0, fmt.Errorf("node %q: replace delete failed: %w", n.label, err)
+		}
+	}
+
 	prepared, err := tx.PrepareContext(ctx, stmt)
 	if err != nil {
 		return 0, fmt.Errorf("node %q: prepare stmt: %w", n.label, err)
@@ -300,11 +346,16 @@ func execSinkTable(ctx context.Context, n *execNode, rows [][]any, cols []string
 	defer prepared.Close()
 
 	inserted := int64(0)
-	for _, row := range rows {
+	for rowIdx, row := range rows {
+		if len(row) != len(cols) {
+			return 0, fmt.Errorf("node %q: insert row %d has %d values but %d columns (%s)",
+				n.label, rowIdx+1, len(row), len(cols), strings.Join(cols, ", "))
+		}
 		args := make([]any, len(row))
 		copy(args, row)
 		if _, err := prepared.ExecContext(ctx, args...); err != nil {
-			continue
+			return 0, fmt.Errorf("node %q: insert failed at row %d into %s (%s): %w",
+				n.label, rowIdx+1, tableRef, strings.Join(cols, ", "), err)
 		}
 		inserted++
 	}
@@ -316,7 +367,7 @@ func execSinkTable(ctx context.Context, n *execNode, rows [][]any, cols []string
 	return inserted, nil
 }
 
-func execSinkObjectStorage(ctx context.Context, n *execNode, rows [][]any, cols []string) (objectKey string, rowsExported int64, err error) {
+func execSinkObjectStorage(ctx context.Context, n *execNode, rt *pipelineRuntime, rows [][]any, cols []string) (objectKey string, rowsExported int64, err error) {
 	if n.connectionID == nil {
 		return "", 0, fmt.Errorf("node %q: connection_id required", n.label)
 	}
@@ -330,10 +381,13 @@ func execSinkObjectStorage(ctx context.Context, n *execNode, rows [][]any, cols 
 	}
 	subfolder, _ := n.config["subfolder"].(string)
 	prefix, _ := n.config["filename_prefix"].(string)
+	subfolder = renderPipelineTemplate(subfolder, rt)
+	prefix = renderPipelineTemplate(prefix, rt)
 	if prefix == "" {
 		prefix = "export"
 	}
 	tableName, _ := n.config["table_name"].(string)
+	tableName = renderPipelineTemplate(tableName, rt)
 
 	dest, err := fetchBucketConn(*n.connectionID)
 	if err != nil {
@@ -403,7 +457,211 @@ func execSinkObjectStorage(ctx context.Context, n *execNode, rows [][]any, cols 
 		return "", 0, fmt.Errorf("node %q: upload failed: %w", n.label, err)
 	}
 
+	rt.payload[payloadKey(n)] = map[string]any{"object_key": key, "rows": len(rows), "format": ext}
+	rt.payload[fmt.Sprintf("node_%d", n.id)] = rt.payload[payloadKey(n)]
 	return key, int64(len(rows)), nil
+}
+
+func execTransformSQLNode(ctx context.Context, n *execNode, rt *pipelineRuntime, buffers map[int64][][]any, colNames map[int64][]string, inEdges map[int64][]int64) error {
+	sqlStr, _ := n.config["sql"].(string)
+	sqlStr = renderPipelineTemplate(sqlStr, rt)
+
+	// If no SQL is configured, this transform acts as an idempotent pass-through
+	// and only returns a payload describing the upstream result.
+	if strings.TrimSpace(sqlStr) == "" {
+		var upstreamID int64
+		if srcs := inEdges[n.id]; len(srcs) > 0 {
+			upstreamID = srcs[0]
+		}
+		buffers[n.id] = buffers[upstreamID]
+		colNames[n.id] = colNames[upstreamID]
+		setNodePayload(rt, n, colNames[n.id], buffers[n.id])
+		return nil
+	}
+
+	if n.connectionID == nil {
+		return fmt.Errorf("node %q: connection_id required for SQL transform", n.label)
+	}
+	db, _, err := GetDB(*n.connectionID)
+	if err != nil {
+		return fmt.Errorf("node %q: cannot connect: %w", n.label, err)
+	}
+
+	rows, err := db.QueryContext(ctx, sqlStr)
+	if err != nil {
+		return fmt.Errorf("node %q: transform query failed: %w", n.label, err)
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return fmt.Errorf("node %q: get columns: %w", n.label, err)
+	}
+
+	var result [][]any
+	const maxRows = 500_000
+	for rows.Next() {
+		if len(result) >= maxRows {
+			break
+		}
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return fmt.Errorf("node %q: scan row: %w", n.label, err)
+		}
+		result = append(result, vals)
+	}
+
+	buffers[n.id] = result
+	colNames[n.id] = cols
+	setNodePayload(rt, n, cols, result)
+	return nil
+}
+
+func execExternalHTTPNode(ctx context.Context, n *execNode, rt *pipelineRuntime) error {
+	urlStr, _ := n.config["url"].(string)
+	urlStr = renderPipelineTemplate(urlStr, rt)
+	if strings.TrimSpace(urlStr) == "" {
+		return fmt.Errorf("node %q: url required", n.label)
+	}
+
+	method, _ := n.config["method"].(string)
+	if method == "" {
+		method = http.MethodPost
+	}
+	body, _ := n.config["body"].(string)
+	body = renderPipelineTemplate(body, rt)
+
+	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(method), urlStr, strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("node %q: build request: %w", n.label, err)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if headers, ok := n.config["headers"].(map[string]any); ok {
+		for k, v := range headers {
+			req.Header.Set(k, renderPipelineTemplate(fmt.Sprint(v), rt))
+		}
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("node %q: request failed: %w", n.label, err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("node %q: HTTP %d: %s", n.label, resp.StatusCode, string(respBody))
+	}
+
+	payload := map[string]any{
+		"status": resp.StatusCode,
+		"body":   string(respBody),
+	}
+	var parsed any
+	if err := json.Unmarshal(respBody, &parsed); err == nil {
+		payload["json"] = parsed
+	}
+	rt.payload[payloadKey(n)] = payload
+	rt.payload[fmt.Sprintf("node_%d", n.id)] = payload
+	return nil
+}
+
+func loadPipelineRuntime(ctx context.Context, runID int64) *pipelineRuntime {
+	rt := &pipelineRuntime{
+		params:  map[string]any{},
+		payload: map[string]any{},
+	}
+	var paramsJSON string
+	_ = appdb.DB.QueryRowContext(ctx, appdb.ConvertQuery(
+		`SELECT COALESCE(business_date,''), COALESCE(run_params,'{}') FROM pipeline_runs WHERE id=?`),
+		runID).Scan(&rt.businessDate, &paramsJSON)
+	_ = json.Unmarshal([]byte(paramsJSON), &rt.params)
+	if rt.params == nil {
+		rt.params = map[string]any{}
+	}
+	if rt.businessDate != "" {
+		rt.params["business_date"] = rt.businessDate
+	}
+	return rt
+}
+
+func renderPipelineTemplate(input string, rt *pipelineRuntime) string {
+	if input == "" || rt == nil {
+		return input
+	}
+	return pipelineTemplatePattern.ReplaceAllStringFunc(input, func(token string) string {
+		matches := pipelineTemplatePattern.FindStringSubmatch(token)
+		if len(matches) != 2 {
+			return token
+		}
+		path := matches[1]
+		if path == "business_date" {
+			return rt.businessDate
+		}
+		if strings.HasPrefix(path, "params.") {
+			return fmt.Sprint(lookupPath(rt.params, strings.TrimPrefix(path, "params.")))
+		}
+		if strings.HasPrefix(path, "payload.") {
+			return fmt.Sprint(lookupPath(rt.payload, strings.TrimPrefix(path, "payload.")))
+		}
+		return token
+	})
+}
+
+func lookupPath(root any, path string) any {
+	cur := root
+	for _, part := range strings.Split(path, ".") {
+		if part == "" {
+			continue
+		}
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return ""
+		}
+		cur = m[part]
+	}
+	if cur == nil {
+		return ""
+	}
+	return cur
+}
+
+func setNodePayload(rt *pipelineRuntime, n *execNode, cols []string, rows [][]any) {
+	if rt == nil {
+		return
+	}
+	first := map[string]any{}
+	if len(rows) > 0 {
+		for i, col := range cols {
+			if i < len(rows[0]) {
+				first[col] = rows[0][i]
+			}
+		}
+	}
+	payload := map[string]any{
+		"rows":    len(rows),
+		"columns": cols,
+		"first":   first,
+	}
+	rt.payload[payloadKey(n)] = payload
+	rt.payload[fmt.Sprintf("node_%d", n.id)] = payload
+}
+
+func payloadKey(n *execNode) string {
+	key := strings.TrimSpace(n.label)
+	if key == "" {
+		key = fmt.Sprintf("node_%d", n.id)
+	}
+	key = strings.ReplaceAll(key, " ", "_")
+	key = strings.ReplaceAll(key, ".", "_")
+	key = strings.ReplaceAll(key, "-", "_")
+	return key
 }
 
 func topoSort(nodeIDs []int64, inEdges map[int64][]int64) ([]int64, error) {

@@ -114,7 +114,7 @@ func backupOptionsFromQuery(r *http.Request) BackupOptions {
 
 var allowedRestoreStatements = []string{
 	"INSERT ", "CREATE TABLE", "CREATE INDEX", "CREATE UNIQUE INDEX",
-	"DROP TABLE", "DROP INDEX", "ALTER TABLE", "SET ", "BEGIN", "COMMIT", "ROLLBACK",
+	"DROP TABLE", "DROP INDEX", "ALTER TABLE", "SET ", "BEGIN", "COMMIT", "ROLLBACK", "DO ",
 }
 
 func isAllowedRestoreStatement(stmt string) bool {
@@ -259,6 +259,19 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 	fmt.Fprintf(w, "-- Generated: %s\n\n", time.Now().Format(time.RFC3339))
 
 	schema := resolveSchema(driver, opts.Schema)
+	// For MySQL/MariaDB, "schema" == the database name. Use the caller-supplied
+	// dbName so that table listing, index, and FK queries target the right database
+	// rather than whatever DATABASE() returns for the connection.
+	if (driver == "mysql" || driver == "mariadb") && schema == "" && dbName != "" {
+		schema = dbName
+	}
+
+	// Emit SET search_path for PostgreSQL so that unqualified names in FK
+	// REFERENCES clauses and other DDL produced by pg_get_constraintdef resolve
+	// correctly when the dump is restored in a fresh database.
+	if driver == "postgres" && schema != "" {
+		fmt.Fprintf(w, "SET search_path TO %q;\n\n", schema)
+	}
 
 	tables, err := listBackupTables(ctx, db, driver, schema, dbName, opts)
 	if err != nil {
@@ -274,12 +287,32 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 		fmt.Fprintf(w, "%s\n\n", fkDisableStatement(driver))
 	}
 
+	// activeTables is the list used for data/post-data phases. When pre-data is
+	// included we restrict it to tables whose DDL succeeded, keeping the dump
+	// self-consistent (no INSERT without a preceding CREATE TABLE).
+	activeTables := tables
+
 	// Pre-data: CREATE TABLE DDL
 	if emitPreData {
 		fmt.Fprintf(w, "-- ================================================================\n")
 		fmt.Fprintf(w, "-- PRE-DATA: schema definitions\n")
 		fmt.Fprintf(w, "-- ================================================================\n\n")
-		if err := writePreData(ctx, w, db, driver, schema, tables, opts); err != nil {
+
+		if driver == "postgres" {
+			// Sequences must come before CREATE TABLE: DEFAULT nextval('seq') is
+			// resolved at CREATE TABLE parse time, so the sequence must already exist.
+			if err := writePGCreateSequences(ctx, w, db, schema); err != nil {
+				fmt.Fprintf(w, "-- Error writing sequences: %v\n\n", err)
+			}
+			// ENUM types must also exist before tables that reference them.
+			if err := writePGEnums(ctx, w, db, schema); err != nil {
+				fmt.Fprintf(w, "-- Error writing enum types: %v\n\n", err)
+			}
+		}
+
+		var err error
+		activeTables, err = writePreData(ctx, w, db, driver, schema, tables, opts)
+		if err != nil {
 			return err
 		}
 	}
@@ -289,8 +322,15 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 		fmt.Fprintf(w, "-- ================================================================\n")
 		fmt.Fprintf(w, "-- DATA: row inserts\n")
 		fmt.Fprintf(w, "-- ================================================================\n\n")
-		if err := writeData(ctx, w, db, driver, tables, opts); err != nil {
+		if err := writeData(ctx, w, db, driver, schema, activeTables, opts); err != nil {
 			return err
+		}
+
+		// Reset sequences after data so nextval() continues from the correct value.
+		if driver == "postgres" {
+			if err := writePGSequenceReset(ctx, w, db, schema); err != nil {
+				fmt.Fprintf(w, "-- Error resetting sequences: %v\n\n", err)
+			}
 		}
 	}
 
@@ -299,7 +339,7 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 		fmt.Fprintf(w, "-- ================================================================\n")
 		fmt.Fprintf(w, "-- POST-DATA: indexes and constraints\n")
 		fmt.Fprintf(w, "-- ================================================================\n\n")
-		if err := writePostData(ctx, w, db, driver, schema, tables, opts); err != nil {
+		if err := writePostData(ctx, w, db, driver, schema, activeTables, opts); err != nil {
 			return err
 		}
 	}
@@ -308,13 +348,6 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 	if opts.IncludeViews && (emitPreData || emitPostData) {
 		if err := writeViews(ctx, w, db, driver, schema); err != nil {
 			fmt.Fprintf(w, "-- Error writing views: %v\n\n", err)
-		}
-	}
-
-	// Sequences (PG only)
-	if opts.IncludeSequences && driver == "postgres" && emitPreData {
-		if err := writePGSequences(ctx, w, db, schema); err != nil {
-			fmt.Fprintf(w, "-- Error writing sequences: %v\n\n", err)
 		}
 	}
 
@@ -329,10 +362,14 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 
 // ── Pre-data ──────────────────────────────────────────────────────────────────
 
-func writePreData(ctx context.Context, w io.Writer, db *sql.DB, driver, schema string, tables []string, opts BackupOptions) error {
+// writePreData writes CREATE TABLE DDL for each table and returns the subset of
+// tables whose DDL was successfully generated. Callers should use this returned
+// slice for data/post-data phases so the dump stays self-consistent.
+func writePreData(ctx context.Context, w io.Writer, db *sql.DB, driver, schema string, tables []string, opts BackupOptions) ([]string, error) {
+	var ok []string
 	for _, tbl := range tables {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return ok, ctx.Err()
 		}
 		ddl, err := generateTableDDL(ctx, db, driver, schema, tbl, opts)
 		if err != nil {
@@ -341,8 +378,9 @@ func writePreData(ctx context.Context, w io.Writer, db *sql.DB, driver, schema s
 		}
 		fmt.Fprintln(w, ddl)
 		fmt.Fprintln(w)
+		ok = append(ok, tbl)
 	}
-	return nil
+	return ok, nil
 }
 
 func generateTableDDL(ctx context.Context, db *sql.DB, driver, schema, table string, opts BackupOptions) (string, error) {
@@ -419,6 +457,13 @@ func pgTableDDL(ctx context.Context, sb *strings.Builder, db *sql.DB, schema, ta
 				WHEN data_type = 'numeric' AND numeric_precision IS NOT NULL AND numeric_scale IS NOT NULL
 					THEN 'numeric(' || numeric_precision || ',' || numeric_scale || ')'
 				WHEN data_type = 'ARRAY'
+					-- udt_name for arrays has a leading '_' (e.g. _text → text[])
+					THEN CASE WHEN LEFT(udt_name, 1) = '_'
+					          THEN SUBSTRING(udt_name FROM 2) || '[]'
+					          ELSE udt_name || '[]'
+					     END
+				WHEN data_type = 'USER-DEFINED'
+					-- enums, domains, composite types — use the actual type name
 					THEN udt_name
 				ELSE data_type
 			END,
@@ -436,9 +481,12 @@ func pgTableDDL(ctx context.Context, sb *strings.Builder, db *sql.DB, schema, ta
 	for rows.Next() {
 		var c colDef
 		if err := rows.Scan(&c.name, &c.colType, &c.nullable, &c.defVal); err != nil {
-			return "", err
+			return "", fmt.Errorf("scanning columns for %s.%s: %w", schema, table, err)
 		}
 		cols = append(cols, c)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("iterating columns for %s.%s: %w", schema, table, err)
 	}
 	if len(cols) == 0 {
 		return "", fmt.Errorf("table not found: %s.%s", schema, table)
@@ -476,7 +524,13 @@ func pgTableDDL(ctx context.Context, sb *strings.Builder, db *sql.DB, schema, ta
 			line += " NOT NULL"
 		}
 		if c.defVal.Valid && c.defVal.String != "" {
-			line += " DEFAULT " + c.defVal.String
+			// Strip ::regclass so nextval('seq'::regclass) → nextval('seq').
+			// PostgreSQL resolves an explicit ::regclass cast at CREATE TABLE parse
+			// time, failing immediately if the sequence doesn't exist yet. With an
+			// implicit text→regclass cast the lookup is deferred to call time, which
+			// our explicit-value INSERTs never trigger.
+			defStr := strings.ReplaceAll(c.defVal.String, "::regclass", "")
+			line += " DEFAULT " + defStr
 		}
 		colLines = append(colLines, line)
 	}
@@ -560,13 +614,13 @@ func mssqlTableDDL(ctx context.Context, sb *strings.Builder, db *sql.DB, schema,
 
 // ── Data ──────────────────────────────────────────────────────────────────────
 
-func writeData(ctx context.Context, w io.Writer, db *sql.DB, driver string, tables []string, opts BackupOptions) error {
+func writeData(ctx context.Context, w io.Writer, db *sql.DB, driver, schema string, tables []string, opts BackupOptions) error {
 	for _, tbl := range tables {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 
-		tblQ := quoteIdentForDriver(driver, "", tbl)
+		tblQ := quoteIdentForDriver(driver, schema, tbl)
 		fmt.Fprintf(w, "-- Table: %s\n", tbl)
 
 		if opts.UseTransaction {
@@ -646,6 +700,17 @@ func writePostData(ctx context.Context, w io.Writer, db *sql.DB, driver, schema 
 			}
 		}
 
+		if driver == "postgres" {
+			pkStmts, err := generatePKsDDL(ctx, db, schema, tbl)
+			if err == nil && len(pkStmts) > 0 {
+				fmt.Fprintf(w, "-- Primary keys for %s\n", tbl)
+				for _, s := range pkStmts {
+					fmt.Fprintln(w, s+";")
+				}
+				fmt.Fprintln(w)
+			}
+		}
+
 		if opts.IncludeFKs && (driver == "postgres" || driver == "mysql" || driver == "mariadb") {
 			fkStmts, err := generateFKsDDL(ctx, db, driver, schema, tbl)
 			if err == nil && len(fkStmts) > 0 {
@@ -679,6 +744,7 @@ func generateIndexesDDL(ctx context.Context, db *sql.DB, driver, schema, table s
 		for rows.Next() {
 			var name, def string
 			rows.Scan(&name, &def)
+			def = addIfNotExistsToIndex(def)
 			stmts = append(stmts, def)
 		}
 	case "sqlite":
@@ -695,9 +761,13 @@ func generateIndexesDDL(ctx context.Context, db *sql.DB, driver, schema, table s
 		}
 	case "mysql", "mariadb":
 		// SHOW CREATE TABLE already includes indexes; emit CREATE INDEX separately
+		dbRef := "DATABASE()"
+		if schema != "" {
+			dbRef = "'" + strings.ReplaceAll(schema, "'", "''") + "'"
+		}
 		rows, err := db.QueryContext(ctx,
 			"SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE FROM INFORMATION_SCHEMA.STATISTICS "+
-				"WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? "+
+				"WHERE TABLE_SCHEMA="+dbRef+" AND TABLE_NAME=? "+
 				"AND INDEX_NAME != 'PRIMARY' ORDER BY INDEX_NAME, SEQ_IN_INDEX",
 			table)
 		if err != nil {
@@ -735,6 +805,48 @@ func generateIndexesDDL(ctx context.Context, db *sql.DB, driver, schema, table s
 	return stmts, nil
 }
 
+// generatePKsDDL emits ALTER TABLE … ADD PRIMARY KEY wrapped in a DO block so
+// it is a no-op when the constraint already exists (duplicate_object) but still
+// gets applied when the table was previously created without one.
+func generatePKsDDL(ctx context.Context, db *sql.DB, schema, table string) ([]string, error) {
+	if schema == "" {
+		schema = "public"
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT kc.column_name
+		FROM information_schema.table_constraints tc
+		JOIN information_schema.key_column_usage kc
+			ON tc.constraint_name = kc.constraint_name AND tc.table_schema = kc.table_schema
+		WHERE tc.constraint_type = 'PRIMARY KEY'
+		  AND tc.table_schema = $1 AND tc.table_name = $2
+		ORDER BY kc.ordinal_position`, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var cols []string
+	for rows.Next() {
+		var col string
+		if err := rows.Scan(&col); err != nil {
+			continue
+		}
+		cols = append(cols, fmt.Sprintf("%q", col))
+	}
+	if len(cols) == 0 {
+		return nil, nil
+	}
+
+	stmt := fmt.Sprintf(
+		"DO $$ BEGIN"+
+			" IF to_regclass('%s.%s') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = '%s.%s'::regclass AND contype = 'p') THEN"+
+			" ALTER TABLE %q.%q ADD PRIMARY KEY (%s);"+
+			" END IF;"+
+			" END $$",
+		schema, table, schema, table, schema, table, strings.Join(cols, ", "))
+	return []string{stmt}, nil
+}
+
 func generateFKsDDL(ctx context.Context, db *sql.DB, driver, schema, table string) ([]string, error) {
 	var stmts []string
 	switch driver {
@@ -753,13 +865,19 @@ func generateFKsDDL(ctx context.Context, db *sql.DB, driver, schema, table strin
 		for rows.Next() {
 			var name, def string
 			rows.Scan(&name, &def)
-			stmts = append(stmts, fmt.Sprintf(`ALTER TABLE %q.%q ADD CONSTRAINT %q %s`, schema, table, name, def))
+			stmts = append(stmts, fmt.Sprintf(
+				"DO $$ BEGIN ALTER TABLE %q.%q ADD CONSTRAINT %q %s; EXCEPTION WHEN duplicate_object THEN NULL; WHEN SQLSTATE '42830' THEN NULL; END $$",
+				schema, table, name, def))
 		}
 	case "mysql", "mariadb":
+		fkDbRef := "DATABASE()"
+		if schema != "" {
+			fkDbRef = "'" + strings.ReplaceAll(schema, "'", "''") + "'"
+		}
 		rows, err := db.QueryContext(ctx,
 			`SELECT CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
 			 FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-			 WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND REFERENCED_TABLE_NAME IS NOT NULL
+			 WHERE TABLE_SCHEMA=`+fkDbRef+` AND TABLE_NAME=? AND REFERENCED_TABLE_NAME IS NOT NULL
 			 ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION`, table)
 		if err != nil {
 			return nil, err
@@ -807,8 +925,12 @@ func writeViews(ctx context.Context, w io.Writer, db *sql.DB, driver, schema str
 		rows, err = db.QueryContext(ctx,
 			`SELECT table_name, view_definition FROM information_schema.views WHERE table_schema=$1`, schema)
 	case "mysql", "mariadb":
+		viewDbRef := "DATABASE()"
+		if schema != "" {
+			viewDbRef = "'" + strings.ReplaceAll(schema, "'", "''") + "'"
+		}
 		rows, err = db.QueryContext(ctx,
-			`SELECT TABLE_NAME, VIEW_DEFINITION FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA=DATABASE()`)
+			`SELECT TABLE_NAME, VIEW_DEFINITION FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA=`+viewDbRef)
 	case "sqlite":
 		rows, err = db.QueryContext(ctx,
 			`SELECT name, sql FROM sqlite_master WHERE type='view'`)
@@ -836,31 +958,136 @@ func writeViews(ctx context.Context, w io.Writer, db *sql.DB, driver, schema str
 	return nil
 }
 
-// ── Sequences (PostgreSQL only) ───────────────────────────────────────────────
+// ── Enums (PostgreSQL only) ───────────────────────────────────────────────────
 
-func writePGSequences(ctx context.Context, w io.Writer, db *sql.DB, schema string) error {
+// writePGEnums emits CREATE TYPE … AS ENUM statements for all enum types in the
+// target schema. These must appear before CREATE TABLE because table columns can
+// reference them, and pg_get_constraintdef output also uses unqualified type names.
+func writePGEnums(ctx context.Context, w io.Writer, db *sql.DB, schema string) error {
 	if schema == "" {
 		schema = "public"
 	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT t.typname, string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder) AS labels
+		FROM pg_type t
+		JOIN pg_namespace n ON n.oid = t.typnamespace
+		JOIN pg_enum e ON e.enumtypid = t.oid
+		WHERE n.nspname = $1
+		GROUP BY t.typname
+		ORDER BY t.typname`, schema)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	any := false
+	for rows.Next() {
+		var typeName, labels string
+		if err := rows.Scan(&typeName, &labels); err != nil {
+			continue
+		}
+		quoted := []string{}
+		for _, lbl := range strings.Split(labels, ",") {
+			quoted = append(quoted, "'"+strings.ReplaceAll(lbl, "'", "''")+"'")
+		}
+		fmt.Fprintf(w, "CREATE TYPE %q.%q AS ENUM (%s);\n", schema, typeName, strings.Join(quoted, ", "))
+		any = true
+	}
+	if any {
+		fmt.Fprintln(w)
+	}
+	return rows.Err()
+}
+
+// ── Sequences (PostgreSQL only) ───────────────────────────────────────────────
+
+// writePGCreateSequences emits CREATE SEQUENCE statements. Must run BEFORE
+// CREATE TABLE because DEFAULT nextval('seq') is resolved at parse time — if
+// the sequence doesn't exist, the CREATE TABLE fails immediately.
+func writePGCreateSequences(ctx context.Context, w io.Writer, db *sql.DB, schema string) error {
+	if schema == "" {
+		schema = "public"
+	}
+	// pg_sequences is available in PostgreSQL 10+.
+	rows, err := db.QueryContext(ctx, `
+		SELECT sequencename, increment, minimum_value, maximum_value, start_value, cache_size, cycle_option
+		FROM pg_sequences WHERE schemaname = $1
+		ORDER BY sequencename`, schema)
+	if err != nil {
+		// Fallback: basic CREATE SEQUENCE without parameters.
+		return writePGSequencesFallback(ctx, w, db, schema)
+	}
+	defer rows.Close()
+
+	any := false
+	for rows.Next() {
+		var name string
+		var inc, minV, maxV, startV, cache int64
+		var cycle bool
+		if err := rows.Scan(&name, &inc, &minV, &maxV, &startV, &cache, &cycle); err != nil {
+			continue
+		}
+		cycleKW := "NO CYCLE"
+		if cycle {
+			cycleKW = "CYCLE"
+		}
+		fmt.Fprintf(w,
+			"CREATE SEQUENCE IF NOT EXISTS %q.%q INCREMENT BY %d MINVALUE %d MAXVALUE %d START WITH %d CACHE %d %s;\n",
+			schema, name, inc, minV, maxV, startV, cache, cycleKW)
+		any = true
+	}
+	if any {
+		fmt.Fprintln(w)
+	}
+	return rows.Err()
+}
+
+// writePGSequencesFallback is used when pg_sequences is not available.
+func writePGSequencesFallback(ctx context.Context, w io.Writer, db *sql.DB, schema string) error {
 	rows, err := db.QueryContext(ctx,
 		`SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema=$1 ORDER BY sequence_name`, schema)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-
-	fmt.Fprintf(w, "-- ================================================================\n")
-	fmt.Fprintf(w, "-- SEQUENCES\n")
-	fmt.Fprintf(w, "-- ================================================================\n\n")
-
 	for rows.Next() {
 		var name string
 		rows.Scan(&name)
-		// Emit a basic CREATE SEQUENCE; current value would need nextval() call
 		fmt.Fprintf(w, "CREATE SEQUENCE IF NOT EXISTS %q.%q;\n", schema, name)
 	}
 	fmt.Fprintln(w)
 	return nil
+}
+
+// writePGSequenceReset emits SELECT setval(...) for all sequences so that
+// after data is restored the sequences continue from the correct value.
+func writePGSequenceReset(ctx context.Context, w io.Writer, db *sql.DB, schema string) error {
+	if schema == "" {
+		schema = "public"
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT sequencename, last_value
+		FROM pg_sequences WHERE schemaname = $1 AND last_value IS NOT NULL
+		ORDER BY sequencename`, schema)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	any := false
+	for rows.Next() {
+		var name string
+		var lastVal int64
+		if err := rows.Scan(&name, &lastVal); err != nil {
+			continue
+		}
+		fmt.Fprintf(w, "SELECT setval('%s.%s', %d);\n", schema, name, lastVal)
+		any = true
+	}
+	if any {
+		fmt.Fprintln(w)
+	}
+	return rows.Err()
 }
 
 // ── Table list ────────────────────────────────────────────────────────────────
@@ -875,7 +1102,11 @@ func listBackupTables(ctx context.Context, db *sql.DB, driver, schema, dbName st
 		tableQ = fmt.Sprintf(
 			`SELECT table_name FROM information_schema.tables WHERE table_schema='%s' AND table_type='BASE TABLE' ORDER BY table_name`, schema)
 	case "mysql", "mariadb":
-		tableQ = `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME`
+		dbRef := "DATABASE()"
+		if schema != "" {
+			dbRef = "'" + strings.ReplaceAll(schema, "'", "''") + "'"
+		}
+		tableQ = `SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=` + dbRef + ` AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME`
 	case "sqlite":
 		tableQ = `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
 	default:
@@ -997,14 +1228,25 @@ func sqlLiteral(v interface{}) string {
 		return "'" + strings.ReplaceAll(t, "'", "''") + "'"
 	case bool:
 		if t {
-			return "1"
+			return "TRUE"
 		}
-		return "0"
+		return "FALSE"
 	case time.Time:
 		return "'" + t.Format("2006-01-02 15:04:05.999999999Z07:00") + "'"
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+func addIfNotExistsToIndex(def string) string {
+	upper := strings.ToUpper(def)
+	if strings.HasPrefix(upper, "CREATE UNIQUE INDEX ") && !strings.Contains(upper, " IF NOT EXISTS ") {
+		return "CREATE UNIQUE INDEX IF NOT EXISTS " + def[len("CREATE UNIQUE INDEX "):]
+	}
+	if strings.HasPrefix(upper, "CREATE INDEX ") && !strings.Contains(upper, " IF NOT EXISTS ") {
+		return "CREATE INDEX IF NOT EXISTS " + def[len("CREATE INDEX "):]
+	}
+	return def
 }
 
 func splitSQL(sql string) []string {

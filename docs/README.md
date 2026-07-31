@@ -8,7 +8,6 @@ This directory contains project, product, and implementation documentation for A
 - [Project README](../README.md)
 - [Open-source project guide](OPEN_SOURCE.md)
 - [Feature guide](FEATURES.md)
-- [Demo guide](DEMO.md)
 - [Donation guide](DONATION.md)
 
 ## User and Product Guides
@@ -20,6 +19,7 @@ This directory contains project, product, and implementation documentation for A
 - [Admin and governance](05-admin-and-governance.md)
 - [Operations and platform](06-ops-and-platform.md)
 - [Analytics dashboards](07-analytics-dashboards.md)
+- [Redis explorer](08-redis-explorer.md)
 - [Table features](TABLE_FEATURES.md)
 
 ## Permissions and Security

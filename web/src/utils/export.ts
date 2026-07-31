@@ -42,6 +42,34 @@ export function downloadCSV(columns: string[], rows: unknown[][], name = 'export
   downloadBlob(blob, `${sanitizeFileName(name)}.csv`)
 }
 
+export function downloadSQL(columns: string[], rows: unknown[][], name = 'export', tableName = 'table_name', driver = 'postgres') {
+  const quoteIdent = (id: string): string => {
+    switch (driver) {
+      case 'mysql':
+      case 'mariadb':
+        return '`' + id.replace(/`/g, '``') + '`'
+      case 'mssql':
+      case 'sqlserver':
+        return '[' + id.replace(/]/g, ']]') + ']'
+      default:
+        return '"' + id.replace(/"/g, '""') + '"'
+    }
+  }
+  const literal = (v: unknown): string => {
+    if (v === null || v === undefined) return 'NULL'
+    if (typeof v === 'number') return Number.isFinite(v) ? String(v) : 'NULL'
+    if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
+    if (typeof v === 'object') return "'" + JSON.stringify(v).replace(/'/g, "''") + "'"
+    return "'" + String(v).replace(/'/g, "''") + "'"
+  }
+  const table = quoteIdent(tableName || 'table_name')
+  const cols = columns.map(quoteIdent).join(', ')
+  const lines = rows.map((row) =>
+    `INSERT INTO ${table} (${cols}) VALUES (${(row as unknown[]).map(literal).join(', ')});`,
+  )
+  downloadText(lines.join('\n'), `${sanitizeFileName(name)}.sql`, 'application/sql;charset=utf-8;')
+}
+
 export function downloadJSON(columns: string[], rows: unknown[][], name = 'export') {
   const data = rows.map((row) => {
     const obj: Record<string, unknown> = {}
@@ -141,25 +169,37 @@ function writeU32(out: number[], value: number) {
 }
 
 function zipFiles(files: Array<{ name: string; data: string }>) {
-  const out: number[] = []
+  // Chunks are concatenated at the end via .set() instead of being spread into
+  // push() — spreading a large Uint8Array (e.g. a big worksheet's XML bytes) as
+  // individual arguments overflows the JS engine's function-argument limit
+  // ("RangeError: too many function arguments") once exports get large.
+  const chunks: Uint8Array[] = []
   const central: number[] = []
+  let offset = 0
+  const push = (bytes: Uint8Array) => {
+    chunks.push(bytes)
+    offset += bytes.length
+  }
   for (const file of files) {
     const name = textBytes(file.name)
     const data = textBytes(file.data)
     const crc = crc32(data)
-    const offset = out.length
-    writeU32(out, 0x04034b50)
-    writeU16(out, 20)
-    writeU16(out, 0)
-    writeU16(out, 0)
-    writeU16(out, 0)
-    writeU16(out, 0)
-    writeU32(out, crc)
-    writeU32(out, data.length)
-    writeU32(out, data.length)
-    writeU16(out, name.length)
-    writeU16(out, 0)
-    out.push(...name, ...data)
+    const localOffset = offset
+    const header: number[] = []
+    writeU32(header, 0x04034b50)
+    writeU16(header, 20)
+    writeU16(header, 0)
+    writeU16(header, 0)
+    writeU16(header, 0)
+    writeU16(header, 0)
+    writeU32(header, crc)
+    writeU32(header, data.length)
+    writeU32(header, data.length)
+    writeU16(header, name.length)
+    writeU16(header, 0)
+    push(new Uint8Array(header))
+    push(name)
+    push(data)
 
     writeU32(central, 0x02014b50)
     writeU16(central, 20)
@@ -177,20 +217,30 @@ function zipFiles(files: Array<{ name: string; data: string }>) {
     writeU16(central, 0)
     writeU16(central, 0)
     writeU32(central, 0)
-    writeU32(central, offset)
+    writeU32(central, localOffset)
     central.push(...name)
   }
-  const centralOffset = out.length
-  out.push(...central)
-  writeU32(out, 0x06054b50)
-  writeU16(out, 0)
-  writeU16(out, 0)
-  writeU16(out, files.length)
-  writeU16(out, files.length)
-  writeU32(out, central.length)
-  writeU32(out, centralOffset)
-  writeU16(out, 0)
-  return new Uint8Array(out)
+  const centralOffset = offset
+  const centralBytes = new Uint8Array(central)
+  push(centralBytes)
+  const eocd: number[] = []
+  writeU32(eocd, 0x06054b50)
+  writeU16(eocd, 0)
+  writeU16(eocd, 0)
+  writeU16(eocd, files.length)
+  writeU16(eocd, files.length)
+  writeU32(eocd, centralBytes.length)
+  writeU32(eocd, centralOffset)
+  writeU16(eocd, 0)
+  push(new Uint8Array(eocd))
+
+  const result = new Uint8Array(offset)
+  let pos = 0
+  for (const chunk of chunks) {
+    result.set(chunk, pos)
+    pos += chunk.length
+  }
+  return result
 }
 
 function xlsxSheetName(value: string, used: Set<string>) {
@@ -225,9 +275,11 @@ function xlsxCell(value: unknown, styleId = 0) {
   if (rawValue === null || rawValue === undefined) return `<c${style} t="inlineStr"><is><t></t></is></c>`
   if (typeof rawValue === 'number' && Number.isFinite(rawValue)) return `<c${style}><v>${rawValue}</v></c>`
   if (typeof rawValue === 'boolean') return `<c${style} t="b"><v>${rawValue ? 1 : 0}</v></c>`
+  // Values that arrive as strings (e.g. varchar columns holding phone numbers, IDs,
+  // zip codes, or big integers beyond Number's safe range) must stay text — guessing
+  // "looks numeric" from content and coercing via Number() silently corrupted them
+  // (lost leading zeros, lost precision on large IDs, etc).
   const text = String(rawValue)
-  const numeric = text.trim() !== '' && !Number.isNaN(Number(text)) && !/^0\d+/.test(text.trim())
-  if (numeric) return `<c${style}><v>${Number(text)}</v></c>`
   return `<c${style} t="inlineStr"><is><t xml:space="preserve">${escapeXML(text)}</t></is></c>`
 }
 
@@ -236,7 +288,7 @@ function xlsxWorksheet(sheet: XLSXSheet) {
   const titleRows = new Set(sheet.titleRows ?? [])
   const mutedRows = new Set(sheet.mutedRows ?? [])
   const errorRows = new Set(sheet.errorRows ?? [])
-  const columnCount = Math.max(1, ...sheet.rows.map((row) => row.length))
+  const columnCount = sheet.rows.reduce((max, row) => Math.max(max, row.length), 1)
   const inferredWidths = inferColumnWidths(sheet.rows, columnCount)
   const columnWidths = Array.from({ length: columnCount }, (_, index) => sheet.columnWidths?.[index] ?? inferredWidths[index])
   const cols = columnWidths

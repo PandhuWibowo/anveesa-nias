@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
+import { useListFilter } from '@/composables/useListFilter'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -72,8 +73,6 @@ const shards = ref<ShardRow[]>([])
 const mappingIndex = ref('')
 const mappingFields = ref<MappingField[]>([])
 const mappingRaw = ref<any>(null)
-const shardFilter = ref('')
-const mappingSearch = ref('')
 const shardStateFilter = ref<'all' | 'STARTED' | 'UNASSIGNED' | 'RELOCATING' | 'INITIALIZING'>('all')
 const expandedMappingFields = ref<Set<string>>(new Set())
 
@@ -81,18 +80,13 @@ const searchConnections = computed(() => connections.value.filter(c => c.driver 
 const activeConn = computed(() => props.activeConnId != null ? connections.value.find(c => c.id === props.activeConnId) ?? null : null)
 const isSearch = computed(() => activeConn.value?.driver === 'elasticsearch' || activeConn.value?.driver === 'opensearch')
 
+const { search: shardFilter, filtered: textFilteredShards } = useListFilter(shards, (s, q) => (s.index?.toLowerCase().includes(q) ?? false) || (s.node?.toLowerCase().includes(q) ?? false))
 const filteredShards = computed(() => {
-  let list = shards.value
-  if (shardFilter.value.trim()) {
-    const q = shardFilter.value.trim().toLowerCase()
-    list = list.filter(s => s.index?.toLowerCase().includes(q) || s.node?.toLowerCase().includes(q))
-  }
-  if (shardStateFilter.value !== 'all') {
-    list = list.filter(s => (s.state || '').toUpperCase() === shardStateFilter.value)
-  }
-  return list
+  if (shardStateFilter.value === 'all') return textFilteredShards.value
+  return textFilteredShards.value.filter(s => (s.state || '').toUpperCase() === shardStateFilter.value)
 })
 
+const { search: mappingSearch } = useListFilter(mappingFields, (field, q) => field.name.toLowerCase().includes(q) || field.type.toLowerCase().includes(q))
 const filteredMappingFields = computed(() => {
   if (!mappingSearch.value.trim()) return mappingFields.value
   return filterFields(mappingFields.value, mappingSearch.value.trim().toLowerCase())

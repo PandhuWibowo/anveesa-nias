@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import axios from 'axios'
+import { useRouter } from 'vue-router'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
 import { readableError } from '@/utils/httpError'
+import { useListFilter } from '@/composables/useListFilter'
+import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
 
 interface Schedule {
   id: number; name: string; conn_id: number; sql: string
@@ -20,14 +23,49 @@ interface ScheduleRun {
   summary: string; error: string; alerted: boolean; ran_at: string
 }
 
-const { connections } = useConnections()
+interface SchedulerStatus {
+  running: boolean
+  instanceID: string
+  lastTick: string
+  startedAt: string
+  intervalSec: number
+}
+
+const { activeConnections: connections } = useConnections()
 const toast = useToast()
+const router = useRouter()
+
+function goToScheduleSource(s: Schedule) {
+  if (s.kind === 'dashboard_report') {
+    router.push({ name: 'dashboards' })
+  } else {
+    router.push({ name: 'data' })
+  }
+}
 const schedules = ref<Schedule[]>([])
+const { search, filtered: filteredSchedules } = useListFilter(schedules, (s, q) =>
+  s.name.toLowerCase().includes(q) || s.sql.toLowerCase().includes(q),
+)
 const dashboards = ref<AnalyticsDashboard[]>([])
 const loading = ref(false)
 const showForm = ref(false)
 const selectedRuns = ref<ScheduleRun[]>([])
 const runsFor = ref<number | null>(null)
+
+const schedulerStatus = ref<SchedulerStatus | null>(null)
+const statusLoading = ref(false)
+
+async function fetchSchedulerStatus() {
+  statusLoading.value = true
+  try {
+    const { data } = await axios.get<SchedulerStatus>('/api/scheduler/status')
+    schedulerStatus.value = data
+  } catch {
+    schedulerStatus.value = null
+  } finally {
+    statusLoading.value = false
+  }
+}
 
 const form = ref<Partial<Schedule>>({
   name: '', conn_id: 0, dashboard_id: 0, sql: '', kind: 'query', ai_prompt: '', interval_min: 60,
@@ -117,6 +155,17 @@ function editSchedule(s: Schedule) {
   showForm.value = true
 }
 
+function rowActions(s: Schedule): RowAction[] {
+  return [
+    { key: 'run', label: 'Run now', icon: 'play', primary: true, onClick: () => runNow(s) },
+    { key: 'toggle', label: s.enabled ? 'Disable' : 'Enable', icon: 'power', primary: true, onClick: () => toggle(s) },
+    { key: 'history', label: 'History', icon: 'history', onClick: () => viewRuns(s) },
+    { key: 'edit', label: 'Edit', icon: 'edit', onClick: () => editSchedule(s) },
+    { key: 'goto', label: s.kind === 'dashboard_report' ? 'Go to Dashboard' : 'Go to Query', icon: 'external-link', onClick: () => goToScheduleSource(s) },
+    { key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => del(s) },
+  ]
+}
+
 function resetForm() {
   form.value = { name: '', conn_id: 0, dashboard_id: 0, sql: '', kind: 'query', ai_prompt: '', interval_min: 60, alert_condition: '', alert_threshold: 0, enabled: true }
 }
@@ -129,7 +178,7 @@ function dashboardName(id: number) {
   return dashboards.value.find((d) => d.id === id)?.name ?? `#${id}`
 }
 
-onMounted(load)
+onMounted(() => { load(); fetchSchedulerStatus() })
 </script>
 
 <template>
@@ -147,13 +196,71 @@ onMounted(load)
         </div>
       </section>
 
+      <!-- Scheduler status -->
+      <div class="page-card sc-status-card">
+        <div class="sc-status-row">
+          <div class="sc-status-meta">
+            <div class="sc-status-title">Background Scheduler</div>
+            <div class="sc-status-desc">The server process that automatically runs your scheduled jobs — SQL checks, AI summaries, dashboard reports, and pipeline cron triggers — on their configured intervals.</div>
+          </div>
+          <div class="sc-status-right">
+            <template v-if="statusLoading">
+              <svg class="spin sc-status-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+              <span class="sc-status-badge">Checking…</span>
+            </template>
+            <template v-else-if="schedulerStatus">
+              <div class="sc-status-indicator">
+                <div class="sc-dot" :class="schedulerStatus.running ? 'sc-dot--on' : 'sc-dot--err'" />
+                <span class="sc-status-badge" :class="schedulerStatus.running ? 'sc-badge--ok' : 'sc-badge--err'">
+                  {{ schedulerStatus.running ? 'Running' : 'Stopped' }}
+                </span>
+              </div>
+              <div class="sc-status-details">
+                <div class="sc-status-detail-row">
+                  <span class="sc-status-key">Runs every</span>
+                  <span class="sc-status-val">{{ schedulerStatus.intervalSec }}s</span>
+                </div>
+                <div class="sc-status-detail-row">
+                  <span class="sc-status-key">Last tick</span>
+                  <span class="sc-status-val">{{ schedulerStatus.lastTick ? new Date(schedulerStatus.lastTick).toLocaleString() : 'Not yet (no tick since startup)' }}</span>
+                </div>
+                <div class="sc-status-detail-row">
+                  <span class="sc-status-key">Started at</span>
+                  <span class="sc-status-val">{{ new Date(schedulerStatus.startedAt).toLocaleString() }}</span>
+                </div>
+                <div class="sc-status-detail-row">
+                  <span class="sc-status-key">Instance</span>
+                  <span class="sc-status-instance">{{ schedulerStatus.instanceID }}</span>
+                </div>
+              </div>
+            </template>
+            <template v-else>
+              <div class="sc-status-indicator">
+                <div class="sc-dot sc-dot--err" />
+                <span class="sc-status-badge sc-badge--err">Unreachable</span>
+              </div>
+              <div class="sc-status-row-sub">
+                <span class="sc-status-key">Could not connect to the scheduler endpoint.</span>
+              </div>
+            </template>
+            <button class="base-btn base-btn--ghost base-btn--sm sc-status-refresh" :disabled="statusLoading" @click="fetchSchedulerStatus">
+              {{ statusLoading ? '…' : 'Refresh' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- List -->
+      <div class="sc-toolbar" v-if="schedules.length">
+        <input v-model="search" class="base-input sc-search" type="search" placeholder="Filter schedules…" />
+      </div>
       <div class="page-grid sc-list">
         <div v-if="loading" class="sc-empty">
           <svg class="spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
         </div>
         <div v-else-if="schedules.length === 0" class="sc-empty">No schedules yet.</div>
-        <div v-for="s in schedules" :key="s.id" class="page-card sc-item" :class="{ 'sc-item--off': !s.enabled }">
+        <div v-else-if="filteredSchedules.length === 0" class="sc-empty">No schedules match "{{ search }}".</div>
+        <div v-for="s in filteredSchedules" :key="s.id" class="page-card sc-item" :class="{ 'sc-item--off': !s.enabled }">
           <div class="sc-item-head">
             <div class="sc-dot" :class="s.enabled ? 'sc-dot--on' : 'sc-dot--off'" />
             <div class="sc-item-info">
@@ -170,13 +277,7 @@ onMounted(load)
               <span v-if="s.next_run_at" class="sc-time">Next: {{ new Date(s.next_run_at).toLocaleString() }}</span>
             </div>
             <div class="sc-item-actions">
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="runNow(s)" title="Run now">▶</button>
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="viewRuns(s)" title="View runs">History</button>
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="toggle(s)">
-                {{ s.enabled ? 'Disable' : 'Enable' }}
-              </button>
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="editSchedule(s)">Edit</button>
-              <button class="base-btn base-btn--ghost base-btn--sm" style="color:var(--danger)" @click="del(s)">Delete</button>
+              <RowActionsMenu :actions="rowActions(s)" />
             </div>
           </div>
           <pre v-if="s.kind !== 'dashboard_report'" class="sc-sql">{{ s.sql }}</pre>
@@ -281,6 +382,8 @@ onMounted(load)
 .sc-header { display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap; }
 .sc-title { font-size:20px; font-weight:700; color:var(--text-primary); }
 .sc-sub { font-size:13px; color:var(--text-muted); margin-top:3px; }
+.sc-toolbar { display:flex; }
+.sc-search { width:240px; max-width:40vw; }
 .sc-list { display:flex; flex-direction:column; gap:8px; }
 .sc-empty { display:flex; align-items:center; justify-content:center; padding:32px; color:var(--text-muted); gap:8px; }
 .sc-item { background:var(--bg-elevated); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
@@ -311,6 +414,27 @@ onMounted(load)
 .sc-run-summary { color:var(--text-primary); flex:1; min-width:220px; }
 .sc-run-err { color:var(--danger); font-family:var(--mono,monospace); font-size:11px; flex:1; }
 .cp-close { background:transparent; border:none; font-size:20px; color:var(--text-muted); cursor:pointer; padding:0 4px; line-height:1; }
+.sc-status-card { background:var(--bg-elevated); border:1px solid var(--border); border-radius:8px; padding:14px 18px; }
+.sc-status-row { display:flex; align-items:flex-start; gap:32px; }
+.sc-status-meta { min-width:0; max-width:400px; }
+.sc-status-title { font-size:13px; font-weight:700; color:var(--text-primary); margin-bottom:4px; }
+.sc-status-desc { font-size:12px; color:var(--text-muted); line-height:1.55; }
+.sc-status-right { display:flex; flex-direction:column; align-items:flex-start; gap:6px; flex-shrink:0; }
+.sc-status-indicator { display:flex; align-items:center; gap:7px; }
+.sc-status-badge { font-size:12px; font-weight:600; }
+.sc-badge--ok { color:#4ade80; }
+.sc-badge--err { color:var(--danger,#f87171); }
+.sc-status-row-sub { display:flex; align-items:center; gap:6px; }
+.sc-status-details { display:flex; flex-direction:column; gap:4px; margin-top:4px; }
+.sc-status-detail-row { display:flex; align-items:center; gap:8px; }
+.sc-status-key { font-size:11px; color:var(--text-muted); min-width:68px; flex-shrink:0; }
+.sc-status-val { font-size:11px; color:var(--text-secondary); }
+.sc-status-instance { font-size:10.5px; color:var(--text-muted); font-family:var(--mono,monospace); background:var(--bg-body); padding:2px 8px; border-radius:4px; border:1px solid var(--border); max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sc-status-refresh { align-self:flex-start; margin-top:2px; }
+.sc-status-spin { color:var(--text-muted); }
+.sc-dot--err { background:var(--danger,#f87171); box-shadow:0 0 6px rgba(248,113,113,0.5); }
+.spin { animation:rotate 1s linear infinite; }
+@keyframes rotate { to { transform:rotate(360deg) } }
 .sc-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.55); display:flex; align-items:center; justify-content:center; z-index:1100; }
 .sc-modal { background:var(--bg-elevated); border:1px solid var(--border); border-radius:10px; width:min(520px,94vw); max-height:85vh; display:flex; flex-direction:column; box-shadow:0 24px 64px rgba(0,0,0,0.55); }
 .sc-modal-header { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--border); font-size:14px; font-weight:700; color:var(--text-primary); }

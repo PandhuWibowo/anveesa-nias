@@ -370,17 +370,10 @@ const sections: DocsSection[] = [
   {
     id: 'project',
     title: 'Open Source Project',
-    description: 'Public repository guidance, demo access, contribution flow, support, and security policy.',
-    routeHints: ['https://github.com/PandhuWibowo/anveesa-nias', 'README.md', 'docs/DEMO.md', 'CONTRIBUTING.md', 'SECURITY.md'],
+    description: 'Public repository guidance, contribution flow, support, and security policy.',
+    routeHints: ['https://github.com/PandhuWibowo/anveesa-nias', 'README.md', 'CONTRIBUTING.md', 'SECURITY.md'],
     screenshots: [],
     features: [
-      {
-        name: 'Demo System',
-        detail: 'Public demo: https://nias.anveesa.com with username admin and password Admin123!.',
-        useCases: ['Evaluate the product without local setup.', 'Show the app to contributors or stakeholders.', 'Capture screenshots for documentation.'],
-        expected: 'Users can try the system with demo credentials only.',
-        notes: ['Do not enter private credentials or sensitive data into the demo.'],
-      },
       {
         name: 'GitHub Repository',
         detail: 'Source code and issues live at https://github.com/PandhuWibowo/anveesa-nias.',

@@ -115,11 +115,13 @@ export function useSchema() {
   const objectDetail = ref<SchemaObjectDetail | null>(null)
   const error = ref('')
 
-  async function fetchSchema(connId: number) {
+  async function fetchSchema(connId: number, options: { refresh?: boolean } = {}) {
     loadingSchema.value = true
     error.value = ''
     try {
-      const { data } = await axios.get<SchemaDatabase[]>(`/api/connections/${connId}/schema`)
+      const { data } = await axios.get<SchemaDatabase[]>(`/api/connections/${connId}/schema`, {
+        params: options.refresh ? { refresh: 1 } : undefined,
+      })
       databases.value = Array.isArray(data)
         ? data.map((db) => ({ ...db, tables: Array.isArray(db.tables) ? db.tables : [] }))
         : []
@@ -182,11 +184,13 @@ export function useSchema() {
     pageSize = 100,
     orderBy?: string,
     orderDir: 'asc' | 'desc' = 'asc',
+    whereClause?: string,
+    searchQuery?: string,
   ) {
     error.value = ''
     try {
       const { data } = await axios.get(`/api/connections/${connId}/schema/${db}/tables/${table}/data`, {
-        params: { page, page_size: pageSize, order_by: orderBy, order_dir: orderDir },
+        params: { page, page_size: pageSize, order_by: orderBy, order_dir: orderDir, where: whereClause || undefined, search: searchQuery || undefined },
       })
       return data
     } catch (err) {

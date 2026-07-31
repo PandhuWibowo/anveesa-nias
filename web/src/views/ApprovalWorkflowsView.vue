@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import axios from 'axios'
 import { useToast } from '@/composables/useToast'
+import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
 
 interface Role { id: number; name: string }
 interface User { id: number; username: string }
@@ -254,6 +255,14 @@ async function removeWorkflow(workflow: Workflow) {
   }
 }
 
+function workflowActions(workflow: Workflow): RowAction[] {
+  return [
+    { key: 'toggle', label: workflow.is_active ? 'Disable' : 'Enable', icon: 'power', onClick: () => toggleWorkflow(workflow) },
+    { key: 'edit', label: 'Edit', icon: 'edit', onClick: () => openEdit(workflow) },
+    { key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => removeWorkflow(workflow) },
+  ]
+}
+
 onMounted(() => {
   resetForm()
   fetchData()
@@ -322,9 +331,7 @@ onMounted(() => {
                   </td>
                   <td>
                     <div class="wf-actions">
-                      <button class="base-btn base-btn--ghost base-btn--xs" @click="toggleWorkflow(workflow)">{{ workflow.is_active ? 'Disable' : 'Enable' }}</button>
-                      <button class="base-btn base-btn--ghost base-btn--xs" @click="openEdit(workflow)">Edit</button>
-                      <button class="base-btn base-btn--ghost base-btn--xs wf-btn-del" @click="removeWorkflow(workflow)">Delete</button>
+                      <RowActionsMenu :actions="workflowActions(workflow)" />
                     </div>
                   </td>
                 </tr>
@@ -429,7 +436,6 @@ onMounted(() => {
 .wf-steps { display: flex; flex-direction: column; gap: 8px; }
 .wf-step { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text-muted); padding-left: 12px; border-left: 2px solid rgba(92, 184, 165, 0.22); }
 .wf-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.wf-btn-del { color: var(--danger) !important; }
 .wf-empty-row { text-align: center; color: var(--text-muted); font-size: 13px; padding: 24px; }
 
 .wf-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; }

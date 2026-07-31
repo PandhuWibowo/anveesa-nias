@@ -7,6 +7,7 @@ import {
   useObsSettings, fetchIndices, suggestFields,
   type ServiceHealthSettings,
 } from '@/composables/useObsSettings'
+import { useListFilter } from '@/composables/useListFilter'
 import IndexPicker from '@/components/ui/IndexPicker.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
@@ -106,6 +107,7 @@ const refreshTimer = ref<ReturnType<typeof setInterval> | null>(null)
 
 const services     = ref<ServiceDef[]>([])
 const serviceCards = ref<ServiceCard[]>([])
+const { search: svcSearch, filtered: filteredServiceCards } = useListFilter(serviceCards, (s, q) => s.name.toLowerCase().includes(q))
 const timeline     = ref<TimelineBucket[]>([])
 const infra        = ref<HostMetric[]>([])
 const alerts       = ref<AlertEntry[]>([])
@@ -343,8 +345,11 @@ function alertRuleClass(rule:string) {
 
     <template v-else>
       <!-- ── Service Cards ──────────────────────────────── -->
+      <div v-if="serviceCards.length" class="sh-search-row">
+        <input v-model="svcSearch" class="base-input sh-search" type="search" placeholder="Filter services…" />
+      </div>
       <div class="sh-cards" :style="{ '--card-cols': Math.min(serviceCards.length || 2, 6) }">
-        <div v-for="svc in serviceCards" :key="svc.name" class="sh-card" :class="statusClass(svc.status)" :style="{ '--svc-color': svc.color }">
+        <div v-for="svc in filteredServiceCards" :key="svc.name" class="sh-card" :class="statusClass(svc.status)" :style="{ '--svc-color': svc.color }">
           <div class="sh-card-head">
             <span class="sh-card-dot" :class="statusDot(svc.status)" />
             <span class="sh-card-label" :title="svc.name">{{ svc.name }}</span>
@@ -360,6 +365,9 @@ function alertRuleClass(rule:string) {
         <div v-if="!serviceCards.length && (loading || discovering)" v-for="i in 4" :key="'sk'+i" class="sh-card sh-card-skeleton"><div class="sh-card-head"><span class="sh-card-label">Discovering…</span></div></div>
         <div v-if="!serviceCards.length && !loading && !discovering" class="sh-card sh-card-empty">
           <p>No services found in <code>{{ settings.logIndex }}</code>. Try a wider time range or <button class="sh-inline-btn" @click="openWizard">adjust settings</button>.</p>
+        </div>
+        <div v-if="serviceCards.length && !filteredServiceCards.length" class="sh-card sh-card-empty">
+          <p>No services match "{{ svcSearch }}".</p>
         </div>
       </div>
 
@@ -643,6 +651,10 @@ function alertRuleClass(rule:string) {
 .sh-onboard-sub { font-size:13px; margin-bottom:20px; }
 .sh-empty code { font-family:var(--mono); background:var(--bg-body); padding:1px 5px; border-radius:3px; font-size:12px; }
 .sh-inline-btn { background:none; border:none; color:#00bfb3; cursor:pointer; text-decoration:underline; font-size:inherit; padding:0; }
+
+/* Search */
+.sh-search-row { display:flex; justify-content:flex-end; }
+.sh-search { width:220px; max-width:100%; }
 
 /* Cards */
 .sh-cards { display:grid; grid-template-columns:repeat(var(--card-cols,4),minmax(0,1fr)); gap:12px; }

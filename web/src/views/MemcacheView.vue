@@ -4,6 +4,7 @@ import { useConnections } from '@/composables/useConnections'
 import { useMemcache, type MemcacheValueResponse } from '@/composables/useMemcache'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
+import { useListFilter } from '@/composables/useListFilter'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -17,6 +18,7 @@ const keyInput = ref('')
 const selectedKey = ref('')
 const currentValue = ref<MemcacheValueResponse | null>(null)
 const knownKeys = ref<string[]>([])
+const { search: keySearch, filtered: filteredKnownKeys } = useListFilter(knownKeys, (key, q) => key.toLowerCase().includes(q))
 const stats = ref<Record<string, string>>({})
 const connected = ref(false)
 const statusText = ref('')
@@ -239,8 +241,15 @@ function formatBytes(value: number) {
           </div>
           <button class="base-btn base-btn--ghost mem-new" :disabled="!connected" @click="newKey">New Key</button>
           <div class="mem-side-title">Recent Keys</div>
+          <input
+            v-if="knownKeys.length"
+            v-model="keySearch"
+            class="base-input mem-key-search"
+            type="search"
+            placeholder="Filter keys…"
+          />
           <button
-            v-for="key in knownKeys"
+            v-for="key in filteredKnownKeys"
             :key="key"
             class="mem-key"
             :class="{ 'mem-key--active': selectedKey === key }"
@@ -249,6 +258,7 @@ function formatBytes(value: number) {
             {{ key }}
           </button>
           <div v-if="knownKeys.length === 0" class="mem-muted">Memcache cannot scan all keys. Search for a key or create one here.</div>
+          <div v-else-if="filteredKnownKeys.length === 0" class="mem-muted">No keys match "{{ keySearch }}".</div>
         </aside>
 
         <section class="mem-editor">
@@ -318,6 +328,7 @@ function formatBytes(value: number) {
 .mem-search { display: flex; gap: 8px; }
 .mem-new { width: 100%; margin: 10px 0 14px; }
 .mem-side-title { font-size: 11px; font-weight: 800; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; }
+.mem-key-search { width: 100%; margin-bottom: 8px; }
 .mem-key { width: 100%; border: 0; background: transparent; color: var(--text-secondary); text-align: left; padding: 8px 10px; border-radius: 6px; font-family: var(--mono, monospace); cursor: pointer; word-break: break-all; }
 .mem-key:hover, .mem-key--active { background: var(--bg-elevated); color: var(--text-primary); }
 .mem-muted { color: var(--text-muted); font-size: 12px; line-height: 1.45; }

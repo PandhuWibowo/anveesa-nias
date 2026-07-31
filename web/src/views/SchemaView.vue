@@ -9,6 +9,7 @@ import {
   type SchemaProperty,
 } from '@/composables/useSchema'
 import { useConnections } from '@/composables/useConnections'
+import { sortMatrixRows, type SortDir } from '@/composables/useSort'
 
 const props = defineProps<{ activeConnId?: number | null }>()
 
@@ -106,6 +107,38 @@ const columnRows = computed(() => (objectDetail.value?.columns ?? []).map((colum
   column.is_primary_key ? 'YES' : '',
   column.default_value ?? '',
 ]))
+
+// DataTable emits `sort(col, dir)` but never reorders props.rows itself —
+// server-paginated consumers sort by re-querying, but these are static,
+// fully-loaded arrays, so we reorder them here ourselves.
+function useMatrixSort(columns: string[], rows: () => unknown[][]) {
+  const sortCol = ref('')
+  const sortDir = ref<SortDir>('asc')
+  const sorted = computed(() => (sortCol.value ? sortMatrixRows(columns, rows(), sortCol.value, sortDir.value) : rows()))
+  function onSort(col: string, dir: SortDir) { sortCol.value = col; sortDir.value = dir }
+  return { sorted, onSort }
+}
+
+const propertyColumns = ['Property', 'Value']
+const propertiesSort = useMatrixSort(propertyColumns, () => rowsForProperties(objectDetail.value?.properties ?? []))
+const enumColumns = ['Value']
+const enumSort = useMatrixSort(enumColumns, () => (objectDetail.value?.enum_values ?? []).map((value) => [value]))
+const routineColumns = ['Field', 'Value']
+const routineSort = useMatrixSort(routineColumns, () => objectDetail.value?.routine ? [
+  ['Type', objectDetail.value.routine.routine_type],
+  ['Identity', objectDetail.value.routine.identity],
+  ['Return Type', objectDetail.value.routine.return_type || ''],
+] : [])
+const columnColumns = ['Name', 'Type', 'Nullable', 'Primary Key', 'Default']
+const columnsSort = useMatrixSort(columnColumns, () => columnRows.value)
+const indexColumns = ['Name', 'Table', 'Method', 'Unique', 'Primary', 'Columns']
+const indexesSort = useMatrixSort(indexColumns, () => indexRows.value)
+const constraintColumns = ['Name', 'Type', 'Columns', 'References', 'Definition']
+const constraintsSort = useMatrixSort(constraintColumns, () => constraintRows.value)
+const triggerColumns = ['Name', 'Table', 'Timing', 'Events']
+const triggersSort = useMatrixSort(triggerColumns, () => triggerRows.value)
+const sequenceColumns = ['Name', 'Start', 'Increment', 'Cache', 'Cycle', 'Owned By']
+const sequencesSort = useMatrixSort(sequenceColumns, () => sequenceRows.value)
 </script>
 
 <template>
@@ -158,17 +191,19 @@ const columnRows = computed(() => (objectDetail.value?.columns ?? []).map((colum
             <div class="schema-explorer__panel">
               <div class="schema-explorer__panel-title">Properties</div>
               <DataTable
-                :columns="['Property', 'Value']"
-                :rows="rowsForProperties(objectDetail.properties)"
+                :columns="propertyColumns"
+                :rows="propertiesSort.sorted.value"
                 :show-row-numbers="false"
+                @sort="propertiesSort.onSort"
               />
             </div>
             <div v-if="objectDetail.enum_values?.length" class="schema-explorer__panel">
               <div class="schema-explorer__panel-title">Enum Values</div>
               <DataTable
-                :columns="['Value']"
-                :rows="objectDetail.enum_values.map((value) => [value])"
+                :columns="enumColumns"
+                :rows="enumSort.sorted.value"
                 :show-row-numbers="false"
+                @sort="enumSort.onSort"
               />
             </div>
           </div>
@@ -181,58 +216,60 @@ const columnRows = computed(() => (objectDetail.value?.columns ?? []).map((colum
           <div v-if="objectDetail.routine" class="schema-explorer__panel">
             <div class="schema-explorer__panel-title">Routine</div>
             <DataTable
-              :columns="['Field', 'Value']"
-              :rows="[
-                ['Type', objectDetail.routine.routine_type],
-                ['Identity', objectDetail.routine.identity],
-                ['Return Type', objectDetail.routine.return_type || ''],
-              ]"
+              :columns="routineColumns"
+              :rows="routineSort.sorted.value"
               :show-row-numbers="false"
+              @sort="routineSort.onSort"
             />
           </div>
 
           <div v-if="objectDetail.columns.length" class="schema-explorer__panel">
             <div class="schema-explorer__panel-title">Columns</div>
             <DataTable
-              :columns="['Name', 'Type', 'Nullable', 'Primary Key', 'Default']"
-              :rows="columnRows"
+              :columns="columnColumns"
+              :rows="columnsSort.sorted.value"
               :show-row-numbers="false"
+              @sort="columnsSort.onSort"
             />
           </div>
 
           <div v-if="objectDetail.indexes.length" class="schema-explorer__panel">
             <div class="schema-explorer__panel-title">Indexes</div>
             <DataTable
-              :columns="['Name', 'Table', 'Method', 'Unique', 'Primary', 'Columns']"
-              :rows="indexRows"
+              :columns="indexColumns"
+              :rows="indexesSort.sorted.value"
               :show-row-numbers="false"
+              @sort="indexesSort.onSort"
             />
           </div>
 
           <div v-if="objectDetail.constraints.length" class="schema-explorer__panel">
             <div class="schema-explorer__panel-title">Constraints</div>
             <DataTable
-              :columns="['Name', 'Type', 'Columns', 'References', 'Definition']"
-              :rows="constraintRows"
+              :columns="constraintColumns"
+              :rows="constraintsSort.sorted.value"
               :show-row-numbers="false"
+              @sort="constraintsSort.onSort"
             />
           </div>
 
           <div v-if="objectDetail.triggers.length" class="schema-explorer__panel">
             <div class="schema-explorer__panel-title">Triggers</div>
             <DataTable
-              :columns="['Name', 'Table', 'Timing', 'Events']"
-              :rows="triggerRows"
+              :columns="triggerColumns"
+              :rows="triggersSort.sorted.value"
               :show-row-numbers="false"
+              @sort="triggersSort.onSort"
             />
           </div>
 
           <div v-if="objectDetail.sequences.length" class="schema-explorer__panel">
             <div class="schema-explorer__panel-title">Sequences</div>
             <DataTable
-              :columns="['Name', 'Start', 'Increment', 'Cache', 'Cycle', 'Owned By']"
-              :rows="sequenceRows"
+              :columns="sequenceColumns"
+              :rows="sequencesSort.sorted.value"
               :show-row-numbers="false"
+              @sort="sequencesSort.onSort"
             />
           </div>
         </template>

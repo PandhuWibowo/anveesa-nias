@@ -9,9 +9,10 @@ function debounce<T extends (...args: unknown[]) => void>(fn: T, ms: number): T 
   }) as T
 }
 import { useConnections } from '@/composables/useConnections'
-import { useLaravelQueue, type LaravelFailedJob, type LaravelHorizonSummary, type LaravelQueueAuditItem, type LaravelQueueFeatureFlags, type LaravelQueueJob, type LaravelQueueQuarantineItem, type LaravelQueueRules, type LaravelQueueSummary } from '@/composables/useLaravelQueue'
+import { useLaravelQueue, type LaravelActiveJob, type LaravelFailedJob, type LaravelHorizonJobs, type LaravelHorizonSummary, type LaravelQueueAuditItem, type LaravelQueueFeatureFlags, type LaravelQueueJob, type LaravelQueueQuarantineItem, type LaravelQueueRules, type LaravelQueueSummary } from '@/composables/useLaravelQueue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
+import { useListFilter } from '@/composables/useListFilter'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -20,6 +21,8 @@ const { connections, fetchConnections } = useConnections()
 const {
   fetchQueues,
   fetchJobs,
+  fetchActiveJobs,
+  releaseStaleJob,
   deleteJob,
   requeueJob,
   clearQueue,
@@ -27,6 +30,7 @@ const {
   retryFailedJob,
   deleteFailedJob,
   fetchHorizon,
+  fetchHorizonJobs,
   fetchOpsSettings,
   saveOpsSettings,
   fetchQueueAudit,
@@ -34,6 +38,11 @@ const {
   quarantineFailedJob,
   releaseQuarantine,
   emitQueueAlerts,
+  fetchFailedJobAlertConfig,
+  saveFailedJobAlertConfig,
+  testFailedJobAlertConfig,
+  sendSelectedFailedJobAlerts,
+  markFailedJobsAsSeen,
   runLaravelAgent,
 } = useLaravelQueue()
 const toast = useToast()
@@ -44,18 +53,26 @@ const prefix = ref('queues')
 const queues = ref<LaravelQueueSummary[]>([])
 const selectedQueue = ref('default')
 const jobs = ref<LaravelQueueJob[]>([])
+const jobsOffset = ref(0)
+const loadingMoreJobs = ref(false)
+const JOBS_PAGE_SIZE = 100
+const activeJobs = ref<LaravelActiveJob[]>([])
+const activeHorizon = ref(false)
+const loadingActive = ref(false)
 const failedJobs = ref<LaravelFailedJob[]>([])
 const horizon = ref<LaravelHorizonSummary | null>(null)
+const horizonJobs = ref<LaravelHorizonJobs | null>(null)
+const loadingHorizonJobs = ref(false)
+const HORIZON_JOBS_PAGE_SIZE = 50
 const selectedJobId = ref('')
 const selectedFailedJobId = ref<number | null>(null)
-const activeState = ref<'all' | 'ready' | 'delayed' | 'reserved' | 'failed'>('all')
+const activeState = ref<'all' | 'ready' | 'delayed' | 'reserved' | 'active' | 'failed'>('all')
 const detailTab = ref<'summary' | 'main' | 'payload' | 'command' | 'exception'>('summary')
-const insightTab = ref<'health' | 'timeline' | 'groups' | 'patterns' | 'quarantine' | 'controls' | 'settings' | 'audit'>('health')
+const insightTab = ref<'health' | 'timeline' | 'groups' | 'patterns' | 'quarantine' | 'controls' | 'settings' | 'audit' | 'executed' | 'docs'>('health')
 const sidebarCollapsed = ref(false)
 const insightsCollapsed = ref(false)
 const detailFullscreenOpen = ref(false)
 const failedGroupBy = ref<'job' | 'exception' | 'queue' | 'date'>('job')
-const search = ref('')
 const retryAfter = ref(90)
 const autoRefresh = ref(false)
 const refreshSeconds = ref(10)
@@ -78,6 +95,12 @@ const queueAudit = ref<LaravelQueueAuditItem[]>([])
 const expandedAuditEntryId = ref<number | null>(null)
 const opsSettingsLoaded = ref(false)
 const savingOpsSettings = ref(false)
+
+const failedJobAlertLoaded = ref(false)
+const failedJobAlertSaved = ref(false)
+const failedJobAlertTesting = ref(false)
+const failedJobAlertTestResult = ref<'ok' | 'error' | null>(null)
+const failedJobAlertConfig = ref({ enabled: false, poll_interval_min: 5, queues_filter: '', last_seen_id: 0 })
 const featureFlags = ref<LaravelQueueFeatureFlags>({
   retry: true,
   delete: true,
@@ -135,21 +158,37 @@ const isRedis = computed(() => activeConn.value?.driver === 'redis')
 const isSql = computed(() => activeConn.value != null && !isNonSqlDriver(activeConn.value.driver))
 // When in SQL-only mode, the user picks a Redis conn just for the retry-push step
 const retryRedisConnId = ref<number | null>(null)
-const filteredJobs = computed(() => {
+const stateFilteredJobs = computed(() => {
+  if (activeState.value === 'all') return jobs.value
+  return jobs.value.filter((job) => job.state === activeState.value)
+})
+const { search, filtered: filteredJobs } = useListFilter(stateFilteredJobs, (job, query) => [
+  job.uuid,
+  job.display_name,
+  job.command_name,
+  job.job,
+  job.raw,
+].some(value => String(value || '').toLowerCase().includes(query)))
+const filteredActiveJobs = computed(() => {
   const query = search.value.trim().toLowerCase()
-  return jobs.value.filter((job) => {
-    if (activeState.value !== 'all' && job.state !== activeState.value) return false
+  return activeJobs.value.filter((job) => {
     if (!query) return true
     return [
       job.uuid,
       job.display_name,
       job.command_name,
       job.job,
+      job.queue,
       job.raw,
     ].some(value => String(value || '').toLowerCase().includes(query))
   })
 })
-const selectedJob = computed(() => jobs.value.find(job => job.id === selectedJobId.value) ?? filteredJobs.value[0] ?? null)
+const staleActiveCount = computed(() => activeJobs.value.filter(job => job.stale).length)
+const selectedJob = computed(() => {
+  const pool = activeState.value === 'active' ? activeJobs.value : jobs.value
+  const visible = activeState.value === 'active' ? filteredActiveJobs.value : filteredJobs.value
+  return pool.find(job => job.id === selectedJobId.value) ?? visible[0] ?? null
+})
 const filteredFailedJobs = computed(() => {
   const query = search.value.trim().toLowerCase()
   return failedJobs.value.filter((job) => {
@@ -165,6 +204,19 @@ const filteredFailedJobs = computed(() => {
 })
 const selectedFailedJob = computed(() => failedJobs.value.find(job => job.id === selectedFailedJobId.value) ?? filteredFailedJobs.value[0] ?? null)
 const selectedSummary = computed(() => queues.value.find(queue => queue.name === selectedQueue.value) ?? null)
+// True per-state totals from the queue summary (LLEN/ZCARD), independent of the
+// capped batch currently loaded into the table.
+const jobsTotal = computed(() => {
+  const s = selectedSummary.value
+  return s ? s.ready + s.delayed + s.reserved : jobs.value.length
+})
+const hasMoreJobs = computed(() => {
+  const s = selectedSummary.value
+  if (!s) return false
+  // Each state is paged with the same offset window, so more remain whenever any
+  // state still has rows beyond what's been loaded.
+  return stateCount('ready') < s.ready || stateCount('delayed') < s.delayed || stateCount('reserved') < s.reserved
+})
 const detailFullscreenTitle = computed(() => {
   if (activeState.value === 'failed' && selectedFailedJob.value) {
     return selectedFailedJob.value.payload?.displayName || selectedFailedJob.value.payload?.job || 'Failed job'
@@ -312,12 +364,12 @@ onMounted(async () => {
   if (isRedis.value) {
     failedConnId.value = sqlConnections.value[0]?.id ?? null
     await loadOpsSettings()
-    await Promise.all([loadQueues(), loadHorizon(), loadQuarantine(), loadQueueAudit()])
+    await Promise.all([loadQueues(), loadHorizon(), loadQuarantine(), loadQueueAudit(), loadFailedJobAlert()])
   } else if (isSql.value) {
     failedConnId.value = props.activeConnId
     activeState.value = 'failed'
     await loadOpsSettings()
-    await Promise.all([loadFailedJobs(), loadQuarantine(), loadQueueAudit()])
+    await Promise.all([loadFailedJobs(), loadQuarantine(), loadQueueAudit(), loadFailedJobAlert()])
   }
 })
 
@@ -340,15 +392,16 @@ watch(() => props.activeConnId, async () => {
   selectedFailedJobIds.value = new Set()
   queues.value = []
   jobs.value = []
+  activeJobs.value = []
   failedJobs.value = []
   if (isRedis.value) {
     await loadOpsSettings()
-    await Promise.all([loadQueues(), loadHorizon(), loadQuarantine(), loadQueueAudit()])
+    await Promise.all([loadQueues(), loadHorizon(), loadQuarantine(), loadQueueAudit(), loadFailedJobAlert()])
   } else if (isSql.value) {
     failedConnId.value = props.activeConnId
     activeState.value = 'failed'
     await loadOpsSettings()
-    await Promise.all([loadFailedJobs(), loadQuarantine(), loadQueueAudit()])
+    await Promise.all([loadFailedJobs(), loadQuarantine(), loadQueueAudit(), loadFailedJobAlert()])
   }
 })
 
@@ -407,9 +460,11 @@ async function loadJobs() {
       queue: selectedQueue.value,
       db: selectedDb.value,
       prefix: prefix.value,
-      limit: 100,
+      limit: JOBS_PAGE_SIZE,
+      offset: 0,
     })
     jobs.value = data.jobs
+    jobsOffset.value = 0
     selectedJobId.value = filteredJobs.value[0]?.id ?? ''
     selectedJobIds.value = new Set([...selectedJobIds.value].filter(id => jobs.value.some(job => job.id === id)))
     recordTimelineSample()
@@ -420,6 +475,98 @@ async function loadJobs() {
   }
 }
 
+async function loadMoreJobs() {
+  if (!activeConn.value || !isRedis.value || !selectedQueue.value || loadingMoreJobs.value) return
+  loadingMoreJobs.value = true
+  try {
+    const nextOffset = jobsOffset.value + JOBS_PAGE_SIZE
+    const data = await fetchJobs(activeConn.value.id, {
+      queue: selectedQueue.value,
+      db: selectedDb.value,
+      prefix: prefix.value,
+      limit: JOBS_PAGE_SIZE,
+      offset: nextOffset,
+    })
+    const existing = new Set(jobs.value.map(job => job.id))
+    jobs.value = [...jobs.value, ...data.jobs.filter(job => !existing.has(job.id))]
+    jobsOffset.value = nextOffset
+    recordTimelineSample()
+  } catch (err) {
+    toast.error(errorMessage(err, 'Failed to load more jobs'))
+  } finally {
+    loadingMoreJobs.value = false
+  }
+}
+
+async function loadActiveJobs() {
+  if (!activeConn.value || !isRedis.value) return
+  loadingActive.value = true
+  try {
+    const data = await fetchActiveJobs(activeConn.value.id, {
+      db: selectedDb.value,
+      prefix: prefix.value,
+      limit: 200,
+    })
+    activeJobs.value = data.jobs
+    activeHorizon.value = data.horizon
+    if (!activeJobs.value.some(job => job.id === selectedJobId.value)) {
+      selectedJobId.value = filteredActiveJobs.value[0]?.id ?? ''
+    }
+  } catch (err) {
+    toast.error(errorMessage(err, 'Failed to load active jobs'))
+  } finally {
+    loadingActive.value = false
+  }
+}
+
+function formatExpires(job: LaravelActiveJob) {
+  if (!job.score) return '-'
+  const seconds = Math.abs(job.expires_in_seconds)
+  const label = seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : `${Math.floor(seconds / 3600)}h`
+  return job.stale ? `overdue ${label}` : `${label} left`
+}
+
+function formatRunningFor(job: LaravelActiveJob) {
+  if (!job.running_for_seconds || job.running_for_seconds < 0) return ''
+  const seconds = job.running_for_seconds
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
+  return `${Math.floor(seconds / 3600)}h`
+}
+
+async function releaseStale(job: LaravelActiveJob) {
+  if (!activeConn.value) return
+  const name = job.display_name || job.command_name || job.job || job.id
+  const ok = await confirmAction('retry', `Release stale job "${name}" back to "${job.queue}"? It will be requeued for reprocessing.`, 'Release Stale Job')
+  if (!ok) return
+  try {
+    await releaseStaleJob(activeConn.value.id, { queue: job.queue, prefix: prefix.value, db: selectedDb.value, raw: job.raw })
+    toast.success('Stale job released back to the queue')
+    await Promise.all([loadActiveJobs(), loadQueues()])
+  } catch (err) {
+    toast.error(errorMessage(err, 'Failed to release stale job'))
+  }
+}
+
+async function releaseAllStale() {
+  if (!activeConn.value) return
+  const stale = activeJobs.value.filter(job => job.stale)
+  if (!stale.length) return
+  const ok = await confirmAction('retry', `Release ${stale.length} stale job${stale.length === 1 ? '' : 's'} back to their queues for reprocessing?`, 'Release All Stale Jobs')
+  if (!ok) return
+  let released = 0
+  for (const job of stale) {
+    try {
+      await releaseStaleJob(activeConn.value.id, { queue: job.queue, prefix: prefix.value, db: selectedDb.value, raw: job.raw })
+      released += 1
+    } catch {
+      // Skip jobs that a worker may have just finished or re-reserved.
+    }
+  }
+  toast.success(`Released ${released} of ${stale.length} stale job${stale.length === 1 ? '' : 's'}`)
+  await Promise.all([loadActiveJobs(), loadQueues()])
+}
+
 async function loadHorizon() {
   if (!activeConn.value || !isRedis.value) return
   try {
@@ -427,6 +574,27 @@ async function loadHorizon() {
   } catch {
     horizon.value = null
   }
+}
+
+async function loadHorizonJobs() {
+  if (!activeConn.value || !isRedis.value) return
+  loadingHorizonJobs.value = true
+  try {
+    horizonJobs.value = await fetchHorizonJobs(activeConn.value.id, { db: selectedDb.value, limit: HORIZON_JOBS_PAGE_SIZE })
+  } catch {
+    horizonJobs.value = null
+  } finally {
+    loadingHorizonJobs.value = false
+  }
+}
+
+function formatRuntime(seconds?: number): string {
+  if (!seconds || seconds <= 0) return '-'
+  if (seconds < 1) return `${Math.round(seconds * 1000)}ms`
+  if (seconds < 60) return `${seconds.toFixed(2)}s`
+  const m = Math.floor(seconds / 60)
+  const s = Math.round(seconds % 60)
+  return `${m}m ${s}s`
 }
 
 async function loadFailedJobs() {
@@ -826,6 +994,44 @@ async function confirmAction(action: 'retry' | 'delete' | 'clear' | 'editedRepla
   return featureFlags.value.requireConfirm ? confirm(message, title) : true
 }
 
+async function loadFailedJobAlert() {
+  if (!failedConnId.value) return
+  failedJobAlertLoaded.value = false
+  try {
+    const { data } = await fetchFailedJobAlertConfig(failedConnId.value)
+    failedJobAlertConfig.value = { ...failedJobAlertConfig.value, ...data }
+  } catch {}
+  failedJobAlertLoaded.value = true
+}
+
+async function saveFailedJobAlert() {
+  if (!failedConnId.value) return
+  try {
+    const { data } = await saveFailedJobAlertConfig(failedConnId.value, failedJobAlertConfig.value)
+    failedJobAlertConfig.value = { ...failedJobAlertConfig.value, ...data }
+    failedJobAlertSaved.value = true
+    setTimeout(() => { failedJobAlertSaved.value = false }, 2000)
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to save alert config')
+  }
+}
+
+async function testFailedJobAlert() {
+  if (!failedConnId.value || failedJobAlertTesting.value) return
+  failedJobAlertTesting.value = true
+  failedJobAlertTestResult.value = null
+  try {
+    await testFailedJobAlertConfig(failedConnId.value)
+    failedJobAlertTestResult.value = 'ok'
+  } catch (e: any) {
+    failedJobAlertTestResult.value = 'error'
+    toast.error(e?.response?.data?.error || 'Test alert failed')
+  } finally {
+    failedJobAlertTesting.value = false
+    setTimeout(() => { failedJobAlertTestResult.value = null }, 4000)
+  }
+}
+
 async function loadOpsSettings() {
   if (!activeConn.value) return
   opsSettingsLoaded.value = false
@@ -980,7 +1186,7 @@ async function exportVisibleJobs() {
     prefix: prefix.value,
     queue: selectedQueue.value,
     state: activeState.value,
-    jobs: activeState.value === 'failed' ? filteredFailedJobs.value : filteredJobs.value,
+    jobs: activeState.value === 'failed' ? filteredFailedJobs.value : activeState.value === 'active' ? filteredActiveJobs.value : filteredJobs.value,
   }
   await exportJson(`laravel-queue-${selectedQueue.value}-${activeState.value}.json`, payload)
 }
@@ -1158,6 +1364,9 @@ async function retrySelectedFailedJob(job: LaravelFailedJob | null, deleteAfter:
     return
   }
   const targetQueue = queueOverride.trim() || job.queue || selectedQueue.value
+  if (!job.queue && !queueOverride.trim()) {
+    toast.info(`Job has no queue recorded — retrying into "${targetQueue}". Set the correct queue in the sidebar first if needed.`)
+  }
   const ok = await confirmAction(action, `Retry failed job #${job.id} into "${targetQueue}"?`, 'Retry Failed Job')
   if (!ok) return
   try {
@@ -1247,9 +1456,32 @@ async function bulkDeleteFailed() {
   }
 }
 
+async function markAllAsSeen() {
+  if (!failedConnId.value) return
+  try {
+    const { data } = await markFailedJobsAsSeen(failedConnId.value)
+    failedJobAlertConfig.value = { ...failedJobAlertConfig.value, ...data }
+    toast.success(`Marked as seen up to ID ${data.last_seen_id} — future alerts only for new jobs`)
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to mark as seen')
+  }
+}
+
+async function bulkSendAlerts() {
+  if (!failedConnId.value || selectedFailedJobs.value.length === 0) return
+  try {
+    const ids = selectedFailedJobs.value.map(j => j.id)
+    const { data } = await sendSelectedFailedJobAlerts(failedConnId.value, ids)
+    toast.success(`Alert sent for ${data.sent} failed job${data.sent === 1 ? '' : 's'}`)
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to send alerts')
+  }
+}
+
 async function refreshCurrentView() {
   await loadQueues()
   await loadHorizon()
+  if (activeState.value === 'active') await loadActiveJobs()
   if (activeState.value === 'failed' && failedConnId.value) await loadFailedJobs()
 }
 
@@ -1498,7 +1730,9 @@ function errorMessage(err: unknown, fallback: string) {
               <button class="lq-insight-tab" :class="{ active: insightTab === 'quarantine' }" @click="insightTab = 'quarantine'; insightsCollapsed = false">Quarantine</button>
               <button class="lq-insight-tab" :class="{ active: insightTab === 'controls' }" @click="insightTab = 'controls'; insightsCollapsed = false">Controls</button>
               <button class="lq-insight-tab" :class="{ active: insightTab === 'settings' }" @click="insightTab = 'settings'; insightsCollapsed = false">Settings</button>
+              <button class="lq-insight-tab" :class="{ active: insightTab === 'executed' }" @click="insightTab = 'executed'; insightsCollapsed = false; loadHorizonJobs()">Executed</button>
               <button class="lq-insight-tab" :class="{ active: insightTab === 'audit' }" @click="insightTab = 'audit'; insightsCollapsed = false; loadQueueAudit()">Audit</button>
+              <button class="lq-insight-tab" :class="{ active: insightTab === 'docs' }" @click="insightTab = 'docs'; insightsCollapsed = false">Docs</button>
             </div>
             <button class="lq-insights-toggle" :title="insightsCollapsed ? 'Show insights' : 'Hide insights'" @click="insightsCollapsed = !insightsCollapsed">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1604,6 +1838,47 @@ function errorMessage(err: unknown, fallback: string) {
           </div>
 
           <div v-if="insightTab === 'settings'" class="lq-settings">
+
+            <!-- Failed Job Alerts -->
+            <div class="lq-settings-card lq-settings-card--alert">
+              <div class="lq-insight__title">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                Failed Job Alerts
+              </div>
+              <div v-if="!failedJobAlertLoaded" class="lq-muted">Loading…</div>
+              <template v-else>
+                <label class="lq-alert-toggle">
+                  <input type="checkbox" v-model="failedJobAlertConfig.enabled" @change="saveFailedJobAlert" />
+                  <span>Send alert via configured channels when a new failed job appears</span>
+                </label>
+                <template v-if="failedJobAlertConfig.enabled">
+                  <label>Poll every
+                    <input v-model.number="failedJobAlertConfig.poll_interval_min" class="base-input lq-short-input" type="number" min="1" max="60" @change="saveFailedJobAlert" />
+                    minutes
+                  </label>
+                  <label>
+                    Filter queues <span class="lq-muted">(optional, comma-separated)</span>
+                    <input v-model="failedJobAlertConfig.queues_filter" class="base-input" type="text" placeholder="default,critical" @blur="saveFailedJobAlert" />
+                  </label>
+                  <div class="lq-alert-notice">
+                    Alerts fire via <strong>Admin → Alert Settings</strong> channels. Make sure at least one channel is enabled and saved there.
+                  </div>
+                  <div class="lq-alert-test-row">
+                    <button class="base-btn base-btn--sm" :disabled="failedJobAlertTesting" @click="testFailedJobAlert">
+                      {{ failedJobAlertTesting ? 'Sending…' : 'Send Test Alert' }}
+                    </button>
+                    <span v-if="failedJobAlertTestResult === 'ok'" class="lq-alert-saved">✓ Test sent to all channels</span>
+                    <span v-else-if="failedJobAlertTestResult === 'error'" class="lq-alert-error">✗ Failed — check channel config</span>
+                  </div>
+                </template>
+                <div class="lq-alert-test-row">
+                  <button class="base-btn base-btn--sm base-btn--ghost" @click="markAllAsSeen">Mark all as seen</button>
+                  <span class="lq-muted" style="font-size:11px">Stops existing jobs from triggering alerts. Last seen ID: {{ failedJobAlertConfig.last_seen_id }}</span>
+                </div>
+                <div v-if="failedJobAlertSaved" class="lq-alert-saved">✓ Saved</div>
+              </template>
+            </div>
+
             <div class="lq-settings-card">
               <div class="lq-insight__title">Feature Flags</div>
               <label><input v-model="featureFlags.readOnly" type="checkbox" /> Read-only mode</label>
@@ -1648,6 +1923,148 @@ function errorMessage(err: unknown, fallback: string) {
               </Transition>
             </div>
           </div>
+
+          <div v-if="insightTab === 'executed'" class="lq-executed">
+            <div class="lq-executed__bar">
+              <div class="lq-executed__hint">
+                Recently executed jobs recorded by Horizon (<code>horizon:recent_jobs</code>). Succeeded jobs only
+                appear here when Horizon is running — a plain <code>queue:work</code> worker deletes jobs on success.
+              </div>
+              <button class="base-btn base-btn--ghost base-btn--sm" :disabled="loadingHorizonJobs" @click="loadHorizonJobs">
+                {{ loadingHorizonJobs ? 'Loading…' : 'Refresh' }}
+              </button>
+            </div>
+
+            <div v-if="!horizonJobs && !loadingHorizonJobs" class="lq-muted">Open this tab or hit Refresh to load executed jobs.</div>
+            <div v-else-if="horizonJobs && !horizonJobs.detected" class="lq-muted">
+              Horizon not detected on this connection / DB. No executed-job history is available.
+            </div>
+            <template v-else-if="horizonJobs">
+              <div class="lq-executed__stats">
+                <div class="lq-stat">
+                  <span class="lq-stat__value">{{ horizonJobs.total.toLocaleString() }}</span>
+                  <span class="lq-stat__label">Retained by Horizon</span>
+                </div>
+                <div class="lq-stat is-success">
+                  <span class="lq-stat__value">{{ horizonJobs.stats.completed }}</span>
+                  <span class="lq-stat__label">Completed (window)</span>
+                </div>
+                <div class="lq-stat is-danger">
+                  <span class="lq-stat__value">{{ horizonJobs.stats.failed }}</span>
+                  <span class="lq-stat__label">Failed (window)</span>
+                </div>
+                <div class="lq-stat">
+                  <span class="lq-stat__value">{{ formatRuntime(horizonJobs.stats.avg_runtime) }}</span>
+                  <span class="lq-stat__label">Avg runtime</span>
+                </div>
+                <div class="lq-stat">
+                  <span class="lq-stat__value">{{ formatRuntime(horizonJobs.stats.max_runtime) }}</span>
+                  <span class="lq-stat__label">Max runtime</span>
+                </div>
+              </div>
+
+              <div v-if="horizonJobs.jobs.length === 0" class="lq-muted">No executed jobs in the retained window.</div>
+              <table v-else class="lq-executed__table">
+                <thead>
+                  <tr><th>Status</th><th>Job</th><th>Queue</th><th>Runtime</th><th>Finished</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="job in horizonJobs.jobs" :key="job.id" :title="job.exception || ''">
+                    <td><span class="lq-state" :data-state="job.status === 'completed' ? 'ready' : (job.status === 'failed' ? 'failed' : 'reserved')">{{ job.status || 'unknown' }}</span></td>
+                    <td class="lq-executed__name">{{ job.name || '-' }}</td>
+                    <td>{{ job.queue || '-' }}</td>
+                    <td>{{ formatRuntime(job.runtime) }}</td>
+                    <td>{{ formatDate(job.completed_at || job.failed_at || job.reserved_at || '') || '-' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </template>
+          </div>
+
+          <div v-if="insightTab === 'docs'" class="lq-docs">
+            <p class="lq-docs__intro">
+              This screen reads a Laravel queue straight from Redis. Below is how to read the states,
+              what the columns mean, and how to tell whether jobs are actually being worked.
+            </p>
+
+            <div class="lq-docs__section">
+              <h4 class="lq-docs__h">Job states</h4>
+              <p>Every job lives in exactly one state. The counters at the top and the state tabs map to these:</p>
+              <table class="lq-docs__table">
+                <thead>
+                  <tr><th>State</th><th>Where it lives in Redis</th><th>Meaning</th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><span class="lq-state" data-state="ready">READY</span></td>
+                    <td>The queue <strong>list</strong> (<code>queues:&lt;name&gt;</code>)</td>
+                    <td>Dispatched and waiting to be picked up. Available <em>now</em>; the next free worker pops it off.</td>
+                  </tr>
+                  <tr>
+                    <td><span class="lq-state" data-state="delayed">DELAYED</span></td>
+                    <td>Sorted set <code>:delayed</code>, score = run-at time</td>
+                    <td>Scheduled for the future (e.g. <code>-&gt;delay(...)</code>). Becomes <em>ready</em> when its time arrives.</td>
+                  </tr>
+                  <tr>
+                    <td><span class="lq-state" data-state="reserved">RESERVED</span></td>
+                    <td>Sorted set <code>:reserved</code>, score = retry deadline</td>
+                    <td>A worker has pulled it and is processing it right now. Should be brief.</td>
+                  </tr>
+                  <tr>
+                    <td><span class="lq-state" data-state="failed">FAILED</span></td>
+                    <td><code>failed_jobs</code> table (SQL connection)</td>
+                    <td>Ran and threw after exhausting retries. Loaded separately via <strong>Load Failed</strong>.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="lq-docs__section">
+              <h4 class="lq-docs__h">Reading the columns</h4>
+              <ul class="lq-docs__list">
+                <li><strong>Attempts</strong> — how many times a worker has tried this job. <code>0</code> on every row means nothing has ever picked them up.</li>
+                <li><strong>Available At</strong> — when the job becomes eligible to run. Only <em>delayed</em> and <em>reserved</em> jobs carry a timestamp (their sorted-set score). <strong>Ready jobs show <code>-</code> because they are already available</strong> — there is nothing to wait for. <em>Available</em> and <em>Age</em> in the detail panel are blank for the same reason.</li>
+                <li><strong>Max Tries / Timeout / Backoff</strong> — read from the job payload; how Laravel will retry it.</li>
+              </ul>
+            </div>
+
+            <div class="lq-docs__section">
+              <h4 class="lq-docs__h">Is the queue actually being worked?</h4>
+              <p>A job reaches Redis in two steps: the app <strong>dispatches</strong> it (producer) and a <strong>worker</strong> pulls it off and runs it (consumer). A healthy queue shows movement between Ready → Reserved → done.</p>
+              <p>Warning signs that <strong>nothing is consuming</strong> the queue:</p>
+              <ul class="lq-docs__list">
+                <li>A large and growing <strong>Ready</strong> count with <strong>Reserved 0 / Active 0</strong>.</li>
+                <li><strong>Attempts = 0</strong> on every job — they have never been touched.</li>
+                <li><strong>Horizon: not detected</strong> — the worker supervisor isn't visible.</li>
+              </ul>
+              <p>The producer is fine in that case (that's why the list grows); the consumer is the problem.</p>
+            </div>
+
+            <div class="lq-docs__section">
+              <h4 class="lq-docs__h">Common causes &amp; what to check on the server</h4>
+              <ul class="lq-docs__list">
+                <li><strong>No worker running</strong> — Horizon / <code>queue:work</code> crashed, was stopped, or the supervisor that keeps it alive died.</li>
+                <li><strong>Worker on the wrong queue</strong> — it's listening to <code>default</code> but these jobs are on <code>subscription</code>. It looks "running" but ignores this list.</li>
+                <li><strong>Wrong connection / DB / prefix</strong> — the worker points at a different Redis connection, DB, or queue prefix than where the jobs land.</li>
+              </ul>
+              <p>This tool only sees Redis, so confirm the cause on the box:</p>
+              <pre class="lq-docs__code">php artisan horizon:status            # if using Horizon
+ps aux | grep -E 'horizon|queue:work' # is a worker process alive?
+sudo supervisorctl status             # did the supervisor crash-loop?
+tail -n 100 storage/logs/laravel.log  # why the worker dies on boot
+# check the 'queue' list in config/horizon.php (or the --queue= flag)</pre>
+            </div>
+
+            <div class="lq-docs__section">
+              <h4 class="lq-docs__h">Note on Failed</h4>
+              <p>A non-zero <strong>Failed</strong> count means jobs <em>did</em> run and error at some earlier point (the list is capped, e.g. at 100). If Ready is piling up but Failed is non-zero, the queue used to be processed and something <strong>changed or stopped recently</strong> — often a deploy or a crashed worker.</p>
+            </div>
+
+            <p class="lq-docs__intro">
+              <strong>Left panel:</strong> pick the <em>Redis DB</em> and <em>Queue Prefix</em> that match your worker's connection,
+              then <em>Refresh</em>. The <strong>Controls</strong> tab can pause/resume Horizon once a Laravel agent is configured.
+            </p>
+          </div>
             </div>
           </Transition>
         </section>
@@ -1670,15 +2087,19 @@ function errorMessage(err: unknown, fallback: string) {
 
         <div class="lq-tabs">
           <template v-if="isRedis">
-            <button class="lq-tab" :class="{ active: activeState === 'all' }" @click="activeState = 'all'">All <span>{{ jobs.length }}</span></button>
-            <button class="lq-tab" :class="{ active: activeState === 'ready' }" @click="activeState = 'ready'">Ready <span>{{ stateCount('ready') }}</span></button>
-            <button class="lq-tab" :class="{ active: activeState === 'delayed' }" @click="activeState = 'delayed'">Delayed <span>{{ stateCount('delayed') }}</span></button>
-            <button class="lq-tab" :class="{ active: activeState === 'reserved' }" @click="activeState = 'reserved'">Reserved <span>{{ stateCount('reserved') }}</span></button>
+            <button class="lq-tab" :class="{ active: activeState === 'all' }" @click="activeState = 'all'">All <span>{{ jobsTotal }}</span></button>
+            <button class="lq-tab" :class="{ active: activeState === 'ready' }" @click="activeState = 'ready'">Ready <span>{{ selectedSummary?.ready ?? stateCount('ready') }}</span></button>
+            <button class="lq-tab" :class="{ active: activeState === 'delayed' }" @click="activeState = 'delayed'">Delayed <span>{{ selectedSummary?.delayed ?? stateCount('delayed') }}</span></button>
+            <button class="lq-tab" :class="{ active: activeState === 'reserved' }" @click="activeState = 'reserved'">Reserved <span>{{ selectedSummary?.reserved ?? stateCount('reserved') }}</span></button>
+            <button class="lq-tab" :class="{ active: activeState === 'active' }" @click="activeState = 'active'; loadActiveJobs()">
+              Active <span>{{ activeJobs.length }}</span>
+              <span v-if="staleActiveCount" class="lq-tab-stale">{{ staleActiveCount }} stale</span>
+            </button>
           </template>
           <button class="lq-tab" :class="{ active: activeState === 'failed' }" @click="activeState = 'failed'; loadFailedJobs()">Failed <span>{{ failedJobs.length }}</span></button>
         </div>
 
-        <div v-if="isRedis && activeState !== 'failed' && selectedJobIds.size" class="lq-bulkbar">
+        <div v-if="isRedis && activeState !== 'failed' && activeState !== 'active' && selectedJobIds.size" class="lq-bulkbar">
           <span>{{ selectedJobIds.size }} selected</span>
           <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!canAction('retry')" @click="bulkRequeueJobs">Requeue selected</button>
           <button class="base-btn base-btn--danger base-btn--sm" :disabled="!canAction('delete')" @click="bulkDeleteJobs">Delete selected</button>
@@ -1692,16 +2113,64 @@ function errorMessage(err: unknown, fallback: string) {
           <button class="base-btn base-btn--danger base-btn--sm" :disabled="!canAction('delete')" @click="bulkDeleteFailed">Delete failed</button>
           <button class="base-btn base-btn--ghost base-btn--sm" @click="quarantineSelectedFailed">Quarantine</button>
           <button class="base-btn base-btn--ghost base-btn--sm" @click="exportSelectedJobs">Export selected</button>
+          <button class="base-btn base-btn--ghost base-btn--sm" @click="bulkSendAlerts">Send Alert</button>
         </div>
 
         <div class="lq-exportbar">
-          <button class="base-btn base-btn--ghost base-btn--sm" :disabled="activeState === 'failed' ? !filteredFailedJobs.length : !filteredJobs.length" @click="exportVisibleJobs">
+          <button class="base-btn base-btn--ghost base-btn--sm" :disabled="activeState === 'failed' ? !filteredFailedJobs.length : activeState === 'active' ? !filteredActiveJobs.length : !filteredJobs.length" @click="exportVisibleJobs">
             Export visible JSON
           </button>
         </div>
 
         <div class="lq-content">
-          <section v-if="isRedis && activeState !== 'failed'" class="lq-jobs">
+          <section v-if="isRedis && activeState === 'active'" class="lq-jobs">
+            <div class="lq-active-bar">
+              <span>{{ filteredActiveJobs.length }} in-flight job{{ filteredActiveJobs.length === 1 ? '' : 's' }} across all queues</span>
+              <span v-if="staleActiveCount" class="lq-state lq-state--stuck">{{ staleActiveCount }} stale (deadline passed)</span>
+              <span v-if="activeHorizon" class="lq-health">Horizon detected</span>
+              <div class="lq-active-actions">
+                <button v-if="staleActiveCount" class="base-btn base-btn--danger base-btn--sm" :disabled="!canAction('retry')" @click="releaseAllStale">Release all stale</button>
+                <button class="base-btn base-btn--ghost base-btn--sm" :disabled="loadingActive" @click="loadActiveJobs">Refresh</button>
+              </div>
+            </div>
+            <table class="lq-table">
+              <thead>
+                <tr>
+                  <th>Queue</th>
+                  <th>Job</th>
+                  <th>Attempts</th>
+                  <th>Running for / Deadline</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="job in filteredActiveJobs"
+                  :key="job.id"
+                  :class="{ 'is-active': selectedJob?.id === job.id, 'is-stuck': job.stale }"
+                  @click="selectedJobId = job.id"
+                >
+                  <td>{{ job.queue }}</td>
+                  <td>
+                    <div class="lq-job-name">{{ job.horizon_name || job.display_name || job.command_name || job.job || 'Laravel job' }}</div>
+                    <div class="lq-job-sub">{{ job.uuid || job.id }}</div>
+                  </td>
+                  <td>{{ job.attempts }}</td>
+                  <td>
+                    <span :class="{ 'lq-state lq-state--stuck': job.stale }">{{ formatExpires(job) }}</span>
+                    <div v-if="formatRunningFor(job)" class="lq-job-sub">running {{ formatRunningFor(job) }}<span v-if="job.horizon_status"> · {{ job.horizon_status }}</span></div>
+                    <div v-else class="lq-job-sub">{{ formatDate(job.deadline_at) }}</div>
+                  </td>
+                  <td @click.stop>
+                    <button v-if="job.stale" class="base-btn base-btn--ghost base-btn--sm" :disabled="!canAction('retry')" @click="releaseStale(job)">Release</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-if="!loadingActive && filteredActiveJobs.length === 0" class="lq-empty-inline">No jobs are currently being processed.</div>
+          </section>
+
+          <section v-else-if="isRedis && activeState !== 'failed'" class="lq-jobs">
             <table class="lq-table">
               <thead>
                 <tr>
@@ -1738,6 +2207,17 @@ function errorMessage(err: unknown, fallback: string) {
               </tbody>
             </table>
             <div v-if="!loadingJobs && filteredJobs.length === 0" class="lq-empty-inline">No jobs in this state.</div>
+            <div v-if="jobs.length > 0" class="lq-loadmore">
+              <span class="lq-loadmore__count">Showing {{ jobs.length }} of {{ jobsTotal }} jobs</span>
+              <button
+                v-if="hasMoreJobs"
+                class="base-btn base-btn--ghost base-btn--sm"
+                :disabled="loadingMoreJobs"
+                @click="loadMoreJobs"
+              >
+                {{ loadingMoreJobs ? 'Loading…' : 'Load more' }}
+              </button>
+            </div>
           </section>
 
           <section v-else class="lq-jobs">
@@ -2197,7 +2677,7 @@ function errorMessage(err: unknown, fallback: string) {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
   background: var(--bg-body);
 }
 
@@ -2545,6 +3025,54 @@ function errorMessage(err: unknown, fallback: string) {
   grid-template-columns: minmax(130px, auto) minmax(0, 1fr);
 }
 
+.lq-settings-card--alert {
+  border-color: rgba(251, 191, 36, 0.25);
+  background: rgba(251, 191, 36, 0.03);
+}
+
+.lq-alert-toggle {
+  display: flex !important;
+  grid-template-columns: unset !important;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-primary) !important;
+}
+
+.lq-alert-notice {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 6px 8px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.lq-alert-saved {
+  font-size: 11px;
+  color: #22c55e;
+  font-weight: 600;
+}
+
+.lq-alert-error {
+  font-size: 11px;
+  color: #ef4444;
+  font-weight: 600;
+}
+
+.lq-alert-test-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.lq-short-input {
+  width: 60px !important;
+  display: inline-block;
+  text-align: center;
+}
+
 .lq-control-buttons {
   display: flex;
   flex-wrap: wrap;
@@ -2754,11 +3282,39 @@ function errorMessage(err: unknown, fallback: string) {
   font-weight: 700;
 }
 
+.lq-tab-stale {
+  margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff !important;
+  background: var(--danger, #dc2626);
+}
+
+.lq-active-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+}
+
+.lq-active-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
 .lq-content {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
   gap: 14px;
-  min-height: 0;
+  min-height: 480px;
   flex: 1;
   padding: 14px;
   overflow: hidden;
@@ -2853,6 +3409,184 @@ function errorMessage(err: unknown, fallback: string) {
   background: var(--danger-bg);
 }
 
+.lq-state[data-state="failed"] { color: var(--danger); background: var(--danger-bg); }
+
+.lq-executed {
+  padding: 4px 2px 8px;
+}
+
+.lq-executed__bar {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.lq-executed__hint {
+  max-width: 720px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.lq-executed__hint code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.lq-executed__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.lq-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 120px;
+  padding: 10px 14px;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.2));
+  border-radius: 10px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.06));
+}
+
+.lq-stat__value {
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.lq-stat__label {
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.lq-stat.is-success .lq-stat__value { color: var(--success); }
+.lq-stat.is-danger .lq-stat__value { color: var(--danger); }
+
+.lq-executed__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.lq-executed__table th,
+.lq-executed__table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border, rgba(127, 127, 127, 0.16));
+  text-align: left;
+  vertical-align: middle;
+}
+
+.lq-executed__table th {
+  color: var(--text-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.lq-executed__name {
+  max-width: 380px;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lq-docs {
+  max-width: 880px;
+  padding: 4px 2px 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.lq-docs__intro {
+  margin: 0 0 14px;
+  color: var(--text-secondary);
+}
+
+.lq-docs__section {
+  margin: 0 0 18px;
+}
+
+.lq-docs__h {
+  margin: 0 0 8px;
+  color: var(--text-primary);
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+.lq-docs p {
+  margin: 0 0 8px;
+}
+
+.lq-docs__list {
+  margin: 0 0 8px;
+  padding-left: 18px;
+}
+
+.lq-docs__list li {
+  margin-bottom: 5px;
+}
+
+.lq-docs code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.lq-docs__code {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.2));
+  border-radius: 8px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.08));
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.lq-docs__table {
+  width: 100%;
+  margin: 4px 0 0;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.lq-docs__table th,
+.lq-docs__table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border, rgba(127, 127, 127, 0.18));
+  text-align: left;
+  vertical-align: top;
+}
+
+.lq-docs__table th {
+  color: var(--text-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.lq-docs__table td:first-child {
+  white-space: nowrap;
+}
+
 .lq-job-name {
   max-width: 420px;
   overflow: hidden;
@@ -2867,6 +3601,20 @@ function errorMessage(err: unknown, fallback: string) {
   padding: 24px;
   color: var(--text-muted);
   font-size: 13px;
+}
+
+.lq-loadmore {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.lq-loadmore__count {
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .lq-detail {
@@ -3126,15 +3874,30 @@ function errorMessage(err: unknown, fallback: string) {
   resize: none;
 }
 
+/* ── Tablet landscape / iPad Pro (≤1024px) ─────────────────────────────────── */
+@media (max-width: 1024px) {
+  .lq-view {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+
+  .lq-view.is-sidebar-collapsed {
+    grid-template-columns: 48px minmax(0, 1fr);
+  }
+
+  .lq-insight-grid,
+  .lq-groups,
+  .lq-ops-grid,
+  .lq-settings {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* ── Tablet / iPad portrait (≤1000px) ──────────────────────────────────────── */
 @media (max-width: 1000px) {
   .lq-view {
     display: flex;
     flex-direction: column;
     overflow: auto;
-  }
-
-  .lq-content {
-    grid-template-columns: 1fr;
   }
 
   .lq-view.is-sidebar-collapsed {
@@ -3144,9 +3907,17 @@ function errorMessage(err: unknown, fallback: string) {
   .lq-insight-grid,
   .lq-groups,
   .lq-ops-grid,
-  .lq-settings,
+  .lq-settings {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
   .lq-audit-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: 24px minmax(120px, 1fr);
+    align-items: start;
+  }
+
+  .lq-audit-row span:nth-child(n + 4) {
+    grid-column: 2;
   }
 
   .lq-sidebar {
@@ -3207,6 +3978,7 @@ function errorMessage(err: unknown, fallback: string) {
   }
 
   .lq-content {
+    grid-template-columns: 1fr;
     gap: 10px;
     padding: 10px;
     overflow: visible;
@@ -3219,7 +3991,7 @@ function errorMessage(err: unknown, fallback: string) {
   }
 
   .lq-table {
-    min-width: 720px;
+    min-width: 640px;
   }
 
   .lq-insight-tabs {
@@ -3238,15 +4010,6 @@ function errorMessage(err: unknown, fallback: string) {
 
   .lq-audit-list {
     max-height: 360px;
-  }
-
-  .lq-audit-row {
-    grid-template-columns: 24px minmax(120px, 1fr);
-    align-items: start;
-  }
-
-  .lq-audit-row span:nth-child(n + 4) {
-    grid-column: 2;
   }
 
   .lq-audit-detail {
@@ -3279,6 +4042,52 @@ function errorMessage(err: unknown, fallback: string) {
   }
 }
 
+/* ── Small tablet / large phone (≤768px) ───────────────────────────────────── */
+@media (max-width: 768px) {
+  .lq-insight-grid,
+  .lq-groups,
+  .lq-ops-grid,
+  .lq-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .lq-sidebar {
+    max-height: min(38vh, 300px);
+  }
+
+  .lq-table {
+    min-width: 520px;
+  }
+
+  .lq-alert-test-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .lq-toolbar__actions {
+    gap: 6px;
+  }
+
+  .lq-bulkbar {
+    gap: 6px;
+    padding: 6px 10px;
+  }
+
+  .lq-healthbar {
+    gap: 8px;
+  }
+
+  .lq-insight-body {
+    padding: 10px;
+  }
+
+  .lq-detail {
+    padding: 10px;
+  }
+}
+
+/* ── Mobile phone (≤640px) ──────────────────────────────────────────────────── */
 @media (max-width: 640px) {
   .lq-panel-header,
   .lq-toolbar,
@@ -3292,7 +4101,7 @@ function errorMessage(err: unknown, fallback: string) {
   }
 
   .lq-sidebar {
-    max-height: 42vh;
+    max-height: 36vh;
   }
 
   .lq-profile-row,
@@ -3379,6 +4188,73 @@ function errorMessage(err: unknown, fallback: string) {
 
   .lq-payload-editor--fullscreen {
     min-height: 52vh;
+  }
+
+  .lq-alert-test-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .lq-bulkbar .base-btn {
+    flex: 1 1 calc(50% - 8px);
+    justify-content: center;
+  }
+}
+
+/* ── Small phone (≤480px) ───────────────────────────────────────────────────── */
+@media (max-width: 480px) {
+  .lq-sidebar {
+    max-height: 30vh;
+  }
+
+  .lq-table {
+    min-width: 360px;
+  }
+
+  .lq-tabs {
+    padding: 0 8px;
+    gap: 0;
+  }
+
+  .lq-tab {
+    padding: 8px 10px;
+    font-size: 11px;
+  }
+
+  .lq-healthbar {
+    padding: 6px 10px;
+    gap: 6px;
+    font-size: 11px;
+  }
+
+  .lq-toolbar {
+    padding: 8px 10px;
+    gap: 6px;
+  }
+
+  .lq-bulkbar .base-btn {
+    flex: 1 1 calc(50% - 6px);
+    font-size: 11px;
+    padding: 5px 8px;
+    justify-content: center;
+  }
+
+  .lq-detail__head {
+    font-size: 12px;
+  }
+
+  .lq-settings-card {
+    padding: 8px;
+  }
+
+  .lq-insight {
+    padding: 8px;
+  }
+
+  .lq-content {
+    padding: 6px;
+    gap: 8px;
   }
 }
 </style>

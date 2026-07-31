@@ -4,7 +4,7 @@ import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
 import { useDatabases } from '@/composables/useDatabases'
 
-const { connections } = useConnections()
+const { activeConnections: connections } = useConnections()
 const { databases: dbsA, fetchDatabases: fetchA } = useDatabases()
 const { databases: dbsB, fetchDatabases: fetchB } = useDatabases()
 

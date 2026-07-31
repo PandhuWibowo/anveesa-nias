@@ -12,7 +12,7 @@ const emit = defineEmits<{
   (e: 'update:modelValue', id: number | null): void
 }>()
 
-const { connections } = useConnections()
+const { connections, activeConnections } = useConnections()
 const open = ref(false)
 const wrapRef = ref<HTMLElement | null>(null)
 
@@ -109,7 +109,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
     <div v-if="open" class="cp-dropdown">
       <div class="cp-list">
         <div
-          v-for="conn in connections"
+          v-for="conn in activeConnections"
           :key="conn.id"
           class="cp-option"
           :class="{ 'cp-option--active': conn.id === modelValue }"
@@ -130,8 +130,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
             <polyline points="20 6 9 17 4 12"/>
           </svg>
         </div>
-        <div v-if="!connections.length" class="cp-empty">
-          No connections configured
+        <div v-if="!activeConnections.length" class="cp-empty">
+          No active connections
         </div>
       </div>
       <div v-if="modelValue != null" class="cp-footer">

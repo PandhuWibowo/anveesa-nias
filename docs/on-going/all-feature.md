@@ -1,6 +1,6 @@
 # All Features — Anveesa Nias
 
-Dokumen ini merangkum seluruh fitur yang tersedia di Anveesa Nias, database studio open-source untuk tim.
+Dokumen ini merangkum seluruh fitur yang tersedia di Anveesa Nias, internal developer platform open-source untuk tim.
 
 ---
 
@@ -11,6 +11,7 @@ Dokumen ini merangkum seluruh fitur yang tersedia di Anveesa Nias, database stud
 - Support **SSH tunnel** untuk koneksi ke database di jaringan private
 - Folder/grup untuk mengorganisir koneksi
 - Test koneksi sebelum menyimpan
+- **Connection Templates** — simpan preset host/port/database sebagai bookmark tanpa kredensial; load template saat membuat koneksi baru untuk mengisi otomatis field infrastruktur
 
 ---
 
@@ -74,6 +75,11 @@ Dokumen ini merangkum seluruh fitur yang tersedia di Anveesa Nias, database stud
 - **Redis** — browser dan operasi key-value Redis (terpisah dari cache internal)
 - **Kafka** — browse topic, produksi dan konsumsi pesan
 - **Laravel Queue** — monitor dan kelola job queue Laravel
+- **Docker Hosts** — halaman khusus untuk daftar dan manajemen SSH host (add, edit, delete, test koneksi, lihat status reachability dan jumlah container)
+- **SFTP Hosts** — halaman khusus untuk daftar dan manajemen SSH host untuk file browsing; card per host dengan status SSH, tombol "Browse files →" ke halaman SFTP
+- **Docker** — manajemen container, image, volume, network, compose via SSH tunnel ke Docker daemon remote; exec terminal langsung dari browser
+- **Nginx** — manajemen konfigurasi nginx via SSH: edit config, toggle sites, tail/search log, inspect TLS certs, fleet health view; status koneksi SSH (Connect / Disconnect) per host
+- **Kubernetes** — manajemen read-only cluster Kubernetes (Alibaba ACK, Huawei CCE, atau kubeconfig standar): browse nodes, namespaces, pods, deployments, statefulsets, daemonsets, jobs, cronjobs, services, ingresses, configmaps, secrets (di-mask), pvcs, events; lihat YAML (describe), pod logs (snapshot + live follow), dan exec terminal interaktif ke pod. Koneksi via kubeconfig (dienkripsi AES). Permission: `kube.view`, `kube.manage`, `kube.exec` (high-risk)
 
 ---
 

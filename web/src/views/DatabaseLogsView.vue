@@ -3,6 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
 import { useAuth } from '@/composables/useAuth'
+import Pagination from '@/components/ui/Pagination.vue'
 
 defineOptions({ inheritAttrs: false })
 
@@ -583,6 +584,14 @@ function cloudAuditGoPage(offset: number) {
   loadCloudAuditLogs()
 }
 
+// cloudAuditPage is an offset (0-indexed); adapt to the 1-indexed page number the
+// shared <Pagination> UI expects, translating back to an offset on navigation.
+const cloudAuditPageNumber = computed(() => Math.floor(cloudAuditPage.value / cloudAuditLimit.value) + 1)
+const cloudAuditTotalPages = computed(() => Math.max(1, Math.ceil(cloudAuditTotal.value / cloudAuditLimit.value)))
+function cloudAuditGoToPageNumber(p: number) {
+  cloudAuditGoPage((p - 1) * cloudAuditLimit.value)
+}
+
 function cloudAuditApply() {
   cloudAuditPage.value = 0
   loadCloudAuditLogs()
@@ -930,19 +939,10 @@ function fmtLogTime(t: string): string {
           </div>
 
           <!-- Pagination -->
-          <div class="err-pager">
-            <span class="err-pager__info">
-              {{ errorTotal.toLocaleString() }} total · page {{ errorPage }} of {{ errorTotalPages }}
-              <span v-if="errorSource" class="err-pager__source">via {{ errorSource }}</span>
-            </span>
-            <div class="err-pager__btns">
-              <button class="err-pager__btn" :disabled="errorPage <= 1" @click="errorGoPage(1)">«</button>
-              <button class="err-pager__btn" :disabled="errorPage <= 1" @click="errorGoPage(errorPage - 1)">‹ Prev</button>
-              <span class="err-pager__cur">{{ errorPage }}</span>
-              <button class="err-pager__btn" :disabled="errorPage >= errorTotalPages" @click="errorGoPage(errorPage + 1)">Next ›</button>
-              <button class="err-pager__btn" :disabled="errorPage >= errorTotalPages" @click="errorGoPage(errorTotalPages)">»</button>
-            </div>
-          </div>
+          <Pagination
+            :page="errorPage" :total-pages="errorTotalPages" :total="errorTotal"
+            :item-label="errorSource ? `total · via ${errorSource}` : 'total'"
+            @update:page="errorGoPage" />
         </template>
       </div>
 
@@ -977,7 +977,7 @@ function fmtLogTime(t: string): string {
                   <input v-model="slowTo" type="date" class="err-date-input" @change="slowApply()" />
                 </div>
               </div>
-              <button class="dblogs-btn" @click="slowApply">
+              <button class="base-btn base-btn--primary" @click="slowApply">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                 Apply
               </button>
@@ -1002,7 +1002,7 @@ function fmtLogTime(t: string): string {
                   <option>DELETE</option><option>CREATE</option>
                 </select>
               </div>
-              <button class="dblogs-btn" @click="slowApply">
+              <button class="base-btn base-btn--primary" @click="slowApply">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                 Apply
               </button>
@@ -1140,19 +1140,10 @@ function fmtLogTime(t: string): string {
           </div>
 
           <!-- Pagination -->
-          <div class="err-pager">
-            <span class="err-pager__info">
-              {{ slowTotal.toLocaleString() }} total · page {{ slowPage }} of {{ slowTotalPages }}
-              <span v-if="slowSource" class="err-pager__source">via {{ slowSource }}</span>
-            </span>
-            <div class="err-pager__btns">
-              <button class="err-pager__btn" :disabled="slowPage <= 1" @click="slowGoPage(1)">«</button>
-              <button class="err-pager__btn" :disabled="slowPage <= 1" @click="slowGoPage(slowPage - 1)">‹ Prev</button>
-              <span class="err-pager__cur">{{ slowPage }}</span>
-              <button class="err-pager__btn" :disabled="slowPage >= slowTotalPages" @click="slowGoPage(slowPage + 1)">Next ›</button>
-              <button class="err-pager__btn" :disabled="slowPage >= slowTotalPages" @click="slowGoPage(slowTotalPages)">»</button>
-            </div>
-          </div>
+          <Pagination
+            :page="slowPage" :total-pages="slowTotalPages" :total="slowTotal"
+            :item-label="slowSource ? `total · via ${slowSource}` : 'total'"
+            @update:page="slowGoPage" />
         </template>
       </div>
 
@@ -1261,18 +1252,10 @@ function fmtLogTime(t: string): string {
             </div>
 
             <!-- Pagination -->
-            <div class="err-pager">
-              <span class="err-pager__info">
-                {{ cloudAuditTotal.toLocaleString() }} files
-                <span class="err-pager__source">via {{ cloudAuditSource }}</span>
-              </span>
-              <div class="err-pager__btns">
-                <button class="err-pager__btn" :disabled="cloudAuditPage === 0" @click="cloudAuditGoPage(0)">«</button>
-                <button class="err-pager__btn" :disabled="cloudAuditPage === 0" @click="cloudAuditGoPage(Math.max(0, cloudAuditPage - cloudAuditLimit))">‹ Prev</button>
-                <span class="err-pager__cur">{{ Math.floor(cloudAuditPage / cloudAuditLimit) + 1 }}</span>
-                <button class="err-pager__btn" :disabled="cloudAuditPage + cloudAuditLimit >= cloudAuditTotal" @click="cloudAuditGoPage(cloudAuditPage + cloudAuditLimit)">Next ›</button>
-              </div>
-            </div>
+            <Pagination
+              :page="cloudAuditPageNumber" :total-pages="cloudAuditTotalPages" :total="cloudAuditTotal"
+              :item-label="cloudAuditSource ? `files · via ${cloudAuditSource}` : 'files'"
+              @update:page="cloudAuditGoToPageNumber" />
           </template>
         </template>
 
@@ -1280,8 +1263,8 @@ function fmtLogTime(t: string): string {
         <template v-else>
           <div class="err-toolbar">
             <div class="err-toolbar__left">
-              <input v-model="auditSearch" type="text" placeholder="Filter by SQL…" class="err-date-input" style="width:200px" @keydown.enter="auditGoPage(1); loadAuditLogs()" />
-              <button class="dblogs-btn" @click="auditGoPage(1); loadAuditLogs()">
+              <input v-model="auditSearch" type="text" placeholder="Filter by SQL…" class="base-input" style="width:200px" @keydown.enter="auditGoPage(1); loadAuditLogs()" />
+              <button class="base-btn base-btn--primary" @click="auditGoPage(1); loadAuditLogs()">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                 Refresh
               </button>
@@ -1387,16 +1370,7 @@ function fmtLogTime(t: string): string {
               </div>
             </div>
 
-            <div class="err-pager">
-              <span class="err-pager__info">{{ auditTotal.toLocaleString() }} total · page {{ auditPage }} of {{ auditTotalPages }}</span>
-              <div class="err-pager__btns">
-                <button class="err-pager__btn" :disabled="auditPage <= 1" @click="auditGoPage(1)">«</button>
-                <button class="err-pager__btn" :disabled="auditPage <= 1" @click="auditGoPage(auditPage - 1)">‹ Prev</button>
-                <span class="err-pager__cur">{{ auditPage }}</span>
-                <button class="err-pager__btn" :disabled="auditPage >= auditTotalPages" @click="auditGoPage(auditPage + 1)">Next ›</button>
-                <button class="err-pager__btn" :disabled="auditPage >= auditTotalPages" @click="auditGoPage(auditTotalPages)">»</button>
-              </div>
-            </div>
+            <Pagination :page="auditPage" :total-pages="auditTotalPages" :total="auditTotal" item-label="total" @update:page="auditGoPage" />
           </template>
         </template>
       </div>
@@ -1473,15 +1447,15 @@ function fmtLogTime(t: string): string {
           </div>
 
           <div class="cloud-modal__footer">
-            <button v-if="cloudForm.id" class="dblogs-btn dblogs-btn--danger" @click="deleteCloudConfig">
+            <button v-if="cloudForm.id" class="base-btn base-btn--danger" @click="deleteCloudConfig">
               Remove Instance
             </button>
-            <button v-if="cloudConfigured" class="dblogs-btn dblogs-btn--ghost" @click="newCloudConfig">
+            <button v-if="cloudConfigured" class="base-btn base-btn--ghost" @click="newCloudConfig">
               New Instance
             </button>
             <div style="flex:1" />
-            <button class="dblogs-btn dblogs-btn--ghost" @click="showCloudModal = false">Cancel</button>
-            <button class="dblogs-btn dblogs-btn--primary" :disabled="cloudSaving" @click="saveCloudConfig">
+            <button class="base-btn base-btn--ghost" @click="showCloudModal = false">Cancel</button>
+            <button class="base-btn base-btn--primary" :disabled="cloudSaving" @click="saveCloudConfig">
               <svg v-if="cloudSaving" class="spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
               {{ cloudSaving ? 'Saving…' : cloudForm.id ? 'Update & Switch' : 'Save & Switch' }}
             </button>
@@ -1646,21 +1620,6 @@ function fmtLogTime(t: string): string {
 }
 .dblogs-shortcut:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 
-.dblogs-btn {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 12px;
-  font-size: 12.5px;
-  font-weight: 600;
-  background: var(--accent);
-  color: #fff;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: opacity .15s;
-}
-.dblogs-btn:hover { opacity: .88; }
 
 .dblogs-source {
   font-size: 11px;
@@ -1871,18 +1830,6 @@ function fmtLogTime(t: string): string {
 /* Spin */
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin .8s linear infinite; }
-
-/* Cloud button variant */
-.dblogs-btn--outline { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
-.dblogs-btn--outline:hover { background: var(--bg); color: var(--text-primary); border-color: var(--text-secondary); }
-.dblogs-btn--cloud { background: #16a34a; color: #fff; border-color: #16a34a; }
-.dblogs-btn--cloud:hover { background: #15803d; }
-.dblogs-btn--primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-.dblogs-btn--primary:hover { opacity: .9; }
-.dblogs-btn--ghost { background: var(--bg-surface); color: var(--text-secondary); border-color: var(--border); }
-.dblogs-btn--ghost:hover { background: var(--bg-body); color: var(--text-primary); }
-.dblogs-btn--danger { background: transparent; color: #ef4444; border-color: #ef4444; }
-.dblogs-btn--danger:hover { background: rgba(239,68,68,.08); }
 
 /* Cloud Modal */
 .cloud-modal-backdrop {
@@ -2295,33 +2242,4 @@ function fmtLogTime(t: string): string {
   color: var(--text-secondary);
 }
 .err-meta-chip svg { opacity: .6; }
-
-/* Pagination */
-.err-pager {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 14px;
-  border: 1px solid var(--border); border-top: none;
-  border-radius: 0 0 10px 10px;
-  background: var(--surface);
-}
-.err-pager__info {
-  font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 8px;
-}
-.err-pager__source {
-  font-size: 11px; opacity: .7; font-style: italic;
-}
-.err-pager__btns { display: flex; align-items: center; gap: 4px; }
-.err-pager__btn {
-  font-size: 12.5px; padding: 4px 10px;
-  border-radius: 6px; border: 1px solid var(--border);
-  background: var(--bg); color: var(--text);
-  cursor: pointer; transition: all .12s;
-}
-.err-pager__btn:hover:not(:disabled) { background: var(--accent); color: #fff; border-color: var(--accent); }
-.err-pager__btn:disabled { opacity: .35; cursor: not-allowed; }
-.err-pager__cur {
-  font-size: 12.5px; font-weight: 700; padding: 4px 10px;
-  border-radius: 6px; background: var(--accent);
-  color: #fff; min-width: 32px; text-align: center;
-}
 </style>

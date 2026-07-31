@@ -6,6 +6,7 @@ import { useConnections } from '@/composables/useConnections'
 import { useDatabases } from '@/composables/useDatabases'
 import { useToast } from '@/composables/useToast'
 import { useAuth } from '@/composables/useAuth'
+import { useListFilter } from '@/composables/useListFilter'
 import ScriptEditor from '@/components/ui/ScriptEditor.vue'
 
 interface DataScript {
@@ -109,7 +110,7 @@ foreach ($userIds as $userId) {
 
 const toast = useToast()
 const route = useRoute()
-const { connections, fetchConnections } = useConnections()
+const { activeConnections: connections, fetchConnections } = useConnections()
 const { databases, fetchDatabases, loading: databasesLoading } = useDatabases()
 const { hasPermission, isAdmin } = useAuth()
 
@@ -124,6 +125,7 @@ const createPanelOpen = ref(false)
 const libraryPanelOpen = ref(true)
 
 const scripts = ref<DataScript[]>([])
+const { search: scriptSearch, filtered: filteredScripts } = useListFilter(scripts, (s, q) => s.name.toLowerCase().includes(q) || (s.description ?? '').toLowerCase().includes(q))
 const versions = ref<DataScriptVersion[]>([])
 const scriptSchemaTables = ref<ScriptSchemaTable[]>([])
 const selectedScriptId = ref<number | null>(null)
@@ -550,11 +552,15 @@ onMounted(async () => {
             </button>
           </div>
 
+          <div v-if="libraryPanelOpen && scripts.length" class="ds-search-row">
+            <input v-model="scriptSearch" class="base-input ds-search" type="search" placeholder="Filter scripts…" />
+          </div>
           <div v-if="libraryPanelOpen && loading" class="ds-empty">Loading scripts…</div>
           <div v-else-if="libraryPanelOpen && !scripts.length" class="ds-empty">No scripts yet.</div>
+          <div v-else-if="libraryPanelOpen && !filteredScripts.length" class="ds-empty">No scripts match "{{ scriptSearch }}".</div>
           <div v-else-if="libraryPanelOpen" class="ds-script-grid">
             <button
-              v-for="item in scripts"
+              v-for="item in filteredScripts"
               :key="item.id"
               class="ds-script-item"
               :class="{ 'ds-script-item--active': item.id === selectedScriptId }"
@@ -793,6 +799,8 @@ onMounted(async () => {
 .ds-version-chip--active { border-color: var(--brand); box-shadow: inset 0 0 0 1px var(--brand); color:var(--text-primary); }
 .ds-language-badge { display:inline-flex; align-items:center; padding:6px 10px; border:1px solid var(--border); border-radius:999px; background:rgba(255,255,255,0.02); color:var(--text-secondary); font-size:11px; font-weight:700; }
 .ds-empty { padding:18px; border:1px dashed var(--border); border-radius:14px; color:var(--text-muted); font-size:12px; text-align:center; }
+.ds-search-row { margin-bottom:12px; }
+.ds-search { width:100%; max-width:280px; }
 .ds-script-item, .ds-plan-item { width:100%; text-align:left; border:1px solid var(--border); border-radius:14px; background:var(--bg-elevated); padding:12px 14px; margin-bottom:10px; cursor:pointer; }
 .ds-script-item--active, .ds-plan-item--active { border-color: var(--brand); box-shadow: inset 0 0 0 1px var(--brand); }
 .ds-script-item__name { font-size:13px; font-weight:600; color:var(--text-primary); }

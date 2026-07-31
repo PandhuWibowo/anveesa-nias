@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
+import { useListFilter } from '@/composables/useListFilter'
 import { formatServerTimestamp, parseServerTimestamp } from '@/utils/datetime'
 
 interface AuditEntry {
@@ -77,7 +78,6 @@ const viewMode = ref<ViewMode>('fingerprints')
 const selectedConnId = ref<number | 'all'>('all')
 const thresholdMs = ref(1000)
 const sinceHours = ref(24)
-const search = ref('')
 const limit = ref(1000)
 
 function truncateSql(sql: string, max = 220): string {
@@ -162,18 +162,20 @@ async function load() {
   }
 }
 
-const filteredEntries = computed(() => {
-  const term = search.value.trim().toLowerCase()
-  return entries.value.filter((entry) => {
+const connFilteredEntries = computed(() =>
+  entries.value.filter((entry) => {
     if (selectedConnId.value !== 'all' && entry.conn_id !== selectedConnId.value) return false
     if (filterMode.value === 'slow' && entry.duration_ms < thresholdMs.value) return false
     if (filterMode.value === 'error' && !entry.error) return false
-    if (term) {
-      const haystack = [entry.sql, entry.error, entry.username, entry.conn_name].join(' ').toLowerCase()
-      if (!haystack.includes(term)) return false
-    }
     return true
   })
+)
+
+// The single search box drives both the app-executions and native-stats lists below;
+// useListFilter owns `search` (bound to the input) and the entries match, native stats reuse the same ref.
+const { search, filtered: filteredEntries } = useListFilter(connFilteredEntries, (entry, term) => {
+  const haystack = [entry.sql, entry.error, entry.username, entry.conn_name].join(' ').toLowerCase()
+  return haystack.includes(term)
 })
 
 const sortedEntries = computed(() =>
@@ -233,16 +235,20 @@ const fingerprintGroups = computed<FingerprintGroup[]>(() => {
   })
 })
 
-const filteredNativeStats = computed(() => {
-  const term = search.value.trim().toLowerCase()
-  return nativeStats.value.filter((stat) => {
+const connFilteredNativeStats = computed(() =>
+  nativeStats.value.filter((stat) => {
     if (selectedConnId.value !== 'all' && stat.conn_id !== selectedConnId.value) return false
     if (filterMode.value === 'slow' && stat.avg_ms < thresholdMs.value) return false
-    if (term) {
-      const haystack = [stat.sql, stat.fingerprint, stat.conn_name, stat.source].join(' ').toLowerCase()
-      if (!haystack.includes(term)) return false
-    }
     return true
+  })
+)
+
+const filteredNativeStats = computed(() => {
+  const term = search.value.trim().toLowerCase()
+  return connFilteredNativeStats.value.filter((stat) => {
+    if (!term) return true
+    const haystack = [stat.sql, stat.fingerprint, stat.conn_name, stat.source].join(' ').toLowerCase()
+    return haystack.includes(term)
   }).sort((a, b) => {
     if (b.avg_ms !== a.avg_ms) return b.avg_ms - a.avg_ms
     if (b.calls !== a.calls) return b.calls - a.calls
@@ -355,7 +361,7 @@ watch([sourceMode, filterMode, selectedConnId, sinceHours], () => { void load() 
 
             <label class="qp-field qp-field--wide">
               <span>Search</span>
-              <input v-model="search" type="text" placeholder="Filter by SQL, fingerprint, error, or connection" />
+              <input v-model="search" class="base-input qp-search" type="text" placeholder="Filter by SQL, fingerprint, error, or connection" />
             </label>
           </div>
         </section>

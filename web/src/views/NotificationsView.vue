@@ -3,12 +3,15 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import axios from 'axios'
 import { useAuth } from '@/composables/useAuth'
 import { useToast } from '@/composables/useToast'
+import { useListFilter } from '@/composables/useListFilter'
+import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
 
 interface ConnectionOption {
   id: number
   name: string
   driver: string
   environment?: string
+  disconnected?: boolean
 }
 
 interface NotificationItem {
@@ -90,8 +93,17 @@ const loading = ref(false)
 const inbox = ref<NotificationItem[]>([])
 const unreadCount = ref(0)
 const targets = ref<NotificationTarget[]>([])
+const { search: targetSearch, filtered: filteredTargets } = useListFilter(targets, (t, q) =>
+  t.name.toLowerCase().includes(q) || t.type.toLowerCase().includes(q),
+)
 const rules = ref<NotificationRule[]>([])
+const { search: ruleSearch, filtered: filteredRules } = useListFilter(rules, (r, q) =>
+  r.name.toLowerCase().includes(q) || r.event_type.toLowerCase().includes(q),
+)
 const deliveries = ref<NotificationDelivery[]>([])
+const { search: deliverySearch, filtered: filteredDeliveries } = useListFilter(deliveries, (d, q) =>
+  (d.target_name || d.channel || '').toLowerCase().includes(q) || (d.event?.event_type || '').toLowerCase().includes(q),
+)
 const events = ref<NotificationEvent[]>([])
 const connections = ref<ConnectionOption[]>([])
 const deliveriesError = ref('')
@@ -342,7 +354,7 @@ async function loadDeliveries() {
 async function loadConnections() {
   if (!canManage.value) return
   const { data } = await axios.get<ConnectionOption[]>('/api/connections')
-  connections.value = data || []
+  connections.value = (data || []).filter(c => !c.disconnected)
 }
 
 async function loadAll() {
@@ -493,6 +505,21 @@ async function deleteRule(id: number) {
   }
 }
 
+function targetActions(target: NotificationTarget): RowAction[] {
+  return [
+    { key: 'test', label: 'Test', icon: 'check', primary: true, onClick: () => testTarget(target.id) },
+    { key: 'edit', label: 'Edit', icon: 'edit', onClick: () => editTarget(target) },
+    { key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => deleteTarget(target.id) },
+  ]
+}
+
+function ruleActions(rule: NotificationRule): RowAction[] {
+  return [
+    { key: 'edit', label: 'Edit', icon: 'edit', onClick: () => editRule(rule) },
+    { key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => deleteRule(rule.id) },
+  ]
+}
+
 onMounted(loadAll)
 </script>
 
@@ -614,19 +641,21 @@ onMounted(loadAll)
               {{ manageDataLoading ? 'Refreshing...' : 'Refresh' }}
             </button>
           </div>
+          <div v-if="targets.length" class="notif-filter">
+            <input v-model="targetSearch" class="base-input" type="search" placeholder="Filter integrations…" />
+          </div>
           <div v-if="manageDataLoading && !targets.length" class="notif-empty">Loading integrations...</div>
           <div v-else-if="!targets.length" class="notif-empty">No integrations configured.</div>
+          <div v-else-if="!filteredTargets.length" class="notif-empty">No integrations match "{{ targetSearch }}".</div>
           <div v-else class="notif-stack">
-            <article v-for="target in targets" :key="target.id" class="notif-card">
+            <article v-for="target in filteredTargets" :key="target.id" class="notif-card">
               <div>
                 <strong>{{ target.name }}</strong>
                 <div class="notif-card__sub">{{ target.type }} · {{ target.is_active ? 'active' : 'inactive' }}<span v-if="target.description"> · {{ target.description }}</span></div>
                 <div v-if="Object.keys(target.config || {}).length" class="notif-card__template">Config: {{ JSON.stringify(target.config) }}</div>
               </div>
               <div class="notif-card__actions">
-                <button class="base-btn base-btn--ghost base-btn--xs" @click="editTarget(target)">Edit</button>
-                <button class="base-btn base-btn--ghost base-btn--xs" @click="testTarget(target.id)">Test</button>
-                <button class="base-btn base-btn--ghost base-btn--xs notif-btn-del" @click="deleteTarget(target.id)">Delete</button>
+                <RowActionsMenu :actions="targetActions(target)" />
               </div>
             </article>
           </div>
@@ -748,10 +777,14 @@ onMounted(loadAll)
               {{ manageDataLoading ? 'Refreshing...' : 'Refresh' }}
             </button>
           </div>
+          <div v-if="rules.length" class="notif-filter">
+            <input v-model="ruleSearch" class="base-input" type="search" placeholder="Filter rules…" />
+          </div>
           <div v-if="manageDataLoading && !rules.length" class="notif-empty">Loading rules...</div>
           <div v-else-if="!rules.length" class="notif-empty">No rules configured.</div>
+          <div v-else-if="!filteredRules.length" class="notif-empty">No rules match "{{ ruleSearch }}".</div>
           <div v-else class="notif-stack">
-            <article v-for="rule in rules" :key="rule.id" class="notif-card">
+            <article v-for="rule in filteredRules" :key="rule.id" class="notif-card">
               <div>
                 <strong>{{ rule.name }}</strong>
                 <div class="notif-card__sub">
@@ -763,8 +796,7 @@ onMounted(loadAll)
                 </div>
               </div>
               <div class="notif-card__actions">
-                <button class="base-btn base-btn--ghost base-btn--xs" @click="editRule(rule)">Edit</button>
-                <button class="base-btn base-btn--ghost base-btn--xs notif-btn-del" @click="deleteRule(rule.id)">Delete</button>
+                <RowActionsMenu :actions="ruleActions(rule)" />
               </div>
             </article>
           </div>
@@ -784,14 +816,18 @@ onMounted(loadAll)
               {{ deliveriesLoading ? 'Loading...' : 'Retry' }}
             </button>
           </div>
+          <div v-if="deliveries.length && !deliveriesError" class="notif-filter">
+            <input v-model="deliverySearch" class="base-input" type="search" placeholder="Filter deliveries…" />
+          </div>
           <div v-if="deliveriesError" class="notif-error">
             <strong>Delivery logs unavailable.</strong>
             <span>{{ deliveriesError }}</span>
           </div>
           <div v-else-if="deliveriesLoading && !deliveries.length" class="notif-empty">Loading delivery logs...</div>
           <div v-else-if="!deliveries.length" class="notif-empty">No deliveries yet.</div>
+          <div v-else-if="!filteredDeliveries.length" class="notif-empty">No deliveries match "{{ deliverySearch }}".</div>
           <div v-else class="notif-stack">
-            <article v-for="delivery in deliveries" :key="delivery.id" class="notif-card notif-card--log">
+            <article v-for="delivery in filteredDeliveries" :key="delivery.id" class="notif-card notif-card--log">
               <div>
                 <strong>{{ delivery.target_name || delivery.channel }}</strong>
                 <div class="notif-card__sub">{{ delivery.event?.event_type }} · {{ delivery.status }} · {{ fmtTime(delivery.updated_at) }}</div>
@@ -938,6 +974,15 @@ onMounted(loadAll)
   font-size: 18px;
 }
 
+.notif-filter {
+  margin-bottom: 12px;
+}
+
+.notif-filter .base-input {
+  width: 260px;
+  max-width: 100%;
+}
+
 .notif-list,
 .notif-stack {
   display: flex;
@@ -1080,14 +1125,6 @@ onMounted(loadAll)
   margin-top: 8px;
   color: #e74c3c;
   font-size: 12px;
-}
-
-.notif-btn-del {
-  color: var(--danger) !important;
-}
-
-.notif-btn-del:hover {
-  background: rgba(239, 68, 68, 0.1) !important;
 }
 
 .notif-empty {

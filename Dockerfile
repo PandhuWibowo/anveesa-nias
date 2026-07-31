@@ -3,20 +3,36 @@
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Stage 1: Build frontend
-FROM oven/bun:1 AS frontend-builder
+# Pin to the build platform: the dist/ output is static (arch-independent) assets,
+# and running under QEMU emulation breaks bun's tarball extraction.
+FROM --platform=$BUILDPLATFORM oven/bun:1 AS frontend-builder
 
 WORKDIR /app/web
 
 # Install dependencies
 COPY web/package.json web/bun.lock* ./
-RUN bun install --frozen-lockfile
+# bun's tarball extraction can fail transiently (most often on the large
+# typescript package) and leaves a corrupted partial in its global cache, so a
+# plain re-run keeps failing. Retry a few times, clearing the cache each time.
+RUN for i in 1 2 3; do \
+        bun install --frozen-lockfile && exit 0; \
+        echo "bun install attempt $i failed — clearing cache and retrying..."; \
+        rm -rf /root/.bun/install/cache ~/.bun/install/cache; \
+        sleep 2; \
+    done; \
+    echo "bun install failed after 3 attempts" >&2; exit 1
 
 # Build frontend
 COPY web/ ./
 RUN bun run build
 
 # Stage 2: Build backend
-FROM golang:1.25-alpine AS backend-builder
+# Run natively on the build platform and let Go cross-compile to the target arch,
+# which is far faster and more reliable than building under QEMU emulation.
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS backend-builder
+
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /app
 
@@ -29,7 +45,7 @@ RUN go mod download
 
 # Build binary
 COPY server/ ./
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o nias-server .
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -ldflags="-s -w" -o nias-server .
 
 # Stage 3: Final image
 FROM alpine:3.19

@@ -5,17 +5,18 @@ import axios from 'axios'
 import { useSavedQueries, type SavedQuery } from '@/composables/useSavedQueries'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
+import { useListFilter } from '@/composables/useListFilter'
 import { pendingSQL } from '@/composables/usePendingSQL'
 import { pendingAIAnalytics } from '@/composables/usePendingAIAnalytics'
 import { pendingDashboardBlock } from '@/composables/usePendingDashboardBlock'
 import { readableError } from '@/utils/httpError'
+import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
 
 const router = useRouter()
 const { queries, loading, fetchAll, save, remove } = useSavedQueries()
-const { connections } = useConnections()
+const { activeConnections: connections } = useConnections()
 const toast = useToast()
 
-const search = ref('')
 const filterConnId = ref<number | 'all'>('all')
 
 // Edit state
@@ -36,21 +37,17 @@ const expandedId = ref<number | null>(null)
 
 onMounted(() => fetchAll())
 
-const filtered = computed(() => {
-  let list = queries.value
-  if (filterConnId.value !== 'all') {
-    list = list.filter(q => q.conn_id === filterConnId.value)
-  }
-  if (search.value.trim()) {
-    const s = search.value.toLowerCase()
-    list = list.filter(q =>
-      q.name.toLowerCase().includes(s) ||
-      q.sql.toLowerCase().includes(s) ||
-      q.description?.toLowerCase().includes(s)
-    )
-  }
-  return list
-})
+const connFiltered = computed(() =>
+  filterConnId.value === 'all'
+    ? queries.value
+    : queries.value.filter(q => q.conn_id === filterConnId.value)
+)
+
+const { search, filtered } = useListFilter(connFiltered, (q, s) =>
+  q.name.toLowerCase().includes(s) ||
+  q.sql.toLowerCase().includes(s) ||
+  (q.description?.toLowerCase().includes(s) ?? false)
+)
 
 function connName(connId: number | null) {
   if (!connId) return null
@@ -145,6 +142,17 @@ async function createNew() {
 
 function formatDate(d: string) {
   return new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function rowActions(q: SavedQuery): RowAction[] {
+  return [
+    { key: 'open', label: 'Open in SQL', icon: 'external-link', primary: true, onClick: () => openInDataBrowser(q.sql) },
+    { key: 'copy', label: 'Copy', icon: 'copy', primary: true, onClick: () => copySQL(q.sql) },
+    { key: 'analyze', label: 'Analyze with AI', icon: 'sparkle', onClick: () => analyzeWithAI(q) },
+    { key: 'dashboard', label: 'Add to Dashboard', icon: 'plus', onClick: () => addToDashboard(q) },
+    { key: 'edit', label: 'Edit', icon: 'edit', onClick: () => startEdit(q) },
+    { key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => deleteQuery(q) },
+  ]
 }
 </script>
 
@@ -263,29 +271,7 @@ function formatDate(d: string) {
               <span class="sq-card__date">{{ formatDate(q.created_at) }}</span>
             </div>
             <div class="sq-card__actions">
-              <button class="base-btn base-btn--ghost base-btn--xs" @click="copySQL(q.sql)" title="Copy SQL">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                Copy
-              </button>
-              <button class="base-btn base-btn--primary base-btn--xs" @click="openInDataBrowser(q.sql)" title="Open in Data Browser SQL tab">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-                Open in SQL
-              </button>
-              <button class="base-btn base-btn--ghost base-btn--xs" @click="analyzeWithAI(q)" title="Open this saved query in AI Analytics">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3l1.9 4.8L19 9.7l-3.8 3.1 1.2 4.9L12 15l-4.4 2.7 1.2-4.9L5 9.7l5.1-1.9L12 3z"/></svg>
-                Analyze with AI
-              </button>
-              <button class="base-btn base-btn--ghost base-btn--xs" @click="addToDashboard(q)" title="Add this saved query into the dashboard builder">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="2" width="9" height="11" rx="1"/><rect x="13" y="2" width="9" height="7" rx="1"/><rect x="2" y="15" width="9" height="7" rx="1"/><rect x="13" y="11" width="9" height="11" rx="1"/></svg>
-                Add to Dashboard
-              </button>
-              <button class="base-btn base-btn--ghost base-btn--xs" @click="startEdit(q)" title="Edit name & description">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                Edit
-              </button>
-              <button class="base-btn base-btn--ghost base-btn--xs" style="color:#f87171" @click="deleteQuery(q)" title="Delete">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
-              </button>
+              <RowActionsMenu :actions="rowActions(q)" />
             </div>
           </template>
         </div>

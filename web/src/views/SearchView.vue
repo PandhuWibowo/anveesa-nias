@@ -5,6 +5,7 @@ import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useSearchCache } from '@/composables/useSearchCache'
+import { useListFilter } from '@/composables/useListFilter'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -57,7 +58,6 @@ const connected = ref(false)
 const latencyMs = ref<number | null>(null)
 const clusterInfo = ref<Record<string, any> | null>(null)
 const indices = ref<SearchIndex[]>([])
-const indexFilter = ref('')
 const indexSortField = ref<IndexSortField>('size')
 const indexSortDirection = ref<SortDirection>('desc')
 const showSystemIndices = ref(true)
@@ -76,15 +76,13 @@ const docBody = ref('{\n  "message": "hello from NIAS",\n  "level": "info"\n}')
 const docResult = ref<Record<string, any> | null>(null)
 const activeTab = ref<'query' | 'document'>('query')
 
+const systemFilteredIndices = computed(() => showSystemIndices.value ? indices.value : indices.value.filter(i => !i.name.startsWith('.')))
+const { search: indexFilter, filtered: textFilteredIndices } = useListFilter(systemFilteredIndices, (i, q) =>
+  i.name.toLowerCase().includes(q) || (i.kind || '').toLowerCase().includes(q) || (i.health || i.status || '').toLowerCase().includes(q)
+)
 const filteredIndices = computed(() => {
-  const q = indexFilter.value.trim().toLowerCase()
-  const filtered = indices.value.filter(i => {
-    if (!showSystemIndices.value && i.name.startsWith('.')) return false
-    if (!q) return true
-    return i.name.toLowerCase().includes(q) || (i.kind || '').toLowerCase().includes(q) || (i.health || i.status || '').toLowerCase().includes(q)
-  })
   const dir = indexSortDirection.value === 'asc' ? 1 : -1
-  return [...filtered].sort((a, b) => compareIndices(a, b, indexSortField.value) * dir)
+  return [...textFilteredIndices.value].sort((a, b) => compareIndices(a, b, indexSortField.value) * dir)
 })
 
 const hits = computed(() => {

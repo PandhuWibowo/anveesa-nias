@@ -4,6 +4,7 @@ import { useConnections } from '@/composables/useConnections'
 import { useMongoDB, type MongoCollectionStat, type MongoDashboardData, type MongoDatabaseSummary, type MongoHealthData, type MongoIndexRecommendation, type MongoIndexSummary, type MongoQueryEntry, type MongoSchemaAnalysis } from '@/composables/useMongoDB'
 import { useToast } from '@/composables/useToast'
 import { readableError } from '@/utils/httpError'
+import { useListFilter } from '@/composables/useListFilter'
 
 const props = defineProps<{ activeConnId?: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -20,7 +21,6 @@ const databases = ref<MongoDatabaseSummary[]>([])
 const collections = ref<MongoCollectionStat[]>([])
 const selectedDb = ref('')
 const selectedCollection = ref('')
-const collectionSearch = ref('')
 const filterText = ref('')
 const sortText = ref('')
 const projectionText = ref('')
@@ -70,11 +70,7 @@ const mongoConnections = computed(() => connections.value.filter(c => c.driver =
 const activeConn = computed(() => connections.value.find(c => c.id === props.activeConnId) ?? null)
 const isMongo = computed(() => activeConn.value?.driver === 'mongodb')
 const selectedCollectionInfo = computed(() => collections.value.find(c => c.name === selectedCollection.value) ?? null)
-const filteredCollections = computed(() => {
-  const q = collectionSearch.value.trim().toLowerCase()
-  if (!q) return collections.value
-  return collections.value.filter(c => c.name.toLowerCase().includes(q))
-})
+const { search: collectionSearch, filtered: filteredCollections } = useListFilter(collections, (c, q) => c.name.toLowerCase().includes(q))
 const tableColumns = computed(() => {
   const set = new Set<string>()
   docs.value.slice(0, 100).forEach(doc => Object.keys(flattenDoc(doc)).forEach(key => set.add(key)))

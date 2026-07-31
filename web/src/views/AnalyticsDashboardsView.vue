@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import axios from 'axios'
 import { useRoute } from 'vue-router'
 
@@ -117,7 +117,7 @@ interface SemanticFilterOption {
 const toast = useToast()
 const route = useRoute()
 const { queries, fetchAll: fetchSavedQueries, save: saveSavedQuery } = useSavedQueries()
-const { connections, fetchConnections } = useConnections()
+const { activeConnections: connections, fetchConnections } = useConnections()
 
 const dashboards = ref<Dashboard[]>([])
 const selectedDashboardId = ref<number | null>(null)
@@ -2405,6 +2405,13 @@ onMounted(async () => {
     await renderDashboard(selectedDashboardId.value)
   }
   applyPendingBlock()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('mousemove', onCardDragMove)
+  window.removeEventListener('mouseup', onCardDragEnd)
+  window.removeEventListener('mousemove', handleBlockResizeMove)
+  window.removeEventListener('mouseup', finishBlockResize)
 })
 </script>
 

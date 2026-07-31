@@ -1,6 +1,6 @@
 # Contributing to Anveesa Nias
 
-Thank you for considering a contribution. This project is intended to be a practical, maintainable open-source database studio, so focused changes with clear tests and documentation are preferred.
+Thank you for considering a contribution. This project is intended to be a practical, maintainable open-source internal developer platform, so focused changes with clear tests and documentation are preferred.
 
 ## Ways to Contribute
 
