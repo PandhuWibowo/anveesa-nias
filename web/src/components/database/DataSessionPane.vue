@@ -3,6 +3,7 @@ import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import axios from 'axios'
 import SchemaTree from '@/components/database/SchemaTree.vue'
 import DataTable from '@/components/database/DataTable.vue'
+import QueryEditor from '@/components/database/QueryEditor.vue'
 import VirtualTable from '@/components/database/VirtualTable.vue'
 import SQLPanel from '@/components/database/SQLPanel.vue'
 import ExplainTree from '@/components/database/ExplainTree.vue'
@@ -63,6 +64,10 @@ interface TableTab {
   pkColumn: string
   dataTableColumns: Array<{ name: string; data_type: string }>
   hasUnsavedEdits: boolean
+  sqlText: string
+  sqlRunning: boolean
+  sqlError: string
+  sqlMode: boolean
 }
 
 let tableTabCounter = 0
@@ -98,9 +103,58 @@ async function loadData(tab?: TableTab) {
   const searchArg = t.filterMode === 'search' ? input : undefined
   const whereArg = t.filterMode === 'sql' ? input : undefined
   const data = await fetchTableData(props.connId, t.db, t.table, t.page, t.pageSize, t.sortBy, t.sortDir, whereArg, searchArg)
-  if (data) { t.columns = data.columns ?? []; t.rows = data.rows ?? []; t.totalRows = data.total_rows ?? 0 }
+  if (data) { t.columns = data.columns ?? []; t.rows = data.rows ?? []; t.totalRows = data.total_rows ?? 0; t.sqlMode = false }
   else if (schemaError.value) { t.filterError = schemaError.value }
   t.loading = false
+}
+
+// ── Browse SQL panel (query editor above the data grid) ──────────
+const browseSqlVisible = ref(true)
+
+function defaultBrowseSQL(db: string, table: string) {
+  const qualified = `${db}.${table}`
+  return activeConn.value?.driver === 'mssql'
+    ? `SELECT TOP 100 * FROM ${qualified};`
+    : `SELECT * FROM ${qualified} LIMIT 100;`
+}
+
+async function runBrowseSQL(sqlArg?: string) {
+  const t = activeTab.value
+  if (!t || !props.connId) return
+  const sql = (sqlArg ?? t.sqlText).trim()
+  if (!sql) return
+  if (!confirmDiscardPendingEdits('run this query')) return
+  t.hasUnsavedEdits = false
+  t.sqlRunning = true
+  t.sqlError = ''
+  try {
+    const { data } = await axios.post<{ columns: string[]; rows: unknown[][]; row_count: number; duration_ms: number }>(
+      `/api/connections/${props.connId}/query`,
+      { sql },
+    )
+    t.columns = data.columns ?? []
+    t.rows = data.rows ?? []
+    t.totalRows = data.row_count ?? t.rows.length
+    t.page = 1
+    t.sqlMode = true
+    axios.post(`/api/connections/${props.connId}/history`, {
+      sql, duration_ms: data.duration_ms, row_count: data.row_count,
+    }).catch(() => {})
+  } catch (e) {
+    t.sqlError = readableError(e, { action: 'Run query', fallback: 'Query failed' })
+  } finally {
+    t.sqlRunning = false
+  }
+}
+
+function resetBrowseSQL() {
+  const t = activeTab.value; if (!t) return
+  if (!confirmDiscardPendingEdits('reset to table browse')) return
+  t.hasUnsavedEdits = false
+  t.sqlText = defaultBrowseSQL(t.db, t.table)
+  t.sqlError = ''
+  t.page = 1
+  loadData()
 }
 
 function applyFilter() {
@@ -150,6 +204,7 @@ async function handleSelectTable(payload: { db: string; table: string }, openInE
     whereClause: '', whereInput: '', filterError: '', filterMode: 'search',
     loading: false, editMode: openInEditMode,
     pkColumn: '', dataTableColumns: [], hasUnsavedEdits: false,
+    sqlText: defaultBrowseSQL(payload.db, payload.table), sqlRunning: false, sqlError: '', sqlMode: false,
   }
   tableTabs.value.push(newTab)
   activeTableTabId.value = id
@@ -1036,6 +1091,27 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           </template>
           <span v-else class="browse-toolbar__empty">Select a table to browse data</span>
         </div>
+        <!-- SQL panel above the data grid: edit + run the query that feeds the table below -->
+        <div v-if="activeTab" class="browse-sql">
+          <div class="browse-sql__bar">
+            <button class="browse-sql__toggle" @click="browseSqlVisible = !browseSqlVisible" :title="browseSqlVisible ? 'Hide SQL editor' : 'Show SQL editor'">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" :style="{ transform: browseSqlVisible ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }"><polyline points="9 18 15 12 9 6"/></svg>
+              SQL
+            </button>
+            <span v-if="activeTab.sqlMode" class="browse-sql__badge" title="The grid below shows this query's result. Reset to return to normal table browsing.">query result</span>
+            <span v-if="activeTab.sqlError" class="browse-sql__error-inline" :title="activeTab.sqlError">{{ activeTab.sqlError }}</span>
+            <div style="flex:1"/>
+            <span class="browse-sql__hint">Ctrl+Enter</span>
+            <button v-if="activeTab.sqlMode" class="base-btn base-btn--ghost base-btn--sm" @click="resetBrowseSQL" title="Back to normal table browsing">Reset</button>
+            <button class="base-btn base-btn--primary base-btn--sm" :disabled="activeTab.sqlRunning" @click="runBrowseSQL()">
+              <svg v-if="!activeTab.sqlRunning" width="10" height="10" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              {{ activeTab.sqlRunning ? 'Running…' : 'Run' }}
+            </button>
+          </div>
+          <div v-show="browseSqlVisible" class="browse-sql__editor">
+            <QueryEditor v-model="activeTab.sqlText" :dark-mode="darkMode" @run="runBrowseSQL" />
+          </div>
+        </div>
         <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;position:relative">
           <template v-for="tab in tableTabs" :key="tab.id">
             <DataTable
@@ -1681,6 +1757,16 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 .filter-clear-btn { flex-shrink:0;width:20px;height:20px;border:none;background:none;color:var(--text-muted);font-size:11px;cursor:pointer;border-radius:4px;display:flex;align-items:center;justify-content:center;padding:0; }
 .filter-clear-btn:hover { background:var(--bg-elevated);color:var(--text-primary); }
 .filter-inline-error { flex-shrink:0;width:18px;height:18px;border-radius:50%;background:#f87171;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;cursor:default; }
+
+/* ── Browse SQL panel (editor above the data grid) ─────────────── */
+.browse-sql { flex-shrink:0;border-bottom:1px solid var(--border);background:var(--bg-surface);display:flex;flex-direction:column; }
+.browse-sql__bar { display:flex;align-items:center;gap:8px;padding:4px 12px;min-height:30px; }
+.browse-sql__toggle { display:flex;align-items:center;gap:5px;border:none;background:none;padding:2px 4px;color:var(--text-muted);font-size:10px;font-weight:700;letter-spacing:0.4px;cursor:pointer;border-radius:4px; }
+.browse-sql__toggle:hover { color:var(--text-primary);background:var(--bg-elevated); }
+.browse-sql__badge { font-size:10px;font-weight:700;color:var(--brand);background:var(--brand-dim);padding:1px 7px;border-radius:4px;letter-spacing:0.3px;flex-shrink:0; }
+.browse-sql__error-inline { font-size:11px;color:#f87171;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0; }
+.browse-sql__hint { font-size:10px;color:var(--text-muted);font-family:var(--mono,monospace);flex-shrink:0; }
+.browse-sql__editor { height:96px;border-top:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden; }
 
 
 /* ── Sidebar Panel (Consistent Width & Styling) ───────────────── */

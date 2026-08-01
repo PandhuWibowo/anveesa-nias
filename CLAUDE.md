@@ -81,10 +81,6 @@ Connection credentials are AES-encrypted at rest using `NIAS_ENCRYPTION_KEY`.
 
 Maintains a pool of live `*sql.DB` connections to user databases. Connections are opened on first use and reused across requests. SSH tunnel support is included for tunneled connections.
 
-### Connection Pool (`handlers/pool.go`)
-
-Maintains a pool of live `*sql.DB` connections to user databases. Connections are opened on first use and reused across requests. SSH tunnel support is included for tunneled connections.
-
 ### Connection Templates (`handlers/connection_templates.go`)
 
 Reusable presets that store `driver + host + port + database + ssl + ssh_host/port/user + tags` — everything except credentials. Exposed as `GET/POST /api/connection-templates` and `PUT/DELETE /api/connection-templates/{id}`. The frontend `ConnectionsView.vue` has a "Load template" picker and "Save as template" button in the new-connection form. Table: `connection_templates` (no username/password stored).
