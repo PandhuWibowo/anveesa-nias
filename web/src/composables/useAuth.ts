@@ -118,12 +118,17 @@ export function useAuth() {
           permissions: Array.isArray(me.data?.permissions) ? me.data.permissions : [],
         }
       }
-    } catch {
-      // Token invalid or expired
-      token.value = ''
-      user.value = null
-      localStorage.removeItem(STORAGE_KEY)
-      sessionStorage.removeItem(LEGACY_STORAGE_KEY)
+    } catch (error) {
+      // Only clear the session on an actual auth failure (invalid/expired token).
+      // Transient failures — rate limiting, network blips, server errors — must not
+      // log the user out; retrying later with the same token should just work.
+      const status = axios.isAxiosError(error) ? error.response?.status : undefined
+      if (status === 401 || status === 423) {
+        token.value = ''
+        user.value = null
+        localStorage.removeItem(STORAGE_KEY)
+        sessionStorage.removeItem(LEGACY_STORAGE_KEY)
+      }
     } finally {
       authReady.value = true
     }
