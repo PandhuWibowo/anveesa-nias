@@ -18,10 +18,18 @@ const panelStyle = ref<Record<string, string>>({})
 
 // Panel is teleported to <body> and positioned with `fixed` coordinates so it
 // can't be clipped by ancestors with overflow:hidden/auto (e.g. the SQL tab
-// toolbar), which previously made the opened dropdown invisible.
+// toolbar), which previously made the opened dropdown invisible. It also
+// auto-flips up/down based on available space — the trigger sits in a
+// toolbar right above a tall results/editor pane, so opening downward
+// unconditionally could push the panel below the visible viewport with no
+// options visible at all.
 function calcPanelStyle() {
   if (!triggerRef.value) return
   const rect = triggerRef.value.getBoundingClientRect()
+  const spaceBelow = window.innerHeight - rect.bottom - 6
+  const spaceAbove = rect.top - 6
+  const preferBelow = props.direction !== 'up' && (spaceBelow >= spaceAbove || spaceBelow >= 140)
+
   const style: Record<string, string> = {
     position: 'fixed',
     left: `${rect.left}px`,
@@ -29,10 +37,12 @@ function calcPanelStyle() {
     maxWidth: '320px',
     zIndex: '9999',
   }
-  if (props.direction === 'up') {
-    style.bottom = `${window.innerHeight - rect.top + 4}px`
-  } else {
+  if (preferBelow) {
     style.top = `${rect.bottom + 4}px`
+    style.maxHeight = `${Math.max(spaceBelow - 8, 120)}px`
+  } else {
+    style.bottom = `${window.innerHeight - rect.top + 4}px`
+    style.maxHeight = `${Math.max(spaceAbove - 8, 120)}px`
   }
   panelStyle.value = style
 }
