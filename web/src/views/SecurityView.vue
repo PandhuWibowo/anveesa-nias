@@ -254,9 +254,12 @@ onMounted(fetchStatus)
               <div class="sec-list-title">Force MFA setup after login</div>
               <div class="sec-list-sub">Users without MFA can only open this Security page and complete setup.</div>
             </div>
-            <button class="base-btn" :class="mfaEnforced ? 'base-btn--ghost' : 'base-btn--primary'" @click="updateMFAPolicy(!mfaEnforced)" :disabled="policyLoading || mfaRequiredSetup">
+            <button class="base-btn" :class="mfaEnforced ? 'base-btn--ghost' : 'base-btn--primary'" @click="updateMFAPolicy(!mfaEnforced)" :disabled="policyLoading">
               {{ policyLoading ? 'Updating...' : (mfaEnforced ? 'Disable Enforcement' : 'Enforce MFA') }}
             </button>
+            <p v-if="mfaRequiredSetup" class="sec-list-sub">
+              You haven't set up MFA yet — you can still disable enforcement here to unblock yourself, without needing to complete setup first.
+            </p>
           </div>
         </div>
       </div>

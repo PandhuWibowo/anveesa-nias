@@ -39,7 +39,13 @@ func EnforceMFASetup(next http.Handler) http.Handler {
 
 func isMFAAllowedPath(path string) bool {
 	switch path {
-	case "/api/auth/setup", "/api/auth/login", "/api/auth/logout", "/api/auth/me", "/api/auth/2fa/status", "/api/auth/2fa/setup", "/api/auth/2fa/enable":
+	case "/api/auth/setup", "/api/auth/login", "/api/auth/logout", "/api/auth/me", "/api/auth/2fa/status", "/api/auth/2fa/setup", "/api/auth/2fa/enable",
+		// Lets an admin who hasn't set up MFA yet still turn off org-wide
+		// enforcement themselves, rather than being permanently locked out
+		// by their own policy. Still gated by requireAny(PermUsersManage)
+		// at the route level (main.go) — this only removes the MFA-wall
+		// check, not the permission check, so non-admins gain nothing.
+		"/api/auth/mfa-policy":
 		return true
 	default:
 		return false
