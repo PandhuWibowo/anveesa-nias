@@ -226,7 +226,11 @@ async function testHost() {
       toast.success(`Connected — Docker ${data.version ?? ''} (${data.os ?? ''}/${data.arch ?? ''})`)
     }
   } catch (e: any) {
-    toast.error(e?.response?.data?.error || 'Connection test failed')
+    if (e?.response?.data?.ssh_ok) {
+      toast.info('SSH connection OK — Docker daemon not reachable (expected if this host is only used for SFTP/Nginx)')
+    } else {
+      toast.error(e?.response?.data?.error || 'Connection test failed')
+    }
   } finally {
     testing.value = false
   }

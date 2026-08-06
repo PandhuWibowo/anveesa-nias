@@ -576,8 +576,10 @@ func DeleteDockerHost() http.HandlerFunc {
 	}
 }
 
-// dockerPing reports daemon reachability + version for a given connection.
-func dockerPing(w http.ResponseWriter, d *dockerConn) {
+// dockerVersion fetches basic daemon info over an established connection.
+// The returned error means the Docker socket specifically isn't reachable —
+// distinct from (and often occurring despite) a successful SSH connection.
+func dockerVersion(d *dockerConn) (map[string]interface{}, error) {
 	var ver struct {
 		Version    string `json:"version"`
 		APIVersion string `json:"apiVersion"`
@@ -585,15 +587,39 @@ func dockerPing(w http.ResponseWriter, d *dockerConn) {
 		Arch       string `json:"arch"`
 	}
 	if err := d.getJSON("/version", nil, &ver); err != nil {
-		http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-		return
+		return nil, err
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	return map[string]interface{}{
 		"ok":          true,
 		"version":     ver.Version,
 		"api_version": ver.APIVersion,
 		"os":          ver.Os,
 		"arch":        ver.Arch,
+	}, nil
+}
+
+// dockerPing reports daemon reachability + version for a given connection.
+func dockerPing(w http.ResponseWriter, d *dockerConn) {
+	info, err := dockerVersion(d)
+	if err != nil {
+		http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+		return
+	}
+	json.NewEncoder(w).Encode(info)
+}
+
+// writeDockerUnreachable responds when SSH (and any jump hop) authenticated
+// fine but the Docker socket itself couldn't be reached — expected for hosts
+// only ever used for SFTP/Nginx, or restricted SFTP-only accounts that
+// reject non-SFTP channels. Still a failed response (the handler's contract
+// is "is Docker up"), but callers can check ssh_ok to phrase it as a soft
+// warning instead of a hard connection error.
+func writeDockerUnreachable(w http.ResponseWriter, err error) {
+	w.WriteHeader(http.StatusBadGateway)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"error":      err.Error(),
+		"ssh_ok":     true,
+		"docker_err": err.Error(),
 	})
 }
 
@@ -615,17 +641,54 @@ func TestDockerHost() http.HandlerFunc {
 			SSHPassword: in.SSHPassword, SSHKey: in.SSHKey, SocketPath: in.SocketPath,
 			JumpHostID: in.JumpHostID,
 		}
-		d, err := dialDocker(h)
+
+		// Local mode talks straight to the socket — there's no separate SSH
+		// layer to verify, so a Docker ping failure is the whole answer.
+		if strings.TrimSpace(h.SSHHost) == "" {
+			d, err := dialDocker(h)
+			if err != nil {
+				http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+				return
+			}
+			defer d.Close()
+			dockerPing(w, d)
+			return
+		}
+
+		// Remote mode: this host record may end up used for SFTP or Nginx
+		// only, never Docker — and a restricted SFTP-only account (or a
+		// jump host with forwarding disabled) will reject the Docker socket
+		// channel even when SSH auth itself is fine. Verify SSH (and any
+		// jump hop) succeeds first, independently of Docker reachability.
+		sshClient, err := sshClientForHost(h)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
 		}
+		sshClient.Close()
+
+		d, err := dialDocker(h)
+		if err != nil {
+			writeDockerUnreachable(w, err)
+			return
+		}
 		defer d.Close()
-		dockerPing(w, d)
+		info, err := dockerVersion(d)
+		if err != nil {
+			writeDockerUnreachable(w, err)
+			return
+		}
+		json.NewEncoder(w).Encode(info)
 	}
 }
 
-// DockerPing tests connectivity for a saved host.
+// DockerPing tests connectivity for a saved host. It still reports failure
+// (non-2xx) whenever the Docker socket itself isn't reachable — callers that
+// gate Docker-specific features on this (DockerView, NginxView) need that —
+// but for a remote host it also confirms whether SSH itself (and any jump
+// hop) got through, so a caller like the host-form "Test connection" button
+// can tell "wrong credentials" apart from "this host just isn't running
+// Docker" (e.g. an SFTP-only account, or a jump host used only for SFTP).
 func DockerPing() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -634,13 +697,30 @@ func DockerPing() http.HandlerFunc {
 			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
 			return
 		}
-		d, err := connectHostByID(id)
+		h, err := loadDockerHost(id)
+		if err != nil {
+			http.Error(w, `{"error":"host not found"}`, http.StatusNotFound)
+			return
+		}
+		d, err := dialDocker(h)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
 		}
 		defer d.Close()
-		dockerPing(w, d)
+		info, err := dockerVersion(d)
+		if err != nil {
+			if strings.TrimSpace(h.SSHHost) != "" {
+				if sc, sshErr := sshClientForHost(h); sshErr == nil {
+					sc.Close()
+					writeDockerUnreachable(w, err)
+					return
+				}
+			}
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(info)
 	}
 }
 
