@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, nextTick, onMounted, onBeforeUnmount } from 'vue'
 
 const props = defineProps<{
   modelValue: string
@@ -13,6 +13,41 @@ const emit = defineEmits<{
 
 const open = ref(false)
 const wrapRef = ref<HTMLElement | null>(null)
+const triggerRef = ref<HTMLElement | null>(null)
+const panelStyle = ref<Record<string, string>>({})
+
+// Panel is teleported to <body> and positioned with `fixed` coordinates so it
+// can't be clipped by ancestors with overflow:hidden/auto (e.g. the SQL tab
+// toolbar), which previously made the opened dropdown invisible.
+function calcPanelStyle() {
+  if (!triggerRef.value) return
+  const rect = triggerRef.value.getBoundingClientRect()
+  const style: Record<string, string> = {
+    position: 'fixed',
+    left: `${rect.left}px`,
+    minWidth: `${Math.max(rect.width, 200)}px`,
+    maxWidth: '320px',
+    zIndex: '9999',
+  }
+  if (props.direction === 'up') {
+    style.bottom = `${window.innerHeight - rect.top + 4}px`
+  } else {
+    style.top = `${rect.bottom + 4}px`
+  }
+  panelStyle.value = style
+}
+
+function toggle() {
+  open.value = !open.value
+  if (open.value) {
+    nextTick(calcPanelStyle)
+    window.addEventListener('scroll', calcPanelStyle, { capture: true, passive: true })
+    window.addEventListener('resize', calcPanelStyle)
+  } else {
+    window.removeEventListener('scroll', calcPanelStyle, { capture: true })
+    window.removeEventListener('resize', calcPanelStyle)
+  }
+}
 
 function pick(db: string) {
   emit('update:modelValue', db)
@@ -20,21 +55,28 @@ function pick(db: string) {
 }
 
 function handleOutside(e: MouseEvent) {
-  if (wrapRef.value && !wrapRef.value.contains(e.target as Node)) {
-    open.value = false
-  }
+  const target = e.target as Node
+  if (wrapRef.value?.contains(target)) return
+  const panel = document.getElementById('dbpick-floating-panel')
+  if (panel?.contains(target)) return
+  open.value = false
 }
 
 onMounted(() => document.addEventListener('mousedown', handleOutside))
-onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', handleOutside)
+  window.removeEventListener('scroll', calcPanelStyle, { capture: true })
+  window.removeEventListener('resize', calcPanelStyle)
+})
 </script>
 
 <template>
   <div class="dbpick" ref="wrapRef">
     <button
+      ref="triggerRef"
       class="dbpick__trigger"
       :class="{ 'dbpick__trigger--open': open }"
-      @click="open = !open"
+      @click="toggle"
       type="button"
       :title="modelValue || 'Select database'"
     >
@@ -49,28 +91,30 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
       </svg>
     </button>
 
-    <div v-if="open" class="dbpick__dropdown" :class="{ 'dbpick__dropdown--up': direction === 'up' }">
-      <div class="dbpick__list">
-        <button
-          v-for="db in databases"
-          :key="db"
-          class="dbpick__option"
-          :class="{ 'dbpick__option--active': db === modelValue }"
-          @mousedown.prevent="pick(db)"
-          type="button"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;color:var(--text-muted)">
-            <ellipse cx="12" cy="5" rx="9" ry="3"/>
-            <path d="M3 5V19A9 3 0 0 0 21 19V5"/>
-            <path d="M3 12A9 3 0 0 0 21 12"/>
-          </svg>
-          <span class="dbpick__option-name">{{ db }}</span>
-          <svg v-if="db === modelValue" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:var(--brand);flex-shrink:0">
-            <polyline points="20 6 9 17 4 12"/>
-          </svg>
-        </button>
+    <Teleport to="body">
+      <div v-if="open" id="dbpick-floating-panel" class="dbpick__dropdown" :style="panelStyle">
+        <div class="dbpick__list">
+          <button
+            v-for="db in databases"
+            :key="db"
+            class="dbpick__option"
+            :class="{ 'dbpick__option--active': db === modelValue }"
+            @mousedown.prevent="pick(db)"
+            type="button"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;color:var(--text-muted)">
+              <ellipse cx="12" cy="5" rx="9" ry="3"/>
+              <path d="M3 5V19A9 3 0 0 0 21 19V5"/>
+              <path d="M3 12A9 3 0 0 0 21 12"/>
+            </svg>
+            <span class="dbpick__option-name">{{ db }}</span>
+            <svg v-if="db === modelValue" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:var(--brand);flex-shrink:0">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+          </button>
+        </div>
       </div>
-    </div>
+    </Teleport>
   </div>
 </template>
 
@@ -117,24 +161,16 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
   transition: transform 0.15s;
 }
 .dbpick__chevron--up { transform: rotate(180deg); }
+</style>
 
+<!-- Not scoped: this panel is teleported to <body>, outside this component's
+     scoped-style boundary, so its class needs global styling. -->
+<style>
 .dbpick__dropdown {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 9999;
-}
-.dbpick__dropdown--up {
-  top: auto;
-  bottom: calc(100% + 4px);
-  left: 0;
-  z-index: 9999;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0,0,0,0.28);
-  min-width: 200px;
-  max-width: 320px;
   overflow: hidden;
 }
 

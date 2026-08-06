@@ -43,6 +43,7 @@ type DockerHost struct {
 	SSHPassword string `json:"ssh_password,omitempty"`
 	SSHKey      string `json:"ssh_key,omitempty"`
 	SocketPath  string `json:"socket_path"`
+	JumpHostID  int64  `json:"jump_host_id,omitempty"`
 	OwnerID     int64  `json:"owner_id"`
 	CreatedAt   string `json:"created_at"`
 }
@@ -55,6 +56,7 @@ type DockerHostInput struct {
 	SSHPassword string `json:"ssh_password"`
 	SSHKey      string `json:"ssh_key"`
 	SocketPath  string `json:"socket_path"`
+	JumpHostID  int64  `json:"jump_host_id"`
 }
 
 // Output structs use lowercase json tags. Go's JSON decoder matches keys
@@ -138,8 +140,23 @@ func dialDocker(h *DockerHost) (*dockerConn, error) {
 	}, nil
 }
 
-// sshClientForHost opens an SSH connection to a remote Docker host.
+// maxJumpDepth bounds how many hops a jump-host chain may have, guarding
+// against misconfigured cycles (host A jumps via B, B jumps via A, ...).
+const maxJumpDepth = 4
+
+// sshClientForHost opens an SSH connection to a remote Docker host. If the
+// host has a JumpHostID set, it is not reachable directly — the connection is
+// tunneled through the jump host's own SSH session instead (e.g. a partner's
+// SFTP server that only has a private IP reachable from inside another VM we
+// already manage).
 func sshClientForHost(h *DockerHost) (*ssh.Client, error) {
+	return sshClientForHostDepth(h, 0)
+}
+
+func sshClientForHostDepth(h *DockerHost, depth int) (*ssh.Client, error) {
+	if depth > maxJumpDepth {
+		return nil, fmt.Errorf("jump host chain too deep (possible cycle)")
+	}
 	authMethods := []ssh.AuthMethod{}
 	if strings.TrimSpace(h.SSHKey) != "" {
 		signer, err := ssh.ParsePrivateKey([]byte(h.SSHKey))
@@ -158,17 +175,57 @@ func sshClientForHost(h *DockerHost) (*ssh.Client, error) {
 	if port == 0 {
 		port = 22
 	}
+	addr := fmt.Sprintf("%s:%d", h.SSHHost, port)
 	cfg := &ssh.ClientConfig{
 		User:            h.SSHUser,
 		Auth:            authMethods,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec
 		Timeout:         10 * time.Second,
 	}
-	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", h.SSHHost, port), cfg)
-	if err != nil {
-		return nil, fmt.Errorf("ssh dial: %w", err)
+
+	if h.JumpHostID == 0 {
+		client, err := ssh.Dial("tcp", addr, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("ssh dial: %w", err)
+		}
+		return client, nil
 	}
-	return client, nil
+
+	bastion, err := loadDockerHost(h.JumpHostID)
+	if err != nil {
+		return nil, fmt.Errorf("load jump host: %w", err)
+	}
+	bastionClient, err := sshClientForHostDepth(bastion, depth+1)
+	if err != nil {
+		return nil, fmt.Errorf("jump host %q: %w", bastion.Name, err)
+	}
+	conn, err := bastionClient.Dial("tcp", addr)
+	if err != nil {
+		bastionClient.Close()
+		return nil, fmt.Errorf("dial %s via jump host %q: %w", addr, bastion.Name, err)
+	}
+	ncc, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
+	if err != nil {
+		conn.Close()
+		bastionClient.Close()
+		return nil, fmt.Errorf("ssh handshake via jump host %q: %w", bastion.Name, err)
+	}
+	// Wrap the connection so closing the returned client also tears down the
+	// bastion hop it tunnels through.
+	return ssh.NewClient(&jumpConn{Conn: ncc, bastion: bastionClient}, chans, reqs), nil
+}
+
+// jumpConn wraps an ssh.Conn established through a bastion client so that
+// Close()ing the resulting *ssh.Client also closes the bastion connection.
+type jumpConn struct {
+	ssh.Conn
+	bastion *ssh.Client
+}
+
+func (j *jumpConn) Close() error {
+	err := j.Conn.Close()
+	j.bastion.Close()
+	return err
 }
 
 // dialDockerSocket opens a single raw connection to the Docker socket. It is
@@ -274,10 +331,10 @@ func loadDockerHost(id int64) (*DockerHost, error) {
 	err := appdb.DB.QueryRow(appdb.ConvertQuery(
 		`SELECT id, name, ssh_host, ssh_port, ssh_user, COALESCE(ssh_password,''),
 		        COALESCE(ssh_key,''), COALESCE(socket_path,'/var/run/docker.sock'),
-		        COALESCE(owner_id,0), created_at
+		        COALESCE(jump_host_id,0), COALESCE(owner_id,0), created_at
 		 FROM docker_hosts WHERE id = ?`), id).
 		Scan(&h.ID, &h.Name, &h.SSHHost, &h.SSHPort, &h.SSHUser, &encPw, &encKey,
-			&h.SocketPath, &h.OwnerID, &h.CreatedAt)
+			&h.SocketPath, &h.JumpHostID, &h.OwnerID, &h.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +374,8 @@ func ListDockerHosts() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		rows, err := appdb.DB.Query(appdb.ConvertQuery(
 			`SELECT id, name, ssh_host, ssh_port, ssh_user,
-			        COALESCE(socket_path,'/var/run/docker.sock'), COALESCE(owner_id,0), created_at
+			        COALESCE(socket_path,'/var/run/docker.sock'), COALESCE(jump_host_id,0),
+			        COALESCE(owner_id,0), created_at
 			 FROM docker_hosts ORDER BY name ASC`))
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
@@ -328,7 +386,7 @@ func ListDockerHosts() http.HandlerFunc {
 		for rows.Next() {
 			var h DockerHost
 			if err := rows.Scan(&h.ID, &h.Name, &h.SSHHost, &h.SSHPort, &h.SSHUser,
-				&h.SocketPath, &h.OwnerID, &h.CreatedAt); err != nil {
+				&h.SocketPath, &h.JumpHostID, &h.OwnerID, &h.CreatedAt); err != nil {
 				continue
 			}
 			// Never expose stored credentials in list responses.
@@ -356,6 +414,30 @@ func validateDockerHostInput(in *DockerHostInput) error {
 	return nil
 }
 
+// validateJumpHostID checks that an optional jump-host reference points at a
+// real, different host. selfID is 0 on create (no self to compare against).
+func validateJumpHostID(jumpID, selfID int64) error {
+	if jumpID == 0 {
+		return nil
+	}
+	if jumpID == selfID {
+		return fmt.Errorf("a host cannot jump via itself")
+	}
+	if _, err := loadDockerHost(jumpID); err != nil {
+		return fmt.Errorf("jump host not found")
+	}
+	return nil
+}
+
+// nullableID returns nil for the SQL driver when id is unset (0), so the
+// column stores NULL instead of a bogus foreign key.
+func nullableID(id int64) interface{} {
+	if id == 0 {
+		return nil
+	}
+	return id
+}
+
 func CreateDockerHost() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -365,6 +447,10 @@ func CreateDockerHost() http.HandlerFunc {
 			return
 		}
 		if err := validateDockerHostInput(&in); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		if err := validateJumpHostID(in.JumpHostID, 0); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
 		}
@@ -387,17 +473,17 @@ func CreateDockerHost() http.HandlerFunc {
 		ownerID, _ := currentUserID(r)
 
 		var id int64
-		insert := `INSERT INTO docker_hosts (name, ssh_host, ssh_port, ssh_user, ssh_password, ssh_key, socket_path, owner_id)
-			 VALUES (?,?,?,?,?,?,?,?)`
+		insert := `INSERT INTO docker_hosts (name, ssh_host, ssh_port, ssh_user, ssh_password, ssh_key, socket_path, jump_host_id, owner_id)
+			 VALUES (?,?,?,?,?,?,?,?,?)`
 		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
 			err = appdb.DB.QueryRow(appdb.ConvertQuery(insert+" RETURNING id"),
-				in.Name, in.SSHHost, in.SSHPort, in.SSHUser, encPw, encKey, in.SocketPath, ownerID).Scan(&id)
+				in.Name, in.SSHHost, in.SSHPort, in.SSHUser, encPw, encKey, in.SocketPath, nullableID(in.JumpHostID), ownerID).Scan(&id)
 		} else {
 			var res interface {
 				LastInsertId() (int64, error)
 			}
 			res, err = appdb.DB.Exec(appdb.ConvertQuery(insert),
-				in.Name, in.SSHHost, in.SSHPort, in.SSHUser, encPw, encKey, in.SocketPath, ownerID)
+				in.Name, in.SSHHost, in.SSHPort, in.SSHUser, encPw, encKey, in.SocketPath, nullableID(in.JumpHostID), ownerID)
 			if err == nil {
 				id, _ = res.LastInsertId()
 			}
@@ -427,6 +513,10 @@ func UpdateDockerHost() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
 		}
+		if err := validateJumpHostID(in.JumpHostID, id); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
 		if in.SSHPort == 0 {
 			in.SSHPort = 22
 		}
@@ -453,8 +543,8 @@ func UpdateDockerHost() http.HandlerFunc {
 
 		_, err = appdb.DB.Exec(appdb.ConvertQuery(
 			`UPDATE docker_hosts SET name=?, ssh_host=?, ssh_port=?, ssh_user=?,
-			        ssh_password=?, ssh_key=?, socket_path=? WHERE id=?`),
-			in.Name, in.SSHHost, in.SSHPort, in.SSHUser, encPw, encKey, in.SocketPath, id)
+			        ssh_password=?, ssh_key=?, socket_path=?, jump_host_id=? WHERE id=?`),
+			in.Name, in.SSHHost, in.SSHPort, in.SSHUser, encPw, encKey, in.SocketPath, nullableID(in.JumpHostID), id)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
@@ -469,6 +559,13 @@ func DeleteDockerHost() http.HandlerFunc {
 		id, err := dockerHostIDFromPath(r)
 		if err != nil {
 			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
+			return
+		}
+		// Clear any hosts that jump via this one before deleting it, so they
+		// don't end up pointing at a nonexistent bastion.
+		if _, err := appdb.DB.Exec(appdb.ConvertQuery(
+			`UPDATE docker_hosts SET jump_host_id=NULL WHERE jump_host_id=?`), id); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
 		}
 		if _, err := appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM docker_hosts WHERE id=?`), id); err != nil {
@@ -516,6 +613,7 @@ func TestDockerHost() http.HandlerFunc {
 		h := &DockerHost{
 			SSHHost: in.SSHHost, SSHPort: in.SSHPort, SSHUser: in.SSHUser,
 			SSHPassword: in.SSHPassword, SSHKey: in.SSHKey, SocketPath: in.SocketPath,
+			JumpHostID: in.JumpHostID,
 		}
 		d, err := dialDocker(h)
 		if err != nil {

@@ -1124,6 +1124,10 @@ func migrate() error {
 			owner_id     INTEGER,
 			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+		// Optional bastion: when set, connections to this host are dialed
+		// through another saved host's SSH session instead of directly —
+		// for targets only reachable from inside that host's network.
+		`ALTER TABLE docker_hosts ADD COLUMN jump_host_id INTEGER`,
 
 		// Per-host nginx UI settings — remembers sudo/paths/binary per docker host
 		`CREATE TABLE IF NOT EXISTS nginx_host_settings (

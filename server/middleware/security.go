@@ -123,10 +123,17 @@ func (rl *RateLimiter) warnRedisFallback(err error) {
 	log.Printf("WARNING: Redis rate limiter failed, falling back to in-memory limiter: %v", err)
 }
 
-// RateLimit middleware wraps handlers with rate limiting
+// RateLimit middleware wraps handlers with rate limiting. It only applies to
+// API routes — static asset/SPA serving is excluded so that a single page
+// load (which fires many JS/CSS/font requests) can't exhaust the same budget
+// as API traffic and block plain navigation.
 func RateLimit(rl *RateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !strings.HasPrefix(r.URL.Path, "/api/") {
+				next.ServeHTTP(w, r)
+				return
+			}
 			ip := getClientIP(r)
 			if !rl.Allow(ip) {
 				w.Header().Set("Retry-After", rl.RetryAfter())
