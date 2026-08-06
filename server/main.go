@@ -848,6 +848,19 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/docker/hosts/", func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/docker/hosts/"), "/")
 		parts := strings.Split(rest, "/")
+		// Private hosts are additionally restricted to their owner, an admin,
+		// or a user granted access in docker_host_access — on top of (never
+		// instead of) the coarse permission checks below. Non-ID segments
+		// like "test"/"users" have nothing to gate and pass straight through.
+		// WebSocket routes self-authenticate via ?token= (browsers can't set
+		// a Bearer header on them) and never get X-User-ID/X-User-Role from
+		// InjectUserContext, so they're excluded here the same way they skip
+		// the coarse permission checks below.
+		selfAuthed := len(parts) == 4 && parts[1] == "containers" &&
+			(parts[3] == "terminal" || parts[3] == "logstream" || parts[3] == "statstream")
+		if !selfAuthed && !handlers.HostAccessGate(w, r, parts[0], false) {
+			return
+		}
 		view := requireAny(handlers.PermDockerView, handlers.PermDockerManage)
 		manage := requireAny(handlers.PermDockerManage)
 		exec := requireAny(handlers.PermDockerExec)
@@ -855,11 +868,19 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		// /api/docker/hosts/test  — validate unsaved credentials
 		case len(parts) == 1 && parts[0] == "test" && r.Method == http.MethodPost:
 			manage(handlers.TestDockerHost())(w, r)
+		// /api/docker/hosts/users  — active users, for the "share with" picker
+		case len(parts) == 1 && parts[0] == "users" && r.Method == http.MethodGet:
+			manage(handlers.ListDockerHostUsers())(w, r)
 		// /api/docker/hosts/{id}
 		case len(parts) == 1 && r.Method == http.MethodPut:
 			manage(handlers.UpdateDockerHost())(w, r)
 		case len(parts) == 1 && r.Method == http.MethodDelete:
 			manage(handlers.DeleteDockerHost())(w, r)
+		// /api/docker/hosts/{id}/access  — view/manage per-user sharing
+		case len(parts) == 2 && parts[1] == "access" && r.Method == http.MethodGet:
+			manage(handlers.GetDockerHostAccess())(w, r)
+		case len(parts) == 2 && parts[1] == "access" && r.Method == http.MethodPut:
+			manage(handlers.SetDockerHostAccess())(w, r)
 		// /api/docker/hosts/{id}/ping
 		case len(parts) == 2 && parts[1] == "ping" && r.Method == http.MethodGet:
 			view(handlers.DockerPing())(w, r)
@@ -1082,6 +1103,15 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/sftp/hosts/", func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/sftp/hosts/"), "/")
 		parts := strings.Split(rest, "/")
+		// Private hosts are additionally restricted to their owner, an admin,
+		// or a user granted access in docker_host_access. download
+		// self-authenticates via ?token= (no Bearer header, so no
+		// X-User-ID/X-User-Role) — excluded here the same way it skips the
+		// coarse permission checks below.
+		selfAuthed := len(parts) == 2 && parts[1] == "download"
+		if !selfAuthed && !handlers.HostAccessGate(w, r, parts[0], false) {
+			return
+		}
 		access := requireAny(handlers.PermSftpAccess, handlers.PermSftpManage)
 		manage := requireAny(handlers.PermSftpManage)
 		switch {
@@ -1124,6 +1154,14 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/nginx/hosts/", func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/nginx/hosts/"), "/")
 		parts := strings.Split(rest, "/")
+		// Private hosts are additionally restricted to their owner, an admin,
+		// or a user granted access in docker_host_access. logs/stream
+		// self-authenticates via ?token= (browser EventSource, no Bearer
+		// header) — excluded here the same way it skips the checks below.
+		selfAuthed := len(parts) == 3 && parts[1] == "logs" && parts[2] == "stream"
+		if !selfAuthed && !handlers.HostAccessGate(w, r, parts[0], false) {
+			return
+		}
 		view := requireAny(handlers.PermNginxView, handlers.PermNginxManage, handlers.PermNginxReload)
 		manage := requireAny(handlers.PermNginxManage)
 		reload := requireAny(handlers.PermNginxReload)

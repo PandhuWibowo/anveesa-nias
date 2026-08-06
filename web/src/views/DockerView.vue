@@ -280,6 +280,10 @@ const emptyForm = (): HostForm => ({
 const jumpHostOptions = computed(() =>
   hosts.value.filter((h) => h.ssh_host && h.id !== editingHostId.value),
 )
+const jumpHostSelectOptions = computed(() => [
+  { value: 0, label: 'Connect directly' },
+  ...jumpHostOptions.value.map((h) => ({ value: h.id, label: h.name })),
+])
 
 // Strip SSH fields when saving a local host so the backend connects to the
 // daemon socket on this machine directly (empty ssh_host = local mode).
@@ -2520,10 +2524,12 @@ onMounted(loadHosts)
             </label>
             <label>
               Jump via (optional)
-              <select v-model.number="form.jump_host_id" class="base-input">
-                <option :value="0">Connect directly</option>
-                <option v-for="jh in jumpHostOptions" :key="jh.id" :value="jh.id">{{ jh.name }}</option>
-              </select>
+              <SearchSelect
+                :model-value="form.jump_host_id"
+                :options="jumpHostSelectOptions"
+                placeholder="Connect directly"
+                @update:model-value="(v) => (form.jump_host_id = Number(v))"
+              />
             </label>
             <p v-if="form.jump_host_id" class="dk-hint">
               This host is only reachable from inside "{{ jumpHostOptions.find(j => j.id === form.jump_host_id)?.name }}" —

@@ -1129,6 +1129,24 @@ func migrate() error {
 		// for targets only reachable from inside that host's network.
 		`ALTER TABLE docker_hosts ADD COLUMN jump_host_id INTEGER`,
 
+		// 'shared' (default, today's behavior) means visible to anyone who
+		// holds the coarse docker.view/docker.manage/sftp.access/etc role
+		// permission, same as before this column existed. 'private' means
+		// only the owner, an admin, or a user listed in docker_host_access
+		// may see or use it — narrowing access among role-permitted users,
+		// never granting access to someone who lacks the role permission.
+		`ALTER TABLE docker_hosts ADD COLUMN visibility TEXT NOT NULL DEFAULT 'shared'`,
+		`CREATE TABLE IF NOT EXISTS docker_host_access (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			host_id      INTEGER NOT NULL REFERENCES docker_hosts(id) ON DELETE CASCADE,
+			user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			access_level TEXT NOT NULL DEFAULT 'viewer',
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(host_id, user_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_docker_host_access_host ON docker_host_access(host_id, access_level)`,
+		`CREATE INDEX IF NOT EXISTS idx_docker_host_access_user ON docker_host_access(user_id, host_id)`,
+
 		// Per-host nginx UI settings — remembers sudo/paths/binary per docker host
 		`CREATE TABLE IF NOT EXISTS nginx_host_settings (
 			host_id     INTEGER PRIMARY KEY,
