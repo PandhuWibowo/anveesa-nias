@@ -19,6 +19,7 @@ type UserInfo struct {
 	Permissions          []string `json:"permissions"`
 	EffectivePermissions []string `json:"effective_permissions"`
 	MFAEnabled           bool     `json:"mfa_enabled"`
+	MFAExempt            bool     `json:"mfa_exempt"`
 	CreatedAt            string   `json:"created_at"`
 }
 
@@ -31,6 +32,7 @@ func ListUsers() http.HandlerFunc {
 				       COALESCE(u.is_active, 1) as is_active,
 				       COALESCE(u.permissions, '[]') as permissions,
 				       COALESCE(u.totp_enabled, 0) as mfa_enabled,
+				       COALESCE(u.mfa_exempt, 0) as mfa_exempt,
 				       u.created_at
 				FROM users u
 			LEFT JOIN roles r ON r.id = u.role_id
@@ -47,9 +49,11 @@ func ListUsers() http.HandlerFunc {
 			var isActive int
 			var permissions string
 			var mfaEnabled int
-			rows.Scan(&u.ID, &u.Username, &u.Role, &u.RoleID, &isActive, &permissions, &mfaEnabled, &u.CreatedAt)
+			var mfaExempt int
+			rows.Scan(&u.ID, &u.Username, &u.Role, &u.RoleID, &isActive, &permissions, &mfaEnabled, &mfaExempt, &u.CreatedAt)
 			u.IsActive = isActive == 1
 			u.MFAEnabled = mfaEnabled == 1
+			u.MFAExempt = mfaExempt == 1
 			u.Permissions = ParseAppPerms(permissions)
 			if effectivePerms, err := appdb.GetUserAppPermissions(u.ID); err == nil {
 				u.EffectivePermissions = effectivePerms
@@ -68,7 +72,11 @@ func ListUsers() http.HandlerFunc {
 // ResetUserMFA clears a user's TOTP enrollment (secret, enabled flag, and
 // backup codes) so they can log in without MFA again — the admin-side
 // counterpart to self-service Disable2FA, for account-recovery when a user
-// has lost their authenticator device and can't disable it themselves.
+// has lost their authenticator device and can't disable it themselves. It
+// also grants an MFA-enforcement exemption, so a reset user isn't
+// immediately walled off again by an org-wide MFA policy before they've had
+// a chance to re-enroll — the exemption clears automatically once they set
+// MFA up again (see Enable2FA), or an admin can revoke it manually.
 func ResetUserMFA() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -79,7 +87,7 @@ func ResetUserMFA() http.HandlerFunc {
 			return
 		}
 		if _, err := appdb.DB.Exec(appdb.ConvertQuery(
-			`UPDATE users SET totp_enabled = 0, totp_secret = NULL, backup_codes = NULL WHERE id = ?`), id); err != nil {
+			`UPDATE users SET totp_enabled = 0, totp_secret = NULL, backup_codes = NULL, mfa_exempt = 1 WHERE id = ?`), id); err != nil {
 			http.Error(w, jsonError("failed to reset MFA"), http.StatusInternalServerError)
 			return
 		}
@@ -104,6 +112,7 @@ func UpdateUser() http.HandlerFunc {
 			Password    string    `json:"password"`
 			Connections []int64   `json:"connections"`
 			Permissions *[]string `json:"permissions"`
+			MFAExempt   *bool     `json:"mfa_exempt"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
@@ -141,6 +150,17 @@ func UpdateUser() http.HandlerFunc {
 				isActive = 1
 			}
 			appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET is_active = ? WHERE id = ?`), isActive, id)
+		}
+
+		// Manually grant/revoke an MFA-enforcement exemption, independent of
+		// resetting MFA itself (e.g. to permanently exempt a service account,
+		// or to revoke an exemption once a reset user should be compliant again).
+		if body.MFAExempt != nil {
+			exempt := 0
+			if *body.MFAExempt {
+				exempt = 1
+			}
+			appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET mfa_exempt = ? WHERE id = ?`), exempt, id)
 		}
 
 		// Update connection assignments

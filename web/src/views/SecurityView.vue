@@ -13,6 +13,7 @@ const enabled = ref(false)
 const backupCodesCount = ref(0)
 const mfaEnforced = ref(false)
 const mfaRequiredSetup = ref(false)
+const mfaExempt = ref(false)
 const canManagePolicy = ref(false)
 const policyLoading = ref(false)
 const sessions = ref<Array<{ id: number; token_id: string; ip_address: string; user_agent: string; last_seen_at: string; expires_at: string; current: boolean; revoked_at?: string | null }>>([])
@@ -46,6 +47,7 @@ async function fetchStatus() {
     backupCodesCount.value = data.backup_codes_count || 0
     mfaEnforced.value = !!data.mfa_enforced
     mfaRequiredSetup.value = !!data.mfa_required_setup
+    mfaExempt.value = !!data.mfa_exempt
     canManagePolicy.value = !!data.can_manage_policy
     if (mfaRequiredSetup.value) {
       sessions.value = []
@@ -107,7 +109,7 @@ async function updateMFAPolicy(enforced: boolean) {
   try {
     const { data } = await axios.post('/api/auth/mfa-policy', { enforced })
     mfaEnforced.value = !!data.mfa_enforced
-    mfaRequiredSetup.value = mfaEnforced.value && !enabled.value
+    mfaRequiredSetup.value = mfaEnforced.value && !enabled.value && !mfaExempt.value
     toast.success(enforced ? 'MFA enforcement enabled' : 'MFA enforcement disabled')
   } catch (error: any) {
     toast.error(error.response?.data?.error || 'Failed to update MFA policy')

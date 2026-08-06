@@ -47,6 +47,12 @@ func userMFAEnabled(userID int64) bool {
 	return err == nil && enabled == 1
 }
 
+func userMFAExempt(userID int64) bool {
+	var exempt int
+	err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COALESCE(mfa_exempt, 0) FROM users WHERE id = ?`), userID).Scan(&exempt)
+	return err == nil && exempt == 1
+}
+
 // Setup2FA generates a new TOTP secret and QR code for the user
 func Setup2FA() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -143,8 +149,9 @@ func Enable2FA() http.HandlerFunc {
 			return
 		}
 
-		// Enable 2FA
-		_, err = appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET totp_enabled = 1 WHERE id = ?`), userID)
+		// Enable 2FA — clears any standing enforcement exemption too, since
+		// the user is compliant again and no longer needs it.
+		_, err = appdb.DB.Exec(appdb.ConvertQuery(`UPDATE users SET totp_enabled = 1, mfa_exempt = 0 WHERE id = ?`), userID)
 		if err != nil {
 			http.Error(w, `{"error":"failed to enable 2FA"}`, http.StatusInternalServerError)
 			return
@@ -309,10 +316,10 @@ func Get2FAStatus() http.HandlerFunc {
 
 		userID, _ := strconv.ParseInt(userIDStr, 10, 64)
 
-		var totpEnabled int
+		var totpEnabled, mfaExempt int
 		var backupCodesJSON string
-		err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COALESCE(totp_enabled, 0), COALESCE(backup_codes, '[]') FROM users WHERE id = ?`), userID).
-			Scan(&totpEnabled, &backupCodesJSON)
+		err := appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT COALESCE(totp_enabled, 0), COALESCE(mfa_exempt, 0), COALESCE(backup_codes, '[]') FROM users WHERE id = ?`), userID).
+			Scan(&totpEnabled, &mfaExempt, &backupCodesJSON)
 		if err != nil {
 			http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
 			return
@@ -327,7 +334,8 @@ func Get2FAStatus() http.HandlerFunc {
 			"enabled":            totpEnabled == 1,
 			"backup_codes_count": len(backupCodes),
 			"mfa_enforced":       policyEnforced,
-			"mfa_required_setup": policyEnforced && totpEnabled != 1,
+			"mfa_exempt":         mfaExempt == 1,
+			"mfa_required_setup": policyEnforced && totpEnabled != 1 && mfaExempt != 1,
 			"can_manage_policy":  canManagePolicy,
 		})
 	}

@@ -23,7 +23,7 @@ func EnforceMFASetup(next http.Handler) http.Handler {
 		}
 
 		userID, err := strconv.ParseInt(userIDStr, 10, 64)
-		if err != nil || userHasMFA(userID) {
+		if err != nil || userHasMFA(userID) || userExemptFromMFA(userID) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -56,4 +56,10 @@ func userHasMFA(userID int64) bool {
 	var enabled int
 	err := db.DB.QueryRow(db.ConvertQuery(`SELECT COALESCE(totp_enabled, 0) FROM users WHERE id = ?`), userID).Scan(&enabled)
 	return err == nil && enabled == 1
+}
+
+func userExemptFromMFA(userID int64) bool {
+	var exempt int
+	err := db.DB.QueryRow(db.ConvertQuery(`SELECT COALESCE(mfa_exempt, 0) FROM users WHERE id = ?`), userID).Scan(&exempt)
+	return err == nil && exempt == 1
 }

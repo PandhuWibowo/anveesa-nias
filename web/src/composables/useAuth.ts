@@ -8,6 +8,7 @@ interface User {
   permissions: string[]
   mfa_enabled?: boolean
   mfa_enforced?: boolean
+  mfa_exempt?: boolean
   mfa_required_setup?: boolean
 }
 

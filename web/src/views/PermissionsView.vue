@@ -312,6 +312,7 @@ interface User {
   permissions: string[]
   effective_permissions: string[]
   mfa_enabled: boolean
+  mfa_exempt: boolean
   created_at: string
 }
 
@@ -568,9 +569,13 @@ async function deleteUser(user: User) {
 }
 
 const resettingMFA = ref(false)
+const togglingMFAExempt = ref(false)
 
 // Clears the user's TOTP enrollment so they can log in without MFA again —
 // for when someone's locked out after losing their authenticator device.
+// Also grants an MFA-enforcement exemption (backend-side) so they aren't
+// immediately walled off again by an org-wide MFA policy before they've had
+// a chance to re-enroll.
 async function resetUserMFA(user: User) {
   if (!confirm(`Reset MFA for "${user.username}"? They'll be able to log in without it until they set it up again.`)) return
 
@@ -579,12 +584,34 @@ async function resetUserMFA(user: User) {
     await axios.post(`/api/admin/users/${user.id}/reset-mfa`)
     toast.success('MFA reset — user can log in without it')
     user.mfa_enabled = false
-    if (editingUser.value?.id === user.id) editingUser.value.mfa_enabled = false
+    user.mfa_exempt = true
+    if (editingUser.value?.id === user.id) {
+      editingUser.value.mfa_enabled = false
+      editingUser.value.mfa_exempt = true
+    }
     await fetchUsers()
   } catch (error: any) {
     toast.error(readableError(error, { action: 'Reset MFA', fallback: 'Failed to reset MFA' }))
   } finally {
     resettingMFA.value = false
+  }
+}
+
+// Manually grant/revoke the MFA-enforcement exemption, independent of a
+// reset — e.g. to permanently exempt a service account, or to put a
+// previously-reset user back under enforcement.
+async function toggleMFAExempt(user: User) {
+  const next = !user.mfa_exempt
+  togglingMFAExempt.value = true
+  try {
+    await axios.put(`/api/admin/users/${user.id}`, { mfa_exempt: next })
+    toast.success(next ? 'User exempted from MFA enforcement' : 'MFA exemption revoked')
+    user.mfa_exempt = next
+    if (editingUser.value?.id === user.id) editingUser.value.mfa_exempt = next
+  } catch (error: any) {
+    toast.error(readableError(error, { action: 'Update MFA exemption', fallback: 'Failed to update MFA exemption' }))
+  } finally {
+    togglingMFAExempt.value = false
   }
 }
 
@@ -1348,6 +1375,18 @@ watch(() => route.query.tab, () => {
                   @click="resetUserMFA(editingUser)"
                 >{{ resettingMFA ? 'Resetting…' : 'Reset MFA' }}</button>
                 <span v-else class="perm-hint">User hasn't set up MFA.</span>
+              </div>
+              <div class="perm-mfa-row">
+                <span class="perm-status" :class="{ 'perm-status--active': editingUser.mfa_exempt }">
+                  {{ editingUser.mfa_exempt ? 'Exempt' : 'Not exempt' }}
+                </span>
+                <button
+                  type="button"
+                  class="base-btn base-btn--ghost base-btn--xs"
+                  :disabled="togglingMFAExempt"
+                  @click="toggleMFAExempt(editingUser)"
+                >{{ togglingMFAExempt ? 'Updating…' : (editingUser.mfa_exempt ? 'Revoke exemption' : 'Exempt from enforcement') }}</button>
+                <span class="perm-hint">Bypasses the org-wide "require MFA" policy for this user only.</span>
               </div>
             </template>
 

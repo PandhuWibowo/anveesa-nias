@@ -580,6 +580,12 @@ func migrate() error {
 		`ALTER TABLE users ADD COLUMN totp_secret TEXT DEFAULT NULL`,
 		`ALTER TABLE users ADD COLUMN totp_enabled INTEGER DEFAULT 0`,
 		`ALTER TABLE users ADD COLUMN backup_codes TEXT DEFAULT NULL`,
+		// Lets a specific user bypass org-wide MFA enforcement — set
+		// automatically when an admin resets their MFA (so the account isn't
+		// immediately walled off again before they've had a chance to
+		// re-enroll), and clearable by an admin, or automatically once the
+		// user sets MFA up again themselves.
+		`ALTER TABLE users ADD COLUMN mfa_exempt INTEGER NOT NULL DEFAULT 0`,
 		`CREATE TABLE IF NOT EXISTS connection_folders (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			name        TEXT NOT NULL,
