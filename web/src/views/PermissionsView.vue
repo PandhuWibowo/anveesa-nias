@@ -311,6 +311,7 @@ interface User {
   is_active: boolean
   permissions: string[]
   effective_permissions: string[]
+  mfa_enabled: boolean
   created_at: string
 }
 
@@ -563,6 +564,27 @@ async function deleteUser(user: User) {
     await fetchUsers()
   } catch (error: any) {
     toast.error(error.response?.data || 'Failed to delete user')
+  }
+}
+
+const resettingMFA = ref(false)
+
+// Clears the user's TOTP enrollment so they can log in without MFA again —
+// for when someone's locked out after losing their authenticator device.
+async function resetUserMFA(user: User) {
+  if (!confirm(`Reset MFA for "${user.username}"? They'll be able to log in without it until they set it up again.`)) return
+
+  resettingMFA.value = true
+  try {
+    await axios.post(`/api/admin/users/${user.id}/reset-mfa`)
+    toast.success('MFA reset — user can log in without it')
+    user.mfa_enabled = false
+    if (editingUser.value?.id === user.id) editingUser.value.mfa_enabled = false
+    await fetchUsers()
+  } catch (error: any) {
+    toast.error(readableError(error, { action: 'Reset MFA', fallback: 'Failed to reset MFA' }))
+  } finally {
+    resettingMFA.value = false
   }
 }
 
@@ -1312,6 +1334,23 @@ watch(() => route.query.tab, () => {
               <option :value="false">Locked</option>
             </select>
 
+            <template v-if="editingUser">
+              <label class="perm-label">Multi-Factor Authentication</label>
+              <div class="perm-mfa-row">
+                <span class="perm-status" :class="{ 'perm-status--active': editingUser.mfa_enabled }">
+                  {{ editingUser.mfa_enabled ? 'Enabled' : 'Disabled' }}
+                </span>
+                <button
+                  v-if="editingUser.mfa_enabled"
+                  type="button"
+                  class="base-btn base-btn--ghost base-btn--xs perm-btn-del"
+                  :disabled="resettingMFA"
+                  @click="resetUserMFA(editingUser)"
+                >{{ resettingMFA ? 'Resetting…' : 'Reset MFA' }}</button>
+                <span v-else class="perm-hint">User hasn't set up MFA.</span>
+              </div>
+            </template>
+
             <label class="perm-label">Direct Feature Permissions</label>
             <div class="perm-perms-container perm-perms-container--compact">
               <div v-for="(perms, group) in groupedPermissions" :key="group" class="perm-perm-group">
@@ -1603,6 +1642,13 @@ watch(() => route.query.tab, () => {
   display: flex;
   gap: 6px;
   justify-content: flex-end;
+}
+
+.perm-mfa-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
 }
 
 .perm-btn-del {

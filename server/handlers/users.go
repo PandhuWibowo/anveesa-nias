@@ -18,6 +18,7 @@ type UserInfo struct {
 	IsActive             bool     `json:"is_active"`
 	Permissions          []string `json:"permissions"`
 	EffectivePermissions []string `json:"effective_permissions"`
+	MFAEnabled           bool     `json:"mfa_enabled"`
 	CreatedAt            string   `json:"created_at"`
 }
 
@@ -25,11 +26,12 @@ func ListUsers() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		rows, err := appdb.DB.Query(`
-				SELECT u.id, u.username, COALESCE(r.name, u.role) as role, 
+				SELECT u.id, u.username, COALESCE(r.name, u.role) as role,
 				       COALESCE(u.role_id, 2) as role_id,
 				       COALESCE(u.is_active, 1) as is_active,
 				       COALESCE(u.permissions, '[]') as permissions,
-				       u.created_at 
+				       COALESCE(u.totp_enabled, 0) as mfa_enabled,
+				       u.created_at
 				FROM users u
 			LEFT JOIN roles r ON r.id = u.role_id
 			ORDER BY u.id
@@ -44,8 +46,10 @@ func ListUsers() http.HandlerFunc {
 			var u UserInfo
 			var isActive int
 			var permissions string
-			rows.Scan(&u.ID, &u.Username, &u.Role, &u.RoleID, &isActive, &permissions, &u.CreatedAt)
+			var mfaEnabled int
+			rows.Scan(&u.ID, &u.Username, &u.Role, &u.RoleID, &isActive, &permissions, &mfaEnabled, &u.CreatedAt)
 			u.IsActive = isActive == 1
+			u.MFAEnabled = mfaEnabled == 1
 			u.Permissions = ParseAppPerms(permissions)
 			if effectivePerms, err := appdb.GetUserAppPermissions(u.ID); err == nil {
 				u.EffectivePermissions = effectivePerms
@@ -58,6 +62,28 @@ func ListUsers() http.HandlerFunc {
 			users = []UserInfo{}
 		}
 		json.NewEncoder(w).Encode(users)
+	}
+}
+
+// ResetUserMFA clears a user's TOTP enrollment (secret, enabled flag, and
+// backup codes) so they can log in without MFA again — the admin-side
+// counterpart to self-service Disable2FA, for account-recovery when a user
+// has lost their authenticator device and can't disable it themselves.
+func ResetUserMFA() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		idStr := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/admin/users/"), "/reset-mfa")
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			http.Error(w, `{"error":"invalid user id"}`, http.StatusBadRequest)
+			return
+		}
+		if _, err := appdb.DB.Exec(appdb.ConvertQuery(
+			`UPDATE users SET totp_enabled = 0, totp_secret = NULL, backup_codes = NULL WHERE id = ?`), id); err != nil {
+			http.Error(w, jsonError("failed to reset MFA"), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"message": "MFA reset — user can log in without it"})
 	}
 }
 

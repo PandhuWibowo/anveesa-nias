@@ -634,7 +634,13 @@ onMounted(loadHosts)
               <tbody>
                 <tr v-if="loading"><td :colspan="canManage ? 6 : 5" class="sf-msg">Loading…</td></tr>
                 <tr v-else-if="connError"><td :colspan="canManage ? 6 : 5" class="sf-msg sf-err">{{ connError }}</td></tr>
-                <tr v-else-if="!entries.length"><td :colspan="canManage ? 6 : 5" class="sf-msg">Empty directory.</td></tr>
+                <tr v-else-if="!entries.length">
+                  <td :colspan="canManage ? 6 : 5" class="sf-dir-empty">
+                    <span class="sf-dir-empty-icon">📁</span>
+                    <span class="sf-dir-empty-title">Empty directory</span>
+                    <span class="sf-dir-empty-hint">Upload a file or create a folder to get started.</span>
+                  </td>
+                </tr>
                 <tr v-else-if="!filteredEntries.length"><td :colspan="canManage ? 6 : 5" class="sf-msg">No files match "{{ search }}".</td></tr>
                 <tr v-for="e in filteredEntries" :key="e.name" class="sf-row" :class="{ 'sf-row--dir': e.isDir }">
                   <td v-if="canManage" class="sf-col-check" @click.stop>
@@ -806,6 +812,10 @@ onMounted(loadHosts)
 .sf-table tbody tr:last-child td { border-bottom: none; }
 .sf-msg { text-align: center; color: var(--text-muted); padding: 24px; }
 .sf-err { color: var(--danger); }
+.sf-dir-empty { text-align: center; padding: 36px 20px; }
+.sf-dir-empty-icon { display: block; font-size: 26px; margin-bottom: 8px; opacity: 0.7; }
+.sf-dir-empty-title { display: block; font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+.sf-dir-empty-hint { display: block; font-size: 12px; color: var(--text-muted); margin-top: 3px; }
 .sf-row:hover { background: var(--bg-hover); }
 .sf-name { display: flex; align-items: center; gap: 9px; cursor: pointer; }
 .sf-row--dir .sf-fname { color: var(--brand); font-weight: 500; }
@@ -815,7 +825,10 @@ onMounted(loadHosts)
 .sf-mode { font-family: var(--mono); font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 .sf-time { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .sf-act { text-align: right; white-space: nowrap; }
-.sf-col-size, .sf-col-mode, .sf-col-time { width: 1%; }
+.sf-col-size, .sf-col-mode, .sf-col-time { width: 1%; white-space: nowrap; }
+.sf-col-size { min-width: 70px; }
+.sf-col-mode { min-width: 110px; }
+.sf-col-time { min-width: 140px; }
 .sf-col-name, .sf-col-size, .sf-col-time { cursor: pointer; user-select: none; }
 
 .sf-modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); display: flex; align-items: center; justify-content: center; z-index: 100; }

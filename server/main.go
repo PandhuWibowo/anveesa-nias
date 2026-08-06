@@ -1221,6 +1221,10 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermUsersManage)(handlers.ResetPasswordHandler())(w, r)
 				return
 			}
+			if strings.HasSuffix(r.URL.Path, "/reset-mfa") {
+				requireAny(handlers.PermUsersManage)(handlers.ResetUserMFA())(w, r)
+				return
+			}
 			http.NotFound(w, r)
 		case http.MethodPut:
 			requireAny(handlers.PermUsersManage)(handlers.UpdateUser())(w, r)
