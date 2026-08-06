@@ -838,7 +838,15 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/docker/hosts", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			requireAny(handlers.PermDockerView, handlers.PermDockerManage)(handlers.ListDockerHosts())(w, r)
+			// Hosts are shared infrastructure across Docker, SFTP, and Nginx —
+			// anyone permitted to use any one of those tools needs to be able
+			// to list them, not just docker.view/docker.manage holders.
+			// Per-host visibility (owner/shared/grant) is still enforced
+			// inside ListDockerHosts(); this only gates reaching the list at
+			// all.
+			requireAny(handlers.PermDockerView, handlers.PermDockerManage,
+				handlers.PermSftpAccess, handlers.PermSftpManage,
+				handlers.PermNginxView, handlers.PermNginxManage, handlers.PermNginxReload)(handlers.ListDockerHosts())(w, r)
 		case http.MethodPost:
 			requireAny(handlers.PermDockerManage)(handlers.CreateDockerHost())(w, r)
 		default:
