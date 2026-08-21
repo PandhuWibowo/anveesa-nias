@@ -687,7 +687,6 @@ watch(restoreSource, () => {
 
 // ── Restore progress (async job, polled) ────────────────────────────────
 const restoreProgress = reactive({ executed: 0, skipped: 0 })
-const restoreCurrent = ref('')
 const restoreCurrentCount = ref(0)
 const restoreRecent = ref<string[]>([])
 const restoreCancelled = ref(false)
@@ -720,7 +719,6 @@ async function runRestore() {
   restoreResult.value = ''
   restoreProgress.executed = 0
   restoreProgress.skipped = 0
-  restoreCurrent.value = ''
   restoreCurrentCount.value = 0
   restoreRecent.value = []
   restoreElapsedSec.value = 0
@@ -748,7 +746,6 @@ async function runRestore() {
       const { data: status } = await axios.get(`/api/restore/jobs/${activeRestoreJobId}`)
       restoreProgress.executed = status.executed ?? 0
       restoreProgress.skipped = status.skipped ?? 0
-      restoreCurrent.value = status.current ?? ''
       restoreCurrentCount.value = status.current_count ?? 0
       restoreRecent.value = status.recent ?? []
 
@@ -1611,13 +1608,21 @@ onMounted(async () => {
                 </div>
                 <button class="base-btn base-btn--ghost base-btn--sm" @click="cancelRestore">Cancel</button>
               </div>
-              <div v-if="restoreCurrent" class="bv-restore-progress__current">
-                <span class="bv-restore-progress__current-dot"></span>
-                <span class="bv-restore-progress__current-label">{{ restoreCurrent }}</span>
-                <span v-if="restoreCurrentCount > 1" class="bv-restore-progress__count">×{{ restoreCurrentCount.toLocaleString() }}</span>
-              </div>
-              <div v-if="restoreRecent.length > 1" class="bv-restore-progress__log">
-                <div v-for="(op, i) in restoreRecent.slice(1)" :key="i" class="bv-restore-progress__log-line">{{ op }}</div>
+
+              <div v-if="restoreRecent.length" class="bv-restore-log">
+                <div
+                  v-for="(op, i) in restoreRecent"
+                  :key="i"
+                  class="bv-restore-log-row"
+                  :class="i === 0 ? 'bv-restore-log-row--active' : 'bv-restore-log-row--done'"
+                >
+                  <span class="bv-restore-log-icon">
+                    <svg v-if="i === 0" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                    <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  </span>
+                  <span class="bv-restore-log-label">{{ op }}</span>
+                  <span v-if="i === 0 && restoreCurrentCount > 1" class="bv-restore-log-count">×{{ restoreCurrentCount.toLocaleString() }}</span>
+                </div>
               </div>
             </div>
 
@@ -2752,55 +2757,53 @@ onMounted(async () => {
   font-size: 12px;
   font-family: var(--font-mono, monospace);
 }
-.bv-restore-progress__current {
+.bv-restore-log {
+  margin-top: 2px;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: 8px;
+  overflow: hidden auto;
+  max-height: 260px;
+  background: color-mix(in srgb, var(--bg-secondary, #1a1a1a) 60%, transparent);
+}
+.bv-restore-log-row {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
   font-size: 12px;
   font-family: var(--font-mono, monospace);
-  color: var(--brand);
-  padding-left: 22px;
-  white-space: nowrap;
-  overflow: hidden;
 }
-.bv-restore-progress__current-label {
+.bv-restore-log-row:last-child { border-bottom: none; }
+
+.bv-restore-log-row--active {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--brand) 6%, transparent);
+}
+.bv-restore-log-row--done {
+  color: var(--text-muted);
+}
+
+.bv-restore-log-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.bv-restore-log-row--active .bv-restore-log-icon { color: var(--brand); }
+.bv-restore-log-row--done .bv-restore-log-icon { color: var(--success, #4caf8a); }
+
+.bv-restore-log-label {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.bv-restore-progress__current-dot {
-  flex-shrink: 0;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--brand);
-  animation: bv-pulse 1.2s ease-in-out infinite;
-}
-.bv-restore-progress__count {
-  flex-shrink: 0;
-  color: var(--text-muted);
-  font-weight: 600;
-}
-@keyframes bv-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
-.bv-restore-progress__log {
-  padding-left: 22px;
-  max-height: 90px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.bv-restore-progress__log-line {
-  font-size: 11px;
-  font-family: var(--font-mono, monospace);
-  color: var(--text-muted);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  opacity: 0.75;
+}
+
+.bv-restore-log-count {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--brand);
 }
 
 @keyframes bv-spin { to { transform: rotate(360deg); } }
