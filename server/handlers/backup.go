@@ -295,12 +295,17 @@ type RestoreJob struct {
 	Executed int64 `json:"executed"`
 	Skipped  int64 `json:"skipped"`
 
-	// Current/Recent give a human-readable window into what the executor is
-	// actually doing right now (e.g. "Inserting into orders"), not just a
-	// running total — both are mu-protected since they're plain strings/slices,
-	// not atomics.
-	Current string   `json:"current,omitempty"`
-	Recent  []string `json:"recent,omitempty"`
+	// Current/CurrentCount/Recent give a human-readable window into what the
+	// executor is actually doing right now (e.g. "Inserting into orders"), not
+	// just a running total — all mu-protected since they're plain values, not
+	// atomics. Recent only gets a new entry when the label actually changes
+	// (a bulk insert into one table can be the identical label for hundreds of
+	// thousands of consecutive statements — repeating that line in a log is
+	// noise, not information); CurrentCount tracks how many times the current
+	// label has repeated in a row instead.
+	Current      string   `json:"current,omitempty"`
+	CurrentCount int64    `json:"current_count,omitempty"`
+	Recent       []string `json:"recent,omitempty"`
 
 	Error string `json:"error,omitempty"`
 
@@ -425,10 +430,15 @@ func RestoreBackup() http.HandlerFunc {
 			onExec := func(stmt string) {
 				label := describeStatement(stmt)
 				job.mu.Lock()
-				job.Current = label
-				job.Recent = append([]string{label}, job.Recent...)
-				if len(job.Recent) > 8 {
-					job.Recent = job.Recent[:8]
+				if label == job.Current {
+					job.CurrentCount++
+				} else {
+					job.Current = label
+					job.CurrentCount = 1
+					job.Recent = append([]string{label}, job.Recent...)
+					if len(job.Recent) > 8 {
+						job.Recent = job.Recent[:8]
+					}
 				}
 				job.mu.Unlock()
 			}
@@ -484,18 +494,20 @@ func GetRestoreJobStatus() http.HandlerFunc {
 			return
 		}
 		job.mu.Lock()
-		status, doneAt, errMsg, current, recent := job.Status, job.DoneAt, job.Error, job.Current, job.Recent
+		status, doneAt, errMsg := job.Status, job.DoneAt, job.Error
+		current, currentCount, recent := job.Current, job.CurrentCount, job.Recent
 		job.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":         job.ID,
-			"status":     status,
-			"started_at": job.StartedAt,
-			"done_at":    doneAt,
-			"executed":   atomic.LoadInt64(&job.Executed),
-			"skipped":    atomic.LoadInt64(&job.Skipped),
-			"current":    current,
-			"recent":     recent,
-			"error":      errMsg,
+			"id":            job.ID,
+			"status":        status,
+			"started_at":    job.StartedAt,
+			"done_at":       doneAt,
+			"executed":      atomic.LoadInt64(&job.Executed),
+			"skipped":       atomic.LoadInt64(&job.Skipped),
+			"current":       current,
+			"current_count": currentCount,
+			"recent":        recent,
+			"error":         errMsg,
 		})
 	}
 }

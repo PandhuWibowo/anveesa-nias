@@ -688,6 +688,7 @@ watch(restoreSource, () => {
 // ── Restore progress (async job, polled) ────────────────────────────────
 const restoreProgress = reactive({ executed: 0, skipped: 0 })
 const restoreCurrent = ref('')
+const restoreCurrentCount = ref(0)
 const restoreRecent = ref<string[]>([])
 const restoreCancelled = ref(false)
 const restoreElapsedSec = ref(0)
@@ -720,6 +721,7 @@ async function runRestore() {
   restoreProgress.executed = 0
   restoreProgress.skipped = 0
   restoreCurrent.value = ''
+  restoreCurrentCount.value = 0
   restoreRecent.value = []
   restoreElapsedSec.value = 0
   const startedAt = Date.now()
@@ -747,6 +749,7 @@ async function runRestore() {
       restoreProgress.executed = status.executed ?? 0
       restoreProgress.skipped = status.skipped ?? 0
       restoreCurrent.value = status.current ?? ''
+      restoreCurrentCount.value = status.current_count ?? 0
       restoreRecent.value = status.recent ?? []
 
       if (status.status === 'done') {
@@ -1608,7 +1611,11 @@ onMounted(async () => {
                 </div>
                 <button class="base-btn base-btn--ghost base-btn--sm" @click="cancelRestore">Cancel</button>
               </div>
-              <div v-if="restoreCurrent" class="bv-restore-progress__current">{{ restoreCurrent }}…</div>
+              <div v-if="restoreCurrent" class="bv-restore-progress__current">
+                <span class="bv-restore-progress__current-dot"></span>
+                <span class="bv-restore-progress__current-label">{{ restoreCurrent }}</span>
+                <span v-if="restoreCurrentCount > 1" class="bv-restore-progress__count">×{{ restoreCurrentCount.toLocaleString() }}</span>
+              </div>
               <div v-if="restoreRecent.length > 1" class="bv-restore-progress__log">
                 <div v-for="(op, i) in restoreRecent.slice(1)" :key="i" class="bv-restore-progress__log-line">{{ op }}</div>
               </div>
@@ -2746,13 +2753,37 @@ onMounted(async () => {
   font-family: var(--font-mono, monospace);
 }
 .bv-restore-progress__current {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-size: 12px;
   font-family: var(--font-mono, monospace);
   color: var(--brand);
   padding-left: 22px;
   white-space: nowrap;
   overflow: hidden;
+}
+.bv-restore-progress__current-label {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
+}
+.bv-restore-progress__current-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand);
+  animation: bv-pulse 1.2s ease-in-out infinite;
+}
+.bv-restore-progress__count {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+@keyframes bv-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 .bv-restore-progress__log {
   padding-left: 22px;
@@ -2760,7 +2791,7 @@ onMounted(async () => {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 .bv-restore-progress__log-line {
   font-size: 11px;
@@ -2769,6 +2800,7 @@ onMounted(async () => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  opacity: 0.75;
 }
 
 @keyframes bv-spin { to { transform: rotate(360deg); } }
