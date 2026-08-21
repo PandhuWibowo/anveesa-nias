@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -188,7 +190,54 @@ func GetBackup() http.HandlerFunc {
 	}
 }
 
-// RestoreBackup executes uploaded SQL statements.
+// ── Async restore job store ───────────────────────────────────────────────────
+//
+// Restores of real-world dumps can run for many minutes (multi-GB files,
+// hundreds of thousands of statements). Running that synchronously inside one
+// HTTP request is fragile — it's at the mercy of the server's WriteTimeout,
+// reverse proxies, and the browser tab staying open — so instead the request
+// just kicks off a background job (mirroring BackupToBucket's job pattern)
+// and the frontend polls for live progress.
+
+type RestoreJobStatus string
+
+const (
+	RestoreJobRunning  RestoreJobStatus = "running"
+	RestoreJobDone     RestoreJobStatus = "done"
+	RestoreJobFailed   RestoreJobStatus = "failed"
+	RestoreJobCanceled RestoreJobStatus = "canceled"
+)
+
+type RestoreJob struct {
+	ID        string           `json:"id"`
+	Status    RestoreJobStatus `json:"status"`
+	StartedAt time.Time        `json:"started_at"`
+	DoneAt    *time.Time       `json:"done_at,omitempty"`
+
+	// Executed/Skipped are updated live via atomic ops from the streaming
+	// executor — read with atomic.LoadInt64, never under mu.
+	Executed int64 `json:"executed"`
+	Skipped  int64 `json:"skipped"`
+
+	Error string `json:"error,omitempty"`
+
+	cancel context.CancelFunc
+	mu     sync.Mutex
+}
+
+var restoreJobs sync.Map // id → *RestoreJob
+
+func getRestoreJob(id string) (*RestoreJob, bool) {
+	v, ok := restoreJobs.Load(id)
+	if !ok {
+		return nil, false
+	}
+	return v.(*RestoreJob), true
+}
+
+// RestoreBackup starts an async restore job and returns a job ID immediately.
+// The actual download/decompress/execute runs in a background goroutine;
+// callers poll GET /api/restore/jobs/:id for status.
 // POST /api/connections/{id}/restore
 func RestoreBackup() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -235,61 +284,145 @@ func RestoreBackup() http.HandlerFunc {
 			return
 		}
 
-		var reader io.Reader
-		var bodyCloser io.Closer
+		// Fail fast on bad inputs before committing to a background job: these
+		// are quick metadata/pool lookups, not the slow part.
+		var dest *bucketConnRow
 		if fromBucket {
-			dest, err := fetchBucketConn(req.DestConnID)
+			dest, err = fetchBucketConn(req.DestConnID)
 			if err != nil {
 				http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
 				return
 			}
-			resp, err := openBucketObjectStream(r.Context(), dest, req.ObjectKey)
-			if err != nil {
-				http.Error(w, `{"error":"failed to fetch object from bucket: `+err.Error()+`"}`, http.StatusBadGateway)
-				return
-			}
-			bodyCloser = resp.Body
-			reader = resp.Body
-			if strings.HasSuffix(strings.ToLower(req.ObjectKey), ".gz") {
-				gz, err := gzip.NewReader(resp.Body)
-				if err != nil {
-					resp.Body.Close()
-					http.Error(w, `{"error":"failed to decompress object: `+err.Error()+`"}`, http.StatusBadRequest)
-					return
-				}
-				reader = gz
-			}
-		} else {
-			reader = strings.NewReader(req.SQL)
 		}
-		if bodyCloser != nil {
-			defer bodyCloser.Close()
-		}
-
 		db, _, err := GetDB(connID)
 		if err != nil {
 			http.Error(w, `{"error":"connection error"}`, http.StatusBadGateway)
 			return
 		}
 
-		tx, err := db.BeginTx(r.Context(), nil)
-		if err != nil {
-			http.Error(w, `{"error":"transaction error"}`, http.StatusInternalServerError)
-			return
+		jobCtx, jobCancel := context.WithCancel(context.Background())
+		job := &RestoreJob{
+			ID:        newJobID(),
+			Status:    RestoreJobRunning,
+			StartedAt: time.Now(),
+			cancel:    jobCancel,
 		}
+		restoreJobs.Store(job.ID, job)
 
-		executed, skipped, err := execRestoreStream(r.Context(), tx, reader)
-		if err != nil {
-			tx.Rollback()
-			http.Error(w, `{"error":"execution error at statement `+strconv.Itoa(executed+1)+`: `+err.Error()+`"}`, http.StatusBadRequest)
-			return
-		}
+		go func() {
+			defer jobCancel()
 
-		if err := tx.Commit(); err != nil {
-			http.Error(w, `{"error":"commit error"}`, http.StatusInternalServerError)
+			var reader io.Reader
+			var bodyCloser io.Closer
+			var stepErr error
+
+			if fromBucket {
+				resp, err := openBucketObjectStream(jobCtx, dest, req.ObjectKey)
+				if err != nil {
+					stepErr = fmt.Errorf("failed to fetch object from bucket: %w", err)
+				} else {
+					bodyCloser = resp.Body
+					reader = resp.Body
+					if strings.HasSuffix(strings.ToLower(req.ObjectKey), ".gz") {
+						gz, gzErr := gzip.NewReader(resp.Body)
+						if gzErr != nil {
+							resp.Body.Close()
+							bodyCloser = nil
+							stepErr = fmt.Errorf("failed to decompress object: %w", gzErr)
+						} else {
+							reader = gz
+						}
+					}
+				}
+			} else {
+				reader = strings.NewReader(req.SQL)
+			}
+
+			if stepErr == nil {
+				tx, err := db.BeginTx(jobCtx, nil)
+				if err != nil {
+					stepErr = fmt.Errorf("transaction error: %w", err)
+				} else {
+					executed, _, execErr := execRestoreStream(jobCtx, tx, reader, &job.Executed, &job.Skipped)
+					if execErr != nil {
+						tx.Rollback()
+						stepErr = fmt.Errorf("execution error at statement %d: %w", executed+1, execErr)
+					} else if err := tx.Commit(); err != nil {
+						stepErr = fmt.Errorf("commit error: %w", err)
+					}
+				}
+			}
+			if bodyCloser != nil {
+				bodyCloser.Close()
+			}
+
+			now := time.Now()
+			job.mu.Lock()
+			defer job.mu.Unlock()
+			job.DoneAt = &now
+			if stepErr != nil {
+				if jobCtx.Err() != nil {
+					job.Status = RestoreJobCanceled
+				} else {
+					job.Status = RestoreJobFailed
+					job.Error = stepErr.Error()
+				}
+				return
+			}
+			job.Status = RestoreJobDone
+		}()
+
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{"job_id": job.ID})
+	}
+}
+
+// GetRestoreJobStatus returns the current status of a restore job.
+// GET /api/restore/jobs/:id
+func GetRestoreJobStatus() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id := strings.TrimPrefix(r.URL.Path, "/api/restore/jobs/")
+		job, ok := getRestoreJob(id)
+		if !ok {
+			http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "executed": executed, "skipped": skipped})
+		job.mu.Lock()
+		status, doneAt, errMsg := job.Status, job.DoneAt, job.Error
+		job.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":         job.ID,
+			"status":     status,
+			"started_at": job.StartedAt,
+			"done_at":    doneAt,
+			"executed":   atomic.LoadInt64(&job.Executed),
+			"skipped":    atomic.LoadInt64(&job.Skipped),
+			"error":      errMsg,
+		})
+	}
+}
+
+// CancelRestoreJob cancels a running restore job. The in-flight transaction
+// is rolled back (its statements were never committed), so cancelling is
+// always safe.
+// DELETE /api/restore/jobs/:id
+func CancelRestoreJob() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id := strings.TrimPrefix(r.URL.Path, "/api/restore/jobs/")
+		job, ok := getRestoreJob(id)
+		if !ok {
+			http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
+			return
+		}
+		job.mu.Lock()
+		if job.Status == RestoreJobRunning {
+			job.cancel()
+			job.Status = RestoreJobCanceled
+		}
+		job.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
@@ -1311,10 +1444,23 @@ const maxRestoreStatementBytes = 512 * 1024 * 1024
 // semicolon-delimited chunk as "a comment if it starts with --" silently
 // drops that first statement (notably `SET search_path`) along with the
 // header.
-func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader) (executed, skipped int, err error) {
+// executedCounter/skippedCounter, if non-nil, are incremented atomically as
+// statements complete — a live progress feed for a caller polling a job
+// status endpoint on another goroutine, independent of the (executed,
+// skipped int) totals returned at the end.
+func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, executedCounter, skippedCounter *int64) (executed, skipped int, err error) {
 	br := bufio.NewReaderSize(r, 256*1024)
 	var cur strings.Builder
 	inStr := false
+	// inDollar tracks PostgreSQL's "$$ ... $$" dollar-quoting (used by the PK/FK
+	// repair DO-blocks this app's own dumps emit). Only the untagged "$$" form
+	// is generated, so a bare toggle-on-"$$" is enough — no need to match a
+	// custom $tag$. Without this, a semicolon INSIDE the DO block (terminating
+	// one of its internal statements) is misread as ending the whole
+	// statement, splitting it and leaving an "unterminated dollar-quoted
+	// string" for Postgres to choke on.
+	inDollar := false
+	pendingDollar := false
 	var prev byte
 
 	flush := func() error {
@@ -1325,12 +1471,18 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader) (executed, 
 		}
 		if !isAllowedRestoreStatement(stmt) {
 			skipped++
+			if skippedCounter != nil {
+				atomic.AddInt64(skippedCounter, 1)
+			}
 			return nil
 		}
 		if _, execErr := tx.ExecContext(ctx, stmt); execErr != nil {
 			return execErr
 		}
 		executed++
+		if executedCounter != nil {
+			atomic.AddInt64(executedCounter, 1)
+		}
 		return nil
 	}
 
@@ -1338,17 +1490,29 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader) (executed, 
 		line, readErr := br.ReadString('\n')
 		if len(line) > 0 {
 			// A "--" line comment only counts as one outside a string literal
-			// (inStr reflects state carried over from prior lines); otherwise
-			// it's just literal string content that happens to contain dashes.
-			if !inStr && strings.HasPrefix(strings.TrimSpace(line), "--") {
+			// or dollar-quoted block (state carried over from prior lines);
+			// otherwise it's just literal content that happens to contain dashes.
+			if !inStr && !inDollar && strings.HasPrefix(strings.TrimSpace(line), "--") {
 				prev = 0
 			} else {
 				for i := 0; i < len(line); i++ {
 					b := line[i]
-					if b == '\'' && prev != '\\' {
+					if !inStr {
+						if b == '$' {
+							if pendingDollar {
+								inDollar = !inDollar
+								pendingDollar = false
+							} else {
+								pendingDollar = true
+							}
+						} else {
+							pendingDollar = false
+						}
+					}
+					if !inDollar && b == '\'' && prev != '\\' {
 						inStr = !inStr
 					}
-					if b == ';' && !inStr {
+					if b == ';' && !inStr && !inDollar {
 						if ferr := flush(); ferr != nil {
 							return executed, skipped, ferr
 						}

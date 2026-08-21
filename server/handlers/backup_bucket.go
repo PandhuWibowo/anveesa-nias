@@ -638,6 +638,13 @@ type s3Object struct {
 	LastModified string `json:"last_modified"`
 }
 
+// maxListedObjects caps how many objects listBucketObjects will accumulate
+// across pages — a safety bound, not an expected bucket size, so pagination
+// and sorting in the UI always have the true full listing to work with
+// (S3 has no server-side "sort by size/date", so callers that want that need
+// the whole listing up front).
+const maxListedObjects = 5000
+
 func listBucketObjects(ctx interface {
 	Done() <-chan struct{}
 	Value(interface{}) interface{}
@@ -650,62 +657,89 @@ func listBucketObjects(ctx interface {
 		scheme = "http"
 	}
 	bucket := strings.Trim(dest.Bucket, "/")
-
 	virtualHost := bucket + "." + endpointHost
-	listURL := fmt.Sprintf("%s://%s/?list-type=2&max-keys=200", scheme, virtualHost)
-	if prefix != "" {
-		listURL += "&prefix=" + url.QueryEscape(prefix+"/")
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	payloadHash := sha256.Sum256([]byte{})
-	payloadHashHex := hex.EncodeToString(payloadHash[:])
-	region := objectStorageRegion(dest.Driver, endpointHost)
-	service := objectStorageService(dest.Driver)
-	signObjectStorageRequestFull(req, dest.Username, dest.Password, region, service, payloadHashHex, nil)
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("bucket list returned HTTP %d", resp.StatusCode)
-	}
 
 	var objects []s3Object
-	body := new(bytes.Buffer)
-	body.ReadFrom(resp.Body)
-	xml := body.String()
+	continuationToken := ""
 
 	for {
-		start := strings.Index(xml, "<Contents>")
-		if start < 0 {
-			break
+		// AWS SigV4 requires the canonical query string sorted alphabetically
+		// by key — url.Values.Encode() does that, so we build params via it
+		// rather than string-concatenating (the old fixed "list-type&max-keys"
+		// order only happened to already be sorted; appending a third param
+		// like continuation-token breaks that by coincidence).
+		q := url.Values{}
+		q.Set("list-type", "2")
+		q.Set("max-keys", "1000")
+		if prefix != "" {
+			q.Set("prefix", prefix+"/")
 		}
-		end := strings.Index(xml[start:], "</Contents>")
-		if end < 0 {
-			break
+		if continuationToken != "" {
+			q.Set("continuation-token", continuationToken)
 		}
-		block := xml[start : start+end+len("</Contents>")]
-		xml = xml[start+end+len("</Contents>"):]
+		listURL := fmt.Sprintf("%s://%s/?%s", scheme, virtualHost, q.Encode())
 
-		obj := s3Object{}
-		if k := extractXMLTag(block, "Key"); k != "" {
-			obj.Key = k
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
+		if err != nil {
+			return nil, err
 		}
-		if s := extractXMLTag(block, "Size"); s != "" {
-			obj.Size, _ = strconv.ParseInt(s, 10, 64)
+
+		payloadHash := sha256.Sum256([]byte{})
+		payloadHashHex := hex.EncodeToString(payloadHash[:])
+		region := objectStorageRegion(dest.Driver, endpointHost)
+		service := objectStorageService(dest.Driver)
+		signObjectStorageRequestFull(req, dest.Username, dest.Password, region, service, payloadHashHex, nil)
+
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
 		}
-		if lm := extractXMLTag(block, "LastModified"); lm != "" {
-			obj.LastModified = lm
+		body := new(bytes.Buffer)
+		body.ReadFrom(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			return nil, fmt.Errorf("bucket list returned HTTP %d", resp.StatusCode)
 		}
-		objects = append(objects, obj)
+
+		xmlBody := body.String()
+		rest := xmlBody
+		for {
+			start := strings.Index(rest, "<Contents>")
+			if start < 0 {
+				break
+			}
+			end := strings.Index(rest[start:], "</Contents>")
+			if end < 0 {
+				break
+			}
+			block := rest[start : start+end+len("</Contents>")]
+			rest = rest[start+end+len("</Contents>"):]
+
+			obj := s3Object{}
+			if k := extractXMLTag(block, "Key"); k != "" {
+				obj.Key = k
+			}
+			if s := extractXMLTag(block, "Size"); s != "" {
+				obj.Size, _ = strconv.ParseInt(s, 10, 64)
+			}
+			if lm := extractXMLTag(block, "LastModified"); lm != "" {
+				obj.LastModified = lm
+			}
+			objects = append(objects, obj)
+		}
+
+		if len(objects) >= maxListedObjects {
+			break
+		}
+		if extractXMLTag(xmlBody, "IsTruncated") != "true" {
+			break
+		}
+		nextToken := extractXMLTag(xmlBody, "NextContinuationToken")
+		if nextToken == "" {
+			break
+		}
+		continuationToken = nextToken
 	}
 	return objects, nil
 }

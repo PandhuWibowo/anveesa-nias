@@ -611,10 +611,49 @@ const restoreBucketLoading = ref(false)
 const restoreBucketBrowsed = ref(false)
 const restoreSelectedKey = ref<string | null>(null)
 
+type RestoreSortKey = 'key' | 'size' | 'last_modified'
+const restoreSortKey = ref<RestoreSortKey>('last_modified')
+const restoreSortDir = ref<'asc' | 'desc'>('desc')
+const restorePage = ref(1)
+const restorePageSize = ref(20)
+
+const restoreSortedFiles = computed(() => {
+  const dir = restoreSortDir.value === 'asc' ? 1 : -1
+  return [...restoreBucketFiles.value].sort((a, b) => {
+    let cmp = 0
+    if (restoreSortKey.value === 'key') cmp = a.key.localeCompare(b.key)
+    else if (restoreSortKey.value === 'size') cmp = a.size - b.size
+    else cmp = a.last_modified.localeCompare(b.last_modified)
+    return cmp * dir
+  })
+})
+
+const restoreTotalPages = computed(() =>
+  Math.max(1, Math.ceil(restoreSortedFiles.value.length / restorePageSize.value))
+)
+
+const restorePagedFiles = computed(() => {
+  const start = (restorePage.value - 1) * restorePageSize.value
+  return restoreSortedFiles.value.slice(start, start + restorePageSize.value)
+})
+
+function toggleRestoreSort(key: RestoreSortKey) {
+  if (restoreSortKey.value === key) {
+    restoreSortDir.value = restoreSortDir.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    restoreSortKey.value = key
+    restoreSortDir.value = key === 'key' ? 'asc' : 'desc'
+  }
+  restorePage.value = 1
+}
+
+watch([restorePageSize, restoreBucketFiles], () => { restorePage.value = 1 })
+
 async function loadRestoreBucketFiles() {
   if (!restoreBucketConnId.value) return
   restoreBucketLoading.value = true
   restoreBucketFiles.value = []
+  restorePage.value = 1
   try {
     const { data } = await axios.get('/api/backup/bucket-list', {
       params: {
@@ -624,7 +663,6 @@ async function loadRestoreBucketFiles() {
     })
     restoreBucketFiles.value = (data.objects ?? [])
       .filter((o: BucketObject) => o.key.endsWith('.sql') || o.key.endsWith('.sql.gz'))
-      .sort((a: BucketObject, b: BucketObject) => b.last_modified.localeCompare(a.last_modified))
     restoreBucketBrowsed.value = true
   } catch (err: any) {
     toast.error(err?.response?.data?.error || 'Failed to list bucket files')
@@ -646,23 +684,88 @@ watch(restoreSource, () => {
   restoreError.value = ''
 })
 
+// ── Restore progress (async job, polled) ────────────────────────────────
+const restoreProgress = reactive({ executed: 0, skipped: 0 })
+const restoreCancelled = ref(false)
+const restoreElapsedSec = ref(0)
+let restoreElapsedTimer: ReturnType<typeof setInterval> | null = null
+let activeRestoreJobId: string | null = null
+
+function restoreElapsedLabel(sec: number): string {
+  if (sec < 60) return `${sec}s`
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return `${m}m ${s}s`
+}
+
+function cancelRestore() {
+  restoreCancelled.value = true
+  if (activeRestoreJobId) {
+    axios.delete(`/api/restore/jobs/${activeRestoreJobId}`).catch(() => {})
+  }
+}
+
 async function runRestore() {
   if (!restoreConnId.value) return
   if (restoreSource.value === 'upload' && !restoreSQL.value) return
   if (restoreSource.value === 'bucket' && (!restoreBucketConnId.value || !restoreSelectedKey.value)) return
+
   restoreLoading.value = true
+  restoreCancelled.value = false
   restoreError.value = ''
   restoreResult.value = ''
+  restoreProgress.executed = 0
+  restoreProgress.skipped = 0
+  restoreElapsedSec.value = 0
+  const startedAt = Date.now()
+  restoreElapsedTimer = setInterval(() => {
+    restoreElapsedSec.value = Math.floor((Date.now() - startedAt) / 1000)
+  }, 1000)
+
   try {
     const payload = restoreSource.value === 'bucket'
       ? { dest_conn_id: restoreBucketConnId.value, object_key: restoreSelectedKey.value }
       : { sql: restoreSQL.value }
-    const { data } = await axios.post(`/api/connections/${restoreConnId.value}/restore`, payload)
-    restoreResult.value = `Executed ${data.executed} statement(s) successfully.`
+    // POST returns immediately with a job_id (HTTP 202) — the restore itself
+    // runs in a background goroutine so it isn't bound by the request/response
+    // lifetime (a big dump can take many minutes; a blocking request would be
+    // at the mercy of proxy/server write timeouts and the tab staying open).
+    const { data: jobData } = await axios.post(`/api/connections/${restoreConnId.value}/restore`, payload)
+    activeRestoreJobId = jobData.job_id
+
+    while (true) {
+      if (restoreCancelled.value) break
+      await new Promise(r => setTimeout(r, 1500))
+      if (restoreCancelled.value) break
+
+      const { data: status } = await axios.get(`/api/restore/jobs/${activeRestoreJobId}`)
+      restoreProgress.executed = status.executed ?? 0
+      restoreProgress.skipped = status.skipped ?? 0
+
+      if (status.status === 'done') {
+        restoreResult.value = `Executed ${status.executed} statement(s) successfully` +
+          (status.skipped ? ` (${status.skipped} skipped).` : '.')
+        toast.success('Restore complete')
+        break
+      }
+      if (status.status === 'failed') {
+        restoreError.value = status.error || 'Restore failed'
+        break
+      }
+      if (status.status === 'canceled') {
+        toast.info('Restore cancelled')
+        break
+      }
+    }
   } catch (error: any) {
-    restoreError.value = error?.response?.data?.error ?? 'Restore failed'
+    if (!restoreCancelled.value) {
+      restoreError.value = error?.response?.data?.error ?? 'Restore failed'
+    }
   } finally {
+    if (restoreElapsedTimer) clearInterval(restoreElapsedTimer)
+    restoreElapsedTimer = null
     restoreLoading.value = false
+    activeRestoreJobId = null
   }
 }
 
@@ -1425,13 +1528,22 @@ onMounted(async () => {
                 </div>
 
                 <div v-if="restoreBucketFiles.length > 0" class="bv-dl-files">
-                  <div class="bv-dl-files__header">
-                    <span>File</span>
-                    <span>Size</span>
-                    <span>Last Modified</span>
+                  <div class="bv-dl-files__header bv-dl-files__header--sortable">
+                    <button type="button" class="bv-sort-th" @click="toggleRestoreSort('key')">
+                      File
+                      <svg v-if="restoreSortKey === 'key'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" :style="{ transform: restoreSortDir === 'asc' ? 'rotate(180deg)' : '' }"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <button type="button" class="bv-sort-th" @click="toggleRestoreSort('size')">
+                      Size
+                      <svg v-if="restoreSortKey === 'size'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" :style="{ transform: restoreSortDir === 'asc' ? 'rotate(180deg)' : '' }"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <button type="button" class="bv-sort-th" @click="toggleRestoreSort('last_modified')">
+                      Last Modified
+                      <svg v-if="restoreSortKey === 'last_modified'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" :style="{ transform: restoreSortDir === 'asc' ? 'rotate(180deg)' : '' }"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
                     <span></span>
                   </div>
-                  <div v-for="f in restoreBucketFiles" :key="f.key" class="bv-dl-files__row">
+                  <div v-for="f in restorePagedFiles" :key="f.key" class="bv-dl-files__row">
                     <span class="bv-dl-files__name" :title="f.key">{{ f.key.split('/').pop() }}</span>
                     <span class="bv-dl-files__meta">{{ formatBytes(f.size) }}</span>
                     <span class="bv-dl-files__meta">{{ formatDate(f.last_modified) }}</span>
@@ -1444,6 +1556,25 @@ onMounted(async () => {
                       {{ restoreSelectedKey === f.key ? 'Selected' : 'Select' }}
                     </button>
                   </div>
+
+                  <div class="bv-pagination">
+                    <span class="bv-pagination__summary">
+                      {{ restoreBucketFiles.length }} file{{ restoreBucketFiles.length === 1 ? '' : 's' }}
+                      · page {{ restorePage }} of {{ restoreTotalPages }}
+                    </span>
+                    <select class="base-input bv-pagination__size" v-model.number="restorePageSize">
+                      <option :value="10">10 / page</option>
+                      <option :value="20">20 / page</option>
+                      <option :value="50">50 / page</option>
+                      <option :value="100">100 / page</option>
+                    </select>
+                    <div class="bv-pagination__nav">
+                      <button class="base-btn base-btn--ghost base-btn--sm" :disabled="restorePage <= 1" @click="restorePage = 1">«</button>
+                      <button class="base-btn base-btn--ghost base-btn--sm" :disabled="restorePage <= 1" @click="restorePage--">‹ Prev</button>
+                      <button class="base-btn base-btn--ghost base-btn--sm" :disabled="restorePage >= restoreTotalPages" @click="restorePage++">Next ›</button>
+                      <button class="base-btn base-btn--ghost base-btn--sm" :disabled="restorePage >= restoreTotalPages" @click="restorePage = restoreTotalPages">»</button>
+                    </div>
+                  </div>
                 </div>
 
                 <div v-else-if="restoreBucketConnId && !restoreBucketLoading && restoreBucketBrowsed" class="bv-empty-hint">
@@ -1451,6 +1582,16 @@ onMounted(async () => {
                 </div>
               </template>
             </template>
+
+            <div v-if="restoreLoading" class="bv-restore-progress">
+              <div class="bv-restore-progress__row">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                <span>Restoring… {{ restoreProgress.executed.toLocaleString() }} statement{{ restoreProgress.executed === 1 ? '' : 's' }} executed</span>
+                <span v-if="restoreProgress.skipped" class="bv-restore-progress__muted">({{ restoreProgress.skipped.toLocaleString() }} skipped)</span>
+                <span class="bv-restore-progress__elapsed">{{ restoreElapsedLabel(restoreElapsedSec) }}</span>
+              </div>
+              <button class="base-btn base-btn--ghost base-btn--sm" @click="cancelRestore">Cancel</button>
+            </div>
 
             <div v-if="restoreResult" class="notice notice--ok">{{ restoreResult }}</div>
             <div v-if="restoreError" class="notice notice--error">{{ restoreError }}</div>
@@ -2485,6 +2626,79 @@ onMounted(async () => {
 }
 
 .bv-dl-btn { min-width: 104px; justify-content: center; }
+
+.bv-dl-files__header--sortable { padding: 0; }
+.bv-sort-th {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: left;
+}
+.bv-sort-th:first-child { padding-left: 14px; }
+.bv-sort-th:hover { color: var(--text-primary); }
+.bv-sort-th svg { flex-shrink: 0; transition: transform 0.15s; }
+
+.bv-pagination {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-2);
+  flex-wrap: wrap;
+}
+.bv-pagination__summary {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-right: auto;
+}
+.bv-pagination__size {
+  width: auto;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.bv-pagination__nav {
+  display: flex;
+  gap: 4px;
+}
+
+.bv-restore-progress {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+.bv-restore-progress__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+  min-width: 0;
+}
+.bv-restore-progress__muted {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.bv-restore-progress__elapsed {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+}
 
 @keyframes bv-spin { to { transform: rotate(360deg); } }
 .bv-spin { animation: bv-spin 0.8s linear infinite; }

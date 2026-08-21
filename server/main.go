@@ -1366,6 +1366,16 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			http.NotFound(w, r)
 		}
 	})
+	mux.HandleFunc("/api/restore/jobs/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermBackupsManage)(handlers.GetRestoreJobStatus())(w, r)
+		case http.MethodDelete:
+			requireAny(handlers.PermBackupsManage)(handlers.CancelRestoreJob())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
 	mux.HandleFunc("/api/backup/bucket-list", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.NotFound(w, r)
