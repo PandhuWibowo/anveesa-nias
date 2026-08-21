@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,12 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+// errRestoreStreamRead marks an error as coming from reading the source
+// stream (network drop, truncated bucket object) rather than a SQL statement
+// failing to execute — see execRestoreStream. Callers use errors.Is against
+// this to decide whether a fresh download + retry is worth attempting.
+var errRestoreStreamRead = errors.New("restore stream read error")
 
 // ── Options ───────────────────────────────────────────────────────────────────
 
@@ -413,32 +420,6 @@ func RestoreBackup() http.HandlerFunc {
 		go func() {
 			defer jobCancel()
 
-			var reader io.Reader
-			var bodyCloser io.Closer
-			var stepErr error
-
-			if fromBucket {
-				resp, err := openBucketObjectStream(jobCtx, dest, req.ObjectKey)
-				if err != nil {
-					stepErr = fmt.Errorf("failed to fetch object from bucket: %w", err)
-				} else {
-					bodyCloser = resp.Body
-					reader = resp.Body
-					if strings.HasSuffix(strings.ToLower(req.ObjectKey), ".gz") {
-						gz, gzErr := gzip.NewReader(resp.Body)
-						if gzErr != nil {
-							resp.Body.Close()
-							bodyCloser = nil
-							stepErr = fmt.Errorf("failed to decompress object: %w", gzErr)
-						} else {
-							reader = gz
-						}
-					}
-				}
-			} else {
-				reader = strings.NewReader(req.SQL)
-			}
-
 			onExec := func(stmt string) {
 				label := describeStatement(stmt)
 				job.mu.Lock()
@@ -462,22 +443,91 @@ func RestoreBackup() http.HandlerFunc {
 				job.mu.Unlock()
 			}
 
-			if stepErr == nil {
+			// A restore of a real production dump can take many minutes just
+			// to download; one dropped connection shouldn't cost the whole
+			// attempt. Only retried for bucket sources, and only on a stream
+			// read error (errRestoreStreamRead) — a real SQL/data problem
+			// fails immediately since retrying won't fix that.
+			const maxAttempts = 3
+			var stepErr error
+
+			for attempt := 1; attempt <= maxAttempts; attempt++ {
+				var reader io.Reader
+				var bodyCloser io.Closer
+
+				if fromBucket {
+					resp, err := openBucketObjectStream(jobCtx, dest, req.ObjectKey)
+					if err != nil {
+						stepErr = fmt.Errorf("failed to fetch object from bucket: %w", err)
+						break
+					}
+					bodyCloser = resp.Body
+					reader = resp.Body
+					if strings.HasSuffix(strings.ToLower(req.ObjectKey), ".gz") {
+						gz, gzErr := gzip.NewReader(resp.Body)
+						if gzErr != nil {
+							resp.Body.Close()
+							stepErr = fmt.Errorf("failed to decompress object: %w", gzErr)
+							break
+						}
+						reader = gz
+					}
+				} else {
+					reader = strings.NewReader(req.SQL)
+				}
+
 				tx, err := db.BeginTx(jobCtx, nil)
 				if err != nil {
-					stepErr = fmt.Errorf("transaction error: %w", err)
-				} else {
-					executed, _, execErr := execRestoreStream(jobCtx, tx, reader, driver, req.SkipConflicts, req.ContinueOnError, &job.Executed, &job.Skipped, &job.FailedRows, onExec, onFail)
-					if execErr != nil {
-						tx.Rollback()
-						stepErr = fmt.Errorf("execution error at statement %d: %w", executed+1, execErr)
-					} else if err := tx.Commit(); err != nil {
-						stepErr = fmt.Errorf("commit error: %w", err)
+					if bodyCloser != nil {
+						bodyCloser.Close()
 					}
+					stepErr = fmt.Errorf("transaction error: %w", err)
+					break
 				}
-			}
-			if bodyCloser != nil {
-				bodyCloser.Close()
+
+				executed, _, execErr := execRestoreStream(jobCtx, tx, reader, driver, req.SkipConflicts, req.ContinueOnError, &job.Executed, &job.Skipped, &job.FailedRows, onExec, onFail)
+				if bodyCloser != nil {
+					bodyCloser.Close()
+				}
+
+				if execErr != nil {
+					tx.Rollback()
+					if fromBucket && errors.Is(execErr, errRestoreStreamRead) && attempt < maxAttempts {
+						// Reset live progress and retry from a fresh download —
+						// the prior attempt's work was rolled back with it, so
+						// the counters showing it would be misleading.
+						atomic.StoreInt64(&job.Executed, 0)
+						atomic.StoreInt64(&job.Skipped, 0)
+						atomic.StoreInt64(&job.FailedRows, 0)
+						retryMsg := fmt.Sprintf("Connection dropped after %d statements — retrying download (attempt %d/%d)", executed, attempt+1, maxAttempts)
+						job.mu.Lock()
+						job.Current = retryMsg
+						job.CurrentCount = 0
+						// The UI renders Recent[0] as "what's happening now" — it
+						// must carry this status too, not just Current, or the
+						// progress panel goes blank during the retry pause.
+						job.Recent = []string{retryMsg}
+						job.FirstRowError = ""
+						job.mu.Unlock()
+						select {
+						case <-time.After(5 * time.Second):
+						case <-jobCtx.Done():
+						}
+						continue
+					}
+					if errors.Is(execErr, errRestoreStreamRead) {
+						stepErr = fmt.Errorf("download interrupted after %d statements (%d attempts): %w", executed, attempt, execErr)
+					} else {
+						stepErr = fmt.Errorf("execution error at statement %d: %w", executed+1, execErr)
+					}
+					break
+				}
+				if err := tx.Commit(); err != nil {
+					stepErr = fmt.Errorf("commit error: %w", err)
+					break
+				}
+				stepErr = nil
+				break
 			}
 
 			now := time.Now()
@@ -1822,7 +1872,13 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 			if readErr == io.EOF {
 				break
 			}
-			return executed, skipped, readErr
+			// Distinguish "the source stream broke" (network drop, truncated
+			// bucket object) from "a statement failed to execute" — they were
+			// previously indistinguishable to the caller, which produced a
+			// misleading "execution error at statement N" for what was really
+			// a download interruption, and gave callers no way to tell this
+			// class of failure is worth retrying with a fresh download.
+			return executed, skipped, fmt.Errorf("%w: %v", errRestoreStreamRead, readErr)
 		}
 	}
 	if err := flush(); err != nil {
