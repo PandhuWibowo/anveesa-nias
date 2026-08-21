@@ -1560,7 +1560,16 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, executedCou
 	// string" for Postgres to choke on.
 	inDollar := false
 	pendingDollar := false
-	var prev byte
+	// pendingQuote defers the "is this `'` a close, or the first half of a
+	// doubled `''` escape?" decision across a line-read boundary — needed
+	// because a string literal's data can legitimately contain '\n'. A quote
+	// inside a string is only ever resolved by looking at the NEXT character
+	// (standard SQL: '' inside a string is one literal quote, not a close);
+	// there is no backslash-escaping in this app's own dumps (sqlLiteral
+	// doubles quotes), so backslashes in the data — e.g. JSON payloads like
+	// "application\/json" — are just ordinary bytes and must never be treated
+	// as an escape character for the surrounding quote.
+	pendingQuote := false
 
 	flush := func() error {
 		stmt := strings.TrimSpace(cur.String())
@@ -1595,11 +1604,48 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, executedCou
 			// or dollar-quoted block (state carried over from prior lines);
 			// otherwise it's just literal content that happens to contain dashes.
 			if !inStr && !inDollar && strings.HasPrefix(strings.TrimSpace(line), "--") {
-				prev = 0
+				// nothing to do — the whole line is discarded
 			} else {
 				for i := 0; i < len(line); i++ {
 					b := line[i]
-					if !inStr {
+
+					if pendingQuote {
+						pendingQuote = false
+						if b == '\'' {
+							// doubled quote spanning the line boundary: one
+							// literal `'` in the data, string stays open.
+							cur.WriteByte(b)
+							continue
+						}
+						// the deferred quote from the previous byte was the
+						// real close; fall through and process b normally.
+						inStr = false
+					}
+
+					if !inDollar && b == '\'' {
+						if inStr {
+							if i+1 < len(line) {
+								if line[i+1] == '\'' {
+									cur.WriteByte(b)
+									cur.WriteByte(line[i+1])
+									i++
+									continue
+								}
+								inStr = false
+								cur.WriteByte(b)
+								continue
+							}
+							// last byte of this line — defer to the next line's first byte
+							pendingQuote = true
+							cur.WriteByte(b)
+							continue
+						}
+						inStr = true
+						cur.WriteByte(b)
+						continue
+					}
+
+					if !inStr && !inDollar {
 						if b == '$' {
 							if pendingDollar {
 								inDollar = !inDollar
@@ -1611,9 +1657,7 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, executedCou
 							pendingDollar = false
 						}
 					}
-					if !inDollar && b == '\'' && prev != '\\' {
-						inStr = !inStr
-					}
+
 					if b == ';' && !inStr && !inDollar {
 						if ferr := flush(); ferr != nil {
 							return executed, skipped, ferr
@@ -1624,7 +1668,6 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, executedCou
 							return executed, skipped, fmt.Errorf("single statement exceeds %dMB — dump may be missing a terminating semicolon", maxRestoreStatementBytes/(1024*1024))
 						}
 					}
-					prev = b
 				}
 			}
 		}
