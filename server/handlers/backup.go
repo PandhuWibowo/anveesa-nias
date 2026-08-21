@@ -290,10 +290,21 @@ type RestoreJob struct {
 	StartedAt time.Time        `json:"started_at"`
 	DoneAt    *time.Time       `json:"done_at,omitempty"`
 
-	// Executed/Skipped are updated live via atomic ops from the streaming
-	// executor — read with atomic.LoadInt64, never under mu.
+	// Executed/Skipped/FailedRows are updated live via atomic ops from the
+	// streaming executor — read with atomic.LoadInt64, never under mu.
 	Executed int64 `json:"executed"`
 	Skipped  int64 `json:"skipped"`
+	// FailedRows counts INSERTs that errored and were rolled back to a
+	// per-statement savepoint instead of aborting the whole restore — only
+	// nonzero when the caller opted into continueOnError.
+	FailedRows int64 `json:"failed_rows"`
+
+	// FirstRowError captures the first row-level error's text (e.g. "date/time
+	// field value out of range") for diagnostics — mu-protected since it's a
+	// plain string, not an atomic. Only the first is kept; a bad dump can
+	// produce millions of identical failures and there's no value in storing
+	// each one.
+	FirstRowError string `json:"first_row_error,omitempty"`
 
 	// Current/CurrentCount/Recent give a human-readable window into what the
 	// executor is actually doing right now (e.g. "Inserting into orders"), not
@@ -347,10 +358,11 @@ func RestoreBackup() http.HandlerFunc {
 		}
 
 		var req struct {
-			SQL           string `json:"sql"`
-			DestConnID    int64  `json:"dest_conn_id"`
-			ObjectKey     string `json:"object_key"`
-			SkipConflicts bool   `json:"skip_conflicts"`
+			SQL             string `json:"sql"`
+			DestConnID      int64  `json:"dest_conn_id"`
+			ObjectKey       string `json:"object_key"`
+			SkipConflicts   bool   `json:"skip_conflicts"`
+			ContinueOnError bool   `json:"continue_on_error"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
@@ -442,13 +454,20 @@ func RestoreBackup() http.HandlerFunc {
 				}
 				job.mu.Unlock()
 			}
+			onFail := func(rowErr error) {
+				job.mu.Lock()
+				if job.FirstRowError == "" {
+					job.FirstRowError = rowErr.Error()
+				}
+				job.mu.Unlock()
+			}
 
 			if stepErr == nil {
 				tx, err := db.BeginTx(jobCtx, nil)
 				if err != nil {
 					stepErr = fmt.Errorf("transaction error: %w", err)
 				} else {
-					executed, _, execErr := execRestoreStream(jobCtx, tx, reader, driver, req.SkipConflicts, &job.Executed, &job.Skipped, onExec)
+					executed, _, execErr := execRestoreStream(jobCtx, tx, reader, driver, req.SkipConflicts, req.ContinueOnError, &job.Executed, &job.Skipped, &job.FailedRows, onExec, onFail)
 					if execErr != nil {
 						tx.Rollback()
 						stepErr = fmt.Errorf("execution error at statement %d: %w", executed+1, execErr)
@@ -496,17 +515,20 @@ func GetRestoreJobStatus() http.HandlerFunc {
 		job.mu.Lock()
 		status, doneAt, errMsg := job.Status, job.DoneAt, job.Error
 		current, currentCount, recent := job.Current, job.CurrentCount, job.Recent
+		firstRowError := job.FirstRowError
 		job.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":            job.ID,
-			"status":        status,
-			"started_at":    job.StartedAt,
-			"done_at":       doneAt,
-			"executed":      atomic.LoadInt64(&job.Executed),
-			"skipped":       atomic.LoadInt64(&job.Skipped),
-			"current":       current,
-			"current_count": currentCount,
-			"recent":        recent,
+			"id":              job.ID,
+			"status":          status,
+			"started_at":      job.StartedAt,
+			"done_at":         doneAt,
+			"executed":        atomic.LoadInt64(&job.Executed),
+			"skipped":         atomic.LoadInt64(&job.Skipped),
+			"failed_rows":     atomic.LoadInt64(&job.FailedRows),
+			"first_row_error": firstRowError,
+			"current":         current,
+			"current_count":   currentCount,
+			"recent":          recent,
 			"error":         errMsg,
 		})
 	}
@@ -1588,6 +1610,20 @@ func addConflictSkip(stmt, driver string) string {
 	}
 }
 
+// savepointStatements returns this driver's syntax for a named savepoint
+// used to isolate a single risky statement within the larger restore
+// transaction. MSSQL has no separate "release" step — a SAVE TRANSACTION
+// marker just stays valid until the outer transaction ends — so release is
+// returned empty there and callers should skip that step.
+func savepointStatements(driver string) (save, rollbackTo, release string) {
+	switch driver {
+	case "mssql", "sqlserver":
+		return "SAVE TRANSACTION restore_row", "ROLLBACK TRANSACTION restore_row", ""
+	default: // postgres, mysql, mariadb, sqlite
+		return "SAVEPOINT restore_row", "ROLLBACK TO SAVEPOINT restore_row", "RELEASE SAVEPOINT restore_row"
+	}
+}
+
 // execRestoreStream reads SQL statements from r as they are parsed — buffering
 // only the current statement, never the whole dump — and executes each
 // allowed one against tx. This lets restores from bucket-hosted dumps scale to
@@ -1601,16 +1637,21 @@ func addConflictSkip(stmt, driver string) string {
 // semicolon-delimited chunk as "a comment if it starts with --" silently
 // drops that first statement (notably `SET search_path`) along with the
 // header.
-// executedCounter/skippedCounter, if non-nil, are incremented atomically as
-// statements complete — a live progress feed for a caller polling a job
-// status endpoint on another goroutine, independent of the (executed,
-// skipped int) totals returned at the end. onExec, if non-nil, is called with
-// the raw statement text right after each successful execution, for callers
-// that want a human-readable "what's happening right now" feed rather than
-// just a running count. When skipConflicts is true, statements are rewritten
-// (see addStatementIfNotExists/addConflictSkip) so re-running a restore
-// against a target that already has the data no-ops instead of erroring.
-func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver string, skipConflicts bool, executedCounter, skippedCounter *int64, onExec func(stmt string)) (executed, skipped int, err error) {
+// executedCounter/skippedCounter/failedCounter, if non-nil, are incremented
+// atomically as statements complete — a live progress feed for a caller
+// polling a job status endpoint on another goroutine, independent of the
+// (executed, skipped int) totals returned at the end. onExec, if non-nil, is
+// called with the raw statement text right after each successful execution,
+// for callers that want a human-readable "what's happening right now" feed
+// rather than just a running count. When skipConflicts is true, statements
+// are rewritten (see addStatementIfNotExists/addConflictSkip) so re-running a
+// restore against a target that already has the data no-ops instead of
+// erroring. When continueOnError is true, INSERTs run inside a per-statement
+// SAVEPOINT — a row that fails (bad data, e.g. an out-of-range date) is
+// rolled back to that savepoint and counted as failed instead of aborting the
+// whole (potentially hours-long, multi-million-statement) transaction; onFail,
+// if non-nil, is called with each such error.
+func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver string, skipConflicts, continueOnError bool, executedCounter, skippedCounter, failedCounter *int64, onExec func(stmt string), onFail func(err error)) (executed, skipped int, err error) {
 	br := bufio.NewReaderSize(r, 256*1024)
 	var cur strings.Builder
 	inStr := false
@@ -1651,9 +1692,37 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 			stmt = addStatementIfNotExists(stmt)
 			stmt = addConflictSkip(stmt, driver)
 		}
-		if _, execErr := tx.ExecContext(ctx, stmt); execErr != nil {
+
+		// Only INSERTs get the savepoint treatment: they're the high-volume,
+		// data-dependent statements where a single malformed row shouldn't sink
+		// an otherwise-good multi-million-row restore. A DDL statement failing
+		// (bad CREATE TABLE, etc.) is a real problem worth aborting for.
+		if continueOnError && strings.HasPrefix(stmt, "INSERT") {
+			save, rollbackTo, release := savepointStatements(driver)
+			if _, spErr := tx.ExecContext(ctx, save); spErr != nil {
+				return spErr
+			}
+			if _, execErr := tx.ExecContext(ctx, stmt); execErr != nil {
+				if _, rbErr := tx.ExecContext(ctx, rollbackTo); rbErr != nil {
+					return rbErr
+				}
+				if failedCounter != nil {
+					atomic.AddInt64(failedCounter, 1)
+				}
+				if onFail != nil {
+					onFail(execErr)
+				}
+				return nil
+			}
+			if release != "" {
+				if _, relErr := tx.ExecContext(ctx, release); relErr != nil {
+					return relErr
+				}
+			}
+		} else if _, execErr := tx.ExecContext(ctx, stmt); execErr != nil {
 			return execErr
 		}
+
 		executed++
 		if executedCounter != nil {
 			atomic.AddInt64(executedCounter, 1)
