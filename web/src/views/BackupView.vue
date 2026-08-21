@@ -693,8 +693,36 @@ const restoreCurrentCount = ref(0)
 const restoreRecent = ref<string[]>([])
 const restoreCancelled = ref(false)
 const restoreElapsedSec = ref(0)
+const restoreReconnecting = ref(false)
+const restoreReconnectAttempt = ref(0)
 let restoreElapsedTimer: ReturnType<typeof setInterval> | null = null
 let activeRestoreJobId: string | null = null
+
+// A dropped client connection (wifi blip, laptop sleep) must not read as "the
+// restore failed" — the actual work runs server-side on a context detached
+// from this HTTP request, so it keeps going regardless of whether we can
+// currently reach the server to ask about it. The job id is also persisted so
+// reloading the page (or the tab having been closed) can reattach instead of
+// losing visibility into a restore that's still running.
+const RESTORE_JOB_STORAGE_KEY = 'nias_restore_job'
+const MAX_RECONNECT_ATTEMPTS = 40 // ~60s of retrying at the 1.5s poll interval
+
+function saveActiveJob(jobId: string, connId: number) {
+  try {
+    localStorage.setItem(RESTORE_JOB_STORAGE_KEY, JSON.stringify({ jobId, connId, savedAt: Date.now() }))
+  } catch { /* localStorage unavailable — not fatal, just lose reattach-on-reload */ }
+}
+function clearActiveJob() {
+  try { localStorage.removeItem(RESTORE_JOB_STORAGE_KEY) } catch { /* ignore */ }
+}
+function loadActiveJob(): { jobId: string; connId: number; savedAt: number } | null {
+  try {
+    const raw = localStorage.getItem(RESTORE_JOB_STORAGE_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
 
 function restoreElapsedLabel(sec: number): string {
   if (sec < 60) return `${sec}s`
@@ -708,46 +736,55 @@ function cancelRestore() {
   if (activeRestoreJobId) {
     axios.delete(`/api/restore/jobs/${activeRestoreJobId}`).catch(() => {})
   }
+  clearActiveJob()
 }
 
-async function runRestore() {
-  if (!restoreConnId.value) return
-  if (restoreSource.value === 'upload' && !restoreSQL.value) return
-  if (restoreSource.value === 'bucket' && (!restoreBucketConnId.value || !restoreSelectedKey.value)) return
-
+async function pollRestoreJob(jobId: string) {
   restoreLoading.value = true
   restoreCancelled.value = false
-  restoreError.value = ''
-  restoreResult.value = ''
-  restoreProgress.executed = 0
-  restoreProgress.skipped = 0
-  restoreProgress.failedRows = 0
-  restoreFirstRowError.value = ''
-  restoreCurrentCount.value = 0
-  restoreRecent.value = []
+  restoreReconnecting.value = false
+  restoreReconnectAttempt.value = 0
   restoreElapsedSec.value = 0
+  activeRestoreJobId = jobId
   const startedAt = Date.now()
   restoreElapsedTimer = setInterval(() => {
     restoreElapsedSec.value = Math.floor((Date.now() - startedAt) / 1000)
   }, 1000)
 
   try {
-    const payload = restoreSource.value === 'bucket'
-      ? { dest_conn_id: restoreBucketConnId.value, object_key: restoreSelectedKey.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value }
-      : { sql: restoreSQL.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value }
-    // POST returns immediately with a job_id (HTTP 202) — the restore itself
-    // runs in a background goroutine so it isn't bound by the request/response
-    // lifetime (a big dump can take many minutes; a blocking request would be
-    // at the mercy of proxy/server write timeouts and the tab staying open).
-    const { data: jobData } = await axios.post(`/api/connections/${restoreConnId.value}/restore`, payload)
-    activeRestoreJobId = jobData.job_id
-
     while (true) {
       if (restoreCancelled.value) break
       await new Promise(r => setTimeout(r, 1500))
       if (restoreCancelled.value) break
 
-      const { data: status } = await axios.get(`/api/restore/jobs/${activeRestoreJobId}`)
+      let status: any
+      try {
+        const resp = await axios.get(`/api/restore/jobs/${jobId}`)
+        status = resp.data
+        restoreReconnecting.value = false
+        restoreReconnectAttempt.value = 0
+      } catch (pollErr: any) {
+        if (!pollErr.response) {
+          // No response reached us at all — this is OUR connection dropping,
+          // not the server's. The restore keeps running regardless; just keep
+          // trying to check on it instead of declaring it failed.
+          restoreReconnectAttempt.value++
+          restoreReconnecting.value = true
+          if (restoreReconnectAttempt.value >= MAX_RECONNECT_ATTEMPTS) {
+            restoreError.value = "Lost connection to the server. The restore is likely still running — reopen this page once you're back online and it will resume watching progress."
+            break
+          }
+          continue
+        }
+        if (pollErr.response.status === 404) {
+          restoreError.value = 'Lost track of this restore (the server may have restarted). Check the target database directly to see what was applied.'
+          clearActiveJob()
+          break
+        }
+        restoreError.value = pollErr.response?.data?.error || 'Failed to check restore status'
+        break
+      }
+
       restoreProgress.executed = status.executed ?? 0
       restoreProgress.skipped = status.skipped ?? 0
       restoreProgress.failedRows = status.failed_rows ?? 0
@@ -761,26 +798,60 @@ async function runRestore() {
           (status.failed_rows ? ` — ${status.failed_rows} row(s) failed and were skipped (e.g. ${status.first_row_error})` : '') +
           '.'
         toast.success('Restore complete')
+        clearActiveJob()
         break
       }
       if (status.status === 'failed') {
         restoreError.value = status.error || 'Restore failed'
+        clearActiveJob()
         break
       }
       if (status.status === 'canceled') {
         toast.info('Restore cancelled')
+        clearActiveJob()
         break
       }
     }
-  } catch (error: any) {
-    if (!restoreCancelled.value) {
-      restoreError.value = error?.response?.data?.error ?? 'Restore failed'
+
+    if (restoreCancelled.value) {
+      toast.info('Restore cancelled')
     }
   } finally {
     if (restoreElapsedTimer) clearInterval(restoreElapsedTimer)
     restoreElapsedTimer = null
     restoreLoading.value = false
+    restoreReconnecting.value = false
     activeRestoreJobId = null
+  }
+}
+
+async function runRestore() {
+  if (!restoreConnId.value) return
+  if (restoreSource.value === 'upload' && !restoreSQL.value) return
+  if (restoreSource.value === 'bucket' && (!restoreBucketConnId.value || !restoreSelectedKey.value)) return
+
+  restoreError.value = ''
+  restoreResult.value = ''
+  restoreProgress.executed = 0
+  restoreProgress.skipped = 0
+  restoreProgress.failedRows = 0
+  restoreFirstRowError.value = ''
+  restoreCurrentCount.value = 0
+  restoreRecent.value = []
+
+  try {
+    const payload = restoreSource.value === 'bucket'
+      ? { dest_conn_id: restoreBucketConnId.value, object_key: restoreSelectedKey.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value }
+      : { sql: restoreSQL.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value }
+    // POST returns immediately with a job_id (HTTP 202) — the restore itself
+    // runs in a background goroutine so it isn't bound by the request/response
+    // lifetime (a big dump can take many minutes; a blocking request would be
+    // at the mercy of proxy/server write timeouts and the tab staying open).
+    const { data: jobData } = await axios.post(`/api/connections/${restoreConnId.value}/restore`, payload)
+    saveActiveJob(jobData.job_id, restoreConnId.value)
+    await pollRestoreJob(jobData.job_id)
+  } catch (error: any) {
+    restoreError.value = error?.response?.data?.error ?? 'Restore failed'
   }
 }
 
@@ -794,6 +865,29 @@ watch(filteredRequests, async (items) => {
 onMounted(async () => {
   await fetchConnections()
   await fetchRequests()
+
+  const saved = loadActiveJob()
+  if (saved) {
+    const isStale = Date.now() - saved.savedAt > 24 * 60 * 60 * 1000
+    if (isStale) {
+      clearActiveJob()
+    } else {
+      try {
+        const { data: status } = await axios.get(`/api/restore/jobs/${saved.jobId}`)
+        if (status.status === 'running') {
+          restoreSource.value = 'bucket'
+          restoreConnId.value = saved.connId
+          activeTab.value = 'restore'
+          toast.info('Reattached to a restore already in progress')
+          pollRestoreJob(saved.jobId) // fire-and-forget — same as a freshly started one
+        } else {
+          clearActiveJob()
+        }
+      } catch {
+        clearActiveJob()
+      }
+    }
+  }
 })
 </script>
 
@@ -1615,6 +1709,11 @@ onMounted(async () => {
             </label>
 
             <div v-if="restoreLoading" class="bv-restore-progress">
+              <div v-if="restoreReconnecting" class="bv-restore-reconnect">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                Connection to server lost — reconnecting… (attempt {{ restoreReconnectAttempt }}/{{ MAX_RECONNECT_ATTEMPTS }})
+                <span class="bv-restore-reconnect__hint">The restore keeps running on the server — this only affects your view of its progress.</span>
+              </div>
               <div class="bv-restore-progress__head">
                 <div class="bv-restore-progress__row">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
@@ -2773,6 +2872,25 @@ onMounted(async () => {
   color: #d97706;
   font-size: 12px;
   font-weight: 600;
+}
+.bv-restore-reconnect {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+  margin-bottom: 2px;
+  border-radius: 6px;
+  background: color-mix(in srgb, #d97706 12%, transparent);
+  color: #d97706;
+  font-size: 12px;
+  font-weight: 600;
+}
+.bv-restore-reconnect__hint {
+  flex-basis: 100%;
+  font-size: 11px;
+  font-weight: 400;
+  color: color-mix(in srgb, #d97706 80%, var(--text-muted));
 }
 .bv-restore-progress__elapsed {
   color: var(--text-muted);

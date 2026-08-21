@@ -420,14 +420,14 @@ func RestoreBackup() http.HandlerFunc {
 		go func() {
 			defer jobCancel()
 
-			onExec := func(stmt string) {
+			onExec := func(stmt string, n int) {
 				label := describeStatement(stmt)
 				job.mu.Lock()
 				if label == job.Current {
-					job.CurrentCount++
+					job.CurrentCount += int64(n)
 				} else {
 					job.Current = label
-					job.CurrentCount = 1
+					job.CurrentCount = int64(n)
 					job.Recent = append([]string{label}, job.Recent...)
 					if len(job.Recent) > 8 {
 						job.Recent = job.Recent[:8]
@@ -1674,6 +1674,51 @@ func savepointStatements(driver string) (save, rollbackTo, release string) {
 	}
 }
 
+// execWithSavepoint runs stmt inside a driver-appropriate SAVEPOINT. The two
+// return values are deliberately distinct: rowErr is stmt's own failure
+// (data problem — the savepoint already cleanly absorbed it, caller decides
+// whether to record-and-move-on or retry differently), while fatalErr means
+// the savepoint mechanism itself broke (can't create/roll back a savepoint)
+// and the whole restore must abort — conflating the two would let a real
+// infrastructure failure get silently swallowed as "just a bad row."
+func execWithSavepoint(ctx context.Context, tx *sql.Tx, driver, stmt string) (rowErr, fatalErr error) {
+	save, rollbackTo, release := savepointStatements(driver)
+	if _, err := tx.ExecContext(ctx, save); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, stmt); err != nil {
+		if _, rbErr := tx.ExecContext(ctx, rollbackTo); rbErr != nil {
+			return nil, rbErr
+		}
+		return err, nil
+	}
+	if release != "" {
+		if _, err := tx.ExecContext(ctx, release); err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
+}
+
+// insertBatchParts splits a single-row "INSERT INTO t (cols) VALUES (tuple)"
+// statement — exactly the shape writeData generates, one row per INSERT —
+// into a reusable prefix ("INSERT INTO t (cols) VALUES ") and its value
+// tuple, so consecutive rows for the same table can be joined into one
+// multi-row INSERT instead of one network round-trip per row. Anything else
+// (a different statement shape) returns ok=false and is left to execute
+// as-is.
+func insertBatchParts(stmt string) (prefix, tuple string, ok bool) {
+	const marker = " VALUES ("
+	if !strings.HasPrefix(stmt, "INSERT INTO ") || !strings.HasSuffix(stmt, ")") {
+		return "", "", false
+	}
+	idx := strings.Index(stmt, marker)
+	if idx < 0 {
+		return "", "", false
+	}
+	return stmt[:idx+len(marker)-1], stmt[idx+len(marker)-1:], true
+}
+
 // execRestoreStream reads SQL statements from r as they are parsed — buffering
 // only the current statement, never the whole dump — and executes each
 // allowed one against tx. This lets restores from bucket-hosted dumps scale to
@@ -1701,7 +1746,7 @@ func savepointStatements(driver string) (save, rollbackTo, release string) {
 // rolled back to that savepoint and counted as failed instead of aborting the
 // whole (potentially hours-long, multi-million-statement) transaction; onFail,
 // if non-nil, is called with each such error.
-func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver string, skipConflicts, continueOnError bool, executedCounter, skippedCounter, failedCounter *int64, onExec func(stmt string), onFail func(err error)) (executed, skipped int, err error) {
+func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver string, skipConflicts, continueOnError bool, executedCounter, skippedCounter, failedCounter *int64, onExec func(stmt string, n int), onFail func(err error)) (executed, skipped int, err error) {
 	br := bufio.NewReaderSize(r, 256*1024)
 	var cur strings.Builder
 	inStr := false
@@ -1725,19 +1770,20 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 	// as an escape character for the surrounding quote.
 	pendingQuote := false
 
-	flush := func() error {
-		stmt := strings.TrimSpace(cur.String())
-		cur.Reset()
-		if stmt == "" {
-			return nil
-		}
-		if !isAllowedRestoreStatement(stmt) {
-			skipped++
-			if skippedCounter != nil {
-				atomic.AddInt64(skippedCounter, 1)
-			}
-			return nil
-		}
+	// Consecutive same-shape single-row INSERTs get folded into one multi-row
+	// INSERT instead of one network round-trip per row — see insertBatchParts
+	// and flushBatch. This is the single biggest lever for restore throughput,
+	// since INSERT statements dominate any real dump and each round-trip's
+	// network+DB latency otherwise dwarfs the actual work being done.
+	const maxBatchRows = 200
+	const maxBatchBytes = 4 * 1024 * 1024
+	var batchPrefix string
+	var batchTuples []string
+	var batchBytes int
+
+	// execStatement runs one statement outside the batching path — DDL, DO
+	// blocks, SET, or a lone (unbatched) INSERT.
+	execStatement := func(stmt string) error {
 		if skipConflicts {
 			stmt = addStatementIfNotExists(stmt)
 			stmt = addConflictSkip(stmt, driver)
@@ -1759,26 +1805,18 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 		// A plain DDL statement failing (bad CREATE TABLE, etc.) is still a
 		// real problem worth aborting for, so nothing else gets this treatment.
 		if continueOnError && (strings.HasPrefix(stmt, "INSERT") || strings.HasPrefix(stmt, "DO ")) {
-			save, rollbackTo, release := savepointStatements(driver)
-			if _, spErr := tx.ExecContext(ctx, save); spErr != nil {
-				return spErr
+			rowErr, fatalErr := execWithSavepoint(ctx, tx, driver, stmt)
+			if fatalErr != nil {
+				return fatalErr
 			}
-			if _, execErr := tx.ExecContext(ctx, stmt); execErr != nil {
-				if _, rbErr := tx.ExecContext(ctx, rollbackTo); rbErr != nil {
-					return rbErr
-				}
+			if rowErr != nil {
 				if failedCounter != nil {
 					atomic.AddInt64(failedCounter, 1)
 				}
 				if onFail != nil {
-					onFail(execErr)
+					onFail(rowErr)
 				}
 				return nil
-			}
-			if release != "" {
-				if _, relErr := tx.ExecContext(ctx, release); relErr != nil {
-					return relErr
-				}
 			}
 		} else if _, execErr := tx.ExecContext(ctx, stmt); execErr != nil {
 			return execErr
@@ -1789,9 +1827,102 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 			atomic.AddInt64(executedCounter, 1)
 		}
 		if onExec != nil {
-			onExec(stmt)
+			onExec(stmt, 1)
 		}
 		return nil
+	}
+
+	// flushBatch executes (and clears) whatever rows are currently buffered.
+	flushBatch := func() error {
+		if len(batchTuples) == 0 {
+			return nil
+		}
+		n := len(batchTuples)
+		tuples := batchTuples
+		prefix := batchPrefix
+		batchPrefix, batchTuples, batchBytes = "", nil, 0
+
+		if n == 1 {
+			// No batching benefit for a single row.
+			return execStatement(prefix + tuples[0])
+		}
+
+		combined := prefix + strings.Join(tuples, ", ")
+		rewritten := combined
+		if skipConflicts {
+			rewritten = addStatementIfNotExists(rewritten)
+			rewritten = addConflictSkip(rewritten, driver)
+		}
+
+		runBatch := func() (rowErr, fatalErr error) {
+			if continueOnError {
+				return execWithSavepoint(ctx, tx, driver, rewritten)
+			}
+			_, err := tx.ExecContext(ctx, rewritten)
+			return err, nil
+		}
+
+		rowErr, fatalErr := runBatch()
+		if fatalErr != nil {
+			return fatalErr
+		}
+		if rowErr == nil {
+			executed += n
+			if executedCounter != nil {
+				atomic.AddInt64(executedCounter, int64(n))
+			}
+			if onExec != nil {
+				onExec(prefix+tuples[n-1], n)
+			}
+			return nil
+		}
+		if !continueOnError {
+			// No fallback without continueOnError — a batch failing aborts the
+			// restore exactly like a single statement failing always has.
+			return rowErr
+		}
+
+		// The batch failed as a whole (its savepoint already absorbed that
+		// cleanly) — fall back to row-by-row so only the actually-bad row(s)
+		// get skipped instead of losing every good row it was bundled with.
+		for _, tuple := range tuples {
+			if err := execStatement(prefix + tuple); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	flush := func() error {
+		stmt := strings.TrimSpace(cur.String())
+		cur.Reset()
+		if stmt == "" {
+			return nil
+		}
+		if !isAllowedRestoreStatement(stmt) {
+			skipped++
+			if skippedCounter != nil {
+				atomic.AddInt64(skippedCounter, 1)
+			}
+			return nil
+		}
+
+		if prefix, tuple, ok := insertBatchParts(stmt); ok {
+			if batchPrefix != "" && (batchPrefix != prefix || len(batchTuples) >= maxBatchRows || batchBytes+len(stmt) > maxBatchBytes) {
+				if err := flushBatch(); err != nil {
+					return err
+				}
+			}
+			batchPrefix = prefix
+			batchTuples = append(batchTuples, tuple)
+			batchBytes += len(stmt)
+			return nil
+		}
+
+		if err := flushBatch(); err != nil {
+			return err
+		}
+		return execStatement(stmt)
 	}
 
 	for {
@@ -1882,6 +2013,9 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 		}
 	}
 	if err := flush(); err != nil {
+		return executed, skipped, err
+	}
+	if err := flushBatch(); err != nil {
 		return executed, skipped, err
 	}
 	return executed, skipped, nil
