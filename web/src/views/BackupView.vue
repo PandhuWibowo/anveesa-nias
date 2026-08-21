@@ -686,6 +686,8 @@ watch(restoreSource, () => {
 
 // ── Restore progress (async job, polled) ────────────────────────────────
 const restoreProgress = reactive({ executed: 0, skipped: 0 })
+const restoreCurrent = ref('')
+const restoreRecent = ref<string[]>([])
 const restoreCancelled = ref(false)
 const restoreElapsedSec = ref(0)
 let restoreElapsedTimer: ReturnType<typeof setInterval> | null = null
@@ -716,6 +718,8 @@ async function runRestore() {
   restoreResult.value = ''
   restoreProgress.executed = 0
   restoreProgress.skipped = 0
+  restoreCurrent.value = ''
+  restoreRecent.value = []
   restoreElapsedSec.value = 0
   const startedAt = Date.now()
   restoreElapsedTimer = setInterval(() => {
@@ -741,6 +745,8 @@ async function runRestore() {
       const { data: status } = await axios.get(`/api/restore/jobs/${activeRestoreJobId}`)
       restoreProgress.executed = status.executed ?? 0
       restoreProgress.skipped = status.skipped ?? 0
+      restoreCurrent.value = status.current ?? ''
+      restoreRecent.value = status.recent ?? []
 
       if (status.status === 'done') {
         restoreResult.value = `Executed ${status.executed} statement(s) successfully` +
@@ -1584,13 +1590,19 @@ onMounted(async () => {
             </template>
 
             <div v-if="restoreLoading" class="bv-restore-progress">
-              <div class="bv-restore-progress__row">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-                <span>Restoring… {{ restoreProgress.executed.toLocaleString() }} statement{{ restoreProgress.executed === 1 ? '' : 's' }} executed</span>
-                <span v-if="restoreProgress.skipped" class="bv-restore-progress__muted">({{ restoreProgress.skipped.toLocaleString() }} skipped)</span>
-                <span class="bv-restore-progress__elapsed">{{ restoreElapsedLabel(restoreElapsedSec) }}</span>
+              <div class="bv-restore-progress__head">
+                <div class="bv-restore-progress__row">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                  <span>{{ restoreProgress.executed.toLocaleString() }} statement{{ restoreProgress.executed === 1 ? '' : 's' }} executed</span>
+                  <span v-if="restoreProgress.skipped" class="bv-restore-progress__muted">({{ restoreProgress.skipped.toLocaleString() }} skipped)</span>
+                  <span class="bv-restore-progress__elapsed">{{ restoreElapsedLabel(restoreElapsedSec) }}</span>
+                </div>
+                <button class="base-btn base-btn--ghost base-btn--sm" @click="cancelRestore">Cancel</button>
               </div>
-              <button class="base-btn base-btn--ghost base-btn--sm" @click="cancelRestore">Cancel</button>
+              <div v-if="restoreCurrent" class="bv-restore-progress__current">{{ restoreCurrent }}…</div>
+              <div v-if="restoreRecent.length > 1" class="bv-restore-progress__log">
+                <div v-for="(op, i) in restoreRecent.slice(1)" :key="i" class="bv-restore-progress__log-line">{{ op }}</div>
+              </div>
             </div>
 
             <div v-if="restoreResult" class="notice notice--ok">{{ restoreResult }}</div>
@@ -2674,13 +2686,18 @@ onMounted(async () => {
 
 .bv-restore-progress {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  gap: 6px;
   padding: 10px 14px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-2);
+}
+.bv-restore-progress__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 .bv-restore-progress__row {
   display: flex;
@@ -2698,6 +2715,31 @@ onMounted(async () => {
   color: var(--text-muted);
   font-size: 12px;
   font-family: var(--font-mono, monospace);
+}
+.bv-restore-progress__current {
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  color: var(--brand);
+  padding-left: 22px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bv-restore-progress__log {
+  padding-left: 22px;
+  max-height: 90px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.bv-restore-progress__log-line {
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 @keyframes bv-spin { to { transform: rotate(360deg); } }

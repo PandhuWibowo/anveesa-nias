@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -139,6 +140,81 @@ func isAllowedRestoreStatement(stmt string) bool {
 	return false
 }
 
+// ── Restore progress labels ─────────────────────────────────────────────────
+//
+// describeStatement turns a raw SQL statement into a short human-readable
+// label ("Inserting into orders") for live progress display — a running
+// count alone doesn't tell an operator what's actually happening during a
+// multi-minute restore. Best-effort only: an unrecognized shape falls back to
+// a truncated statement preview rather than failing.
+
+var (
+	reInsertInto  = regexp.MustCompile(`(?is)^INSERT\s+INTO\s+([^\s(]+)`)
+	reCreateTable = regexp.MustCompile(`(?is)^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s(]+)`)
+	reCreateIndex = regexp.MustCompile(`(?is)^CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\S+\s+ON\s+([^\s(]+)`)
+	reCreateSeq   = regexp.MustCompile(`(?is)^CREATE\s+SEQUENCE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)`)
+	reCreateType  = regexp.MustCompile(`(?is)^CREATE\s+TYPE\s+(\S+)`)
+	reCreateView  = regexp.MustCompile(`(?is)^CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(\S+)`)
+	reAlterTable  = regexp.MustCompile(`(?is)^ALTER\s+TABLE\s+([^\s(]+)`)
+	reDropTable   = regexp.MustCompile(`(?is)^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([^\s(]+)`)
+	reDropIndex   = regexp.MustCompile(`(?is)^DROP\s+INDEX\s+(?:IF\s+EXISTS\s+)?([^\s(]+)`)
+	reSetval      = regexp.MustCompile(`(?is)^SELECT\s+SETVAL\(\s*'([^']+)'`)
+	reDoTable     = regexp.MustCompile(`(?is)ALTER\s+TABLE\s+([^\s(]+)`)
+)
+
+// cleanIdent strips quoting/brackets and collapses `"schema"."table"` down to
+// `schema.table` for a readable label.
+func cleanIdent(s string) string {
+	s = strings.ReplaceAll(s, `"."`, ".")
+	s = strings.Trim(s, `"`+"`"+`[]`)
+	return s
+}
+
+func describeStatement(stmt string) string {
+	s := strings.TrimSpace(stmt)
+	upper := strings.ToUpper(s)
+	switch {
+	case reInsertInto.MatchString(s):
+		return "Inserting into " + cleanIdent(reInsertInto.FindStringSubmatch(s)[1])
+	case reCreateTable.MatchString(s):
+		return "Creating table " + cleanIdent(reCreateTable.FindStringSubmatch(s)[1])
+	case reCreateIndex.MatchString(s):
+		return "Indexing " + cleanIdent(reCreateIndex.FindStringSubmatch(s)[1])
+	case reCreateSeq.MatchString(s):
+		return "Creating sequence " + cleanIdent(reCreateSeq.FindStringSubmatch(s)[1])
+	case reCreateType.MatchString(s):
+		return "Creating type " + cleanIdent(reCreateType.FindStringSubmatch(s)[1])
+	case reCreateView.MatchString(s):
+		return "Creating view " + cleanIdent(reCreateView.FindStringSubmatch(s)[1])
+	case reSetval.MatchString(s):
+		return "Resetting sequence " + cleanIdent(reSetval.FindStringSubmatch(s)[1])
+	case strings.HasPrefix(upper, "DO "):
+		if m := reDoTable.FindStringSubmatch(s); m != nil {
+			return "Repairing constraints on " + cleanIdent(m[1])
+		}
+		return "Applying constraint repair"
+	case reDropTable.MatchString(s):
+		return "Dropping table " + cleanIdent(reDropTable.FindStringSubmatch(s)[1])
+	case reDropIndex.MatchString(s):
+		return "Dropping index " + cleanIdent(reDropIndex.FindStringSubmatch(s)[1])
+	case reAlterTable.MatchString(s):
+		return "Altering table " + cleanIdent(reAlterTable.FindStringSubmatch(s)[1])
+	case strings.HasPrefix(upper, "SET "):
+		return "Configuring session"
+	case strings.HasPrefix(upper, "BEGIN"):
+		return "Starting transaction block"
+	case strings.HasPrefix(upper, "COMMIT"):
+		return "Committing"
+	case strings.HasPrefix(upper, "EXEC"):
+		return "Toggling foreign key checks"
+	default:
+		if len(s) > 48 {
+			return s[:48] + "…"
+		}
+		return s
+	}
+}
+
 // ── HTTP Handlers ─────────────────────────────────────────────────────────────
 
 // GetBackup streams a SQL dump as a downloadable file.
@@ -218,6 +294,13 @@ type RestoreJob struct {
 	// executor — read with atomic.LoadInt64, never under mu.
 	Executed int64 `json:"executed"`
 	Skipped  int64 `json:"skipped"`
+
+	// Current/Recent give a human-readable window into what the executor is
+	// actually doing right now (e.g. "Inserting into orders"), not just a
+	// running total — both are mu-protected since they're plain strings/slices,
+	// not atomics.
+	Current string   `json:"current,omitempty"`
+	Recent  []string `json:"recent,omitempty"`
 
 	Error string `json:"error,omitempty"`
 
@@ -338,12 +421,23 @@ func RestoreBackup() http.HandlerFunc {
 				reader = strings.NewReader(req.SQL)
 			}
 
+			onExec := func(stmt string) {
+				label := describeStatement(stmt)
+				job.mu.Lock()
+				job.Current = label
+				job.Recent = append([]string{label}, job.Recent...)
+				if len(job.Recent) > 8 {
+					job.Recent = job.Recent[:8]
+				}
+				job.mu.Unlock()
+			}
+
 			if stepErr == nil {
 				tx, err := db.BeginTx(jobCtx, nil)
 				if err != nil {
 					stepErr = fmt.Errorf("transaction error: %w", err)
 				} else {
-					executed, _, execErr := execRestoreStream(jobCtx, tx, reader, &job.Executed, &job.Skipped)
+					executed, _, execErr := execRestoreStream(jobCtx, tx, reader, &job.Executed, &job.Skipped, onExec)
 					if execErr != nil {
 						tx.Rollback()
 						stepErr = fmt.Errorf("execution error at statement %d: %w", executed+1, execErr)
@@ -389,7 +483,7 @@ func GetRestoreJobStatus() http.HandlerFunc {
 			return
 		}
 		job.mu.Lock()
-		status, doneAt, errMsg := job.Status, job.DoneAt, job.Error
+		status, doneAt, errMsg, current, recent := job.Status, job.DoneAt, job.Error, job.Current, job.Recent
 		job.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"id":         job.ID,
@@ -398,6 +492,8 @@ func GetRestoreJobStatus() http.HandlerFunc {
 			"done_at":    doneAt,
 			"executed":   atomic.LoadInt64(&job.Executed),
 			"skipped":    atomic.LoadInt64(&job.Skipped),
+			"current":    current,
+			"recent":     recent,
 			"error":      errMsg,
 		})
 	}
@@ -1447,8 +1543,11 @@ const maxRestoreStatementBytes = 512 * 1024 * 1024
 // executedCounter/skippedCounter, if non-nil, are incremented atomically as
 // statements complete — a live progress feed for a caller polling a job
 // status endpoint on another goroutine, independent of the (executed,
-// skipped int) totals returned at the end.
-func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, executedCounter, skippedCounter *int64) (executed, skipped int, err error) {
+// skipped int) totals returned at the end. onExec, if non-nil, is called with
+// the raw statement text right after each successful execution, for callers
+// that want a human-readable "what's happening right now" feed rather than
+// just a running count.
+func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, executedCounter, skippedCounter *int64, onExec func(stmt string)) (executed, skipped int, err error) {
 	br := bufio.NewReaderSize(r, 256*1024)
 	var cur strings.Builder
 	inStr := false
@@ -1482,6 +1581,9 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, executedCou
 		executed++
 		if executedCounter != nil {
 			atomic.AddInt64(executedCounter, 1)
+		}
+		if onExec != nil {
+			onExec(stmt)
 		}
 		return nil
 	}
