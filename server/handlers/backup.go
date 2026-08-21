@@ -1693,11 +1693,22 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 			stmt = addConflictSkip(stmt, driver)
 		}
 
-		// Only INSERTs get the savepoint treatment: they're the high-volume,
-		// data-dependent statements where a single malformed row shouldn't sink
-		// an otherwise-good multi-million-row restore. A DDL statement failing
-		// (bad CREATE TABLE, etc.) is a real problem worth aborting for.
-		if continueOnError && strings.HasPrefix(stmt, "INSERT") {
+		// INSERTs and "DO $$ ... $$" blocks get the savepoint treatment — both
+		// are the data-dependent statements where bad rows shouldn't sink an
+		// otherwise-good multi-million-row restore:
+		//   - INSERT: the obvious case, one malformed row.
+		//   - DO blocks: this app's own post-data PK/FK repair statements
+		//     (generatePKsDDL/generateFKsDDL) ADD a constraint against
+		//     already-inserted data. Postgres validates existing rows when
+		//     adding a FOREIGN KEY, using the identical "insert or update on
+		//     table X violates..." wording as a live INSERT failure — so an
+		//     orphaned reference in the source data (or a row this same
+		//     restore already skipped) fails here with SQLSTATE 23503
+		//     (foreign_key_violation), which the DO block's own exception
+		//     handler doesn't catch (it only catches duplicate_object/42830).
+		// A plain DDL statement failing (bad CREATE TABLE, etc.) is still a
+		// real problem worth aborting for, so nothing else gets this treatment.
+		if continueOnError && (strings.HasPrefix(stmt, "INSERT") || strings.HasPrefix(stmt, "DO ")) {
 			save, rollbackTo, release := savepointStatements(driver)
 			if _, spErr := tx.ExecContext(ctx, save); spErr != nil {
 				return spErr

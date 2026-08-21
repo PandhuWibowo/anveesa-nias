@@ -596,6 +596,7 @@ const restoreResult = ref('')
 const restoreLoading = ref(false)
 const restoreError = ref('')
 const restoreSkipConflicts = ref(false)
+const restoreContinueOnError = ref(false)
 
 async function uploadFile(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
@@ -686,7 +687,8 @@ watch(restoreSource, () => {
 })
 
 // ── Restore progress (async job, polled) ────────────────────────────────
-const restoreProgress = reactive({ executed: 0, skipped: 0 })
+const restoreProgress = reactive({ executed: 0, skipped: 0, failedRows: 0 })
+const restoreFirstRowError = ref('')
 const restoreCurrentCount = ref(0)
 const restoreRecent = ref<string[]>([])
 const restoreCancelled = ref(false)
@@ -719,6 +721,8 @@ async function runRestore() {
   restoreResult.value = ''
   restoreProgress.executed = 0
   restoreProgress.skipped = 0
+  restoreProgress.failedRows = 0
+  restoreFirstRowError.value = ''
   restoreCurrentCount.value = 0
   restoreRecent.value = []
   restoreElapsedSec.value = 0
@@ -729,8 +733,8 @@ async function runRestore() {
 
   try {
     const payload = restoreSource.value === 'bucket'
-      ? { dest_conn_id: restoreBucketConnId.value, object_key: restoreSelectedKey.value, skip_conflicts: restoreSkipConflicts.value }
-      : { sql: restoreSQL.value, skip_conflicts: restoreSkipConflicts.value }
+      ? { dest_conn_id: restoreBucketConnId.value, object_key: restoreSelectedKey.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value }
+      : { sql: restoreSQL.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value }
     // POST returns immediately with a job_id (HTTP 202) — the restore itself
     // runs in a background goroutine so it isn't bound by the request/response
     // lifetime (a big dump can take many minutes; a blocking request would be
@@ -746,12 +750,16 @@ async function runRestore() {
       const { data: status } = await axios.get(`/api/restore/jobs/${activeRestoreJobId}`)
       restoreProgress.executed = status.executed ?? 0
       restoreProgress.skipped = status.skipped ?? 0
+      restoreProgress.failedRows = status.failed_rows ?? 0
+      restoreFirstRowError.value = status.first_row_error ?? ''
       restoreCurrentCount.value = status.current_count ?? 0
       restoreRecent.value = status.recent ?? []
 
       if (status.status === 'done') {
         restoreResult.value = `Executed ${status.executed} statement(s) successfully` +
-          (status.skipped ? ` (${status.skipped} skipped).` : '.')
+          (status.skipped ? ` (${status.skipped} skipped)` : '') +
+          (status.failed_rows ? ` — ${status.failed_rows} row(s) failed and were skipped (e.g. ${status.first_row_error})` : '') +
+          '.'
         toast.success('Restore complete')
         break
       }
@@ -1598,12 +1606,21 @@ onMounted(async () => {
               </span>
             </label>
 
+            <label class="bv-skip-conflicts">
+              <input type="checkbox" v-model="restoreContinueOnError" :disabled="restoreLoading" />
+              <span>
+                Continue past row errors
+                <span class="bv-skip-conflicts__hint">Skips individual rows that fail (bad data, orphaned foreign keys) instead of rolling back the entire restore — recommended for large production dumps where one bad row shouldn't cost you everything else. Failed rows are counted and reported, not silently dropped.</span>
+              </span>
+            </label>
+
             <div v-if="restoreLoading" class="bv-restore-progress">
               <div class="bv-restore-progress__head">
                 <div class="bv-restore-progress__row">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
                   <span>{{ restoreProgress.executed.toLocaleString() }} statement{{ restoreProgress.executed === 1 ? '' : 's' }} executed</span>
                   <span v-if="restoreProgress.skipped" class="bv-restore-progress__muted">({{ restoreProgress.skipped.toLocaleString() }} skipped)</span>
+                  <span v-if="restoreProgress.failedRows" class="bv-restore-progress__failed">{{ restoreProgress.failedRows.toLocaleString() }} row{{ restoreProgress.failedRows === 1 ? '' : 's' }} failed</span>
                   <span class="bv-restore-progress__elapsed">{{ restoreElapsedLabel(restoreElapsedSec) }}</span>
                 </div>
                 <button class="base-btn base-btn--ghost base-btn--sm" @click="cancelRestore">Cancel</button>
@@ -2751,6 +2768,11 @@ onMounted(async () => {
 .bv-restore-progress__muted {
   color: var(--text-muted);
   font-size: 12px;
+}
+.bv-restore-progress__failed {
+  color: #d97706;
+  font-size: 12px;
+  font-weight: 600;
 }
 .bv-restore-progress__elapsed {
   color: var(--text-muted);
