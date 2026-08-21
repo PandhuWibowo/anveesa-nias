@@ -485,39 +485,12 @@ func DownloadFromBucket() http.HandlerFunc {
 			return
 		}
 
-		endpointHost := buildS3Host(dest)
-		scheme := "https"
-		if !dest.SSL {
-			scheme = "http"
-		}
-		bucket := strings.Trim(dest.Bucket, "/")
-		virtualHost := bucket + "." + endpointHost
-		downloadURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, url.PathEscape(objectKey))
-
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, downloadURL, nil)
-		if err != nil {
-			http.Error(w, `{"error":"failed to build request: `+err.Error()+`"}`, http.StatusInternalServerError)
-			return
-		}
-
-		payloadHash := sha256.Sum256([]byte{})
-		payloadHashHex := hex.EncodeToString(payloadHash[:])
-		region := objectStorageRegion(dest.Driver, endpointHost)
-		service := objectStorageService(dest.Driver)
-		signObjectStorageRequestFull(req, dest.Username, dest.Password, region, service, payloadHashHex, nil)
-
-		client := &http.Client{Timeout: 4 * time.Hour}
-		resp, err := client.Do(req)
+		resp, err := openBucketObjectStream(r.Context(), dest, objectKey)
 		if err != nil {
 			http.Error(w, `{"error":"download failed: `+err.Error()+`"}`, http.StatusBadGateway)
 			return
 		}
 		defer resp.Body.Close()
-
-		if resp.StatusCode >= 400 {
-			http.Error(w, fmt.Sprintf(`{"error":"bucket returned HTTP %d"}`, resp.StatusCode), http.StatusBadGateway)
-			return
-		}
 
 		parts := strings.Split(objectKey, "/")
 		filename := parts[len(parts)-1]
@@ -530,10 +503,12 @@ func DownloadFromBucket() http.HandlerFunc {
 	}
 }
 
-// downloadBucketObjectBytes fetches an object's full content into memory, capped
-// at maxBytes. Used by restore-from-bucket, which needs the raw SQL text rather
-// than a streamed HTTP response (see DownloadFromBucket).
-func downloadBucketObjectBytes(ctx context.Context, dest *bucketConnRow, objectKey string, maxBytes int64) ([]byte, error) {
+// openBucketObjectStream issues a signed GET for an object and returns the
+// live HTTP response for streaming — callers must Close resp.Body. Used where
+// the full object must never be buffered in memory (restore-from-bucket,
+// DownloadFromBucket), unlike listBucketObjects/presign which only need
+// metadata or a URL.
+func openBucketObjectStream(ctx context.Context, dest *bucketConnRow, objectKey string) (*http.Response, error) {
 	endpointHost := buildS3Host(dest)
 	scheme := "https"
 	if !dest.SSL {
@@ -554,24 +529,17 @@ func downloadBucketObjectBytes(ctx context.Context, dest *bucketConnRow, objectK
 	service := objectStorageService(dest.Driver)
 	signObjectStorageRequestFull(req, dest.Username, dest.Password, region, service, payloadHashHex, nil)
 
-	client := &http.Client{Timeout: 2 * time.Minute}
+	// Generous timeout — restore/download sources can be multi-GB dumps.
+	client := &http.Client{Timeout: 4 * time.Hour}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
+		resp.Body.Close()
 		return nil, fmt.Errorf("bucket returned HTTP %d", resp.StatusCode)
 	}
-
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > maxBytes {
-		return nil, fmt.Errorf("object too large (max %dMB)", maxBytes/(1024*1024))
-	}
-	return data, nil
+	return resp, nil
 }
 
 // presignedDownloadURL returns a time-limited pre-signed GET URL for an object.

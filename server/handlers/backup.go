@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"bytes"
+	"bufio"
 	"compress/gzip"
 	"context"
 	"database/sql"
@@ -113,9 +113,18 @@ func backupOptionsFromQuery(r *http.Request) BackupOptions {
 
 // ── Restore allow-list ────────────────────────────────────────────────────────
 
+// allowedRestoreStatements must cover every statement shape writeBackupDump
+// can emit (see generateTableDDL, writePGCreateSequences, writePGEnums,
+// writePGSequenceReset, writeViews, fkDisable/EnableStatement) — otherwise a
+// restore of the app's own backups silently drops statements a later one
+// depends on (e.g. a CREATE TABLE ... DEFAULT nextval(seq) failing because the
+// CREATE SEQUENCE before it was skipped).
 var allowedRestoreStatements = []string{
 	"INSERT ", "CREATE TABLE", "CREATE INDEX", "CREATE UNIQUE INDEX",
+	"CREATE SEQUENCE", "CREATE TYPE", "CREATE OR REPLACE VIEW", "CREATE VIEW",
+	"SELECT SETVAL(",
 	"DROP TABLE", "DROP INDEX", "ALTER TABLE", "SET ", "BEGIN", "COMMIT", "ROLLBACK", "DO ",
+	"EXEC SP_MSFOREACHTABLE",
 }
 
 func isAllowedRestoreStatement(stmt string) bool {
@@ -210,49 +219,51 @@ func RestoreBackup() http.HandlerFunc {
 			return
 		}
 
-		const maxRestoreBytes = 50 * 1024 * 1024
+		fromBucket := strings.TrimSpace(req.SQL) == "" && req.DestConnID != 0 && strings.TrimSpace(req.ObjectKey) != ""
+		if !fromBucket && strings.TrimSpace(req.SQL) == "" {
+			http.Error(w, `{"error":"sql required"}`, http.StatusBadRequest)
+			return
+		}
 
-		sqlText := req.SQL
-		if strings.TrimSpace(sqlText) == "" && req.DestConnID != 0 && strings.TrimSpace(req.ObjectKey) != "" {
+		// The upload path posts SQL text inline as JSON from the browser, so it
+		// stays tight. The bucket path streams the object straight through
+		// (download → gunzip → statement executor) without ever buffering the
+		// whole dump in memory, so multi-GB restores are fine there.
+		const maxUploadBytes = 50 * 1024 * 1024
+		if !fromBucket && len(req.SQL) > maxUploadBytes {
+			http.Error(w, `{"error":"SQL too large (max 50MB, use a bucket source for larger dumps)"}`, http.StatusBadRequest)
+			return
+		}
+
+		var reader io.Reader
+		var bodyCloser io.Closer
+		if fromBucket {
 			dest, err := fetchBucketConn(req.DestConnID)
 			if err != nil {
 				http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
 				return
 			}
-			data, err := downloadBucketObjectBytes(r.Context(), dest, req.ObjectKey, maxRestoreBytes)
+			resp, err := openBucketObjectStream(r.Context(), dest, req.ObjectKey)
 			if err != nil {
 				http.Error(w, `{"error":"failed to fetch object from bucket: `+err.Error()+`"}`, http.StatusBadGateway)
 				return
 			}
+			bodyCloser = resp.Body
+			reader = resp.Body
 			if strings.HasSuffix(strings.ToLower(req.ObjectKey), ".gz") {
-				gz, err := gzip.NewReader(bytes.NewReader(data))
+				gz, err := gzip.NewReader(resp.Body)
 				if err != nil {
-					http.Error(w, `{"error":"failed to decompress object"}`, http.StatusBadRequest)
+					resp.Body.Close()
+					http.Error(w, `{"error":"failed to decompress object: `+err.Error()+`"}`, http.StatusBadRequest)
 					return
 				}
-				decompressed, err := io.ReadAll(io.LimitReader(gz, maxRestoreBytes+1))
-				gz.Close()
-				if err != nil {
-					http.Error(w, `{"error":"failed to decompress object"}`, http.StatusBadRequest)
-					return
-				}
-				if int64(len(decompressed)) > maxRestoreBytes {
-					http.Error(w, `{"error":"SQL too large (max 50MB)"}`, http.StatusBadRequest)
-					return
-				}
-				sqlText = string(decompressed)
-			} else {
-				sqlText = string(data)
+				reader = gz
 			}
+		} else {
+			reader = strings.NewReader(req.SQL)
 		}
-
-		if strings.TrimSpace(sqlText) == "" {
-			http.Error(w, `{"error":"sql required"}`, http.StatusBadRequest)
-			return
-		}
-		if int64(len(sqlText)) > maxRestoreBytes {
-			http.Error(w, `{"error":"SQL too large (max 50MB)"}`, http.StatusBadRequest)
-			return
+		if bodyCloser != nil {
+			defer bodyCloser.Close()
 		}
 
 		db, _, err := GetDB(connID)
@@ -267,23 +278,11 @@ func RestoreBackup() http.HandlerFunc {
 			return
 		}
 
-		stmts := splitSQL(sqlText)
-		executed, skipped := 0, 0
-		for _, stmt := range stmts {
-			stmt = strings.TrimSpace(stmt)
-			if stmt == "" || strings.HasPrefix(stmt, "--") {
-				continue
-			}
-			if !isAllowedRestoreStatement(stmt) {
-				skipped++
-				continue
-			}
-			if _, err := tx.ExecContext(r.Context(), stmt); err != nil {
-				tx.Rollback()
-				http.Error(w, `{"error":"execution error at statement `+strconv.Itoa(executed+1)+`"}`, http.StatusBadRequest)
-				return
-			}
-			executed++
+		executed, skipped, err := execRestoreStream(r.Context(), tx, reader)
+		if err != nil {
+			tx.Rollback()
+			http.Error(w, `{"error":"execution error at statement `+strconv.Itoa(executed+1)+`: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
 		}
 
 		if err := tx.Commit(); err != nil {
@@ -1293,26 +1292,85 @@ func addIfNotExistsToIndex(def string) string {
 	return def
 }
 
-func splitSQL(sql string) []string {
-	var stmts []string
+// maxRestoreStatementBytes bounds a single statement's buffered size — a
+// defensive cap in case a dump is malformed (e.g. a missing terminating
+// semicolon swallows the rest of the file into one "statement"), not a limit
+// on overall dump size.
+const maxRestoreStatementBytes = 512 * 1024 * 1024
+
+// execRestoreStream reads SQL statements from r as they are parsed — buffering
+// only the current statement, never the whole dump — and executes each
+// allowed one against tx. This lets restores from bucket-hosted dumps scale to
+// multi-GB files without holding the file (or its decompressed form) in
+// memory.
+//
+// Comment lines (outside a string literal) are stripped per-line rather than
+// checked only on the fully-accumulated statement: our own dumps always open
+// with several "-- ..." header lines directly followed by the first real
+// statement with no semicolon in between, so treating the whole
+// semicolon-delimited chunk as "a comment if it starts with --" silently
+// drops that first statement (notably `SET search_path`) along with the
+// header.
+func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader) (executed, skipped int, err error) {
+	br := bufio.NewReaderSize(r, 256*1024)
 	var cur strings.Builder
 	inStr := false
-	for i, ch := range sql {
-		if ch == '\'' && (i == 0 || sql[i-1] != '\\') {
-			inStr = !inStr
+	var prev byte
+
+	flush := func() error {
+		stmt := strings.TrimSpace(cur.String())
+		cur.Reset()
+		if stmt == "" {
+			return nil
 		}
-		if ch == ';' && !inStr {
-			s := strings.TrimSpace(cur.String())
-			if s != "" {
-				stmts = append(stmts, s)
+		if !isAllowedRestoreStatement(stmt) {
+			skipped++
+			return nil
+		}
+		if _, execErr := tx.ExecContext(ctx, stmt); execErr != nil {
+			return execErr
+		}
+		executed++
+		return nil
+	}
+
+	for {
+		line, readErr := br.ReadString('\n')
+		if len(line) > 0 {
+			// A "--" line comment only counts as one outside a string literal
+			// (inStr reflects state carried over from prior lines); otherwise
+			// it's just literal string content that happens to contain dashes.
+			if !inStr && strings.HasPrefix(strings.TrimSpace(line), "--") {
+				prev = 0
+			} else {
+				for i := 0; i < len(line); i++ {
+					b := line[i]
+					if b == '\'' && prev != '\\' {
+						inStr = !inStr
+					}
+					if b == ';' && !inStr {
+						if ferr := flush(); ferr != nil {
+							return executed, skipped, ferr
+						}
+					} else {
+						cur.WriteByte(b)
+						if cur.Len() > maxRestoreStatementBytes {
+							return executed, skipped, fmt.Errorf("single statement exceeds %dMB — dump may be missing a terminating semicolon", maxRestoreStatementBytes/(1024*1024))
+						}
+					}
+					prev = b
+				}
 			}
-			cur.Reset()
-		} else {
-			cur.WriteRune(ch)
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				break
+			}
+			return executed, skipped, readErr
 		}
 	}
-	if s := strings.TrimSpace(cur.String()); s != "" {
-		stmts = append(stmts, s)
+	if err := flush(); err != nil {
+		return executed, skipped, err
 	}
-	return stmts
+	return executed, skipped, nil
 }
