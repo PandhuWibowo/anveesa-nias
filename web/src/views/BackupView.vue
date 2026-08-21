@@ -595,6 +595,7 @@ const restoreSQL = ref('')
 const restoreResult = ref('')
 const restoreLoading = ref(false)
 const restoreError = ref('')
+const restoreSkipConflicts = ref(false)
 
 async function uploadFile(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
@@ -728,8 +729,8 @@ async function runRestore() {
 
   try {
     const payload = restoreSource.value === 'bucket'
-      ? { dest_conn_id: restoreBucketConnId.value, object_key: restoreSelectedKey.value }
-      : { sql: restoreSQL.value }
+      ? { dest_conn_id: restoreBucketConnId.value, object_key: restoreSelectedKey.value, skip_conflicts: restoreSkipConflicts.value }
+      : { sql: restoreSQL.value, skip_conflicts: restoreSkipConflicts.value }
     // POST returns immediately with a job_id (HTTP 202) — the restore itself
     // runs in a background goroutine so it isn't bound by the request/response
     // lifetime (a big dump can take many minutes; a blocking request would be
@@ -1588,6 +1589,14 @@ onMounted(async () => {
                 </div>
               </template>
             </template>
+
+            <label class="bv-skip-conflicts">
+              <input type="checkbox" v-model="restoreSkipConflicts" :disabled="restoreLoading" />
+              <span>
+                Skip rows that already exist
+                <span class="bv-skip-conflicts__hint">Safe to re-run — makes CREATE TABLE/INDEX/SEQUENCE idempotent and INSERTs ignore primary-key conflicts instead of failing. MSSQL targets aren't supported for the insert-skip part.</span>
+              </span>
+            </label>
 
             <div v-if="restoreLoading" class="bv-restore-progress">
               <div class="bv-restore-progress__head">
@@ -2682,6 +2691,26 @@ onMounted(async () => {
 .bv-pagination__nav {
   display: flex;
   gap: 4px;
+}
+
+.bv-skip-conflicts {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+.bv-skip-conflicts input {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+.bv-skip-conflicts__hint {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-weight: 400;
+  margin-top: 1px;
 }
 
 .bv-restore-progress {

@@ -342,9 +342,10 @@ func RestoreBackup() http.HandlerFunc {
 		}
 
 		var req struct {
-			SQL        string `json:"sql"`
-			DestConnID int64  `json:"dest_conn_id"`
-			ObjectKey  string `json:"object_key"`
+			SQL           string `json:"sql"`
+			DestConnID    int64  `json:"dest_conn_id"`
+			ObjectKey     string `json:"object_key"`
+			SkipConflicts bool   `json:"skip_conflicts"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
@@ -377,7 +378,7 @@ func RestoreBackup() http.HandlerFunc {
 				return
 			}
 		}
-		db, _, err := GetDB(connID)
+		db, driver, err := GetDB(connID)
 		if err != nil {
 			http.Error(w, `{"error":"connection error"}`, http.StatusBadGateway)
 			return
@@ -437,7 +438,7 @@ func RestoreBackup() http.HandlerFunc {
 				if err != nil {
 					stepErr = fmt.Errorf("transaction error: %w", err)
 				} else {
-					executed, _, execErr := execRestoreStream(jobCtx, tx, reader, &job.Executed, &job.Skipped, onExec)
+					executed, _, execErr := execRestoreStream(jobCtx, tx, reader, driver, req.SkipConflicts, &job.Executed, &job.Skipped, onExec)
 					if execErr != nil {
 						tx.Rollback()
 						stepErr = fmt.Errorf("execution error at statement %d: %w", executed+1, execErr)
@@ -1527,6 +1528,54 @@ func addIfNotExistsToIndex(def string) string {
 // on overall dump size.
 const maxRestoreStatementBytes = 512 * 1024 * 1024
 
+// ── Skip-conflicts rewriting ─────────────────────────────────────────────────
+//
+// Re-running a restore against a target that already has the data fails on
+// the first primary-key collision (by design — see execRestoreStream's single
+// transaction). When the caller explicitly opts in to skipConflicts, these
+// rewrite each statement to be a no-op on conflict instead of erroring, so a
+// restore can be safely re-run.
+
+// addStatementIfNotExists makes schema-creating statements idempotent even if
+// the dump wasn't generated with the backup-time "IF NOT EXISTS" option —
+// without this, CREATE TABLE would still fail immediately, before even
+// reaching the INSERTs that addConflictSkip protects.
+func addStatementIfNotExists(stmt string) string {
+	upper := strings.ToUpper(stmt)
+	switch {
+	case strings.HasPrefix(upper, "CREATE TABLE ") && !strings.Contains(upper, "IF NOT EXISTS"):
+		return "CREATE TABLE IF NOT EXISTS " + stmt[len("CREATE TABLE "):]
+	case strings.HasPrefix(upper, "CREATE SEQUENCE ") && !strings.Contains(upper, "IF NOT EXISTS"):
+		return "CREATE SEQUENCE IF NOT EXISTS " + stmt[len("CREATE SEQUENCE "):]
+	case strings.HasPrefix(upper, "CREATE UNIQUE INDEX ") || strings.HasPrefix(upper, "CREATE INDEX "):
+		return addIfNotExistsToIndex(stmt)
+	default:
+		return stmt
+	}
+}
+
+// addConflictSkip rewrites a plain INSERT into this driver's "ignore on
+// conflict" form. Assumes the statement text is exactly what writeData
+// generates ("INSERT INTO " uppercase) since restore only ever runs against
+// this app's own dumps. MSSQL has no simple equivalent syntax, so it's left
+// unmodified there — skip-conflicts only actually skips on the other drivers.
+func addConflictSkip(stmt, driver string) string {
+	const prefix = "INSERT INTO "
+	if !strings.HasPrefix(stmt, prefix) {
+		return stmt
+	}
+	switch driver {
+	case "postgres":
+		return stmt + " ON CONFLICT DO NOTHING"
+	case "mysql", "mariadb":
+		return "INSERT IGNORE INTO " + stmt[len(prefix):]
+	case "sqlite":
+		return "INSERT OR IGNORE INTO " + stmt[len(prefix):]
+	default:
+		return stmt
+	}
+}
+
 // execRestoreStream reads SQL statements from r as they are parsed — buffering
 // only the current statement, never the whole dump — and executes each
 // allowed one against tx. This lets restores from bucket-hosted dumps scale to
@@ -1546,8 +1595,10 @@ const maxRestoreStatementBytes = 512 * 1024 * 1024
 // skipped int) totals returned at the end. onExec, if non-nil, is called with
 // the raw statement text right after each successful execution, for callers
 // that want a human-readable "what's happening right now" feed rather than
-// just a running count.
-func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, executedCounter, skippedCounter *int64, onExec func(stmt string)) (executed, skipped int, err error) {
+// just a running count. When skipConflicts is true, statements are rewritten
+// (see addStatementIfNotExists/addConflictSkip) so re-running a restore
+// against a target that already has the data no-ops instead of erroring.
+func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver string, skipConflicts bool, executedCounter, skippedCounter *int64, onExec func(stmt string)) (executed, skipped int, err error) {
 	br := bufio.NewReaderSize(r, 256*1024)
 	var cur strings.Builder
 	inStr := false
@@ -1583,6 +1634,10 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, executedCou
 				atomic.AddInt64(skippedCounter, 1)
 			}
 			return nil
+		}
+		if skipConflicts {
+			stmt = addStatementIfNotExists(stmt)
+			stmt = addConflictSkip(stmt, driver)
 		}
 		if _, execErr := tx.ExecContext(ctx, stmt); execErr != nil {
 			return execErr
