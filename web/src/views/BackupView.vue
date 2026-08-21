@@ -7,6 +7,7 @@ import { useToast } from '@/composables/useToast'
 import { useAuth } from '@/composables/useAuth'
 import { downloadBlob } from '@/utils/export'
 import DriverIcon from '@/components/ui/DriverIcon.vue'
+import ConnectionPicker from '@/components/ui/ConnectionPicker.vue'
 
 // ── Types ─────────────────────────────────────────────────────────────
 interface BackupDownloadRequest {
@@ -601,13 +602,62 @@ async function uploadFile(e: Event) {
   restoreSQL.value = await file.text()
 }
 
+// ── Restore from Bucket ─────────────────────────────────────────────
+const restoreSource = ref<'upload' | 'bucket'>('upload')
+const restoreBucketConnId = ref<number | null>(null)
+const restoreBucketSubfolder = ref('')
+const restoreBucketFiles = ref<BucketObject[]>([])
+const restoreBucketLoading = ref(false)
+const restoreBucketBrowsed = ref(false)
+const restoreSelectedKey = ref<string | null>(null)
+
+async function loadRestoreBucketFiles() {
+  if (!restoreBucketConnId.value) return
+  restoreBucketLoading.value = true
+  restoreBucketFiles.value = []
+  try {
+    const { data } = await axios.get('/api/backup/bucket-list', {
+      params: {
+        dest_conn_id: restoreBucketConnId.value,
+        subfolder: restoreBucketSubfolder.value.trim(),
+      },
+    })
+    restoreBucketFiles.value = (data.objects ?? [])
+      .filter((o: BucketObject) => o.key.endsWith('.sql') || o.key.endsWith('.sql.gz'))
+      .sort((a: BucketObject, b: BucketObject) => b.last_modified.localeCompare(a.last_modified))
+    restoreBucketBrowsed.value = true
+  } catch (err: any) {
+    toast.error(err?.response?.data?.error || 'Failed to list bucket files')
+  } finally {
+    restoreBucketLoading.value = false
+  }
+}
+
+watch(restoreBucketConnId, () => {
+  restoreBucketFiles.value = []
+  restoreBucketSubfolder.value = ''
+  restoreBucketBrowsed.value = false
+  restoreSelectedKey.value = null
+  if (restoreBucketConnId.value) loadRestoreBucketFiles()
+})
+
+watch(restoreSource, () => {
+  restoreResult.value = ''
+  restoreError.value = ''
+})
+
 async function runRestore() {
-  if (!restoreConnId.value || !restoreSQL.value) return
+  if (!restoreConnId.value) return
+  if (restoreSource.value === 'upload' && !restoreSQL.value) return
+  if (restoreSource.value === 'bucket' && (!restoreBucketConnId.value || !restoreSelectedKey.value)) return
   restoreLoading.value = true
   restoreError.value = ''
   restoreResult.value = ''
   try {
-    const { data } = await axios.post(`/api/connections/${restoreConnId.value}/restore`, { sql: restoreSQL.value })
+    const payload = restoreSource.value === 'bucket'
+      ? { dest_conn_id: restoreBucketConnId.value, object_key: restoreSelectedKey.value }
+      : { sql: restoreSQL.value }
+    const { data } = await axios.post(`/api/connections/${restoreConnId.value}/restore`, payload)
     restoreResult.value = `Executed ${data.executed} statement(s) successfully.`
   } catch (error: any) {
     restoreError.value = error?.response?.data?.error ?? 'Restore failed'
@@ -1309,25 +1359,106 @@ onMounted(async () => {
             </div>
           </div>
           <div class="page-card__body bv-card-body">
-            <select class="base-input" v-model.number="restoreConnId">
-              <option :value="null">Select connection…</option>
-              <option v-for="c in dbConnections" :key="c.id" :value="c.id">{{ c.name }}</option>
-            </select>
-            <div class="bv-drop" @dragover.prevent @drop.prevent="(e) => { const f = e.dataTransfer?.files?.[0]; if (f) f.text().then(t => restoreSQL = t) }">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-              <span>Drop a .sql file here or</span>
-              <label class="bv-file-btn">Browse <input type="file" accept=".sql,.txt" style="display:none" @change="uploadFile" /></label>
+            <ConnectionPicker v-model="restoreConnId" :drivers="DB_DRIVERS" placeholder="Select connection…" />
+
+            <div class="page-tabs bv-tabs">
+              <button class="page-tab" :class="{ 'is-active': restoreSource === 'upload' }" @click="restoreSource = 'upload'">
+                Upload File
+              </button>
+              <button class="page-tab" :class="{ 'is-active': restoreSource === 'bucket' }" @click="restoreSource = 'bucket'">
+                Browse Bucket
+              </button>
             </div>
-            <div v-if="restoreSQL" class="bv-preview">
-              <div class="bv-preview-header">
-                <span>{{ restoreSQL.split('\n').length }} lines loaded</span>
-                <button class="base-btn base-btn--ghost base-btn--sm" @click="restoreSQL = ''">Clear</button>
+
+            <template v-if="restoreSource === 'upload'">
+              <div class="bv-drop" @dragover.prevent @drop.prevent="(e) => { const f = e.dataTransfer?.files?.[0]; if (f) f.text().then(t => restoreSQL = t) }">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <span>Drop a .sql file here or</span>
+                <label class="bv-file-btn">Browse <input type="file" accept=".sql,.txt" style="display:none" @change="uploadFile" /></label>
               </div>
-              <pre class="bv-preview-pre">{{ restoreSQL.slice(0, 500) }}{{ restoreSQL.length > 500 ? '\n…' : '' }}</pre>
-            </div>
+              <div v-if="restoreSQL" class="bv-preview">
+                <div class="bv-preview-header">
+                  <span>{{ restoreSQL.split('\n').length }} lines loaded</span>
+                  <button class="base-btn base-btn--ghost base-btn--sm" @click="restoreSQL = ''">Clear</button>
+                </div>
+                <pre class="bv-preview-pre">{{ restoreSQL.slice(0, 500) }}{{ restoreSQL.length > 500 ? '\n…' : '' }}</pre>
+              </div>
+            </template>
+
+            <template v-else>
+              <div v-if="bucketConnections.length === 0" class="bv-empty-hint">
+                No bucket connections found. <a href="/connections" style="color:var(--brand)">Add one →</a>
+              </div>
+              <template v-else>
+                <div class="bv-conn-grid">
+                  <button
+                    v-for="c in bucketConnections"
+                    :key="c.id"
+                    class="bv-conn-card"
+                    :class="{ 'is-active': restoreBucketConnId === c.id }"
+                    @click="restoreBucketConnId = c.id"
+                  >
+                    <div class="bv-conn-card__badge" :class="`conn-badge--${c.driver}`">
+                      <DriverIcon :driver="c.driver" :size="14" />
+                    </div>
+                    <div class="bv-conn-card__info">
+                      <span class="bv-conn-card__name">{{ c.name }}</span>
+                      <span class="bv-conn-card__driver">{{ driverLabel(c.driver) }}</span>
+                    </div>
+                    <svg v-if="restoreBucketConnId === c.id" class="bv-conn-card__check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  </button>
+                </div>
+
+                <div v-if="restoreBucketConnId" class="bv-dl-path-row">
+                  <input
+                    class="base-input"
+                    v-model="restoreBucketSubfolder"
+                    placeholder="Path / subfolder (e.g. database/prod)"
+                    style="flex:1"
+                    @keydown.enter="loadRestoreBucketFiles"
+                  />
+                  <button class="base-btn base-btn--secondary" :disabled="restoreBucketLoading" @click="loadRestoreBucketFiles">
+                    <svg v-if="restoreBucketLoading" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                    <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    {{ restoreBucketLoading ? 'Loading…' : 'Browse' }}
+                  </button>
+                </div>
+
+                <div v-if="restoreBucketFiles.length > 0" class="bv-dl-files">
+                  <div class="bv-dl-files__header">
+                    <span>File</span>
+                    <span>Size</span>
+                    <span>Last Modified</span>
+                    <span></span>
+                  </div>
+                  <div v-for="f in restoreBucketFiles" :key="f.key" class="bv-dl-files__row">
+                    <span class="bv-dl-files__name" :title="f.key">{{ f.key.split('/').pop() }}</span>
+                    <span class="bv-dl-files__meta">{{ formatBytes(f.size) }}</span>
+                    <span class="bv-dl-files__meta">{{ formatDate(f.last_modified) }}</span>
+                    <button
+                      class="base-btn base-btn--sm bv-dl-btn"
+                      :class="restoreSelectedKey === f.key ? 'base-btn--primary' : 'base-btn--secondary'"
+                      @click="restoreSelectedKey = f.key"
+                    >
+                      <svg v-if="restoreSelectedKey === f.key" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                      {{ restoreSelectedKey === f.key ? 'Selected' : 'Select' }}
+                    </button>
+                  </div>
+                </div>
+
+                <div v-else-if="restoreBucketConnId && !restoreBucketLoading && restoreBucketBrowsed" class="bv-empty-hint">
+                  No backup files (.sql / .sql.gz) found in this path.
+                </div>
+              </template>
+            </template>
+
             <div v-if="restoreResult" class="notice notice--ok">{{ restoreResult }}</div>
             <div v-if="restoreError" class="notice notice--error">{{ restoreError }}</div>
-            <button class="base-btn base-btn--primary" :disabled="!restoreConnId || !restoreSQL || restoreLoading" @click="runRestore">
+            <button
+              class="base-btn base-btn--primary"
+              :disabled="!restoreConnId || (restoreSource === 'upload' ? !restoreSQL : !restoreSelectedKey) || restoreLoading"
+              @click="runRestore"
+            >
               {{ restoreLoading ? 'Restoring…' : 'Run Restore' }}
             </button>
           </div>

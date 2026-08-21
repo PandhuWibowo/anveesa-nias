@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { useConnections, type Connection } from '@/composables/useConnections'
+import { ref, computed, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
+import { useConnections, type Connection, type DbDriver } from '@/composables/useConnections'
 import DriverIcon from '@/components/ui/DriverIcon.vue'
 
 const props = defineProps<{
   modelValue: number | null
   placeholder?: string
+  drivers?: DbDriver[]
 }>()
 
 const emit = defineEmits<{
@@ -14,13 +15,38 @@ const emit = defineEmits<{
 
 const { connections, activeConnections } = useConnections()
 const open = ref(false)
+const search = ref('')
 const wrapRef = ref<HTMLElement | null>(null)
+const searchRef = ref<HTMLInputElement | null>(null)
 
 const selected = computed<Connection | null>(() =>
   props.modelValue != null
     ? (connections.value.find(c => c.id === props.modelValue) ?? null)
     : null
 )
+
+const driverFiltered = computed<Connection[]>(() =>
+  props.drivers?.length
+    ? activeConnections.value.filter(c => props.drivers!.includes(c.driver))
+    : activeConnections.value
+)
+
+const filteredConnections = computed<Connection[]>(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return driverFiltered.value
+  return driverFiltered.value.filter(c =>
+    c.name.toLowerCase().includes(q) ||
+    c.host?.toLowerCase().includes(q) ||
+    c.database?.toLowerCase().includes(q)
+  )
+})
+
+watch(open, (isOpen) => {
+  if (isOpen) {
+    search.value = ''
+    nextTick(() => searchRef.value?.focus())
+  }
+})
 
 const driverColors: Record<string, string> = {
   sqlite: '#4b5563',
@@ -107,9 +133,20 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
 
     <!-- Dropdown -->
     <div v-if="open" class="cp-dropdown">
+      <div class="cp-search-wrap">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="cp-search-icon"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input
+          ref="searchRef"
+          v-model="search"
+          type="text"
+          class="cp-search"
+          placeholder="Search connections…"
+          @keydown.esc="open = false"
+        />
+      </div>
       <div class="cp-list">
         <div
-          v-for="conn in activeConnections"
+          v-for="conn in filteredConnections"
           :key="conn.id"
           class="cp-option"
           :class="{ 'cp-option--active': conn.id === modelValue }"
@@ -130,8 +167,11 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
             <polyline points="20 6 9 17 4 12"/>
           </svg>
         </div>
-        <div v-if="!activeConnections.length" class="cp-empty">
+        <div v-if="!driverFiltered.length" class="cp-empty">
           No active connections
+        </div>
+        <div v-else-if="!filteredConnections.length" class="cp-empty">
+          No matches for "{{ search }}"
         </div>
       </div>
       <div v-if="modelValue != null" class="cp-footer">
@@ -241,6 +281,33 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
   min-width: 260px;
   max-width: 360px;
   overflow: hidden;
+}
+
+.cp-search-wrap {
+  position: relative;
+  padding: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.cp-search-icon {
+  position: absolute;
+  left: 15px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.cp-search {
+  width: 100%;
+  padding: 6px 8px 6px 26px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  outline: none;
+}
+.cp-search:focus {
+  border-color: var(--brand);
 }
 
 .cp-list {

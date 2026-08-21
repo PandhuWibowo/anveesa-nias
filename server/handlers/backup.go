@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"database/sql"
@@ -200,13 +201,56 @@ func RestoreBackup() http.HandlerFunc {
 		}
 
 		var req struct {
-			SQL string `json:"sql"`
+			SQL        string `json:"sql"`
+			DestConnID int64  `json:"dest_conn_id"`
+			ObjectKey  string `json:"object_key"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.SQL) == "" {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+			return
+		}
+
+		const maxRestoreBytes = 50 * 1024 * 1024
+
+		sqlText := req.SQL
+		if strings.TrimSpace(sqlText) == "" && req.DestConnID != 0 && strings.TrimSpace(req.ObjectKey) != "" {
+			dest, err := fetchBucketConn(req.DestConnID)
+			if err != nil {
+				http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+				return
+			}
+			data, err := downloadBucketObjectBytes(r.Context(), dest, req.ObjectKey, maxRestoreBytes)
+			if err != nil {
+				http.Error(w, `{"error":"failed to fetch object from bucket: `+err.Error()+`"}`, http.StatusBadGateway)
+				return
+			}
+			if strings.HasSuffix(strings.ToLower(req.ObjectKey), ".gz") {
+				gz, err := gzip.NewReader(bytes.NewReader(data))
+				if err != nil {
+					http.Error(w, `{"error":"failed to decompress object"}`, http.StatusBadRequest)
+					return
+				}
+				decompressed, err := io.ReadAll(io.LimitReader(gz, maxRestoreBytes+1))
+				gz.Close()
+				if err != nil {
+					http.Error(w, `{"error":"failed to decompress object"}`, http.StatusBadRequest)
+					return
+				}
+				if int64(len(decompressed)) > maxRestoreBytes {
+					http.Error(w, `{"error":"SQL too large (max 50MB)"}`, http.StatusBadRequest)
+					return
+				}
+				sqlText = string(decompressed)
+			} else {
+				sqlText = string(data)
+			}
+		}
+
+		if strings.TrimSpace(sqlText) == "" {
 			http.Error(w, `{"error":"sql required"}`, http.StatusBadRequest)
 			return
 		}
-		if len(req.SQL) > 50*1024*1024 {
+		if int64(len(sqlText)) > maxRestoreBytes {
 			http.Error(w, `{"error":"SQL too large (max 50MB)"}`, http.StatusBadRequest)
 			return
 		}
@@ -223,7 +267,7 @@ func RestoreBackup() http.HandlerFunc {
 			return
 		}
 
-		stmts := splitSQL(req.SQL)
+		stmts := splitSQL(sqlText)
 		executed, skipped := 0, 0
 		for _, stmt := range stmts {
 			stmt = strings.TrimSpace(stmt)

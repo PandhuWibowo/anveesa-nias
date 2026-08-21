@@ -530,6 +530,50 @@ func DownloadFromBucket() http.HandlerFunc {
 	}
 }
 
+// downloadBucketObjectBytes fetches an object's full content into memory, capped
+// at maxBytes. Used by restore-from-bucket, which needs the raw SQL text rather
+// than a streamed HTTP response (see DownloadFromBucket).
+func downloadBucketObjectBytes(ctx context.Context, dest *bucketConnRow, objectKey string, maxBytes int64) ([]byte, error) {
+	endpointHost := buildS3Host(dest)
+	scheme := "https"
+	if !dest.SSL {
+		scheme = "http"
+	}
+	bucket := strings.Trim(dest.Bucket, "/")
+	virtualHost := bucket + "." + endpointHost
+	downloadURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, url.PathEscape(objectKey))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	payloadHash := sha256.Sum256([]byte{})
+	payloadHashHex := hex.EncodeToString(payloadHash[:])
+	region := objectStorageRegion(dest.Driver, endpointHost)
+	service := objectStorageService(dest.Driver)
+	signObjectStorageRequestFull(req, dest.Username, dest.Password, region, service, payloadHashHex, nil)
+
+	client := &http.Client{Timeout: 2 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("bucket returned HTTP %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("object too large (max %dMB)", maxBytes/(1024*1024))
+	}
+	return data, nil
+}
+
 // presignedDownloadURL returns a time-limited pre-signed GET URL for an object.
 // The browser can use this URL to download directly from the bucket without
 // routing through the application server.
