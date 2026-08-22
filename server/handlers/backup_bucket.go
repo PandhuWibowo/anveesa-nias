@@ -49,6 +49,7 @@ type BackupJob struct {
 	Bucket            string `json:"bucket,omitempty"`
 	SizeBytes         int64  `json:"size_bytes,omitempty"`
 	UncompressedBytes int64  `json:"uncompressed_bytes,omitempty"`
+	RecordsExported   int64  `json:"records_exported,omitempty"` // log/document count (search backups only)
 
 	// Error (populated on failed)
 	Error string `json:"error,omitempty"`

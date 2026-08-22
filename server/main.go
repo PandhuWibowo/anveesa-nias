@@ -538,6 +538,8 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchListIndices())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "aggregate" && r.Method == http.MethodPost:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchAggregate())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "backup-to-bucket" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchBackupToBucket())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "fields" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchIndexFields())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "watcher-stats" && r.Method == http.MethodGet:

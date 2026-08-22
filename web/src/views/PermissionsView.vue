@@ -765,6 +765,69 @@ function closeAllColMenus() {
   showRoleColMenu.value = false
   showGroupColMenu.value = false
   showUserColMenu.value = false
+  showUserExportMenu.value = false
+}
+
+// ── Export users to CSV ──
+// Superset of the on-screen columns (adds fields like ID/MFA that aren't
+// shown in the table but are useful in an export) — defaults to "export all".
+const exportUserColDefs = [
+  { key: 'id' as const, label: 'ID' },
+  { key: 'username' as const, label: 'Username' },
+  { key: 'role' as const, label: 'Role' },
+  { key: 'effective_access' as const, label: 'Effective Access' },
+  { key: 'is_active' as const, label: 'Status' },
+  { key: 'mfa_enabled' as const, label: 'MFA Enabled' },
+  { key: 'mfa_exempt' as const, label: 'MFA Exempt' },
+  { key: 'created_at' as const, label: 'Created' },
+]
+const exportUserColumns = ref<Record<string, boolean>>(
+  Object.fromEntries(exportUserColDefs.map((c) => [c.key, true])),
+)
+const showUserExportMenu = ref(false)
+
+function setAllExportUserColumns(val: boolean) {
+  exportUserColDefs.forEach((c) => { exportUserColumns.value[c.key] = val })
+}
+
+function userExportValue(u: User, key: string): string {
+  switch (key) {
+    case 'id': return String(u.id)
+    case 'username': return u.username
+    case 'role': return u.role
+    case 'effective_access': return getUserEffectivePermissions(u).map(getPermissionLabel).join('; ')
+    case 'is_active': return u.is_active ? 'Active' : 'Inactive'
+    case 'mfa_enabled': return u.mfa_enabled ? 'Yes' : 'No'
+    case 'mfa_exempt': return u.mfa_exempt ? 'Yes' : 'No'
+    case 'created_at': return new Date(u.created_at).toLocaleDateString()
+    default: return ''
+  }
+}
+
+function csvEscape(v: string): string {
+  return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v
+}
+
+function exportUsersCsv() {
+  const cols = exportUserColDefs.filter((c) => exportUserColumns.value[c.key])
+  if (!cols.length) {
+    toast.error('Select at least one column to export')
+    return
+  }
+  const rows = filteredUsers.value.map((u) => cols.map((c) => csvEscape(userExportValue(u, c.key))).join(','))
+  const csv = [cols.map((c) => csvEscape(c.label)).join(','), ...rows].join('\r\n')
+  // Leading BOM so Excel opens UTF-8 (non-ASCII usernames/emails) correctly.
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `users-export-${new Date().toISOString().slice(0, 10)}.csv`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+  showUserExportMenu.value = false
+  toast.success(`Exported ${filteredUsers.value.length} user${filteredUsers.value.length === 1 ? '' : 's'}`)
 }
 
 // ── Init ──
@@ -1122,6 +1185,27 @@ watch(() => route.query.tab, () => {
               <label v-for="col in userColDefs" :key="col.key" class="perm-col-item">
                 <input type="checkbox" v-model="visibleUserColumns[col.key]" /> {{ col.label }}
               </label>
+            </div>
+          </div>
+          <div class="perm-col-toggle" @click.stop>
+            <button class="base-btn base-btn--ghost base-btn--xs" @click="showUserExportMenu = !showUserExportMenu">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Export
+            </button>
+            <div v-if="showUserExportMenu" class="perm-col-menu">
+              <div class="perm-col-menu-title">
+                Export Columns
+                <div class="perm-col-menu-links">
+                  <button type="button" class="perm-col-menu-link" @click="setAllExportUserColumns(true)">All</button>
+                  <button type="button" class="perm-col-menu-link" @click="setAllExportUserColumns(false)">None</button>
+                </div>
+              </div>
+              <label v-for="col in exportUserColDefs" :key="col.key" class="perm-col-item">
+                <input type="checkbox" v-model="exportUserColumns[col.key]" /> {{ col.label }}
+              </label>
+              <button class="base-btn base-btn--primary base-btn--xs perm-col-menu-export" @click="exportUsersCsv">
+                Export CSV ({{ filteredUsers.length }} users)
+              </button>
             </div>
           </div>
           <select class="perm-filter-sel" v-model="userPageSize">
@@ -2239,6 +2323,7 @@ watch(() => route.query.tab, () => {
   box-shadow: 0 8px 24px rgba(0,0,0,0.3); z-index: 200;
 }
 .perm-col-menu-title {
+  display: flex; align-items: center; justify-content: space-between;
   font-size: 10px; font-weight: 700; text-transform: uppercase;
   letter-spacing: 0.1em; color: var(--text-muted); margin-bottom: 8px;
 }
@@ -2246,6 +2331,14 @@ watch(() => route.query.tab, () => {
   display: flex; align-items: center; gap: 8px;
   font-size: 13px; color: var(--text-primary);
   padding: 4px 0; cursor: pointer;
+  white-space: nowrap;
 }
 .perm-col-item input { cursor: pointer; }
+.perm-col-menu-links { display: flex; gap: 6px; text-transform: none; letter-spacing: normal; }
+.perm-col-menu-link {
+  background: none; border: none; color: var(--brand); cursor: pointer;
+  font-size: 10px; font-weight: 600; padding: 0;
+}
+.perm-col-menu-link:hover { text-decoration: underline; }
+.perm-col-menu-export { width: 100%; margin-top: 10px; justify-content: center; white-space: nowrap; }
 </style>
