@@ -27,6 +27,18 @@ let view: EditorView | null = null
 const themeCompartment = new Compartment()
 const completionCompartment = new Compartment()
 
+// A leading "-- comment" line (e.g. a commented-out statement left above the
+// one being edited) must never end up as a prefix of the SQL text sent to
+// the backend — the query endpoint's SELECT/write classification looks at
+// the very first keyword, and a leading "--" makes it misclassify a real
+// SELECT as a write, silently discarding its result rows.
+function stripLeadingComments(text: string): string {
+  const lines = text.split('\n')
+  let i = 0
+  while (i < lines.length && (lines[i].trim() === '' || lines[i].trim().startsWith('--'))) i++
+  return lines.slice(i).join('\n').trim()
+}
+
 // Returns selected text if any, otherwise the statement at the cursor position.
 function getActiveSQL(): string {
   if (!view) return props.modelValue
@@ -35,11 +47,20 @@ function getActiveSQL(): string {
   if (from !== to) return state.sliceDoc(from, to).trim()
   const full = state.doc.toString()
   const cursor = state.selection.main.head
-  // Split on bare semicolons, respecting single/double-quoted strings
+  // Split on bare semicolons, respecting single/double-quoted strings and
+  // skipping "-- line comments" — a ';' inside a commented-out statement
+  // above the real one must not count as a statement boundary, or the
+  // segment the cursor is actually in gets merged with (or split away from)
+  // its neighbor incorrectly.
   const stmts: Array<{ from: number; to: number }> = []
   let inSingle = false, inDouble = false, stmtStart = 0
   for (let i = 0; i < full.length; i++) {
     const ch = full[i]
+    if (!inSingle && !inDouble && ch === '-' && full[i + 1] === '-') {
+      const nl = full.indexOf('\n', i)
+      i = nl === -1 ? full.length : nl
+      continue
+    }
     if (ch === "'" && !inDouble) inSingle = !inSingle
     else if (ch === '"' && !inSingle) inDouble = !inDouble
     else if (ch === ';' && !inSingle && !inDouble) {
@@ -49,7 +70,8 @@ function getActiveSQL(): string {
   }
   stmts.push({ from: stmtStart, to: full.length })
   const match = stmts.find(s => cursor >= s.from && cursor <= s.to)
-  return match ? full.slice(match.from, match.to).trim() : full.trim()
+  const raw = match ? full.slice(match.from, match.to) : full
+  return stripLeadingComments(raw) || raw.trim()
 }
 
 const baseTheme = EditorView.theme({

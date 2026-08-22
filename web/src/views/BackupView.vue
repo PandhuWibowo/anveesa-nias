@@ -689,6 +689,8 @@ watch(restoreSource, () => {
 // ── Restore progress (async job, polled) ────────────────────────────────
 const restoreProgress = reactive({ executed: 0, skipped: 0, failedRows: 0 })
 const restoreFirstRowError = ref('')
+const restoreFailedRowDetails = ref<{ statement: string; error: string }[]>([])
+const restoreFailedRowsOpen = ref(false)
 const restoreCurrentCount = ref(0)
 const restoreRecent = ref<string[]>([])
 const restoreCancelled = ref(false)
@@ -789,6 +791,7 @@ async function pollRestoreJob(jobId: string) {
       restoreProgress.skipped = status.skipped ?? 0
       restoreProgress.failedRows = status.failed_rows ?? 0
       restoreFirstRowError.value = status.first_row_error ?? ''
+      restoreFailedRowDetails.value = status.failed_row_details ?? []
       restoreCurrentCount.value = status.current_count ?? 0
       restoreRecent.value = status.recent ?? []
 
@@ -836,6 +839,8 @@ async function runRestore() {
   restoreProgress.skipped = 0
   restoreProgress.failedRows = 0
   restoreFirstRowError.value = ''
+  restoreFailedRowDetails.value = []
+  restoreFailedRowsOpen.value = false
   restoreCurrentCount.value = 0
   restoreRecent.value = []
 
@@ -1743,6 +1748,23 @@ onMounted(async () => {
             </div>
 
             <div v-if="restoreResult" class="notice notice--ok">{{ restoreResult }}</div>
+
+            <div v-if="restoreFailedRowDetails.length" class="bv-failed-rows">
+              <button type="button" class="bv-failed-rows__toggle" @click="restoreFailedRowsOpen = !restoreFailedRowsOpen">
+                <svg :style="{ transform: restoreFailedRowsOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                {{ restoreFailedRowsOpen ? 'Hide' : 'Show' }} failed rows ({{ restoreFailedRowDetails.length }}{{ restoreProgress.failedRows > restoreFailedRowDetails.length ? ` of ${restoreProgress.failedRows}` : '' }})
+              </button>
+              <div v-if="restoreFailedRowsOpen" class="bv-failed-rows__list">
+                <div v-for="(f, i) in restoreFailedRowDetails" :key="i" class="bv-failed-rows__row">
+                  <span class="bv-failed-rows__stmt">{{ f.statement }}</span>
+                  <span class="bv-failed-rows__err">{{ f.error }}</span>
+                </div>
+                <div v-if="restoreProgress.failedRows > restoreFailedRowDetails.length" class="bv-failed-rows__more">
+                  + {{ (restoreProgress.failedRows - restoreFailedRowDetails.length).toLocaleString() }} more not shown
+                </div>
+              </div>
+            </div>
+
             <div v-if="restoreError" class="notice notice--error">{{ restoreError }}</div>
             <button
               class="base-btn base-btn--primary"
@@ -2872,6 +2894,56 @@ onMounted(async () => {
   color: #d97706;
   font-size: 12px;
   font-weight: 600;
+}
+
+.bv-failed-rows {
+  border: 1px solid color-mix(in srgb, #d97706 35%, var(--border));
+  border-radius: 8px;
+  overflow: hidden;
+}
+.bv-failed-rows__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  background: color-mix(in srgb, #d97706 8%, transparent);
+  border: none;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #d97706;
+  text-align: left;
+}
+.bv-failed-rows__list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+.bv-failed-rows__row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.bv-failed-rows__stmt {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.bv-failed-rows__err {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.bv-failed-rows__more {
+  padding: 8px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-style: italic;
 }
 .bv-restore-reconnect {
   display: flex;

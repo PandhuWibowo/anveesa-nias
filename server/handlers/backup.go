@@ -37,16 +37,16 @@ type BackupOptions struct {
 	IfNotExists  bool `json:"if_not_exists"` // use CREATE TABLE IF NOT EXISTS
 
 	// Data options
-	ColumnInsert    bool `json:"column_insert"`    // INSERT INTO t (c1,c2) VALUES (...)
-	UseTransaction  bool `json:"use_transaction"`  // BEGIN/COMMIT per table
+	ColumnInsert    bool `json:"column_insert"`     // INSERT INTO t (c1,c2) VALUES (...)
+	UseTransaction  bool `json:"use_transaction"`   // BEGIN/COMMIT per table
 	DisableFKChecks bool `json:"disable_fk_checks"` // SET FOREIGN_KEY_CHECKS=0 wrapper
 
 	// Post-data / extra DDL
-	IncludeIndexes  bool `json:"include_indexes"`  // emit CREATE INDEX after data
-	IncludeFKs      bool `json:"include_fks"`      // emit ADD CONSTRAINT … FOREIGN KEY
-	IncludeViews    bool `json:"include_views"`    // emit CREATE VIEW definitions
+	IncludeIndexes   bool `json:"include_indexes"`   // emit CREATE INDEX after data
+	IncludeFKs       bool `json:"include_fks"`       // emit ADD CONSTRAINT … FOREIGN KEY
+	IncludeViews     bool `json:"include_views"`     // emit CREATE VIEW definitions
 	IncludeSequences bool `json:"include_sequences"` // emit CREATE SEQUENCE (PG only)
-	IncludeTriggers bool `json:"include_triggers"` // emit CREATE TRIGGER (best-effort)
+	IncludeTriggers  bool `json:"include_triggers"`  // emit CREATE TRIGGER (best-effort)
 
 	// Output
 	Compress bool `json:"compress"` // gzip the output (.sql.gz)
@@ -60,18 +60,18 @@ type BackupOptions struct {
 // DefaultBackupOptions returns sensible defaults matching pgAdmin's defaults.
 func DefaultBackupOptions() BackupOptions {
 	return BackupOptions{
-		Sections:        "all",
-		DropExisting:    false,
-		IfNotExists:     false,
-		ColumnInsert:    true,
-		UseTransaction:  false,
-		DisableFKChecks: true,
-		IncludeIndexes:  true,
-		IncludeFKs:      true,
-		IncludeViews:    false,
+		Sections:         "all",
+		DropExisting:     false,
+		IfNotExists:      false,
+		ColumnInsert:     true,
+		UseTransaction:   false,
+		DisableFKChecks:  true,
+		IncludeIndexes:   true,
+		IncludeFKs:       true,
+		IncludeViews:     false,
 		IncludeSequences: false,
-		IncludeTriggers: false,
-		Compress:        false,
+		IncludeTriggers:  false,
+		Compress:         false,
 	}
 }
 
@@ -285,6 +285,18 @@ func GetBackup() http.HandlerFunc {
 
 type RestoreJobStatus string
 
+// RestoreRowFailure pairs a failed statement's human-readable label (e.g.
+// "Inserting into public.accounts") with its error, for diagnostics.
+type RestoreRowFailure struct {
+	Statement string `json:"statement"`
+	Error     string `json:"error"`
+}
+
+// maxTrackedRowFailures caps how many individual failures RestoreJob keeps
+// full detail on — FailedRows (the atomic counter) always reflects the true
+// total regardless of this cap.
+const maxTrackedRowFailures = 50
+
 const (
 	RestoreJobRunning  RestoreJobStatus = "running"
 	RestoreJobDone     RestoreJobStatus = "done"
@@ -307,12 +319,15 @@ type RestoreJob struct {
 	// nonzero when the caller opted into continueOnError.
 	FailedRows int64 `json:"failed_rows"`
 
-	// FirstRowError captures the first row-level error's text (e.g. "date/time
-	// field value out of range") for diagnostics — mu-protected since it's a
-	// plain string, not an atomic. Only the first is kept; a bad dump can
-	// produce millions of identical failures and there's no value in storing
-	// each one.
+	// FirstRowError mirrors FailedRowDetails[0].Error for older frontend
+	// builds that only read this field — kept in sync, not a separate value.
 	FirstRowError string `json:"first_row_error,omitempty"`
+	// FailedRowDetails captures up to maxTrackedRowFailures individual row
+	// failures (which statement, and why) for diagnostics — mu-protected.
+	// Capped rather than unbounded: a badly-formed dump can produce millions
+	// of identical failures, and there's no value in storing each one;
+	// FailedRows still tracks the true total count separately via atomic ops.
+	FailedRowDetails []RestoreRowFailure `json:"failed_row_details,omitempty"`
 
 	// Current/CurrentCount/Recent give a human-readable window into what the
 	// executor is actually doing right now (e.g. "Inserting into orders"), not
@@ -436,10 +451,16 @@ func RestoreBackup() http.HandlerFunc {
 				}
 				job.mu.Unlock()
 			}
-			onFail := func(rowErr error) {
+			onFail := func(stmt string, rowErr error) {
 				job.mu.Lock()
 				if job.FirstRowError == "" {
 					job.FirstRowError = rowErr.Error()
+				}
+				if len(job.FailedRowDetails) < maxTrackedRowFailures {
+					job.FailedRowDetails = append(job.FailedRowDetails, RestoreRowFailure{
+						Statement: describeStatement(stmt),
+						Error:     rowErr.Error(),
+					})
 				}
 				job.mu.Unlock()
 			}
@@ -549,6 +570,7 @@ func RestoreBackup() http.HandlerFunc {
 						job.CurrentCount = 0
 						job.Recent = []string{retryMsg}
 						job.FirstRowError = ""
+						job.FailedRowDetails = nil
 						job.mu.Unlock()
 						select {
 						case <-time.After(3 * time.Second):
@@ -607,20 +629,22 @@ func GetRestoreJobStatus() http.HandlerFunc {
 		status, doneAt, errMsg := job.Status, job.DoneAt, job.Error
 		current, currentCount, recent := job.Current, job.CurrentCount, job.Recent
 		firstRowError := job.FirstRowError
+		failedRowDetails := job.FailedRowDetails
 		job.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":              job.ID,
-			"status":          status,
-			"started_at":      job.StartedAt,
-			"done_at":         doneAt,
-			"executed":        atomic.LoadInt64(&job.Executed),
-			"skipped":         atomic.LoadInt64(&job.Skipped),
-			"failed_rows":     atomic.LoadInt64(&job.FailedRows),
-			"first_row_error": firstRowError,
-			"current":         current,
-			"current_count":   currentCount,
-			"recent":          recent,
-			"error":         errMsg,
+			"id":                 job.ID,
+			"status":             status,
+			"started_at":         job.StartedAt,
+			"done_at":            doneAt,
+			"executed":           atomic.LoadInt64(&job.Executed),
+			"skipped":            atomic.LoadInt64(&job.Skipped),
+			"failed_rows":        atomic.LoadInt64(&job.FailedRows),
+			"first_row_error":    firstRowError,
+			"failed_row_details": failedRowDetails,
+			"current":            current,
+			"current_count":      currentCount,
+			"recent":             recent,
+			"error":              errMsg,
 		})
 	}
 }
@@ -1786,8 +1810,8 @@ func insertBatchParts(stmt string) (prefix, tuple string, ok bool) {
 // SAVEPOINT — a row that fails (bad data, e.g. an out-of-range date) is
 // rolled back to that savepoint and counted as failed instead of aborting the
 // whole (potentially hours-long, multi-million-statement) transaction; onFail,
-// if non-nil, is called with each such error.
-func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver string, skipConflicts, continueOnError bool, executedCounter, skippedCounter, failedCounter *int64, onExec func(stmt string, n int), onFail func(err error)) (executed, skipped int, err error) {
+// if non-nil, is called with the failed statement's text and its error.
+func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver string, skipConflicts, continueOnError bool, executedCounter, skippedCounter, failedCounter *int64, onExec func(stmt string, n int), onFail func(stmt string, err error)) (executed, skipped int, err error) {
 	br := bufio.NewReaderSize(r, 256*1024)
 	var cur strings.Builder
 	inStr := false
@@ -1855,7 +1879,7 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 					atomic.AddInt64(failedCounter, 1)
 				}
 				if onFail != nil {
-					onFail(rowErr)
+					onFail(stmt, rowErr)
 				}
 				return nil
 			}

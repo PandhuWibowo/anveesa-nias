@@ -80,14 +80,17 @@ func ExecuteQuery() http.HandlerFunc {
 			return
 		}
 
-		// Check if this is a write operation and if user has permission
-		upper := strings.ToUpper(strings.TrimSpace(req.SQL))
-		isWrite := !strings.HasPrefix(upper, "SELECT") &&
-			!strings.HasPrefix(upper, "WITH") &&
-			!strings.HasPrefix(upper, "SHOW") &&
-			!strings.HasPrefix(upper, "DESCRIBE") &&
-			!strings.HasPrefix(upper, "EXPLAIN") &&
-			!strings.HasPrefix(upper, "PRAGMA")
+		// Check if this is a write operation and if user has permission. Uses
+		// firstSQLKeyword rather than a raw prefix check on the trimmed text —
+		// SQL handed to this endpoint can start with a "-- comment" line (e.g.
+		// a leading commented-out statement left in an editor), and a naive
+		// HasPrefix(upper, "SELECT") would then misclassify a real SELECT as a
+		// write, routing it through ExecContext and silently discarding its
+		// result rows instead of returning them.
+		keyword := firstSQLKeyword(req.SQL)
+		isReadKeyword := keyword == "SELECT" || keyword == "WITH" || keyword == "SHOW" ||
+			keyword == "DESCRIBE" || keyword == "EXPLAIN" || keyword == "PRAGMA"
+		isWrite := !isReadKeyword
 
 		if isWrite && !CheckWritePermission(r, connID) {
 			http.Error(w, `{"error":"write permission denied"}`, http.StatusForbidden)
@@ -140,12 +143,7 @@ func ExecuteQuery() http.HandlerFunc {
 
 		start := time.Now()
 
-		isSelect := strings.HasPrefix(upper, "SELECT") ||
-			strings.HasPrefix(upper, "WITH") ||
-			strings.HasPrefix(upper, "SHOW") ||
-			strings.HasPrefix(upper, "DESCRIBE") ||
-			strings.HasPrefix(upper, "EXPLAIN") ||
-			strings.HasPrefix(upper, "PRAGMA")
+		isSelect := isReadKeyword
 
 		result := &QueryResult{
 			Columns: []string{},
