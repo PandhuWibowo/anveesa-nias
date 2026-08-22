@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -485,7 +486,7 @@ func DownloadFromBucket() http.HandlerFunc {
 			return
 		}
 
-		resp, err := openBucketObjectStream(r.Context(), dest, objectKey)
+		resp, err := openBucketObjectStream(r.Context(), dest, objectKey, 0)
 		if err != nil {
 			http.Error(w, `{"error":"download failed: `+err.Error()+`"}`, http.StatusBadGateway)
 			return
@@ -507,8 +508,10 @@ func DownloadFromBucket() http.HandlerFunc {
 // live HTTP response for streaming — callers must Close resp.Body. Used where
 // the full object must never be buffered in memory (restore-from-bucket,
 // DownloadFromBucket), unlike listBucketObjects/presign which only need
-// metadata or a URL.
-func openBucketObjectStream(ctx context.Context, dest *bucketConnRow, objectKey string) (*http.Response, error) {
+// metadata or a URL. rangeStart, if > 0, requests only the suffix starting at
+// that byte offset (a plain "bytes=N-" range) — used to resume a download
+// that was cut off partway rather than re-transferring the whole object.
+func openBucketObjectStream(ctx context.Context, dest *bucketConnRow, objectKey string, rangeStart int64) (*http.Response, error) {
 	endpointHost := buildS3Host(dest)
 	scheme := "https"
 	if !dest.SSL {
@@ -521,6 +524,9 @@ func openBucketObjectStream(ctx context.Context, dest *bucketConnRow, objectKey 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return nil, err
+	}
+	if rangeStart > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", rangeStart))
 	}
 
 	payloadHash := sha256.Sum256([]byte{})
@@ -540,6 +546,90 @@ func openBucketObjectStream(ctx context.Context, dest *bucketConnRow, objectKey 
 		return nil, fmt.Errorf("bucket returned HTTP %d", resp.StatusCode)
 	}
 	return resp, nil
+}
+
+// downloadObjectToTempFile downloads objectKey to a local temp file, resuming
+// via HTTP Range requests when the connection drops instead of restarting the
+// whole transfer. This is what actually gets a multi-GB download past a
+// fixed-duration or fixed-size limit somewhere in the network path (a proxy,
+// load balancer, or the bucket service itself) — each retry only has to
+// survive transferring the remaining bytes, not the whole object again, so
+// the transfer keeps making forward progress even if no single connection
+// can survive the full duration.
+//
+// The reason this downloads to disk instead of streaming straight into the
+// SQL parser (like the rest of this app's bucket reads do) is that gzip
+// can't be resumed mid-decompression: DEFLATE's back-references depend on
+// everything decoded before a given point, so there's no way to "seek" into
+// a gzip stream at an arbitrary compressed-byte offset. Materializing the
+// compressed bytes on disk first decouples "reliably get the bytes" (network,
+// resumable) from "process the SQL" (disk-only from here, so a later DB
+// hiccup doesn't require touching the bucket again either).
+func downloadObjectToTempFile(ctx context.Context, dest *bucketConnRow, objectKey string, onProgress func(downloaded int64)) (path string, err error) {
+	f, err := os.CreateTemp("", "nias-restore-*.download")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	path = f.Name()
+	defer f.Close()
+	cleanup := func() { os.Remove(path) }
+
+	const maxAttempts = 8
+	var downloaded int64
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		resp, reqErr := openBucketObjectStream(ctx, dest, objectKey, downloaded)
+		if reqErr != nil {
+			if attempt >= maxAttempts || ctx.Err() != nil {
+				cleanup()
+				return "", reqErr
+			}
+		} else {
+			// If we asked for a range but the server ignored it and sent the
+			// whole object again (status 200 instead of 206), whatever we'd
+			// already written is now the wrong prefix — start the file over.
+			if downloaded > 0 && resp.StatusCode != http.StatusPartialContent {
+				if _, err := f.Seek(0, io.SeekStart); err == nil {
+					f.Truncate(0)
+					downloaded = 0
+				}
+			}
+			n, copyErr := io.Copy(f, resp.Body)
+			resp.Body.Close()
+			downloaded += n
+			if onProgress != nil {
+				onProgress(downloaded)
+			}
+			if copyErr == nil {
+				return path, nil
+			}
+			if attempt >= maxAttempts || ctx.Err() != nil {
+				cleanup()
+				return "", fmt.Errorf("download failed after %d attempts (%s transferred): %w", attempt, formatByteCount(downloaded), copyErr)
+			}
+		}
+		select {
+		case <-time.After(3 * time.Second):
+		case <-ctx.Done():
+			cleanup()
+			return "", ctx.Err()
+		}
+	}
+	cleanup()
+	return "", fmt.Errorf("download failed after %d attempts", maxAttempts)
+}
+
+func formatByteCount(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%dB", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 // presignedDownloadURL returns a time-limited pre-signed GET URL for an object.

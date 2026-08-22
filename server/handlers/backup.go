@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -443,30 +444,69 @@ func RestoreBackup() http.HandlerFunc {
 				job.mu.Unlock()
 			}
 
-			// A restore of a real production dump can take many minutes just
-			// to download; one dropped connection shouldn't cost the whole
-			// attempt. Only retried for bucket sources, and only on a stream
-			// read error (errRestoreStreamRead) — a real SQL/data problem
-			// fails immediately since retrying won't fix that.
-			const maxAttempts = 3
+			// Two-tier strategy: the first attempt streams directly from the
+			// bucket, overlapping network transfer with DB execution — the
+			// fast path, and the right choice for the overwhelming majority
+			// of restores on a healthy connection. Only if that stream breaks
+			// mid-flight do later attempts switch to downloading the object
+			// to a local temp file first (resumable via HTTP Range requests)
+			// and processing it from disk — slower, since download and exec
+			// no longer overlap, but immune to further network drops. Paying
+			// that cost only once actually needed (rather than by default)
+			// keeps the common case fast while still recovering the case that
+			// motivated this at all: a connection that reliably drops at a
+			// similar point every time, which plain retries alone can't fix.
+			const maxAttempts = 4
 			var stepErr error
+			var useResumable bool
 
 			for attempt := 1; attempt <= maxAttempts; attempt++ {
 				var reader io.Reader
-				var bodyCloser io.Closer
+				var closer io.Closer
+				var tempPath string
 
 				if fromBucket {
-					resp, err := openBucketObjectStream(jobCtx, dest, req.ObjectKey)
-					if err != nil {
-						stepErr = fmt.Errorf("failed to fetch object from bucket: %w", err)
-						break
+					if !useResumable {
+						resp, err := openBucketObjectStream(jobCtx, dest, req.ObjectKey, 0)
+						if err != nil {
+							stepErr = fmt.Errorf("failed to fetch object from bucket: %w", err)
+							break
+						}
+						closer = resp.Body
+						reader = resp.Body
+					} else {
+						job.mu.Lock()
+						job.Current = "Downloading from bucket…"
+						job.Recent = []string{job.Current}
+						job.mu.Unlock()
+
+						path, dlErr := downloadObjectToTempFile(jobCtx, dest, req.ObjectKey, func(downloaded int64) {
+							job.mu.Lock()
+							job.Current = "Downloading from bucket… " + formatByteCount(downloaded)
+							job.Recent = []string{job.Current}
+							job.mu.Unlock()
+						})
+						if dlErr != nil {
+							stepErr = fmt.Errorf("failed to download object from bucket: %w", dlErr)
+							break
+						}
+						tempPath = path
+						f, err := os.Open(path)
+						if err != nil {
+							os.Remove(path)
+							stepErr = fmt.Errorf("failed to reopen downloaded file: %w", err)
+							break
+						}
+						closer = f
+						reader = f
 					}
-					bodyCloser = resp.Body
-					reader = resp.Body
 					if strings.HasSuffix(strings.ToLower(req.ObjectKey), ".gz") {
-						gz, gzErr := gzip.NewReader(resp.Body)
+						gz, gzErr := gzip.NewReader(reader)
 						if gzErr != nil {
-							resp.Body.Close()
+							closer.Close()
+							if tempPath != "" {
+								os.Remove(tempPath)
+							}
 							stepErr = fmt.Errorf("failed to decompress object: %w", gzErr)
 							break
 						}
@@ -478,39 +518,40 @@ func RestoreBackup() http.HandlerFunc {
 
 				tx, err := db.BeginTx(jobCtx, nil)
 				if err != nil {
-					if bodyCloser != nil {
-						bodyCloser.Close()
+					if closer != nil {
+						closer.Close()
+					}
+					if tempPath != "" {
+						os.Remove(tempPath)
 					}
 					stepErr = fmt.Errorf("transaction error: %w", err)
 					break
 				}
 
 				executed, _, execErr := execRestoreStream(jobCtx, tx, reader, driver, req.SkipConflicts, req.ContinueOnError, &job.Executed, &job.Skipped, &job.FailedRows, onExec, onFail)
-				if bodyCloser != nil {
-					bodyCloser.Close()
+				if closer != nil {
+					closer.Close()
+				}
+				if tempPath != "" {
+					os.Remove(tempPath)
 				}
 
 				if execErr != nil {
 					tx.Rollback()
 					if fromBucket && errors.Is(execErr, errRestoreStreamRead) && attempt < maxAttempts {
-						// Reset live progress and retry from a fresh download —
-						// the prior attempt's work was rolled back with it, so
-						// the counters showing it would be misleading.
+						useResumable = true
 						atomic.StoreInt64(&job.Executed, 0)
 						atomic.StoreInt64(&job.Skipped, 0)
 						atomic.StoreInt64(&job.FailedRows, 0)
-						retryMsg := fmt.Sprintf("Connection dropped after %d statements — retrying download (attempt %d/%d)", executed, attempt+1, maxAttempts)
+						retryMsg := fmt.Sprintf("Connection dropped after %d statements — switching to a resumable download (attempt %d/%d)", executed, attempt+1, maxAttempts)
 						job.mu.Lock()
 						job.Current = retryMsg
 						job.CurrentCount = 0
-						// The UI renders Recent[0] as "what's happening now" — it
-						// must carry this status too, not just Current, or the
-						// progress panel goes blank during the retry pause.
 						job.Recent = []string{retryMsg}
 						job.FirstRowError = ""
 						job.mu.Unlock()
 						select {
-						case <-time.After(5 * time.Second):
+						case <-time.After(3 * time.Second):
 						case <-jobCtx.Done():
 						}
 						continue
