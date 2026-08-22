@@ -949,24 +949,13 @@ onMounted(async () => {
                 No database connections found. <a href="/connections" style="color:var(--brand)">Add one →</a>
               </div>
               <template v-else>
-                <div class="bv-conn-grid">
-                  <button
-                    v-for="c in dbConnections"
-                    :key="c.id"
-                    class="bv-conn-card"
-                    :class="{ 'is-active': bucketForm.source_conn_id === c.id }"
-                    @click="bucketForm.source_conn_id = c.id; onSourceConnChange()"
-                  >
-                    <div class="bv-conn-card__badge" :class="`conn-badge--${c.driver}`">
-                      <DriverIcon :driver="c.driver" :size="14" />
-                    </div>
-                    <div class="bv-conn-card__info">
-                      <span class="bv-conn-card__name">{{ c.name }}</span>
-                      <span class="bv-conn-card__driver">{{ driverLabel(c.driver) }}</span>
-                    </div>
-                    <svg v-if="bucketForm.source_conn_id === c.id" class="bv-conn-card__check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                  </button>
-                </div>
+                <ConnectionPicker
+                  :model-value="bucketForm.source_conn_id"
+                  @update:model-value="(id) => { bucketForm.source_conn_id = id; onSourceConnChange() }"
+                  :drivers="DB_DRIVERS"
+                  placeholder="Select source database…"
+                  full-width
+                />
 
                 <div v-if="bucketForm.source_conn_id" class="form-group">
                   <label class="form-label">Database / Schema</label>
@@ -986,24 +975,13 @@ onMounted(async () => {
               <div v-if="bucketConnections.length === 0" class="bv-empty-hint">
                 No object storage connection found. Go to <a href="/connections" style="color:var(--brand)">Connections → Add connection</a> and select your provider (Huawei OBS, AWS S3, GCP Storage, or Alibaba OSS), then enter your endpoint, access key, secret key, and bucket name.
               </div>
-              <div v-else class="bv-conn-grid">
-                <button
-                  v-for="c in bucketConnections"
-                  :key="c.id"
-                  class="bv-conn-card"
-                  :class="{ 'is-active': bucketForm.dest_conn_id === c.id }"
-                  @click="bucketForm.dest_conn_id = c.id"
-                >
-                  <div class="bv-conn-card__badge" :class="`conn-badge--${c.driver}`">
-                    <DriverIcon :driver="c.driver" :size="14" />
-                  </div>
-                  <div class="bv-conn-card__info">
-                    <span class="bv-conn-card__name">{{ c.name }}</span>
-                    <span class="bv-conn-card__driver">{{ c.database || driverLabel(c.driver) }}</span>
-                  </div>
-                  <svg v-if="bucketForm.dest_conn_id === c.id" class="bv-conn-card__check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                </button>
-              </div>
+              <ConnectionPicker
+                v-else
+                v-model="bucketForm.dest_conn_id"
+                :drivers="S3_DRIVERS"
+                placeholder="Select destination bucket…"
+                full-width
+              />
 
               <!-- File info -->
               <div class="bv-section-label" style="margin-top:4px">
@@ -1576,7 +1554,7 @@ onMounted(async () => {
             </div>
           </div>
           <div class="page-card__body bv-card-body">
-            <ConnectionPicker v-model="restoreConnId" :drivers="DB_DRIVERS" placeholder="Select connection…" />
+            <ConnectionPicker v-model="restoreConnId" :drivers="DB_DRIVERS" placeholder="Select connection…" full-width />
 
             <div class="page-tabs bv-tabs">
               <button class="page-tab" :class="{ 'is-active': restoreSource === 'upload' }" @click="restoreSource = 'upload'">

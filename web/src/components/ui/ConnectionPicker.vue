@@ -7,6 +7,10 @@ const props = defineProps<{
   modelValue: number | null
   placeholder?: string
   drivers?: DbDriver[]
+  // Toolbar usages (SchemaView, etc.) want the compact default width; form
+  // contexts where every other field is a full-width base-input want this
+  // to match instead of looking like a stray small control.
+  fullWidth?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -106,11 +110,11 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
 </script>
 
 <template>
-  <div class="cp-wrap" ref="wrapRef">
+  <div class="cp-wrap" :class="{ 'cp-wrap--full': fullWidth }" ref="wrapRef">
     <!-- Trigger -->
     <button
       class="cp-trigger"
-      :class="{ 'cp-trigger--open': open, 'cp-trigger--empty': !selected }"
+      :class="{ 'cp-trigger--open': open, 'cp-trigger--empty': !selected, 'cp-trigger--full': fullWidth }"
       @click="open = !open"
       type="button"
     >
@@ -190,6 +194,10 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
   display: inline-flex;
   flex-shrink: 0;
 }
+.cp-wrap--full {
+  display: flex;
+  width: 100%;
+}
 
 /* Trigger */
 .cp-trigger {
@@ -208,6 +216,11 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
   max-width: 300px;
   white-space: nowrap;
   overflow: hidden;
+}
+.cp-trigger--full {
+  width: 100%;
+  max-width: none;
+  padding: 8px 12px;
 }
 .cp-trigger:hover,
 .cp-trigger--open {
