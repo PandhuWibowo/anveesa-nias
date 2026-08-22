@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"time"
 
@@ -196,6 +199,269 @@ func SftpDownload() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Disposition", `attachment; filename="`+path.Base(p)+`"`)
 		io.Copy(w, f)
+	}
+}
+
+// sftpWalkFiles recursively visits every FILE under p (or p itself, if p is a
+// file), calling visit with the file's full remote path and the name it
+// should get inside the zip (entryPrefix + its path relative to p) — this is
+// what preserves folder structure when a whole directory is selected for
+// bulk download, e.g. selecting "Intraday" produces entries like
+// "Intraday/file.xlsx", "Intraday/sub/file2.xlsx", not a flat file list.
+func sftpWalkFiles(c *sftp.Client, p, entryName string, visit func(fullPath, entryName string) error) error {
+	st, err := c.Stat(p)
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		return visit(p, entryName)
+	}
+	infos, err := c.ReadDir(p)
+	if err != nil {
+		return err
+	}
+	for _, fi := range infos {
+		if err := sftpWalkFiles(c, path.Join(p, fi.Name()), path.Join(entryName, fi.Name()), visit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sftpZipFilename(paths []string) string {
+	if len(paths) == 1 {
+		base := path.Base(strings.TrimRight(paths[0], "/"))
+		if base == "" || base == "." || base == "/" {
+			base = "download"
+		}
+		return base + ".zip"
+	}
+	return fmt.Sprintf("download-%d.zip", time.Now().Unix())
+}
+
+// SftpDownloadZip streams one or more remote files/folders as a single ZIP
+// archive — folders are included recursively with their structure preserved.
+// Self-authenticates via ?token= like SftpDownload, since it's a plain
+// browser GET (an anchor-tag download can't carry an Authorization header).
+func SftpDownloadZip() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if len(jwtSecret) > 0 {
+			uid, err := dockerWSUserID(r) // validates ?token=
+			if err != nil {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if !appdb.HasUserAppPermission(uid, PermSftpAccess) && !appdb.HasUserAppPermission(uid, PermSftpManage) {
+				http.Error(w, "insufficient permissions", http.StatusForbidden)
+				return
+			}
+		}
+		id, err := sftpHostID(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+
+		seen := map[string]bool{}
+		var paths []string
+		for _, p := range r.URL.Query()["path"] {
+			p = strings.TrimSpace(p)
+			if p == "" || seen[p] {
+				continue
+			}
+			seen[p] = true
+			paths = append(paths, p)
+		}
+		if len(paths) == 0 {
+			http.Error(w, jsonError("at least one path is required"), http.StatusBadRequest)
+			return
+		}
+
+		client, cleanup, err := sftpSession(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer cleanup()
+
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+sftpZipFilename(paths)+`"`)
+
+		zw := zip.NewWriter(w)
+		defer zw.Close()
+
+		for _, p := range paths {
+			entryRoot := path.Base(strings.TrimRight(p, "/"))
+			// Best-effort: a path that's missing, permission-denied, or a
+			// broken symlink just contributes nothing to the zip rather than
+			// failing the whole download — headers are already sent by the
+			// time any individual file read could fail, so there's no clean
+			// way to report a partial failure other than an incomplete zip.
+			_ = sftpWalkFiles(client, p, entryRoot, func(fullPath, entryName string) error {
+				f, err := client.Open(fullPath)
+				if err != nil {
+					return nil
+				}
+				defer f.Close()
+				fw, err := zw.Create(entryName)
+				if err != nil {
+					return nil
+				}
+				io.Copy(fw, f)
+				return nil
+			})
+		}
+	}
+}
+
+// SftpBackupToBucket starts an async job that zips one or more remote
+// files/folders (same recursive-structure-preserving walk as
+// SftpDownloadZip) and uploads the archive straight to an existing object
+// storage connection — server-to-server, so a multi-GB folder never
+// round-trips through the browser. Reuses the backup job store/endpoints
+// (GET/DELETE /api/backup/jobs/:id) so the frontend can poll it exactly like
+// a database-to-bucket backup.
+//
+// POST /api/sftp/hosts/{id}/backup-to-bucket
+func SftpBackupToBucket() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := sftpHostID(r)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+
+		var req struct {
+			Paths      []string `json:"paths"`
+			DestConnID int64    `json:"dest_conn_id"`
+			Prefix     string   `json:"prefix"`
+			Subfolder  string   `json:"subfolder"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, jsonError("invalid request body"), http.StatusBadRequest)
+			return
+		}
+		if req.DestConnID == 0 {
+			http.Error(w, jsonError("dest_conn_id is required"), http.StatusBadRequest)
+			return
+		}
+
+		seen := map[string]bool{}
+		var paths []string
+		for _, p := range req.Paths {
+			p = strings.TrimSpace(p)
+			if p == "" || seen[p] {
+				continue
+			}
+			seen[p] = true
+			paths = append(paths, p)
+		}
+		if len(paths) == 0 {
+			http.Error(w, jsonError("at least one path is required"), http.StatusBadRequest)
+			return
+		}
+
+		dest, err := fetchBucketConn(req.DestConnID)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+
+		client, cleanup, err := sftpSession(id)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+
+		ts := time.Now().UTC().Format("20060102_150405")
+		prefix := strings.TrimSpace(req.Prefix)
+		if prefix == "" {
+			prefix = "sftp"
+		}
+		objectName := fmt.Sprintf("%s_%s.zip", prefix, ts)
+		if sub := strings.Trim(strings.TrimSpace(req.Subfolder), "/"); sub != "" {
+			objectName = sub + "/" + objectName
+		}
+
+		jobCtx, jobCancel := context.WithCancel(context.Background())
+		job := &BackupJob{
+			ID:        newJobID(),
+			Status:    BackupJobRunning,
+			Stage:     "zipping",
+			StartedAt: time.Now(),
+			cancel:    jobCancel,
+		}
+		backupJobs.Store(job.ID, job)
+
+		go func() {
+			defer jobCancel()
+			defer cleanup()
+
+			pr, pw := io.Pipe()
+			go func() {
+				zw := zip.NewWriter(pw)
+				var walkErr error
+				for _, p := range paths {
+					entryRoot := path.Base(strings.TrimRight(p, "/"))
+					if err := sftpWalkFiles(client, p, entryRoot, func(fullPath, entryName string) error {
+						f, err := client.Open(fullPath)
+						if err != nil {
+							return nil
+						}
+						defer f.Close()
+						fw, err := zw.Create(entryName)
+						if err != nil {
+							return nil
+						}
+						_, err = io.Copy(fw, f)
+						return err
+					}); err != nil {
+						walkErr = err
+					}
+				}
+				closeErr := zw.Close()
+				if walkErr == nil {
+					walkErr = closeErr
+				}
+				pw.CloseWithError(walkErr)
+			}()
+
+			cr := &countingReader{r: pr}
+			job.mu.Lock()
+			job.Stage = "uploading"
+			job.uploadCounter = &cr.n
+			job.mu.Unlock()
+			uploadErr := uploadToBucketStream(jobCtx, dest, objectName, cr)
+			if uploadErr != nil {
+				pr.CloseWithError(uploadErr)
+			}
+
+			now := time.Now()
+			job.mu.Lock()
+			defer job.mu.Unlock()
+			job.DoneAt = &now
+			if uploadErr != nil || jobCtx.Err() != nil {
+				if jobCtx.Err() != nil && uploadErr == nil {
+					job.Status = BackupJobCanceled
+				} else {
+					job.Status = BackupJobFailed
+					if uploadErr != nil {
+						job.Error = uploadErr.Error()
+					} else {
+						job.Error = jobCtx.Err().Error()
+					}
+				}
+				return
+			}
+			job.Status = BackupJobDone
+			job.ObjectKey = objectName
+			job.Bucket = dest.Bucket
+			job.SizeBytes = atomic.LoadInt64(&cr.n)
+		}()
+
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{"job_id": job.ID})
 	}
 }
 

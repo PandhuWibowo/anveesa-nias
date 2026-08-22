@@ -7,11 +7,13 @@ import SortIcon from '@/components/ui/SortIcon.vue'
 import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
 import ActionIcon from '@/components/ui/ActionIcon.vue'
 import SftpFolderPicker from '@/components/ui/SftpFolderPicker.vue'
+import ConnectionPicker from '@/components/ui/ConnectionPicker.vue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
 import { useListFilter } from '@/composables/useListFilter'
 import { useSort } from '@/composables/useSort'
+import { type DbDriver } from '@/composables/useConnections'
 
 interface SshHost {
   id: number
@@ -94,6 +96,16 @@ const showCompress = ref(false)
 const compressTarget = ref<SftpEntry | null>(null)
 const compressFormat = ref<'zip' | 'targz'>('zip')
 const compressing = ref(false)
+
+// Backup to bucket (zip selected files/folders straight to an OSS/S3 connection)
+const OSS_DRIVERS: DbDriver[] = ['s3_aws', 's3_gcp', 's3_oss', 's3_obs']
+const showBackup = ref(false)
+const backupTargets = ref<SftpEntry[]>([])
+const backupDestConnId = ref<number | null>(null)
+const backupPrefix = ref('sftp')
+const backupSubfolder = ref('')
+const backupRunning = ref(false)
+const backupStage = ref('')
 
 // View file
 const showView = ref(false)
@@ -203,6 +215,24 @@ function download(entry: SftpEntry) {
   a.href = url
   a.download = entry.name
   a.click()
+}
+
+// Bulk download — zips one or more files/folders server-side and streams the
+// zip back natively (same anchor-tag-GET trick as single download, so a
+// multi-GB folder never gets buffered as an in-memory blob in the browser).
+// Folders are included recursively with their structure preserved.
+function downloadZip(targets: SftpEntry[]) {
+  if (!targets.length) return
+  const token = localStorage.getItem('nias-token') || ''
+  const params = new URLSearchParams()
+  for (const e of targets) params.append('path', joinPath(cwd.value, e.name))
+  params.set('token', token)
+  const a = document.createElement('a')
+  a.href = `/api/sftp/hosts/${hostId.value}/zip?${params.toString()}`
+  a.click()
+}
+function downloadSelected() {
+  downloadZip(filteredEntries.value.filter((e) => selected.value.has(e.name)))
 }
 
 // ── Upload (streamed, with progress + speed; pause/resume/cancel) ──
@@ -387,6 +417,67 @@ async function submitCompress() {
     compressing.value = false
   }
 }
+
+function openBackup(entry: SftpEntry) {
+  backupTargets.value = [entry]
+  backupDestConnId.value = null
+  backupSubfolder.value = ''
+  showBackup.value = true
+}
+function openBackupSelected() {
+  backupTargets.value = filteredEntries.value.filter((e) => selected.value.has(e.name))
+  if (!backupTargets.value.length) return
+  backupDestConnId.value = null
+  backupSubfolder.value = ''
+  showBackup.value = true
+}
+async function submitBackup() {
+  if (!backupDestConnId.value || !backupTargets.value.length) return
+  backupRunning.value = true
+  backupStage.value = 'Zipping…'
+  try {
+    const { data: jobData } = await axios.post(`/api/sftp/hosts/${hostId.value}/backup-to-bucket`, {
+      paths: backupTargets.value.map((e) => joinPath(cwd.value, e.name)),
+      dest_conn_id: backupDestConnId.value,
+      prefix: backupPrefix.value || 'sftp',
+      subfolder: backupSubfolder.value,
+    })
+    const jobId = jobData.job_id
+
+    while (true) {
+      await new Promise((r) => setTimeout(r, 2000))
+      const { data: status } = await axios.get(`/api/backup/jobs/${jobId}`)
+
+      if (status.stage === 'uploading' && status.uploaded_bytes > 0) {
+        const mb = (status.uploaded_bytes / 1024 / 1024).toFixed(1)
+        backupStage.value = `Uploading to bucket… ${mb} MB uploaded`
+      } else if (status.stage === 'zipping') {
+        backupStage.value = 'Zipping…'
+      }
+
+      if (status.status === 'done') {
+        toast.success(`Uploaded → ${status.object_key}`)
+        showBackup.value = false
+        backupTargets.value = []
+        selected.value = new Set()
+        return
+      }
+      if (status.status === 'failed') {
+        throw new Error(status.error || 'Backup job failed')
+      }
+      if (status.status === 'canceled') {
+        toast.info('Backup cancelled')
+        return
+      }
+    }
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || e?.message || 'Backup to bucket failed')
+  } finally {
+    backupRunning.value = false
+    backupStage.value = ''
+  }
+}
+
 async function del(entry: SftpEntry) {
   const ok = await confirm(
     `Delete "${entry.name}"${entry.isDir ? ' and everything in it' : ''}? This cannot be undone.`,
@@ -500,7 +591,10 @@ function rowActions(e: SftpEntry): RowAction[] {
   if (!e.isDir) {
     actions.push({ key: 'view', label: 'View', icon: 'view', primary: true, onClick: () => view(e) })
     actions.push({ key: 'download', label: 'Download', icon: 'download', primary: true, onClick: () => download(e) })
+  } else {
+    actions.push({ key: 'download-zip', label: 'Download as ZIP', icon: 'download', primary: true, onClick: () => downloadZip([e]) })
   }
+  actions.push({ key: 'backup-bucket', label: 'Backup to bucket…', icon: 'upload', onClick: () => openBackup(e) })
   actions.push({ key: 'copy-path', label: 'Copy path', icon: 'copy', onClick: () => copyPath(joinPath(cwd.value, e.name)) })
   if (canManage.value) {
     if (e.isDir) {
@@ -604,10 +698,13 @@ onMounted(loadHosts)
             </label>
           </div>
 
-          <!-- Bulk selection bar -->
-          <div v-if="canManage && selected.size > 0" class="sf-bulk-bar">
+          <!-- Bulk selection bar — visible to anyone who can reach this page
+               (read-only viewers can bulk-download; only managers can move) -->
+          <div v-if="selected.size > 0" class="sf-bulk-bar">
             <span>{{ selected.size }} selected</span>
-            <button class="base-btn base-btn--sm" @click="openMoveSelected">Move…</button>
+            <button class="base-btn base-btn--sm base-btn--primary" @click="downloadSelected">↓ Download ZIP</button>
+            <button class="base-btn base-btn--sm" @click="openBackupSelected">Backup to bucket…</button>
+            <button v-if="canManage" class="base-btn base-btn--sm" @click="openMoveSelected">Move…</button>
             <button class="base-btn base-btn--sm" @click="selected = new Set()">Clear</button>
           </div>
 
@@ -623,7 +720,7 @@ onMounted(loadHosts)
             <table class="sf-table">
               <thead>
                 <tr>
-                  <th v-if="canManage" class="sf-col-check"><input type="checkbox" :checked="allSelected" @change="toggleSelectAll" /></th>
+                  <th class="sf-col-check"><input type="checkbox" :checked="allSelected" @change="toggleSelectAll" /></th>
                   <th class="sf-col-name" :class="{ sorted: sortKey === 'name' }" @click="toggleSort('name')">Name <SortIcon :active="sortKey === 'name'" :dir="sortDir" /></th>
                   <th class="sf-col-size" :class="{ sorted: sortKey === 'size' }" @click="toggleSort('size')">Size <SortIcon :active="sortKey === 'size'" :dir="sortDir" /></th>
                   <th class="sf-col-mode">Permissions</th>
@@ -632,18 +729,18 @@ onMounted(loadHosts)
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="loading"><td :colspan="canManage ? 6 : 5" class="sf-msg">Loading…</td></tr>
-                <tr v-else-if="connError"><td :colspan="canManage ? 6 : 5" class="sf-msg sf-err">{{ connError }}</td></tr>
+                <tr v-if="loading"><td colspan="6" class="sf-msg">Loading…</td></tr>
+                <tr v-else-if="connError"><td colspan="6" class="sf-msg sf-err">{{ connError }}</td></tr>
                 <tr v-else-if="!entries.length">
-                  <td :colspan="canManage ? 6 : 5" class="sf-dir-empty">
+                  <td colspan="6" class="sf-dir-empty">
                     <span class="sf-dir-empty-icon">📁</span>
                     <span class="sf-dir-empty-title">Empty directory</span>
                     <span class="sf-dir-empty-hint">Upload a file or create a folder to get started.</span>
                   </td>
                 </tr>
-                <tr v-else-if="!filteredEntries.length"><td :colspan="canManage ? 6 : 5" class="sf-msg">No files match "{{ search }}".</td></tr>
+                <tr v-else-if="!filteredEntries.length"><td colspan="6" class="sf-msg">No files match "{{ search }}".</td></tr>
                 <tr v-for="e in filteredEntries" :key="e.name" class="sf-row" :class="{ 'sf-row--dir': e.isDir }">
-                  <td v-if="canManage" class="sf-col-check" @click.stop>
+                  <td class="sf-col-check" @click.stop>
                     <input type="checkbox" :checked="selected.has(e.name)" @change="toggleSelect(e.name)" />
                   </td>
                   <td class="sf-name" @click="e.isDir ? open(e) : view(e)">
@@ -690,6 +787,44 @@ onMounted(loadHosts)
         <div class="sf-modal-actions">
           <button class="base-btn base-btn--sm" @click="showRename = false">Cancel</button>
           <button class="base-btn base-btn--primary base-btn--sm" :disabled="!renameName.trim()" @click="submitRename">Rename</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Backup to bucket modal -->
+    <div v-if="showBackup" class="sf-modal-backdrop" @click.self="!backupRunning && (showBackup = false)">
+      <div class="sf-modal sf-modal--wide page-card">
+        <div class="sf-modal-title">
+          Backup to bucket
+          <span class="sf-modal-sub">{{ backupTargets.length === 1 ? backupTargets[0].name : `${backupTargets.length} items` }}</span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Destination bucket</label>
+          <ConnectionPicker
+            v-model="backupDestConnId"
+            :drivers="OSS_DRIVERS"
+            placeholder="Select destination bucket…"
+            full-width
+          />
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Filename prefix</label>
+            <input v-model="backupPrefix" class="base-input" placeholder="sftp" :disabled="backupRunning" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Subfolder in bucket</label>
+            <input v-model="backupSubfolder" class="base-input" placeholder="backups/sftp" :disabled="backupRunning" />
+          </div>
+        </div>
+        <div v-if="backupRunning" class="sf-backup-status">{{ backupStage }}</div>
+
+        <div class="sf-modal-actions">
+          <button class="base-btn base-btn--sm" :disabled="backupRunning" @click="showBackup = false">Cancel</button>
+          <button class="base-btn base-btn--primary base-btn--sm" :disabled="backupRunning || !backupDestConnId" @click="submitBackup">
+            {{ backupRunning ? 'Uploading…' : 'Start backup' }}
+          </button>
         </div>
       </div>
     </div>
@@ -833,9 +968,12 @@ onMounted(loadHosts)
 
 .sf-modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); display: flex; align-items: center; justify-content: center; z-index: 100; }
 .sf-modal { width: 380px; max-width: 92vw; padding: 20px; }
+.sf-modal--wide { width: 460px; }
 .sf-modal-title { font-size: 15px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px; word-break: break-all; }
+.sf-modal-sub { display: block; font-size: 12px; font-weight: 400; color: var(--text-muted); margin-top: 2px; word-break: break-all; }
 .sf-modal-input { width: 100%; }
 .sf-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.sf-backup-status { font-size: 12.5px; color: var(--text-muted); margin-top: 10px; }
 
 .sf-compress-formats { display: flex; gap: 16px; }
 .sf-radio { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-primary); cursor: pointer; }

@@ -1112,11 +1112,11 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/sftp/hosts/"), "/")
 		parts := strings.Split(rest, "/")
 		// Private hosts are additionally restricted to their owner, an admin,
-		// or a user granted access in docker_host_access. download
-		// self-authenticates via ?token= (no Bearer header, so no
-		// X-User-ID/X-User-Role) — excluded here the same way it skips the
+		// or a user granted access in docker_host_access. download/zip
+		// self-authenticate via ?token= (no Bearer header, so no
+		// X-User-ID/X-User-Role) — excluded here the same way they skip the
 		// coarse permission checks below.
-		selfAuthed := len(parts) == 2 && parts[1] == "download"
+		selfAuthed := len(parts) == 2 && (parts[1] == "download" || parts[1] == "zip")
 		if !selfAuthed && !handlers.HostAccessGate(w, r, parts[0], false) {
 			return
 		}
@@ -1131,9 +1131,11 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			access(handlers.SftpArchiveList())(w, r)
 		case len(parts) == 2 && parts[1] == "extract" && r.Method == http.MethodPost:
 			manage(handlers.SftpExtract())(w, r)
-		// download self-authenticates via ?token= (browser-native streaming)
+		// download/zip self-authenticate via ?token= (browser-native streaming)
 		case len(parts) == 2 && parts[1] == "download" && r.Method == http.MethodGet:
 			handlers.SftpDownload()(w, r)
+		case len(parts) == 2 && parts[1] == "zip" && r.Method == http.MethodGet:
+			handlers.SftpDownloadZip()(w, r)
 		case len(parts) == 2 && parts[1] == "upload" && r.Method == http.MethodPost:
 			manage(handlers.SftpUpload())(w, r)
 		case len(parts) == 2 && parts[1] == "mkdir" && r.Method == http.MethodPost:
@@ -1144,6 +1146,8 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			manage(handlers.SftpRename())(w, r)
 		case len(parts) == 2 && parts[1] == "compress" && r.Method == http.MethodPost:
 			manage(handlers.SftpCompress())(w, r)
+		case len(parts) == 2 && parts[1] == "backup-to-bucket" && r.Method == http.MethodPost:
+			access(handlers.SftpBackupToBucket())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
