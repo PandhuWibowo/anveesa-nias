@@ -41,8 +41,8 @@ type BackupJob struct {
 	DoneAt    *time.Time      `json:"done_at,omitempty"`
 
 	// Live upload progress (updated atomically, no lock needed)
-	Stage         string `json:"stage"`           // "dumping" | "uploading"
-	UploadedBytes int64  `json:"uploaded_bytes"`  // bytes sent to bucket so far
+	Stage         string `json:"stage"`          // "dumping" | "uploading"
+	UploadedBytes int64  `json:"uploaded_bytes"` // bytes sent to bucket so far
 
 	// Result (populated on done)
 	ObjectKey         string `json:"object_key,omitempty"`
@@ -60,7 +60,7 @@ type BackupJob struct {
 }
 
 var (
-	backupJobs   sync.Map          // id → *BackupJob
+	backupJobs   sync.Map // id → *BackupJob
 	jobIDCounter uint64
 )
 
@@ -336,6 +336,20 @@ func uploadToBucketStream(ctx interface {
 	Err() error
 	Deadline() (time.Time, bool)
 }, dest *bucketConnRow, objectKey string, body io.Reader) error {
+	return uploadToBucketStreamTyped(ctx, dest, objectKey, body, "application/octet-stream")
+}
+
+// uploadToBucketStreamTyped is uploadToBucketStream with a caller-supplied
+// Content-Type — the browser-uploaded-file path (cloud_storage.go) wants the
+// real MIME type so downloads/inline-previews behave correctly; the backup
+// paths (SQL dumps, gzipped NDJSON, zip archives) are fine with the generic
+// default, so they keep calling the untyped wrapper above.
+func uploadToBucketStreamTyped(ctx interface {
+	Done() <-chan struct{}
+	Value(interface{}) interface{}
+	Err() error
+	Deadline() (time.Time, bool)
+}, dest *bucketConnRow, objectKey string, body io.Reader, contentType string) error {
 	endpointHost := buildS3Host(dest)
 	scheme := "https"
 	if !dest.SSL {
@@ -345,7 +359,7 @@ func uploadToBucketStream(ctx interface {
 	key := strings.TrimPrefix(objectKey, "/")
 
 	virtualHost := bucket + "." + endpointHost
-	uploadURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, url.PathEscape(key))
+	uploadURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, s3KeyPathEscape(key))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, body)
 	if err != nil {
@@ -355,7 +369,10 @@ func uploadToBucketStream(ctx interface {
 	// Chunked transfer — no Content-Length needed, no full-body hash required
 	req.ContentLength = -1
 	req.TransferEncoding = []string{"chunked"}
-	req.Header.Set("Content-Type", "application/octet-stream")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	req.Header.Set("Content-Type", contentType)
 
 	region := objectStorageRegion(dest.Driver, endpointHost)
 	service := objectStorageService(dest.Driver)
@@ -520,7 +537,7 @@ func openBucketObjectStream(ctx context.Context, dest *bucketConnRow, objectKey 
 	}
 	bucket := strings.Trim(dest.Bucket, "/")
 	virtualHost := bucket + "." + endpointHost
-	downloadURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, url.PathEscape(objectKey))
+	downloadURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, s3KeyPathEscape(objectKey))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
@@ -645,7 +662,7 @@ func presignedDownloadURL(dest *bucketConnRow, objectKey string, expires time.Du
 	bucket := strings.Trim(dest.Bucket, "/")
 	key := strings.TrimPrefix(objectKey, "/")
 	virtualHost := bucket + "." + endpointHost
-	objectURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, url.PathEscape(key))
+	objectURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, s3KeyPathEscape(key))
 
 	now := time.Now().UTC()
 	amzDate := now.Format("20060102T150405Z")
@@ -667,14 +684,14 @@ func presignedDownloadURL(dest *bucketConnRow, objectKey string, expires time.Du
 	canonicalQuery := q.Encode() // url.Values.Encode() sorts keys
 
 	canonicalHeaders := "host:" + virtualHost + "\n"
-	canonicalURI := "/" + url.PathEscape(key)
+	canonicalURI := "/" + s3KeyPathEscape(key)
 
 	canonicalRequest := strings.Join([]string{
 		"GET",
 		canonicalURI,
 		canonicalQuery,
 		canonicalHeaders,
-		"host",           // signed headers
+		"host", // signed headers
 		"UNSIGNED-PAYLOAD",
 	}, "\n")
 
@@ -857,6 +874,46 @@ func buildS3Host(dest *bucketConnRow) string {
 		h = fmt.Sprintf("%s:%d", h, dest.Port)
 	}
 	return h
+}
+
+// awsURIEncode implements AWS's own strict SigV4 URI-encoding rule — only
+// A-Z, a-z, 0-9, '-', '.', '_', '~' are left unescaped; every other byte is
+// percent-encoded (uppercase hex), full stop. This is deliberately NOT
+// Go's url.PathEscape/QueryEscape: those follow RFC 3986's more permissive
+// pchar/sub-delims rules and leave characters like '&', '(', ')', '+', and
+// space unescaped in a path segment — which AWS's spec requires encoded.
+// Confirmed against a local MinIO: a key containing any of those characters
+// fails signature verification when built with url.PathEscape instead of
+// this function, since the client and server end up computing the
+// canonical URI differently.
+func awsURIEncode(s string) string {
+	var sb strings.Builder
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') ||
+			b == '-' || b == '.' || b == '_' || b == '~' {
+			sb.WriteByte(b)
+		} else {
+			fmt.Fprintf(&sb, "%%%02X", b)
+		}
+	}
+	return sb.String()
+}
+
+// s3KeyPathEscape AWS-URI-encodes each path segment of an S3 object key
+// separately, joined by a literal "/" — the slash between segments must
+// stay literal per the SigV4 canonical-URI spec (only segment content gets
+// percent-encoded), which is also why this isn't just awsURIEncode(key)
+// directly. Huawei OBS tolerates the more lenient url.PathEscape encoding
+// this replaces — which is why the subfolder-backup feature has worked in
+// testing so far — but strict implementations (MinIO, likely real AWS
+// S3/GCS/Alibaba OSS) reject it.
+func s3KeyPathEscape(key string) string {
+	segs := strings.Split(strings.TrimPrefix(key, "/"), "/")
+	for i, s := range segs {
+		segs[i] = awsURIEncode(s)
+	}
+	return strings.Join(segs, "/")
 }
 
 // signObjectStorageRequestFull signs with the actual payload hash (used for GET/HEAD/LIST).

@@ -159,6 +159,7 @@ const allMenuGroups: MenuGroup[] = [
       { name: 'cron', label: 'Cron Scheduler', desc: 'View and edit the native crontab on each of your SSH Hosts', icon: 'scheduler', section: 'Servers', permissionsAny: ['cron.view', 'cron.manage'] },
       { name: 'kube-clusters', label: 'K8s Clusters', desc: 'Manage Kubernetes cluster connections (Alibaba ACK, Huawei CCE) via kubeconfig', icon: 'kube', section: 'Kubernetes', permissionsAny: ['kube.view', 'kube.manage'] },
       { name: 'kubernetes', label: 'Kubernetes', desc: 'Browse nodes, workloads, services, events, and pod logs across your clusters', icon: 'kube', section: 'Kubernetes', permissionsAny: ['kube.view', 'kube.manage'] },
+      { name: 'cloud-storage', label: 'Cloud Storage', desc: 'Browse, upload, and download files across your AWS S3, GCP, Alibaba OSS, and Huawei OBS connections', icon: 'cloud', section: 'Storage', permissionsAny: ['cloudstorage.access', 'cloudstorage.manage'] },
     ],
   },
   {
@@ -265,6 +266,7 @@ const ICON_PATHS: Record<string, string> = {
   sftp: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5"/><path d="M9.5 13.5 12 11l2.5 2.5"/>',
   nginx: '<path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M9 16V9l6 7V9"/>',
   kube: '<path d="M12 2 3 7v10l9 5 9-5V7z"/><circle cx="12" cy="12" r="2.5"/><path d="M12 9.5V5.5"/><path d="m14.2 13.4 3.3 1.9"/><path d="m9.8 13.4-3.3 1.9"/>',
+  cloud: '<path d="M17.5 19a4.5 4.5 0 0 0 0-9 6 6 0 0 0-11.4-1.5A4 4 0 0 0 6.5 19h11z"/>',
 }
 
 function iconPath(icon: string): string {

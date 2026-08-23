@@ -710,6 +710,26 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 					http.NotFound(w, r)
 				}
 
+			// ── Cloud Storage (browse s3_aws/s3_gcp/s3_oss/s3_obs connections) ──
+			// download/zip self-authenticate via ?token= (browser-native streaming),
+			// same pattern as SFTP's download/zip.
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "list" && r.Method == http.MethodGet:
+				requireAny(handlers.PermCloudStorageAccess, handlers.PermCloudStorageManage)(handlers.CloudStorageList())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "download" && r.Method == http.MethodGet:
+				handlers.CloudStorageDownload()(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "zip" && r.Method == http.MethodGet:
+				handlers.CloudStorageDownloadZip()(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "upload" && r.Method == http.MethodPost:
+				requireAny(handlers.PermCloudStorageManage)(handlers.CloudStorageUpload())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "delete" && r.Method == http.MethodPost:
+				requireAny(handlers.PermCloudStorageManage)(handlers.CloudStorageDelete())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "delete-prefix" && r.Method == http.MethodPost:
+				requireAny(handlers.PermCloudStorageManage)(handlers.CloudStorageDeletePrefix())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "rename" && r.Method == http.MethodPost:
+				requireAny(handlers.PermCloudStorageManage)(handlers.CloudStorageRename())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "mkdir" && r.Method == http.MethodPost:
+				requireAny(handlers.PermCloudStorageManage)(handlers.CloudStorageMkdir())(w, r)
+
 			default:
 				http.NotFound(w, r)
 			}

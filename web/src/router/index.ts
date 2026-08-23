@@ -249,6 +249,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['sftp.access', 'sftp.manage'] },
         },
         {
+          path: 'cloud-storage',
+          name: 'cloud-storage',
+          component: () => import('@/views/CloudStorageView.vue'),
+          meta: { requiredPermissionsAny: ['cloudstorage.access', 'cloudstorage.manage'] },
+        },
+        {
           path: 'kube-clusters',
           name: 'kube-clusters',
           component: () => import('@/views/KubeClustersView.vue'),
