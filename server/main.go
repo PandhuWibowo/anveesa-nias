@@ -729,6 +729,12 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermCloudStorageManage)(handlers.CloudStorageRename())(w, r)
 			case sub == "storage" && len(parts) >= 3 && parts[2] == "mkdir" && r.Method == http.MethodPost:
 				requireAny(handlers.PermCloudStorageManage)(handlers.CloudStorageMkdir())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "read" && r.Method == http.MethodGet:
+				requireAny(handlers.PermCloudStorageAccess, handlers.PermCloudStorageManage)(handlers.CloudStorageRead())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "metadata" && r.Method == http.MethodGet:
+				requireAny(handlers.PermCloudStorageAccess, handlers.PermCloudStorageManage)(handlers.CloudStorageGetMetadata())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "metadata" && r.Method == http.MethodPost:
+				requireAny(handlers.PermCloudStorageManage)(handlers.CloudStorageUpdateMetadata())(w, r)
 
 			default:
 				http.NotFound(w, r)

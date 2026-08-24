@@ -21,7 +21,9 @@ const { connections, activeConnections } = useConnections()
 const open = ref(false)
 const search = ref('')
 const wrapRef = ref<HTMLElement | null>(null)
+const triggerRef = ref<HTMLElement | null>(null)
 const searchRef = ref<HTMLInputElement | null>(null)
+const panelStyle = ref<Record<string, string>>({})
 
 const selected = computed<Connection | null>(() =>
   props.modelValue != null
@@ -45,10 +47,52 @@ const filteredConnections = computed<Connection[]>(() => {
   )
 })
 
+// Panel is teleported to <body> and positioned with `fixed` coordinates so it
+// can't be clipped by an ancestor with overflow:hidden — e.g. .page-hero,
+// which uses overflow:hidden to clip its own decorative background glow and
+// was cutting this dropdown off whenever the picker sat in a page's hero
+// actions bar. It also auto-flips up/down and clamps horizontally based on
+// available space, matching DatabasePicker.vue's pattern.
+function calcPanelStyle() {
+  if (!triggerRef.value) return
+  const rect = triggerRef.value.getBoundingClientRect()
+  const spaceBelow = window.innerHeight - rect.bottom - 6
+  const spaceAbove = rect.top - 6
+  const preferBelow = spaceBelow >= spaceAbove || spaceBelow >= 200
+
+  const width = Math.max(rect.width, 260)
+  const maxLeft = Math.max(8, window.innerWidth - width - 8)
+  const left = Math.min(Math.max(8, rect.left), maxLeft)
+
+  const style: Record<string, string> = {
+    position: 'fixed',
+    left: `${left}px`,
+    minWidth: `${width}px`,
+    maxWidth: '360px',
+    zIndex: '9999',
+  }
+  if (preferBelow) {
+    style.top = `${rect.bottom + 4}px`
+    style.maxHeight = `${Math.max(spaceBelow - 8, 160)}px`
+  } else {
+    style.bottom = `${window.innerHeight - rect.top + 4}px`
+    style.maxHeight = `${Math.max(spaceAbove - 8, 160)}px`
+  }
+  panelStyle.value = style
+}
+
 watch(open, (isOpen) => {
   if (isOpen) {
     search.value = ''
-    nextTick(() => searchRef.value?.focus())
+    nextTick(() => {
+      calcPanelStyle()
+      searchRef.value?.focus()
+    })
+    window.addEventListener('scroll', calcPanelStyle, { capture: true, passive: true })
+    window.addEventListener('resize', calcPanelStyle)
+  } else {
+    window.removeEventListener('scroll', calcPanelStyle, { capture: true })
+    window.removeEventListener('resize', calcPanelStyle)
   }
 })
 
@@ -100,19 +144,26 @@ function clear() {
 }
 
 function handleOutside(e: MouseEvent) {
-  if (wrapRef.value && !wrapRef.value.contains(e.target as Node)) {
-    open.value = false
-  }
+  const target = e.target as Node
+  if (wrapRef.value?.contains(target)) return
+  const panel = document.getElementById('cp-floating-dropdown')
+  if (panel?.contains(target)) return
+  open.value = false
 }
 
 onMounted(() => document.addEventListener('mousedown', handleOutside))
-onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', handleOutside)
+  window.removeEventListener('scroll', calcPanelStyle, { capture: true })
+  window.removeEventListener('resize', calcPanelStyle)
+})
 </script>
 
 <template>
   <div class="cp-wrap" :class="{ 'cp-wrap--full': fullWidth }" ref="wrapRef">
     <!-- Trigger -->
     <button
+      ref="triggerRef"
       class="cp-trigger"
       :class="{ 'cp-trigger--open': open, 'cp-trigger--empty': !selected, 'cp-trigger--full': fullWidth }"
       @click="open = !open"
@@ -136,55 +187,57 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
     </button>
 
     <!-- Dropdown -->
-    <div v-if="open" class="cp-dropdown">
-      <div class="cp-search-wrap">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="cp-search-icon"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input
-          ref="searchRef"
-          v-model="search"
-          type="text"
-          class="cp-search"
-          placeholder="Search connections…"
-          @keydown.esc="open = false"
-        />
-      </div>
-      <div class="cp-list">
-        <div
-          v-for="conn in filteredConnections"
-          :key="conn.id"
-          class="cp-option"
-          :class="{ 'cp-option--active': conn.id === modelValue }"
-          @mousedown.prevent="pick(conn)"
-        >
-          <span
-            class="cp-badge cp-badge--sm"
-            :style="{ background: driverColors[conn.driver] ?? '#555' }"
-          ><DriverIcon :driver="conn.driver" :size="11" /></span>
-          <div class="cp-option-info">
-            <span class="cp-option-name">{{ conn.name }}</span>
-            <span class="cp-option-host" v-if="conn.host">
-              {{ conn.host }}{{ conn.port ? ':' + conn.port : '' }}
-              <template v-if="conn.database"> / {{ conn.database }}</template>
-            </span>
+    <Teleport to="body">
+      <div v-if="open" id="cp-floating-dropdown" class="cp-dropdown" :style="panelStyle">
+        <div class="cp-search-wrap">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="cp-search-icon"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input
+            ref="searchRef"
+            v-model="search"
+            type="text"
+            class="cp-search"
+            placeholder="Search connections…"
+            @keydown.esc="open = false"
+          />
+        </div>
+        <div class="cp-list">
+          <div
+            v-for="conn in filteredConnections"
+            :key="conn.id"
+            class="cp-option"
+            :class="{ 'cp-option--active': conn.id === modelValue }"
+            @mousedown.prevent="pick(conn)"
+          >
+            <span
+              class="cp-badge cp-badge--sm"
+              :style="{ background: driverColors[conn.driver] ?? '#555' }"
+            ><DriverIcon :driver="conn.driver" :size="11" /></span>
+            <div class="cp-option-info">
+              <span class="cp-option-name">{{ conn.name }}</span>
+              <span class="cp-option-host" v-if="conn.host">
+                {{ conn.host }}{{ conn.port ? ':' + conn.port : '' }}
+                <template v-if="conn.database"> / {{ conn.database }}</template>
+              </span>
+            </div>
+            <svg v-if="conn.id === modelValue" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" class="cp-check">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
           </div>
-          <svg v-if="conn.id === modelValue" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" class="cp-check">
-            <polyline points="20 6 9 17 4 12"/>
-          </svg>
+          <div v-if="!driverFiltered.length" class="cp-empty">
+            No active connections
+          </div>
+          <div v-else-if="!filteredConnections.length" class="cp-empty">
+            No matches for "{{ search }}"
+          </div>
         </div>
-        <div v-if="!driverFiltered.length" class="cp-empty">
-          No active connections
-        </div>
-        <div v-else-if="!filteredConnections.length" class="cp-empty">
-          No matches for "{{ search }}"
+        <div v-if="modelValue != null" class="cp-footer">
+          <button class="cp-clear" @mousedown.prevent="clear" type="button">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            Clear selection
+          </button>
         </div>
       </div>
-      <div v-if="modelValue != null" class="cp-footer">
-        <button class="cp-clear" @mousedown.prevent="clear" type="button">
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          Clear selection
-        </button>
-      </div>
-    </div>
+    </Teleport>
   </div>
 </template>
 
@@ -280,19 +333,16 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
 .cp-chevron--up {
   transform: rotate(180deg);
 }
+</style>
 
-/* Dropdown */
+<!-- Not scoped: the dropdown is teleported to <body>, outside this
+     component's scoped-style boundary, so its classes need global styling. -->
+<style>
 .cp-dropdown {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 9999;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0,0,0,0.28);
-  min-width: 260px;
-  max-width: 360px;
   overflow: hidden;
 }
 

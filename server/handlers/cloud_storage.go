@@ -336,11 +336,22 @@ func batchDeleteBucketObjects(ctx context.Context, dest *bucketConnRow, keys []s
 }
 
 func copyBucketObject(ctx context.Context, dest *bucketConnRow, srcKey, dstKey string) error {
+	return copyBucketObjectWithHeaders(ctx, dest, srcKey, dstKey, nil)
+}
+
+// copyBucketObjectWithHeaders is copyBucketObject plus caller-supplied extra
+// headers merged into the PUT-copy request — used by the metadata editor to
+// set x-amz-metadata-directive: REPLACE plus new Content-Type/Cache-Control/
+// x-amz-meta-* headers on a copy-to-self (srcKey == dstKey), since S3 has no
+// in-place metadata edit.
+func copyBucketObjectWithHeaders(ctx context.Context, dest *bucketConnRow, srcKey, dstKey string, extraHeaders map[string]string) error {
 	bucket := strings.Trim(dest.Bucket, "/")
 	copySource := "/" + bucket + "/" + s3KeyPathEscape(srcKey)
-	resp, err := bucketSignedRequest(ctx, dest, http.MethodPut, dstKey, map[string]string{
-		"x-amz-copy-source": copySource,
-	}, nil)
+	headers := map[string]string{"x-amz-copy-source": copySource}
+	for k, v := range extraHeaders {
+		headers[k] = v
+	}
+	resp, err := bucketSignedRequest(ctx, dest, http.MethodPut, dstKey, headers, nil)
 	if err != nil {
 		return err
 	}
@@ -455,6 +466,60 @@ func CloudStorageDownload() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Disposition", `attachment; filename="`+path.Base(key)+`"`)
 		io.Copy(w, resp.Body)
+	}
+}
+
+// cloudStorageMaxRead caps how much of a file CloudStorageRead will return —
+// matches sftpMaxRead's cap so the two preview code paths behave the same.
+const cloudStorageMaxRead = 2 << 20 // 2 MiB
+
+// CloudStorageRead returns a text preview of a remote object's content.
+// Mirrors SftpRead in sftp.go exactly (same response shape) so the frontend
+// preview modal can share logic between the SFTP and Cloud Storage browsers.
+// GET /api/connections/{id}/storage/read?key=
+func CloudStorageRead() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		connID, err := connectionIDFromPath(r.URL.Path)
+		if err != nil {
+			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
+			return
+		}
+		key := strings.TrimSpace(r.URL.Query().Get("key"))
+		if key == "" {
+			http.Error(w, jsonError("key is required"), http.StatusBadRequest)
+			return
+		}
+		dest, err := fetchBucketConn(connID)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		resp, err := openBucketObjectStream(r.Context(), dest, key, 0)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		var size int64
+		if cl := resp.Header.Get("Content-Length"); cl != "" {
+			size, _ = strconv.ParseInt(cl, 10, 64)
+		}
+		buf, err := io.ReadAll(io.LimitReader(resp.Body, cloudStorageMaxRead))
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		binary := bytes.IndexByte(buf, 0) != -1
+		truncated := size > int64(len(buf)) || int64(len(buf)) >= cloudStorageMaxRead
+		json.NewEncoder(w).Encode(map[string]any{
+			"key":       key,
+			"content":   string(buf),
+			"size":      size,
+			"truncated": truncated,
+			"binary":    binary,
+		})
 	}
 }
 
@@ -773,6 +838,111 @@ func CloudStorageMkdir() http.HandlerFunc {
 			return
 		}
 		if err := uploadObjectSpooled(r.Context(), dest, key+"/", bytes.NewReader(nil), ""); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	}
+}
+
+// CloudStorageGetMetadata HEADs an object and returns its Content-Type,
+// size, ETag, Last-Modified, and any x-amz-meta-* custom metadata.
+// GET /api/connections/{id}/storage/metadata?key=
+func CloudStorageGetMetadata() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		connID, err := connectionIDFromPath(r.URL.Path)
+		if err != nil {
+			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
+			return
+		}
+		key := strings.TrimSpace(r.URL.Query().Get("key"))
+		if key == "" {
+			http.Error(w, jsonError("key is required"), http.StatusBadRequest)
+			return
+		}
+		dest, err := fetchBucketConn(connID)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		resp, err := bucketSignedRequest(r.Context(), dest, http.MethodHead, key, nil, nil)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		var size int64
+		if cl := resp.Header.Get("Content-Length"); cl != "" {
+			size, _ = strconv.ParseInt(cl, 10, 64)
+		}
+		metadata := map[string]string{}
+		for h, vals := range resp.Header {
+			if len(vals) == 0 {
+				continue
+			}
+			if lower := strings.ToLower(h); strings.HasPrefix(lower, "x-amz-meta-") {
+				metadata[strings.TrimPrefix(lower, "x-amz-meta-")] = vals[0]
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"key":           key,
+			"content_type":  resp.Header.Get("Content-Type"),
+			"cache_control": resp.Header.Get("Cache-Control"),
+			"size":          size,
+			"etag":          strings.Trim(resp.Header.Get("ETag"), `"`),
+			"last_modified": resp.Header.Get("Last-Modified"),
+			"metadata":      metadata,
+		})
+	}
+}
+
+// CloudStorageUpdateMetadata rewrites an object's Content-Type,
+// Cache-Control, and custom metadata. S3 has no in-place metadata edit —
+// this is implemented as a copy-to-self with x-amz-metadata-directive:
+// REPLACE, matching how Vestra's own metadata editor works for S3/OBS/OSS.
+// POST /api/connections/{id}/storage/metadata
+// { "key": "...", "content_type": "...", "cache_control": "...", "metadata": {...} }
+func CloudStorageUpdateMetadata() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		connID, err := connectionIDFromPath(r.URL.Path)
+		if err != nil {
+			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Key          string            `json:"key"`
+			ContentType  string            `json:"content_type"`
+			CacheControl string            `json:"cache_control"`
+			Metadata     map[string]string `json:"metadata"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if strings.TrimSpace(body.Key) == "" {
+			http.Error(w, jsonError("key is required"), http.StatusBadRequest)
+			return
+		}
+		dest, err := fetchBucketConn(connID)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		headers := map[string]string{"x-amz-metadata-directive": "REPLACE"}
+		if body.ContentType != "" {
+			headers["Content-Type"] = body.ContentType
+		}
+		if body.CacheControl != "" {
+			headers["Cache-Control"] = body.CacheControl
+		}
+		for k, v := range body.Metadata {
+			k = strings.TrimSpace(k)
+			if k == "" {
+				continue
+			}
+			headers["x-amz-meta-"+k] = v
+		}
+		if err := copyBucketObjectWithHeaders(r.Context(), dest, body.Key, body.Key, headers); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
 		}

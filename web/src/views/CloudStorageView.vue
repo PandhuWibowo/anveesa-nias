@@ -88,6 +88,34 @@ const showRename = ref(false)
 const renameName = ref('')
 const renameTarget = ref<CsEntry | null>(null)
 
+// Preview — images/video/audio/PDF render via native elements pointed at the
+// download URL (no fetch needed); text/JSON/CSV fetch content through the
+// read endpoint and render client-side. Excel/Word are intentionally not
+// supported (would need new parsing dependencies) — falls through to
+// "unsupported".
+type PreviewKind = 'image' | 'video' | 'audio' | 'pdf' | 'json' | 'csv' | 'text' | 'unsupported'
+const showPreview = ref(false)
+const previewEntry = ref<CsEntry | null>(null)
+const previewKind = ref<PreviewKind>('text')
+const previewLoading = ref(false)
+const previewError = ref('')
+const previewContent = ref('')
+const previewCsvRows = ref<string[][]>([])
+const previewTruncated = ref(false)
+const previewBinary = ref(false)
+
+// Metadata editor — S3 has no in-place metadata edit; the backend implements
+// "save" as a copy-to-self with x-amz-metadata-directive: REPLACE.
+const showMetadata = ref(false)
+const metadataEntry = ref<CsEntry | null>(null)
+const metadataLoading = ref(false)
+const metadataSaving = ref(false)
+const metadataError = ref('')
+const metadataContentType = ref('')
+const metadataCacheControl = ref('')
+const metadataRows = ref<{ key: string; val: string }[]>([])
+const metadataReadOnly = ref({ size: 0, etag: '', lastModified: '' })
+
 // ── Path helpers ────────────────────────────────────────────────
 function parentPrefix(p: string): string {
   const trimmed = p.replace(/\/$/, '')
@@ -179,13 +207,142 @@ function up() {
 }
 
 // ── Download (native browser streaming) ─────────────────────────
-function download(entry: CsEntry) {
+function downloadUrl(entry: CsEntry): string {
   const token = localStorage.getItem('nias-token') || ''
-  const url = `/api/connections/${connId.value}/storage/download?key=${encodeURIComponent(entry.key)}&token=${encodeURIComponent(token)}`
+  return `/api/connections/${connId.value}/storage/download?key=${encodeURIComponent(entry.key)}&token=${encodeURIComponent(token)}`
+}
+function download(entry: CsEntry) {
   const a = document.createElement('a')
-  a.href = url
+  a.href = downloadUrl(entry)
   a.download = entry.name
   a.click()
+}
+
+// ── Preview ───────────────────────────────────────────────────────
+const previewUrl = computed(() => previewEntry.value ? downloadUrl(previewEntry.value) : '')
+
+function detectPreviewKind(name: string): PreviewKind {
+  const ext = name.split('.').pop()?.toLowerCase() || ''
+  if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(ext)) return 'image'
+  if (['mp4', 'webm', 'mov', 'm4v'].includes(ext)) return 'video'
+  if (['mp3', 'wav', 'ogg', 'm4a', 'flac'].includes(ext)) return 'audio'
+  if (ext === 'pdf') return 'pdf'
+  if (ext === 'json') return 'json'
+  if (['csv', 'tsv'].includes(ext)) return 'csv'
+  if (['txt', 'md', 'log', 'yml', 'yaml', 'toml', 'env', 'conf', 'ini', 'sh', 'bash', 'zsh', 'sql', 'xml', 'html', 'css', 'js', 'ts', 'vue', 'go', 'py', 'java', 'rb', 'rs', 'c', 'h', 'cpp'].includes(ext)) return 'text'
+  return 'unsupported'
+}
+
+// Splits on the first row's delimiter (comma vs tab) — no quoted-field
+// escaping, matches this view's "simple client-side preview" scope rather
+// than a full CSV parser.
+function parseCsvPreview(text: string): string[][] {
+  const lines = text.split(/\r\n|\n/).filter((l) => l.length > 0).slice(0, 500)
+  const delim = lines[0]?.includes('\t') ? '\t' : ','
+  return lines.map((line) => line.split(delim))
+}
+
+async function openPreview(entry: CsEntry) {
+  previewEntry.value = entry
+  showPreview.value = true
+  previewError.value = ''
+  previewContent.value = ''
+  previewCsvRows.value = []
+  previewTruncated.value = false
+  previewBinary.value = false
+  const kind = detectPreviewKind(entry.name)
+  previewKind.value = kind
+  // image/video/audio/pdf render straight from the download URL — no fetch
+  if (kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'pdf' || kind === 'unsupported') return
+
+  previewLoading.value = true
+  try {
+    const { data } = await axios.get<{ content: string; size: number; truncated: boolean; binary: boolean }>(
+      `/api/connections/${connId.value}/storage/read`,
+      { params: { key: entry.key } },
+    )
+    previewTruncated.value = data.truncated
+    previewBinary.value = data.binary
+    if (data.binary) return
+    if (kind === 'json') {
+      try {
+        previewContent.value = JSON.stringify(JSON.parse(data.content), null, 2)
+      } catch {
+        previewContent.value = data.content
+      }
+    } else if (kind === 'csv') {
+      previewCsvRows.value = parseCsvPreview(data.content)
+    } else {
+      previewContent.value = data.content
+    }
+  } catch (e: any) {
+    previewError.value = e?.response?.data?.error || 'Could not read file'
+  } finally {
+    previewLoading.value = false
+  }
+}
+function closePreview() {
+  showPreview.value = false
+  previewEntry.value = null
+}
+
+// ── Metadata editor ─────────────────────────────────────────────
+function addMetaRow() {
+  metadataRows.value.push({ key: '', val: '' })
+}
+async function openMetadata(entry: CsEntry) {
+  metadataEntry.value = entry
+  showMetadata.value = true
+  metadataError.value = ''
+  metadataContentType.value = ''
+  metadataCacheControl.value = ''
+  metadataRows.value = []
+  metadataLoading.value = true
+  try {
+    const { data } = await axios.get<{
+      content_type: string
+      cache_control: string
+      size: number
+      etag: string
+      last_modified: string
+      metadata: Record<string, string>
+    }>(`/api/connections/${connId.value}/storage/metadata`, { params: { key: entry.key } })
+    metadataContentType.value = data.content_type || ''
+    metadataCacheControl.value = data.cache_control || ''
+    metadataRows.value = Object.entries(data.metadata || {}).map(([key, val]) => ({ key, val }))
+    metadataReadOnly.value = { size: data.size, etag: data.etag, lastModified: data.last_modified }
+  } catch (e: any) {
+    metadataError.value = e?.response?.data?.error || 'Could not load metadata'
+  } finally {
+    metadataLoading.value = false
+  }
+}
+function closeMetadata() {
+  showMetadata.value = false
+  metadataEntry.value = null
+}
+async function saveMetadata() {
+  if (!metadataEntry.value) return
+  metadataSaving.value = true
+  try {
+    const metadata: Record<string, string> = {}
+    for (const row of metadataRows.value) {
+      const key = row.key.trim()
+      if (key) metadata[key] = row.val
+    }
+    await axios.post(`/api/connections/${connId.value}/storage/metadata`, {
+      key: metadataEntry.value.key,
+      content_type: metadataContentType.value,
+      cache_control: metadataCacheControl.value,
+      metadata,
+    })
+    toast.success('Metadata updated')
+    closeMetadata()
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to update metadata')
+  } finally {
+    metadataSaving.value = false
+  }
 }
 
 // Bulk download — zips one or more objects/folders server-side and streams
@@ -363,11 +520,15 @@ function copyPath(key: string) {
 function rowActions(e: CsEntry): RowAction[] {
   const actions: RowAction[] = []
   if (!e.isDir) {
+    actions.push({ key: 'view', label: 'View', icon: 'view', primary: true, onClick: () => openPreview(e) })
     actions.push({ key: 'download', label: 'Download', icon: 'download', primary: true, onClick: () => download(e) })
   } else {
     actions.push({ key: 'download-zip', label: 'Download as ZIP', icon: 'download', primary: true, onClick: () => downloadZip([e]) })
   }
   actions.push({ key: 'copy-path', label: 'Copy key', icon: 'copy', onClick: () => copyPath(e.key) })
+  if (!e.isDir) {
+    actions.push({ key: 'info', label: 'Metadata…', icon: 'info', onClick: () => openMetadata(e) })
+  }
   if (canManage.value) {
     actions.push({ key: 'rename', label: 'Rename', icon: 'edit', onClick: () => rename(e) })
     actions.push({ key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => del(e) })
@@ -507,7 +668,7 @@ onMounted(loadConnections)
                   <td class="cs-col-check" @click.stop>
                     <input type="checkbox" :checked="selected.has(e.name)" @change="toggleSelect(e.name)" />
                   </td>
-                  <td class="cs-name" @click="e.isDir ? open(e) : undefined">
+                  <td class="cs-name" @click="e.isDir ? open(e) : openPreview(e)">
                     <span class="cs-icon">{{ fileIcon(e) }}</span>
                     <span class="cs-fname">{{ e.name }}</span>
                   </td>
@@ -550,6 +711,97 @@ onMounted(loadConnections)
         <div class="cs-modal-actions">
           <button class="base-btn base-btn--sm" @click="showRename = false">Cancel</button>
           <button class="base-btn base-btn--primary base-btn--sm" :disabled="!renameName.trim()" @click="submitRename">Rename</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Preview modal -->
+    <div v-if="showPreview" class="cs-modal-backdrop" @click.self="closePreview">
+      <div class="cs-modal cs-view-modal page-card">
+        <div class="cs-modal-title">{{ previewEntry?.name }}</div>
+
+        <div v-if="previewKind === 'image'" class="cs-preview-media">
+          <img :src="previewUrl" :alt="previewEntry?.name" />
+        </div>
+        <div v-else-if="previewKind === 'video'" class="cs-preview-media">
+          <video :src="previewUrl" controls />
+        </div>
+        <div v-else-if="previewKind === 'audio'" class="cs-preview-media cs-preview-media--audio">
+          <audio :src="previewUrl" controls />
+        </div>
+        <div v-else-if="previewKind === 'pdf'" class="cs-preview-pdf">
+          <iframe :src="previewUrl" title="PDF preview" />
+        </div>
+        <div v-else-if="previewKind === 'unsupported'" class="cs-msg">This file type can't be previewed here. Use Download instead.</div>
+        <div v-else-if="previewLoading" class="cs-msg">Loading…</div>
+        <div v-else-if="previewError" class="cs-msg cs-err">{{ previewError }}</div>
+        <div v-else-if="previewBinary" class="cs-msg">This file looks binary and can't be previewed. Use Download instead.</div>
+        <template v-else-if="previewKind === 'csv'">
+          <div v-if="previewTruncated" class="cs-view-notice">Showing the first 2 MB of this file.</div>
+          <div class="cs-csv-wrap">
+            <table class="cs-csv-table">
+              <tbody>
+                <tr v-for="(row, i) in previewCsvRows" :key="i" :class="{ 'cs-csv-header': i === 0 }">
+                  <td v-for="(cell, j) in row" :key="j">{{ cell }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
+        <template v-else>
+          <div v-if="previewTruncated" class="cs-view-notice">Showing the first 2 MB of this file.</div>
+          <pre class="cs-view-content">{{ previewContent }}</pre>
+        </template>
+
+        <div class="cs-modal-actions">
+          <button class="base-btn base-btn--sm" @click="previewEntry && download(previewEntry)">Download</button>
+          <button class="base-btn base-btn--sm" @click="closePreview">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Metadata modal -->
+    <div v-if="showMetadata" class="cs-modal-backdrop" @click.self="closeMetadata">
+      <div class="cs-modal cs-meta-modal page-card">
+        <div class="cs-modal-title">{{ metadataEntry?.name }} — Metadata</div>
+
+        <div v-if="metadataLoading" class="cs-msg">Loading…</div>
+        <div v-else-if="metadataError" class="cs-msg cs-err">{{ metadataError }}</div>
+        <template v-else>
+          <div class="form-group">
+            <label class="form-label">Content-Type</label>
+            <input v-model="metadataContentType" class="base-input" placeholder="e.g. image/png" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Cache-Control</label>
+            <input v-model="metadataCacheControl" class="base-input" placeholder="e.g. public, max-age=31536000" />
+          </div>
+          <div class="form-group">
+            <div class="cs-meta-rows-head">
+              <label class="form-label" style="margin-bottom:0">Custom Metadata</label>
+              <button class="base-btn base-btn--ghost base-btn--xs" @click="addMetaRow">+ Add</button>
+            </div>
+            <div v-for="(row, i) in metadataRows" :key="i" class="cs-meta-row">
+              <input v-model="row.key" class="base-input" placeholder="key" />
+              <input v-model="row.val" class="base-input" placeholder="value" />
+              <button class="cs-meta-row-del" @click="metadataRows.splice(i, 1)" title="Remove">
+                <ActionIcon name="close" />
+              </button>
+            </div>
+            <p v-if="!metadataRows.length" class="cs-meta-empty">No custom metadata.</p>
+          </div>
+          <div class="cs-meta-readonly">
+            <div>Size: <strong>{{ formatBytes(metadataReadOnly.size) }}</strong></div>
+            <div v-if="metadataReadOnly.etag">ETag: <strong>{{ metadataReadOnly.etag }}</strong></div>
+            <div v-if="metadataReadOnly.lastModified">Modified: <strong>{{ formatTime(metadataReadOnly.lastModified) }}</strong></div>
+          </div>
+        </template>
+
+        <div class="cs-modal-actions">
+          <button class="base-btn base-btn--sm" @click="closeMetadata">Cancel</button>
+          <button class="base-btn base-btn--primary base-btn--sm" :disabled="metadataSaving || metadataLoading" @click="saveMetadata">
+            {{ metadataSaving ? 'Saving…' : 'Save' }}
+          </button>
         </div>
       </div>
     </div>
@@ -642,6 +894,30 @@ onMounted(loadConnections)
 .cs-modal-title { font-size: 15px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px; word-break: break-all; }
 .cs-modal-input { width: 100%; }
 .cs-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+.cs-view-modal { width: 820px; max-width: 92vw; max-height: 86vh; display: flex; flex-direction: column; }
+.cs-view-notice { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+.cs-view-content { flex: 1; overflow: auto; background: var(--bg-hover); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 12px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-all; margin: 0; }
+.cs-preview-media { display: flex; align-items: center; justify-content: center; max-height: 70vh; overflow: auto; background: var(--bg-hover); border-radius: var(--r-sm); }
+.cs-preview-media img { max-width: 100%; max-height: 70vh; object-fit: contain; }
+.cs-preview-media video { max-width: 100%; max-height: 70vh; }
+.cs-preview-media--audio { padding: 30px; }
+.cs-preview-pdf { flex: 1; min-height: 60vh; }
+.cs-preview-pdf iframe { width: 100%; height: 60vh; border: 1px solid var(--border); border-radius: var(--r-sm); }
+.cs-csv-wrap { flex: 1; overflow: auto; border: 1px solid var(--border); border-radius: var(--r-sm); }
+.cs-csv-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cs-csv-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); white-space: nowrap; }
+.cs-csv-header td { font-weight: 600; background: var(--bg-hover); position: sticky; top: 0; }
+
+.cs-meta-modal { width: 460px; max-width: 92vw; }
+.cs-meta-rows-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.cs-meta-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.cs-meta-row .base-input { font-size: 12px; padding: 6px 8px; }
+.cs-meta-row-del { flex-shrink: 0; background: none; border: none; padding: 4px; color: var(--text-muted); cursor: pointer; border-radius: var(--r-xs); }
+.cs-meta-row-del:hover { color: var(--danger); background: var(--bg-hover); }
+.cs-meta-empty { font-size: 11px; color: var(--text-muted); margin: 0; }
+.cs-meta-readonly { padding: 10px 12px; background: var(--bg-hover); border-radius: var(--r-sm); font-size: 11px; color: var(--text-muted); line-height: 1.8; }
+.cs-meta-readonly strong { color: var(--text-secondary); font-weight: 500; word-break: break-all; }
 
 .cs-uploads { position: fixed; right: 18px; bottom: 18px; width: 320px; max-height: 50vh; overflow-y: auto; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); z-index: 90; padding: 10px 12px; }
 .cs-uploads-head { font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; }
