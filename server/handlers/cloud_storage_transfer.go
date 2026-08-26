@@ -17,12 +17,17 @@ import (
 // (Huawei OBS → Alibaba OSS → AWS S3 etc). Because S3's native
 // x-amz-copy-source copy only works within a single provider's own
 // credentials, a cross-provider transfer has no server-side "copy" to lean
-// on: the app relays it itself, streaming each object from
-// openBucketObjectStream (backup_bucket.go) straight into
-// uploadToBucketStream (backup_bucket.go) without buffering to disk. This
-// reuses the exact async-job pattern BackupJob already established
-// (backup_bucket.go) — a goroutine populates a mutex-guarded struct kept in
-// an in-memory sync.Map, polled via GET/DELETE .../transfer-jobs/{id}.
+// on: the app relays it itself, reading each object from
+// openBucketObjectStream (backup_bucket.go) and writing it out via
+// uploadObjectSpooled (cloud_storage.go) — which spools to a temp file to
+// learn the real size before the PUT. That spooling (not a direct
+// stream-to-stream pipe) is required, not just simpler: MinIO, and per
+// uploadObjectSpooled's own doc comment very likely real AWS S3/GCS/Alibaba
+// OSS too, reject a chunked/unsigned-payload PUT with 411 Length Required —
+// only Huawei OBS tolerates that in this app's experience. This reuses the
+// exact async-job pattern BackupJob already established (backup_bucket.go)
+// — a goroutine populates a mutex-guarded struct kept in an in-memory
+// sync.Map, polled via GET/DELETE .../transfer-jobs/{id}.
 
 // ── Async transfer job store ────────────────────────────────────────────────
 
@@ -473,7 +478,14 @@ func transferOneTask(jobCtx context.Context, job *TransferJob, srcConn *bucketCo
 		return
 	}
 	cr := &countingReader{r: resp.Body}
-	uploadErr := uploadToBucketStream(jobCtx, task.dest.conn, destKey, cr)
+	// uploadObjectSpooled (not uploadToBucketStream) deliberately — chunked,
+	// unsigned-payload PUTs are only tolerated by Huawei OBS in practice;
+	// MinIO and, per cloud_storage.go's own findings, very likely real AWS
+	// S3/GCS/Alibaba OSS too reject them with 411 Length Required. Spooling
+	// to a temp file first (learning the real size) is what actually works
+	// across providers — the same reason CloudStorageUpload already uses it
+	// for browser uploads.
+	uploadErr := uploadObjectSpooled(jobCtx, task.dest.conn, destKey, cr, "")
 	resp.Body.Close()
 
 	bytes := atomic.LoadInt64(&cr.n)
