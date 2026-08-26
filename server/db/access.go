@@ -229,7 +229,7 @@ func GetAccessibleConnectionIDs(userID int64, role string) ([]int64, error) {
 		return nil, nil // nil = unrestricted
 	}
 
-	rows, err := DB.Query(`
+	rows, err := DB.Query(ConvertQuery(`
 		SELECT DISTINCT conn_id FROM (
 			-- via active folders/groups (respecting role_restrict)
 			SELECT fc.conn_id
@@ -246,7 +246,7 @@ func GetAccessibleConnectionIDs(userID int64, role string) ([]int64, error) {
 			-- connections owned by the user
 			SELECT id FROM connections WHERE owner_id = ?
 		)
-	`, userID, role, userID, userID)
+	`), userID, role, userID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -287,17 +287,17 @@ func GetUserConnectionPermissions(userID int64, role string, connID int64) ([]Db
 	// 1. Direct user-connection permissions
 	var directRaw string
 	hasDirect := false
-	err = DB.QueryRow(`
+	err = DB.QueryRow(ConvertQuery(`
 		SELECT COALESCE(permissions, '[]')
 		FROM user_connections
 		WHERE user_id = ? AND conn_id = ?
-	`, userID, connID).Scan(&directRaw)
+	`), userID, connID).Scan(&directRaw)
 	if err == nil {
 		hasDirect = true
 	}
 
 	// 2. Group-level permissions (union across all matching groups)
-	rows, err := DB.Query(`
+	rows, err := DB.Query(ConvertQuery(`
 		SELECT COALESCE(fc.permissions, '[]')
 		FROM folder_connections fc
 		JOIN folder_members fm ON fm.folder_id = fc.folder_id
@@ -306,7 +306,7 @@ func GetUserConnectionPermissions(userID int64, role string, connID int64) ([]Db
 		  AND fc.conn_id = ?
 		  AND f.is_active = 1
 		  AND (f.role_restrict = '' OR f.role_restrict = ?)
-	`, userID, connID, role)
+	`), userID, connID, role)
 	if err != nil {
 		return nil, err
 	}
@@ -439,14 +439,14 @@ func ListAccessGroups() ([]map[string]interface{}, error) {
 
 // GetGroupMembers returns users assigned to a group
 func GetGroupMembers(groupID int64) ([]map[string]interface{}, error) {
-	rows, err := DB.Query(`
+	rows, err := DB.Query(ConvertQuery(`
 		SELECT u.id, u.username, COALESCE(r.name, 'user') as role
 		FROM users u
 		JOIN folder_members fm ON fm.user_id = u.id
 		LEFT JOIN roles r ON r.id = u.role_id
 		WHERE fm.folder_id = ?
 		ORDER BY u.username
-	`, groupID)
+	`), groupID)
 	if err != nil {
 		return nil, err
 	}
@@ -470,15 +470,15 @@ func GetGroupMembers(groupID int64) ([]map[string]interface{}, error) {
 
 // GetGroupConnections returns connections assigned to a group
 func GetGroupConnections(groupID int64) ([]map[string]interface{}, error) {
-	rows, err := DB.Query(`
-		SELECT c.id, c.name, c.driver, c.host, c.port, 
-		       COALESCE(c.environment, 'development'), 
+	rows, err := DB.Query(ConvertQuery(`
+		SELECT c.id, c.name, c.driver, c.host, c.port,
+		       COALESCE(c.environment, 'development'),
 		       COALESCE(fc.permissions, '[]')
 		FROM connections c
 		JOIN folder_connections fc ON fc.conn_id = c.id
 		WHERE fc.folder_id = ?
 		ORDER BY c.name
-	`, groupID)
+	`), groupID)
 	if err != nil {
 		return nil, err
 	}

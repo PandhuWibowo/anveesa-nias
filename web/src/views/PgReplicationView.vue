@@ -5,6 +5,7 @@ import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
 import { useConnections } from '@/composables/useConnections'
+import ConnectionPicker from '@/components/ui/ConnectionPicker.vue'
 
 // Mirrors server/handlers/pg_replication.go's JSON shapes.
 interface ReplicationLink {
@@ -44,8 +45,7 @@ const { confirm } = useConfirm()
 const { hasAnyPermission } = useAuth()
 const canManage = computed(() => hasAnyPermission(['pgreplication.manage']))
 
-const { connections, fetchConnections } = useConnections()
-const pgConnections = computed(() => connections.value.filter((c) => c.driver === 'postgres'))
+const { fetchConnections } = useConnections()
 
 // ── Links list + live status polling ─────────────────────────────
 const links = ref<ReplicationLink[]>([])
@@ -136,9 +136,6 @@ const creating = ref(false)
 const createError = ref('')
 const walWarning = ref<{ walLevelOk: boolean; hasPriv: boolean } | null>(null)
 
-const sourceChoices = computed(() => pgConnections.value.filter((c) => c.id !== targetConnId.value))
-const targetChoices = computed(() => pgConnections.value.filter((c) => c.id !== sourceConnId.value))
-
 function openCreate() {
   showCreate.value = true
   sourceConnId.value = null
@@ -154,11 +151,12 @@ function openCreate() {
   walWarning.value = null
 }
 
-async function onSourceSelected(id: number) {
+async function onSourceSelected(id: number | null) {
   sourceConnId.value = id
   walWarning.value = null
   availableTables.value = []
   selectedTables.value = new Set()
+  if (id == null) return
   try {
     const { data } = await axios.get<PublicationsResponse>('/api/pg-replication/publications', { params: { connection_id: id } })
     walWarning.value = { walLevelOk: data.wal_level_ok, hasPriv: data.has_replication_privilege }
@@ -199,6 +197,12 @@ async function submitCreate() {
   }
   creating.value = true
   createError.value = ''
+  // Publication creation and subscription creation are two separate calls
+  // (they run against two different Postgres servers, so there's no single
+  // transaction that could span both) — track whether the first one
+  // succeeded so a failure on the second can roll it back instead of
+  // leaving an orphaned publication sitting on the source forever.
+  let publicationCreated = false
   try {
     await axios.post('/api/pg-replication/publications', {
       connectionId: sourceConnId.value,
@@ -206,6 +210,7 @@ async function submitCreate() {
       allTables: allTables.value,
       tables: allTables.value ? [] : Array.from(selectedTables.value),
     })
+    publicationCreated = true
     await axios.post('/api/pg-replication/subscriptions', {
       targetConnectionId: targetConnId.value,
       sourceConnectionId: sourceConnId.value,
@@ -217,7 +222,19 @@ async function submitCreate() {
     showCreate.value = false
     await loadLinks()
   } catch (e: any) {
-    createError.value = e?.response?.data?.error || 'Failed to create replication'
+    const message = e?.response?.data?.error || 'Failed to create replication'
+    if (publicationCreated) {
+      try {
+        await axios.delete(`/api/pg-replication/publications/${encodeURIComponent(pubName.value.trim())}`, {
+          params: { connection_id: sourceConnId.value },
+        })
+        createError.value = message
+      } catch {
+        createError.value = `${message} — and the publication it created on the source could not be rolled back automatically; you may need to drop "${pubName.value.trim()}" manually.`
+      }
+    } else {
+      createError.value = message
+    }
   } finally {
     creating.value = false
   }
@@ -329,10 +346,14 @@ onUnmounted(() => {
 
         <div class="form-group">
           <label class="form-label">Source connection (publisher)</label>
-          <select class="base-input" :value="sourceConnId ?? ''" @change="onSourceSelected(Number(($event.target as HTMLSelectElement).value))">
-            <option value="" disabled>Select a Postgres connection…</option>
-            <option v-for="c in sourceChoices" :key="c.id" :value="c.id">{{ c.name }} ({{ c.database }})</option>
-          </select>
+          <ConnectionPicker
+            :model-value="sourceConnId"
+            @update:model-value="onSourceSelected"
+            :drivers="['postgres']"
+            :exclude-ids="targetConnId != null ? [targetConnId] : []"
+            placeholder="Select a Postgres connection…"
+            full-width
+          />
         </div>
 
         <div v-if="walWarning && (!walWarning.walLevelOk || !walWarning.hasPriv)" class="pr-warning">
@@ -342,10 +363,13 @@ onUnmounted(() => {
 
         <div class="form-group">
           <label class="form-label">Target connection (subscriber)</label>
-          <select class="base-input" :value="targetConnId ?? ''" @change="targetConnId = Number(($event.target as HTMLSelectElement).value)">
-            <option value="" disabled>Select a Postgres connection…</option>
-            <option v-for="c in targetChoices" :key="c.id" :value="c.id">{{ c.name }} ({{ c.database }})</option>
-          </select>
+          <ConnectionPicker
+            v-model="targetConnId"
+            :drivers="['postgres']"
+            :exclude-ids="sourceConnId != null ? [sourceConnId] : []"
+            placeholder="Select a Postgres connection…"
+            full-width
+          />
         </div>
 
         <div class="form-group">

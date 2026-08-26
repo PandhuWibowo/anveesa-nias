@@ -11,6 +11,10 @@ const props = defineProps<{
   // contexts where every other field is a full-width base-input want this
   // to match instead of looking like a stray small control.
   fullWidth?: boolean
+  // Hides specific connections from the list — e.g. a source/target pair
+  // where whichever one is already picked on the other side shouldn't be
+  // selectable again.
+  excludeIds?: number[]
 }>()
 
 const emit = defineEmits<{
@@ -31,11 +35,15 @@ const selected = computed<Connection | null>(() =>
     : null
 )
 
-const driverFiltered = computed<Connection[]>(() =>
-  props.drivers?.length
+const driverFiltered = computed<Connection[]>(() => {
+  let list = props.drivers?.length
     ? activeConnections.value.filter(c => props.drivers!.includes(c.driver))
     : activeConnections.value
-)
+  if (props.excludeIds?.length) {
+    list = list.filter(c => !props.excludeIds!.includes(c.id))
+  }
+  return list
+})
 
 const filteredConnections = computed<Connection[]>(() => {
   const q = search.value.trim().toLowerCase()

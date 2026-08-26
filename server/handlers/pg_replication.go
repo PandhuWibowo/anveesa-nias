@@ -153,6 +153,10 @@ func ListPublications() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
 		}
+		if !CheckReadPermission(r, connID) {
+			http.Error(w, jsonError("permission denied on connection"), http.StatusForbidden)
+			return
+		}
 		db, err := requirePostgresDB(connID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
@@ -236,6 +240,10 @@ func CreatePublication() http.HandlerFunc {
 			http.Error(w, jsonError(`select at least one table, or choose "all tables"`), http.StatusBadRequest)
 			return
 		}
+		if !CheckWritePermission(r, req.ConnectionID) {
+			http.Error(w, jsonError("permission denied on connection"), http.StatusForbidden)
+			return
+		}
 		db, err := requirePostgresDB(req.ConnectionID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
@@ -293,6 +301,10 @@ func DropPublication() http.HandlerFunc {
 		connID, err := pgReplConnID(r)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		if !CheckWritePermission(r, connID) {
+			http.Error(w, jsonError("permission denied on connection"), http.StatusForbidden)
 			return
 		}
 		db, err := requirePostgresDB(connID)
@@ -370,6 +382,10 @@ func ListSubscriptions() http.HandlerFunc {
 		connID, err := pgReplConnID(r)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		if !CheckReadPermission(r, connID) {
+			http.Error(w, jsonError("permission denied on connection"), http.StatusForbidden)
 			return
 		}
 		db, err := requirePostgresDB(connID)
@@ -465,6 +481,20 @@ func CreateSubscription() http.HandlerFunc {
 			http.Error(w, jsonError("source and target must be different connections"), http.StatusBadRequest)
 			return
 		}
+		// Read on source (its credentials are being pulled to build the
+		// CONNECTION string) and write on target (CREATE SUBSCRIPTION runs
+		// there) — without both, a user holding only the app-level
+		// pgreplication.manage permission could point a subscription at any
+		// stored Postgres connection regardless of that connection's own
+		// per-user grants.
+		if !CheckReadPermission(r, req.SourceConnectionID) {
+			http.Error(w, jsonError("permission denied on source connection"), http.StatusForbidden)
+			return
+		}
+		if !CheckWritePermission(r, req.TargetConnectionID) {
+			http.Error(w, jsonError("permission denied on target connection"), http.StatusForbidden)
+			return
+		}
 
 		srcInfo, err := fetchPgConnInfo(req.SourceConnectionID)
 		if err != nil {
@@ -534,6 +564,10 @@ func AlterSubscriptionState() http.HandlerFunc {
 			http.Error(w, jsonError(`action must be "enable" or "disable"`), http.StatusBadRequest)
 			return
 		}
+		if !CheckWritePermission(r, connID) {
+			http.Error(w, jsonError("permission denied on connection"), http.StatusForbidden)
+			return
+		}
 		db, err := requirePostgresDB(connID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
@@ -547,7 +581,14 @@ func AlterSubscriptionState() http.HandlerFunc {
 	}
 }
 
-// DropSubscription drops a subscription and removes its bookkeeping link.
+// DropSubscription drops a subscription, removes its bookkeeping link, and —
+// best-effort — drops the paired publication on the source too, as long as
+// no other tracked link still references it (a publication can in principle
+// be shared by more than one subscription, e.g. two different targets
+// replicating from the same source) and the caller has write access on the
+// source connection. Without this, every link ever created and dropped
+// through this UI leaked one CREATE PUBLICATION object on the source
+// forever, since nothing else in the app ever cleans those up.
 // DELETE /api/pg-replication/subscriptions/{name}?connection_id=X
 func DropSubscription() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -558,16 +599,50 @@ func DropSubscription() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
 		}
+		if !CheckWritePermission(r, connID) {
+			http.Error(w, jsonError("permission denied on connection"), http.StatusForbidden)
+			return
+		}
 		db, err := requirePostgresDB(connID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
 		}
+
+		// Look up the bookkeeping link *before* dropping anything — DROP
+		// SUBSCRIPTION alone only ever touches the target, so this is the
+		// only place that still knows which source connection/publication
+		// this subscription was paired with.
+		var srcConnID int64
+		var pubName string
+		linkErr := appdb.DB.QueryRow(appdb.ConvertQuery(
+			`SELECT source_connection_id, publication_name FROM pg_replication_links WHERE target_connection_id=? AND subscription_name=?`),
+			connID, name,
+		).Scan(&srcConnID, &pubName)
+
 		if _, err := db.ExecContext(r.Context(), "DROP SUBSCRIPTION "+quoteIdentPG(name)); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
 		}
 		appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM pg_replication_links WHERE target_connection_id=? AND subscription_name=?`), connID, name)
+
+		if linkErr == nil {
+			var stillReferenced int
+			appdb.DB.QueryRow(appdb.ConvertQuery(
+				`SELECT COUNT(*) FROM pg_replication_links WHERE source_connection_id=? AND publication_name=?`),
+				srcConnID, pubName,
+			).Scan(&stillReferenced)
+			if stillReferenced == 0 {
+				if !CheckWritePermission(r, srcConnID) {
+					log.Printf("pg_replication: not dropping orphaned publication %s on connection %d — caller lacks write permission on the source", pubName, srcConnID)
+				} else if srcDB, srcErr := requirePostgresDB(srcConnID); srcErr == nil {
+					if _, dropErr := srcDB.ExecContext(r.Context(), "DROP PUBLICATION IF EXISTS "+quoteIdentPG(pubName)); dropErr != nil {
+						log.Printf("pg_replication: failed to drop orphaned publication %s on connection %d: %v", pubName, srcConnID, dropErr)
+					}
+				}
+			}
+		}
+
 		json.NewEncoder(w).Encode(map[string]string{"status": "dropped"})
 	}
 }
