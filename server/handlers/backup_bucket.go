@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1037,7 +1038,19 @@ func s3KeyPathEscape(key string) string {
 	return strings.Join(segs, "/")
 }
 
-// signObjectStorageRequestFull signs with the actual payload hash (used for GET/HEAD/LIST).
+// signObjectStorageRequestFull signs with the actual payload hash (used for
+// GET/HEAD/LIST/PUT-copy/DELETE). Every header actually present on the
+// request gets included in SignedHeaders — not just a fixed host/date/hash
+// baseline — because strict implementations reject a request outright if
+// any header it carries is left out of the signature. This bit real:
+// Alibaba OSS returned "SignatureDoesNotMatch: HeadersNotSigned:
+// X-AMZ-COPY-SOURCE" on same-bucket moves/renames, since the old fixed
+// baseline never signed x-amz-copy-source (set by copyBucketObjectWithHeaders
+// before calling in here) even though it was sent on the wire. The same gap
+// existed for Range (openBucketObjectStream's resume support) and
+// Content-MD5/Content-Type (batchDeleteBucketObjects) — Huawei OBS and MinIO
+// just didn't enforce the check, which is why this went unnoticed until a
+// stricter provider hit it.
 func signObjectStorageRequestFull(req *http.Request, accessKey, secretKey, region, service, payloadHash string, _ []byte) {
 	now := time.Now().UTC()
 	amzDate := now.Format("20060102T150405Z")
@@ -1051,10 +1064,25 @@ func signObjectStorageRequestFull(req *http.Request, accessKey, secretKey, regio
 		canonicalURI = "/"
 	}
 	canonicalQuery := req.URL.RawQuery
-	canonicalHeaders := "host:" + req.URL.Host + "\n" +
-		"x-amz-content-sha256:" + payloadHash + "\n" +
-		"x-amz-date:" + amzDate + "\n"
-	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
+
+	headerValues := map[string]string{"host": req.URL.Host}
+	names := []string{"host"}
+	for k, vals := range req.Header {
+		lower := strings.ToLower(k)
+		headerValues[lower] = strings.TrimSpace(strings.Join(vals, ","))
+		names = append(names, lower)
+	}
+	sort.Strings(names)
+
+	var canonicalHeadersBuilder strings.Builder
+	for _, name := range names {
+		canonicalHeadersBuilder.WriteString(name)
+		canonicalHeadersBuilder.WriteString(":")
+		canonicalHeadersBuilder.WriteString(headerValues[name])
+		canonicalHeadersBuilder.WriteString("\n")
+	}
+	canonicalHeaders := canonicalHeadersBuilder.String()
+	signedHeaders := strings.Join(names, ";")
 	canonicalRequest := strings.Join([]string{
 		req.Method,
 		canonicalURI,
