@@ -255,6 +255,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['cloudstorage.access', 'cloudstorage.manage'] },
         },
         {
+          path: 'pg-replication',
+          name: 'pg-replication',
+          component: () => import('@/views/PgReplicationView.vue'),
+          meta: { requiredPermissionsAny: ['pgreplication.view', 'pgreplication.manage'] },
+        },
+        {
           path: 'kube-clusters',
           name: 'kube-clusters',
           component: () => import('@/views/KubeClustersView.vue'),

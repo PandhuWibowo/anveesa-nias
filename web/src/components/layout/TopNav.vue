@@ -160,6 +160,7 @@ const allMenuGroups: MenuGroup[] = [
       { name: 'kube-clusters', label: 'K8s Clusters', desc: 'Manage Kubernetes cluster connections (Alibaba ACK, Huawei CCE) via kubeconfig', icon: 'kube', section: 'Kubernetes', permissionsAny: ['kube.view', 'kube.manage'] },
       { name: 'kubernetes', label: 'Kubernetes', desc: 'Browse nodes, workloads, services, events, and pod logs across your clusters', icon: 'kube', section: 'Kubernetes', permissionsAny: ['kube.view', 'kube.manage'] },
       { name: 'cloud-storage', label: 'Cloud Storage', desc: 'Browse, upload, and download files across your AWS S3, GCP, Alibaba OSS, and Huawei OBS connections', icon: 'cloud', section: 'Storage', permissionsAny: ['cloudstorage.access', 'cloudstorage.manage'] },
+      { name: 'pg-replication', label: 'Postgres Replication', desc: 'Create and monitor native logical replication (publications/subscriptions) between Postgres connections', icon: 'plug', section: 'Database', permissionsAny: ['pgreplication.view', 'pgreplication.manage'] },
     ],
   },
   {

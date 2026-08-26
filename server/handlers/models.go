@@ -162,22 +162,24 @@ const (
 	PermDBUsersManage  = "dbusers.manage"
 	PermSettingsAlerts = "settings.alerts"
 	// Infrastructure
-	PermDockerView         = "docker.view"
-	PermDockerManage       = "docker.manage"
-	PermDockerExec         = "docker.exec"
-	PermSftpAccess         = "sftp.access"
-	PermSftpManage         = "sftp.manage"
-	PermNginxView          = "nginx.view"
-	PermNginxManage        = "nginx.manage"
-	PermNginxReload        = "nginx.reload"
-	PermKubeView           = "kube.view"
-	PermKubeManage         = "kube.manage"
-	PermKubeExec           = "kube.exec"
-	PermCronView           = "cron.view"
-	PermCronManage         = "cron.manage"
-	PermCronExec           = "cron.exec"
-	PermCloudStorageAccess = "cloudstorage.access"
-	PermCloudStorageManage = "cloudstorage.manage"
+	PermDockerView          = "docker.view"
+	PermDockerManage        = "docker.manage"
+	PermDockerExec          = "docker.exec"
+	PermSftpAccess          = "sftp.access"
+	PermSftpManage          = "sftp.manage"
+	PermNginxView           = "nginx.view"
+	PermNginxManage         = "nginx.manage"
+	PermNginxReload         = "nginx.reload"
+	PermKubeView            = "kube.view"
+	PermKubeManage          = "kube.manage"
+	PermKubeExec            = "kube.exec"
+	PermCronView            = "cron.view"
+	PermCronManage          = "cron.manage"
+	PermCronExec            = "cron.exec"
+	PermCloudStorageAccess  = "cloudstorage.access"
+	PermCloudStorageManage  = "cloudstorage.manage"
+	PermPgReplicationView   = "pgreplication.view"
+	PermPgReplicationManage = "pgreplication.manage"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -258,6 +260,8 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermCronExec, Label: "Run Cron Jobs On-Demand (high-risk)", Group: "Infrastructure"},
 	{Key: PermCloudStorageAccess, Label: "Browse & Download Files (Cloud Storage)", Group: "Infrastructure"},
 	{Key: PermCloudStorageManage, Label: "Upload, Rename & Delete Files (Cloud Storage)", Group: "Infrastructure"},
+	{Key: PermPgReplicationView, Label: "View Postgres Replication Links & Status", Group: "Infrastructure"},
+	{Key: PermPgReplicationManage, Label: "Create & Manage Postgres Replication (Publications/Subscriptions)", Group: "Infrastructure"},
 }
 
 // PermissionDef describes a single permission for the UI.

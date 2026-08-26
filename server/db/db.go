@@ -1205,6 +1205,24 @@ func migrate() error {
 
 		// Cron scheduler manages each host's *native* crontab live over SSH
 		// (crontab -l / crontab -), so no cron tables are stored here.
+
+		// Postgres logical replication links — bookkeeping only. Postgres
+		// itself has no concept of a Nias connection id (a subscription just
+		// stores a raw libpq connection string), so this table is what lets
+		// the UI show "connection A's publication X -> connection B's
+		// subscription Y" as one row instead of the user having to
+		// correlate host/port strings by hand.
+		`CREATE TABLE IF NOT EXISTS pg_replication_links (
+			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+			source_connection_id INTEGER NOT NULL,
+			target_connection_id INTEGER NOT NULL,
+			publication_name    TEXT NOT NULL,
+			subscription_name   TEXT NOT NULL,
+			created_by          TEXT NOT NULL DEFAULT '',
+			created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_pg_replication_links_target ON pg_replication_links(target_connection_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_pg_replication_links_source ON pg_replication_links(source_connection_id)`,
 	}
 	for _, s := range stmts {
 		convertedSQL := convertSQL(s)

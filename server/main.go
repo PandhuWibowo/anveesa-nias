@@ -865,6 +865,54 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 
+	// ── Postgres logical replication (publications/subscriptions) ──────────
+	pgReplView := requireAny(handlers.PermPgReplicationView, handlers.PermPgReplicationManage)
+	pgReplManage := requireAny(handlers.PermPgReplicationManage)
+	mux.HandleFunc("/api/pg-replication/links", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		pgReplView(handlers.ListReplicationLinks())(w, r)
+	})
+	mux.HandleFunc("/api/pg-replication/publications", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			pgReplView(handlers.ListPublications())(w, r)
+		case http.MethodPost:
+			pgReplManage(handlers.CreatePublication())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/pg-replication/publications/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.NotFound(w, r)
+			return
+		}
+		pgReplManage(handlers.DropPublication())(w, r)
+	})
+	mux.HandleFunc("/api/pg-replication/subscriptions", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			pgReplView(handlers.ListSubscriptions())(w, r)
+		case http.MethodPost:
+			pgReplManage(handlers.CreateSubscription())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/pg-replication/subscriptions/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPatch:
+			pgReplManage(handlers.AlterSubscriptionState())(w, r)
+		case http.MethodDelete:
+			pgReplManage(handlers.DropSubscription())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
 	mux.HandleFunc("/api/docker/hosts", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
