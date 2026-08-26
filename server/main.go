@@ -737,6 +737,8 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermCloudStorageManage)(handlers.CloudStorageUpdateMetadata())(w, r)
 			case sub == "storage" && len(parts) >= 3 && parts[2] == "transfer" && r.Method == http.MethodPost:
 				requireAny(handlers.PermCloudStorageManage)(handlers.TransferToBuckets())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "move" && r.Method == http.MethodPost:
+				requireAny(handlers.PermCloudStorageManage)(handlers.MoveWithinBucket())(w, r)
 
 			default:
 				http.NotFound(w, r)
@@ -1454,6 +1456,16 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			requireAny(handlers.PermCloudStorageManage)(handlers.GetTransferJobStatus())(w, r)
 		case http.MethodDelete:
 			requireAny(handlers.PermCloudStorageManage)(handlers.CancelTransferJob())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/storage/move-jobs/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermCloudStorageManage)(handlers.GetMoveJobStatus())(w, r)
+		case http.MethodDelete:
+			requireAny(handlers.PermCloudStorageManage)(handlers.CancelMoveJob())(w, r)
 		default:
 			http.NotFound(w, r)
 		}

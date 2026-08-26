@@ -63,6 +63,25 @@ interface TransferJobView {
 }
 interface TransferDestChoice { connectionId: number; prefix: string; checked: boolean }
 
+// Move — mirrors server/handlers/cloud_storage_move.go's moveJobView. Same
+// job/poll pattern as Transfer, but scoped to one connection (no fan-out).
+interface MoveItemResult { source_key: string; dest_key: string; status: 'done' | 'failed'; error?: string }
+interface MoveJobView {
+  id: string
+  status: 'running' | 'done' | 'partial' | 'failed' | 'canceled'
+  started_at: string
+  done_at?: string
+  connection_id: number
+  dest_folder: string
+  object_count: number
+  total_items: number
+  completed_items: number
+  failed_items: number
+  error?: string
+  current_item?: string
+  results: MoveItemResult[]
+}
+
 const router = useRouter()
 const toast = useToast()
 const { confirm } = useConfirm()
@@ -635,16 +654,24 @@ async function submitRename() {
   }
 }
 // ── Move to folder (bulk, same connection) ──────────────────────
-// Reuses the existing rename endpoint (CloudStorageRename already supports
-// an arbitrary from/to path, including whole folders, recursively — it's
-// only the single-item Rename modal above that's restricted to staying in
-// the current directory). This just loops it over a selection with a new
-// parent path instead of a new name.
+// Backed by a background job (server/handlers/cloud_storage_move.go), not a
+// synchronous loop — moving a folder with hundreds of objects means
+// hundreds of sequential S3 copy round-trips, which against a real cloud
+// provider can easily exceed a browser/reverse-proxy timeout well before
+// finishing. A job that returns immediately and gets polled (same pattern
+// as Transfer below) survives that; a blocking request per item doesn't —
+// it dies mid-copy, before the originals are ever deleted, so the move
+// silently never happens.
 const showMoveTo = ref(false)
 const moveToItems = ref<CsEntry[]>([])
 const moveToDestFolder = ref('')
 const moveToSubmitting = ref(false)
 const moveToError = ref('')
+
+const showMoveProgress = ref(false)
+const moveJobId = ref<string | null>(null)
+const moveJob = ref<MoveJobView | null>(null)
+const MOVE_JOB_KEY = 'nias:cloudstorage:activeMoveJob'
 
 function openMoveTo(items: CsEntry[]) {
   if (!items.length) return
@@ -664,24 +691,74 @@ async function submitMoveTo() {
   }
   moveToSubmitting.value = true
   moveToError.value = ''
-  let failed = 0
-  for (const entry of moveToItems.value) {
-    const to = destFolder + '/' + entry.name + (entry.isDir ? '/' : '')
-    if (to === entry.key) continue // already there
-    try {
-      await axios.post(`/api/connections/${connId.value}/storage/rename`, { from: entry.key, to })
-    } catch (e: any) {
-      failed++
-      toast.error(`${entry.name}: ${e?.response?.data?.error || 'move failed'}`)
-    }
+  try {
+    const { data } = await axios.post<{ job_id: string }>(`/api/connections/${connId.value}/storage/move`, {
+      items: moveToItems.value.map((e) => e.key),
+      destFolder,
+    })
+    showMoveTo.value = false
+    startMovePolling(data.job_id)
+  } catch (e: any) {
+    moveToError.value = e?.response?.data?.error || 'Failed to start move'
+  } finally {
+    moveToSubmitting.value = false
   }
-  moveToSubmitting.value = false
-  showMoveTo.value = false
-  const moved = moveToItems.value.length - failed
-  if (moved > 0) toast.success(`Moved ${moved} item${moved === 1 ? '' : 's'} to ${destFolder}/`)
-  selected.value = new Set()
-  await loadDir(cwd.value)
 }
+
+function saveActiveMoveJob(id: string) {
+  localStorage.setItem(MOVE_JOB_KEY, id)
+}
+function clearActiveMoveJob() {
+  localStorage.removeItem(MOVE_JOB_KEY)
+}
+function startMovePolling(jobId: string) {
+  moveJobId.value = jobId
+  moveJob.value = null
+  saveActiveMoveJob(jobId)
+  showMoveProgress.value = true
+  pollMoveJob(jobId)
+}
+async function pollMoveJob(jobId: string) {
+  while (moveJobId.value === jobId) {
+    try {
+      const { data } = await axios.get<MoveJobView>(`/api/storage/move-jobs/${jobId}`)
+      if (moveJobId.value !== jobId) return
+      moveJob.value = data
+      if (data.status !== 'running') {
+        clearActiveMoveJob()
+        if (data.status === 'done') toast.success(`Moved ${data.completed_items} item${data.completed_items === 1 ? '' : 's'} to ${data.dest_folder}/`)
+        else if (data.status === 'partial') toast.error(`Move finished — ${data.failed_items} failed`)
+        else if (data.status === 'canceled') toast.error('Move canceled')
+        else toast.error(data.error || 'Move failed')
+        selected.value = new Set()
+        await loadDir(cwd.value)
+        return
+      }
+    } catch {
+      clearActiveMoveJob()
+      return
+    }
+    await new Promise((r) => setTimeout(r, 1500))
+  }
+}
+async function cancelMove() {
+  if (!moveJobId.value) return
+  try {
+    await axios.delete(`/api/storage/move-jobs/${moveJobId.value}`)
+  } catch {
+    // best-effort — the poller will still pick up the final status
+  }
+}
+function closeMoveProgress() {
+  showMoveProgress.value = false
+  moveJobId.value = null
+  moveJob.value = null
+}
+const moveProgressPct = computed(() => {
+  const j = moveJob.value
+  if (!j || !j.total_items) return 0
+  return Math.round(((j.completed_items + j.failed_items) / j.total_items) * 100)
+})
 
 async function del(entry: CsEntry) {
   const ok = await confirm(
@@ -760,6 +837,12 @@ onMounted(() => {
     transferJobId.value = activeJobId
     showTransferProgress.value = true
     pollTransferJob(activeJobId)
+  }
+  const activeMoveJobId = localStorage.getItem(MOVE_JOB_KEY)
+  if (activeMoveJobId) {
+    moveJobId.value = activeMoveJobId
+    showMoveProgress.value = true
+    pollMoveJob(activeMoveJobId)
   }
 })
 </script>
@@ -1138,6 +1221,35 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- Move progress dock -->
+    <div v-if="showMoveProgress && moveJob" class="cs-uploads cs-transfer-dock cs-move-dock">
+      <div class="cs-uploads-head">
+        <span>Move {{ moveJob.status === 'running' ? 'in progress' : moveJob.status }}</span>
+        <button class="cs-up-btn" @click="closeMoveProgress">✕</button>
+      </div>
+      <div class="cs-up-bar">
+        <div
+          class="cs-up-fill"
+          :class="{ 'cs-up-fill--err': moveJob.status === 'failed' || moveJob.status === 'partial' }"
+          :style="{ width: moveProgressPct + '%' }"
+        ></div>
+      </div>
+      <div class="cs-transfer-progress-meta">
+        {{ moveJob.completed_items }}/{{ moveJob.total_items }} done
+        <span v-if="moveJob.failed_items">· {{ moveJob.failed_items }} failed</span>
+        · to {{ moveJob.dest_folder }}/
+      </div>
+      <div v-if="moveJob.status === 'running' && moveJob.current_item" class="cs-transfer-current">{{ moveJob.current_item }}</div>
+      <div class="cs-up-actions">
+        <button v-if="moveJob.status === 'running'" class="cs-up-btn cs-up-btn--danger" @click="cancelMove">Cancel</button>
+      </div>
+      <div v-if="moveJob.status !== 'running' && moveJob.results.some((r) => r.status === 'failed')" class="cs-transfer-errors">
+        <div v-for="(r, i) in moveJob.results.filter((r) => r.status === 'failed').slice(0, 5)" :key="i" class="cs-transfer-error-row">
+          {{ r.source_key }}: {{ r.error }}
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -1258,8 +1370,9 @@ onMounted(() => {
 .cs-transfer-dest-check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
 .cs-transfer-dest-prefix { margin-left: 24px; width: calc(100% - 24px); font-size: 12px; }
 
-/* Transfer progress dock */
+/* Transfer / Move progress docks */
 .cs-transfer-dock { right: 352px; }
+.cs-move-dock { right: 704px; }
 .cs-transfer-dock .cs-uploads-head { display: flex; align-items: center; justify-content: space-between; }
 .cs-transfer-progress-meta { font-size: 11px; color: var(--text-muted); margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
 .cs-transfer-current { font-size: 11px; color: var(--text-secondary); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 4px; }
