@@ -44,6 +44,19 @@ interface BucketObject {
   last_modified: string
 }
 
+interface BackupHistoryEntry {
+  id: number
+  action: 'backup_to_bucket' | 'restore' | 'direct_download' | string
+  target: string
+  details: string
+  username: string
+  conn_id: number | null
+  conn_name: string
+  duration_ms: number
+  error: string
+  executed_at: string
+}
+
 // ── Auth / global ─────────────────────────────────────────────────────
 const toast = useToast()
 const { connections, fetchConnections } = useConnections()
@@ -306,6 +319,7 @@ async function runBucketBackup() {
     clearInterval(progressTimer)
     bucketRunning.value = false
     bucketAbortController.value = null
+    loadActivityHistory()
   }
 }
 
@@ -332,6 +346,51 @@ watch(() => bucketForm.dest_conn_id, () => {
   bucketHistory.value = []
   if (bucketForm.dest_conn_id) loadBucketHistory()
 })
+
+// ── Activity History (all actions on this page) ───────────────────────
+const activityHistory = ref<BackupHistoryEntry[]>([])
+const activityLoading = ref(false)
+const activityFilter = ref<'all' | 'backup_to_bucket' | 'restore' | 'direct_download'>('all')
+
+const filteredActivity = computed(() =>
+  activityFilter.value === 'all'
+    ? activityHistory.value
+    : activityHistory.value.filter(e => e.action === activityFilter.value)
+)
+
+function activityStatus(e: BackupHistoryEntry): 'success' | 'canceled' | 'failed' {
+  if (!e.error) return 'success'
+  if (/^cancel/i.test(e.error)) return 'canceled'
+  return 'failed'
+}
+
+function activityActionLabel(action: string): string {
+  const map: Record<string, string> = {
+    backup_to_bucket: 'Backup to bucket',
+    restore: 'Restore',
+    direct_download: 'Download',
+  }
+  return map[action] ?? action
+}
+
+function formatDurationMs(ms: number): string {
+  if (!ms || ms < 1000) return `${ms || 0}ms`
+  const s = ms / 1000
+  if (s < 60) return `${s.toFixed(1)}s`
+  return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`
+}
+
+async function loadActivityHistory() {
+  activityLoading.value = true
+  try {
+    const { data } = await axios.get<BackupHistoryEntry[]>('/api/backup/history', { params: { limit: 100 } })
+    activityHistory.value = data ?? []
+  } catch {
+    activityHistory.value = []
+  } finally {
+    activityLoading.value = false
+  }
+}
 
 function formatBytes(b: number): string {
   if (b < 1024) return `${b} B`
@@ -579,6 +638,7 @@ async function downloadFromBucket(key: string) {
     setTimeout(() => {
       dlBucketDownloading.value = new Set([...dlBucketDownloading.value].filter(k => k !== key))
     }, 1500)
+    loadActivityHistory()
   }
 }
 
@@ -825,6 +885,7 @@ async function pollRestoreJob(jobId: string) {
     restoreLoading.value = false
     restoreReconnecting.value = false
     activeRestoreJobId = null
+    loadActivityHistory()
   }
 }
 
@@ -870,6 +931,7 @@ watch(filteredRequests, async (items) => {
 onMounted(async () => {
   await fetchConnections()
   await fetchRequests()
+  loadActivityHistory()
 
   const saved = loadActiveJob()
   if (saved) {
@@ -1754,6 +1816,63 @@ onMounted(async () => {
           </div>
         </div>
 
+        <!-- ══ ACTIVITY HISTORY (all actions on this page) ═══════════════ -->
+        <div class="page-card bv-card">
+          <div class="page-card__head">
+            <div>
+              <div class="page-card__title">Activity History</div>
+              <div class="page-card__sub">Backups, restores, and downloads run on this page, newest first.</div>
+            </div>
+            <div class="bv-activity-head-actions">
+              <select class="base-input bv-filter" v-model="activityFilter">
+                <option value="all">All actions</option>
+                <option value="backup_to_bucket">Backups</option>
+                <option value="restore">Restores</option>
+                <option value="direct_download">Downloads</option>
+              </select>
+              <button class="base-btn base-btn--secondary base-btn--sm" :disabled="activityLoading" @click="loadActivityHistory">
+                <svg v-if="activityLoading" class="bv-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/><path d="M21 3v6h-6"/></svg>
+                Refresh
+              </button>
+            </div>
+          </div>
+          <div class="page-card__body">
+            <div v-if="activityLoading && !activityHistory.length" class="bv-empty">
+              <svg class="spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+              Loading…
+            </div>
+            <div v-else-if="!filteredActivity.length" class="bv-empty">
+              No activity recorded yet — actions taken on this page will show up here.
+            </div>
+            <div v-else class="bv-activity-list">
+              <div v-for="e in filteredActivity" :key="e.id" class="bv-activity-item">
+                <div class="bv-activity-item__icon" :data-status="activityStatus(e)">
+                  <svg v-if="e.action === 'backup_to_bucket'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  <svg v-else-if="e.action === 'restore'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.14"/></svg>
+                  <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                </div>
+                <div class="bv-activity-item__body">
+                  <div class="bv-activity-item__top">
+                    <span class="bv-activity-item__action">{{ activityActionLabel(e.action) }}</span>
+                    <span class="bv-status" :data-status="activityStatus(e)">{{ activityStatus(e) }}</span>
+                    <span v-if="e.conn_name" class="bv-activity-item__conn">{{ e.conn_name }}</span>
+                  </div>
+                  <div class="bv-activity-item__target" :title="e.target">{{ e.target }}</div>
+                  <div class="bv-activity-item__meta">
+                    <span>{{ e.username || 'unknown' }}</span>
+                    <span>·</span>
+                    <span>{{ formatDate(e.executed_at) }}</span>
+                    <span>·</span>
+                    <span>{{ formatDurationMs(e.duration_ms) }}</span>
+                  </div>
+                  <div v-if="activityStatus(e) === 'failed' && e.error" class="bv-activity-item__error">{{ e.error }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
   </div>
@@ -2594,13 +2713,101 @@ onMounted(async () => {
 }
 
 .bv-status[data-status="approved"],
-.bv-status[data-status="done"] { background: rgba(34, 197, 94, 0.15); color: #16a34a; }
+.bv-status[data-status="done"],
+.bv-status[data-status="success"] { background: rgba(34, 197, 94, 0.15); color: #16a34a; }
 
 .bv-status[data-status="pending_review"],
 .bv-status[data-status="executing"] { background: rgba(245, 158, 11, 0.16); color: #d97706; }
 
 .bv-status[data-status="rejected"],
 .bv-status[data-status="failed"] { background: rgba(239, 68, 68, 0.14); color: #dc2626; }
+
+.bv-status[data-status="canceled"] { background: var(--bg-surface); color: var(--text-muted); }
+
+/* ── Activity History ── */
+.bv-activity-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bv-activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bv-activity-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 8px;
+  transition: background 0.1s;
+}
+
+.bv-activity-item:hover { background: var(--bg-body); }
+
+.bv-activity-item__icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--bg-body);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.bv-activity-item__icon[data-status="success"] { color: #16a34a; }
+.bv-activity-item__icon[data-status="failed"] { color: #dc2626; }
+.bv-activity-item__icon[data-status="canceled"] { color: var(--text-muted); }
+
+.bv-activity-item__body { flex: 1; min-width: 0; }
+
+.bv-activity-item__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.bv-activity-item__action {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.bv-activity-item__conn {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.bv-activity-item__target {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  word-break: break-all;
+  margin-top: 2px;
+}
+
+.bv-activity-item__meta {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+.bv-activity-item__error {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #dc2626;
+  word-break: break-word;
+}
 
 .bv-empty {
   display: flex;

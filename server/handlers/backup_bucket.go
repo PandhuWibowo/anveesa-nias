@@ -194,6 +194,12 @@ func BackupToBucket() http.HandlerFunc {
 			return
 		}
 
+		username := r.Header.Get("X-Username")
+		if username == "" {
+			username = "anonymous"
+		}
+		srcConnName := connectionNameByID(req.SourceConnID)
+
 		// Build object key
 		ext := ".sql"
 		if req.Options.Compress {
@@ -235,7 +241,12 @@ func BackupToBucket() http.HandlerFunc {
 				var gz *gzip.Writer
 				var pipeOut io.Writer = pw
 				if req.Options.Compress {
-					gz, _ = gzip.NewWriterLevel(pw, gzip.BestCompression)
+					// BestCompression (9) spends a lot of CPU for only a
+					// marginal size gain over DefaultCompression (6) — on an
+					// 8GB+ dump that difference is the dominant cost of the
+					// whole backup, since compression is single-threaded and
+					// serialized with dump generation in this same goroutine.
+					gz, _ = gzip.NewWriterLevel(pw, gzip.DefaultCompression)
 					pipeOut = gz
 				}
 				cw := &countingWriter{w: pipeOut}
@@ -260,11 +271,11 @@ func BackupToBucket() http.HandlerFunc {
 
 			now := time.Now()
 			job.mu.Lock()
-			defer job.mu.Unlock()
 			job.DoneAt = &now
 			if uploadErr != nil || jobCtx.Err() != nil {
 				if jobCtx.Err() != nil && uploadErr == nil {
 					job.Status = BackupJobCanceled
+					job.Error = "canceled"
 				} else {
 					job.Status = BackupJobFailed
 					if uploadErr != nil {
@@ -273,12 +284,18 @@ func BackupToBucket() http.HandlerFunc {
 						job.Error = jobCtx.Err().Error()
 					}
 				}
-				return
+			} else {
+				job.Status = BackupJobDone
+				job.ObjectKey = objectName
+				job.Bucket = dest.Bucket
+				job.SizeBytes = atomic.LoadInt64(&cr.n)
 			}
-			job.Status = BackupJobDone
-			job.ObjectKey = objectName
-			job.Bucket = dest.Bucket
-			job.SizeBytes = atomic.LoadInt64(&cr.n)
+			finalStatus, finalErr, sizeBytes := job.Status, job.Error, job.SizeBytes
+			job.mu.Unlock()
+
+			details := fmt.Sprintf("status=%s db=%s dest=%s/%s compressed=%v size=%s",
+				finalStatus, req.Database, dest.Bucket, objectName, req.Options.Compress, formatByteCount(sizeBytes))
+			writeBackupAudit("backup_to_bucket", objectName, details, username, req.SourceConnID, srcConnName, now.Sub(job.StartedAt).Milliseconds(), finalErr)
 		}()
 
 		w.WriteHeader(http.StatusAccepted)
@@ -324,6 +341,87 @@ func CancelBackupJob() http.HandlerFunc {
 		}
 		job.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// ── Action history (audit) ───────────────────────────────────────────────
+//
+// Every action a user can take on the Backup & Restore page — running a
+// bucket backup, restoring from a file, or downloading an existing backup —
+// gets a row in the shared audit_log table under event_type "backup". This
+// reuses the same table/writer the rest of the app already logs to (see
+// handlers/audit.go) rather than adding a page-specific table, but is
+// deliberately exposed through its own endpoint/permission gate
+// (PermBackupsManage) instead of the admin-only /api/admin/audit — anyone
+// who can run a backup should be able to see what backups have run.
+
+// connectionNameByID is a best-effort lookup used purely for audit-log
+// readability — a missing/renamed connection just shows up as an empty
+// conn_name rather than failing the action being logged.
+func connectionNameByID(id int64) string {
+	if id == 0 {
+		return ""
+	}
+	var name string
+	appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT name FROM connections WHERE id=?`), id).Scan(&name)
+	return name
+}
+
+// writeBackupAudit records one backup/restore/download action. errMsg == ""
+// means success; a "canceled" errMsg means the user canceled it; anything
+// else is a failure — the frontend derives its status pill from this instead
+// of a separate status column.
+func writeBackupAudit(action, target, details, username string, connID int64, connName string, durationMs int64, errMsg string) {
+	var connIDPtr *int64
+	if connID > 0 {
+		connIDPtr = &connID
+	}
+	writeAuditEvent("backup", action, target, details, username, connIDPtr, connName, "", durationMs, 0, errMsg)
+}
+
+type BackupHistoryEntry struct {
+	ID         int64  `json:"id"`
+	Action     string `json:"action"`
+	Target     string `json:"target"`
+	Details    string `json:"details"`
+	Username   string `json:"username"`
+	ConnID     *int64 `json:"conn_id"`
+	ConnName   string `json:"conn_name"`
+	DurationMs int64  `json:"duration_ms"`
+	Error      string `json:"error"`
+	ExecutedAt string `json:"executed_at"`
+}
+
+// ListBackupHistory returns recent backup/restore/download actions taken on
+// the Backup & Restore page, newest first.
+// GET /api/backup/history?limit=N
+func ListBackupHistory() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		limit := 100
+		if l := r.URL.Query().Get("limit"); l != "" {
+			if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 500 {
+				limit = n
+			}
+		}
+		rows, err := appdb.DB.Query(appdb.ConvertQuery(`
+			SELECT id, action, COALESCE(target,''), COALESCE(details,''), username, conn_id, COALESCE(conn_name,''), duration_ms, COALESCE(error,''), executed_at
+			FROM audit_log WHERE event_type = 'backup' ORDER BY id DESC LIMIT ?`), limit)
+		if err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		entries := []BackupHistoryEntry{}
+		for rows.Next() {
+			var e BackupHistoryEntry
+			if err := rows.Scan(&e.ID, &e.Action, &e.Target, &e.Details, &e.Username, &e.ConnID, &e.ConnName, &e.DurationMs, &e.Error, &e.ExecutedAt); err != nil {
+				continue
+			}
+			entries = append(entries, e)
+		}
+		json.NewEncoder(w).Encode(entries)
 	}
 }
 
@@ -453,6 +551,11 @@ func uploadToBucket(ctx interface {
 func PresignDownload() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		start := time.Now()
+		username := r.Header.Get("X-Username")
+		if username == "" {
+			username = "anonymous"
+		}
 		destIDStr := r.URL.Query().Get("dest_conn_id")
 		destID, err := strconv.ParseInt(destIDStr, 10, 64)
 		if err != nil || destID == 0 {
@@ -472,10 +575,17 @@ func PresignDownload() http.HandlerFunc {
 		}
 
 		signed, err := presignedDownloadURL(dest, objectKey, 60*time.Minute)
+		// Logged here rather than in DownloadFromBucket: the browser downloads
+		// straight from the bucket using this URL and never routes through our
+		// server again, so this request is the only reliable server-side signal
+		// that a download was requested for objectKey — DownloadFromBucket only
+		// fires on the (uncommon) proxied fallback path.
 		if err != nil {
+			writeBackupAudit("direct_download", objectKey, "bucket="+dest.Bucket, username, destID, connectionNameByID(destID), time.Since(start).Milliseconds(), err.Error())
 			http.Error(w, `{"error":"failed to sign URL: `+err.Error()+`"}`, http.StatusInternalServerError)
 			return
 		}
+		writeBackupAudit("direct_download", objectKey, "bucket="+dest.Bucket, username, destID, connectionNameByID(destID), time.Since(start).Milliseconds(), "")
 
 		json.NewEncoder(w).Encode(map[string]string{"url": signed})
 	}
@@ -486,6 +596,11 @@ func PresignDownload() http.HandlerFunc {
 // GET /api/backup/bucket-download?dest_conn_id=N&object_key=path/to/file.sql.gz
 func DownloadFromBucket() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		username := r.Header.Get("X-Username")
+		if username == "" {
+			username = "anonymous"
+		}
 		destIDStr := r.URL.Query().Get("dest_conn_id")
 		destID, err := strconv.ParseInt(destIDStr, 10, 64)
 		if err != nil || destID == 0 {
@@ -506,6 +621,7 @@ func DownloadFromBucket() http.HandlerFunc {
 
 		resp, err := openBucketObjectStream(r.Context(), dest, objectKey, 0)
 		if err != nil {
+			writeBackupAudit("direct_download", objectKey, "bucket="+dest.Bucket+" (proxied)", username, destID, connectionNameByID(destID), time.Since(start).Milliseconds(), err.Error())
 			http.Error(w, `{"error":"download failed: `+err.Error()+`"}`, http.StatusBadGateway)
 			return
 		}
@@ -518,7 +634,12 @@ func DownloadFromBucket() http.HandlerFunc {
 		if cl := resp.Header.Get("Content-Length"); cl != "" {
 			w.Header().Set("Content-Length", cl)
 		}
-		io.Copy(w, resp.Body)
+		n, copyErr := io.Copy(w, resp.Body)
+		errMsg := ""
+		if copyErr != nil {
+			errMsg = copyErr.Error()
+		}
+		writeBackupAudit("direct_download", objectKey, fmt.Sprintf("bucket=%s (proxied) size=%s", dest.Bucket, formatByteCount(n)), username, destID, connectionNameByID(destID), time.Since(start).Milliseconds(), errMsg)
 	}
 }
 

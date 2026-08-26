@@ -37,6 +37,32 @@ interface UploadJob {
   controller: AbortController | null
 }
 
+// Transfer — mirrors server/handlers/cloud_storage_transfer.go's transferJobView
+interface TransferDestSummary { connection_id: number; conn_name: string; prefix: string }
+interface TransferItemResult { source_key: string; dest_connection_id: number; dest_key: string; status: 'done' | 'failed' | 'skipped'; bytes?: number; error?: string }
+interface TransferJobView {
+  id: string
+  status: 'running' | 'done' | 'partial' | 'failed' | 'canceled'
+  started_at: string
+  done_at?: string
+  mode: 'copy' | 'move'
+  conflict_policy: 'overwrite' | 'skip'
+  source_conn_name: string
+  destinations: TransferDestSummary[]
+  object_count: number
+  total_items: number
+  completed_items: number
+  failed_items: number
+  skipped_items: number
+  total_bytes?: number
+  transferred_bytes: number
+  moved_source_objects?: number
+  error?: string
+  current_item?: string
+  results: TransferItemResult[]
+}
+interface TransferDestChoice { connectionId: number; prefix: string; checked: boolean }
+
 const router = useRouter()
 const toast = useToast()
 const { confirm } = useConfirm()
@@ -103,6 +129,23 @@ const previewContent = ref('')
 const previewCsvRows = ref<string[][]>([])
 const previewTruncated = ref(false)
 const previewBinary = ref(false)
+
+// Transfer — copy/move selected files/folders to one or more other bucket
+// connections (possibly a different cloud provider entirely), run as a
+// background job polled the same way BackupView.vue polls restore jobs.
+const showTransfer = ref(false)
+const transferItems = ref<CsEntry[]>([])
+const transferMode = ref<'copy' | 'move'>('copy')
+const transferConflictPolicy = ref<'overwrite' | 'skip'>('overwrite')
+const transferDestChoices = ref<TransferDestChoice[]>([])
+const transferDestCount = computed(() => transferDestChoices.value.filter((d) => d.checked).length)
+const transferSubmitting = ref(false)
+const transferError = ref('')
+
+const showTransferProgress = ref(false)
+const transferJobId = ref<string | null>(null)
+const transferJob = ref<TransferJobView | null>(null)
+const TRANSFER_JOB_KEY = 'nias:cloudstorage:activeTransferJob'
 
 // Metadata editor — S3 has no in-place metadata edit; the backend implements
 // "save" as a copy-to-self with x-amz-metadata-directive: REPLACE.
@@ -362,6 +405,105 @@ function downloadSelected() {
   downloadZip(filteredEntries.value.filter((e) => selected.value.has(e.name)))
 }
 
+// ── Transfer ────────────────────────────────────────────────────
+function connectionLabel(id: number): string {
+  const c = connections.value.find((x) => x.id === id)
+  return c ? `${c.name} (${c.database || c.driver})` : `#${id}`
+}
+function openTransfer(items: CsEntry[]) {
+  if (!items.length) return
+  transferItems.value = items
+  transferMode.value = 'copy'
+  transferConflictPolicy.value = 'overwrite'
+  transferError.value = ''
+  transferDestChoices.value = bucketConnections.value
+    .filter((c) => c.id !== connId.value)
+    .map((c) => ({ connectionId: c.id, prefix: cwd.value.replace(/\/$/, ''), checked: false }))
+  showTransfer.value = true
+}
+function transferSelected() {
+  openTransfer(filteredEntries.value.filter((e) => selected.value.has(e.name)))
+}
+async function submitTransfer() {
+  const destinations = transferDestChoices.value
+    .filter((d) => d.checked)
+    .map((d) => ({ connectionId: d.connectionId, prefix: d.prefix.trim() }))
+  if (!destinations.length) {
+    transferError.value = 'Pick at least one destination'
+    return
+  }
+  transferSubmitting.value = true
+  transferError.value = ''
+  try {
+    const { data } = await axios.post<{ job_id: string }>(`/api/connections/${connId.value}/storage/transfer`, {
+      items: transferItems.value.map((e) => e.key),
+      destinations,
+      mode: transferMode.value,
+      conflictPolicy: transferConflictPolicy.value,
+    })
+    showTransfer.value = false
+    startTransferPolling(data.job_id)
+  } catch (e: any) {
+    transferError.value = e?.response?.data?.error || 'Failed to start transfer'
+  } finally {
+    transferSubmitting.value = false
+  }
+}
+
+function saveActiveTransferJob(id: string) {
+  localStorage.setItem(TRANSFER_JOB_KEY, id)
+}
+function clearActiveTransferJob() {
+  localStorage.removeItem(TRANSFER_JOB_KEY)
+}
+function startTransferPolling(jobId: string) {
+  transferJobId.value = jobId
+  transferJob.value = null
+  saveActiveTransferJob(jobId)
+  showTransferProgress.value = true
+  pollTransferJob(jobId)
+}
+async function pollTransferJob(jobId: string) {
+  while (transferJobId.value === jobId) {
+    try {
+      const { data } = await axios.get<TransferJobView>(`/api/storage/transfer-jobs/${jobId}`)
+      if (transferJobId.value !== jobId) return
+      transferJob.value = data
+      if (data.status !== 'running') {
+        clearActiveTransferJob()
+        if (data.status === 'done') toast.success('Transfer complete')
+        else if (data.status === 'partial') toast.error(`Transfer finished — ${data.failed_items} failed, ${data.skipped_items} skipped`)
+        else if (data.status === 'canceled') toast.error('Transfer canceled')
+        else toast.error(data.error || 'Transfer failed')
+        await loadDir(cwd.value)
+        return
+      }
+    } catch {
+      clearActiveTransferJob()
+      return
+    }
+    await new Promise((r) => setTimeout(r, 1500))
+  }
+}
+async function cancelTransfer() {
+  if (!transferJobId.value) return
+  try {
+    await axios.delete(`/api/storage/transfer-jobs/${transferJobId.value}`)
+  } catch {
+    // best-effort — the poller will still pick up the final status
+  }
+}
+function closeTransferProgress() {
+  showTransferProgress.value = false
+  transferJobId.value = null
+  transferJob.value = null
+}
+const transferProgressPct = computed(() => {
+  const j = transferJob.value
+  if (!j || !j.total_items) return 0
+  return Math.round(((j.completed_items + j.failed_items + j.skipped_items) / j.total_items) * 100)
+})
+
 // ── Upload (streamed, with progress + speed; pause/resume/cancel) ──
 async function uploadFiles(files: FileList | File[]) {
   for (const file of Array.from(files)) {
@@ -530,6 +672,7 @@ function rowActions(e: CsEntry): RowAction[] {
     actions.push({ key: 'info', label: 'Metadata…', icon: 'info', onClick: () => openMetadata(e) })
   }
   if (canManage.value) {
+    actions.push({ key: 'transfer', label: 'Transfer…', icon: 'move', onClick: () => openTransfer([e]) })
     actions.push({ key: 'rename', label: 'Rename', icon: 'edit', onClick: () => rename(e) })
     actions.push({ key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => del(e) })
   }
@@ -560,7 +703,15 @@ function fileIcon(e: CsEntry): string {
   return '📄'
 }
 
-onMounted(loadConnections)
+onMounted(() => {
+  loadConnections()
+  const activeJobId = localStorage.getItem(TRANSFER_JOB_KEY)
+  if (activeJobId) {
+    transferJobId.value = activeJobId
+    showTransferProgress.value = true
+    pollTransferJob(activeJobId)
+  }
+})
 </script>
 
 <template>
@@ -631,6 +782,7 @@ onMounted(loadConnections)
           <div v-if="selected.size > 0" class="cs-bulk-bar">
             <span>{{ selected.size }} selected</span>
             <button class="base-btn base-btn--sm base-btn--primary" @click="downloadSelected">↓ Download ZIP</button>
+            <button v-if="canManage" class="base-btn base-btn--sm" @click="transferSelected">⇄ Transfer</button>
             <button class="base-btn base-btn--sm" @click="selected = new Set()">Clear</button>
           </div>
 
@@ -711,6 +863,57 @@ onMounted(loadConnections)
         <div class="cs-modal-actions">
           <button class="base-btn base-btn--sm" @click="showRename = false">Cancel</button>
           <button class="base-btn base-btn--primary base-btn--sm" :disabled="!renameName.trim()" @click="submitRename">Rename</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Transfer modal -->
+    <div v-if="showTransfer" class="cs-modal-backdrop" @click.self="showTransfer = false">
+      <div class="cs-modal cs-transfer-modal page-card">
+        <div class="cs-modal-title">Transfer {{ transferItems.length }} item{{ transferItems.length === 1 ? '' : 's' }}</div>
+
+        <div class="cs-transfer-source">
+          <div v-for="e in transferItems.slice(0, 8)" :key="e.key" class="cs-transfer-source-item">
+            <span class="cs-icon">{{ fileIcon(e) }}</span>{{ e.key }}
+          </div>
+          <div v-if="transferItems.length > 8" class="cs-transfer-more">+{{ transferItems.length - 8 }} more</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Mode</label>
+          <div class="cs-transfer-radios">
+            <label><input type="radio" value="copy" v-model="transferMode" /> Copy (keep source)</label>
+            <label><input type="radio" value="move" v-model="transferMode" /> Move (delete source once every destination succeeds)</label>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">If the destination already has the file</label>
+          <div class="cs-transfer-radios">
+            <label><input type="radio" value="overwrite" v-model="transferConflictPolicy" /> Overwrite</label>
+            <label><input type="radio" value="skip" v-model="transferConflictPolicy" /> Skip</label>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Destinations</label>
+          <div v-if="!transferDestChoices.length" class="cs-msg">No other bucket connections available — add one under Manage connections.</div>
+          <div v-for="d in transferDestChoices" :key="d.connectionId" class="cs-transfer-dest">
+            <label class="cs-transfer-dest-check">
+              <input type="checkbox" v-model="d.checked" />
+              <span>{{ connectionLabel(d.connectionId) }}</span>
+            </label>
+            <input v-if="d.checked" v-model="d.prefix" class="base-input cs-transfer-dest-prefix" placeholder="destination folder (optional)" />
+          </div>
+        </div>
+
+        <div v-if="transferError" class="cs-msg cs-err">{{ transferError }}</div>
+
+        <div class="cs-modal-actions">
+          <button class="base-btn base-btn--sm" @click="showTransfer = false">Cancel</button>
+          <button class="base-btn base-btn--primary base-btn--sm" :disabled="transferSubmitting || !transferDestCount" @click="submitTransfer">
+            {{ transferSubmitting ? 'Starting…' : 'Start Transfer' }}
+          </button>
         </div>
       </div>
     </div>
@@ -827,6 +1030,36 @@ onMounted(loadConnections)
         </div>
       </div>
     </div>
+
+    <!-- Transfer progress dock -->
+    <div v-if="showTransferProgress && transferJob" class="cs-uploads cs-transfer-dock">
+      <div class="cs-uploads-head">
+        <span>Transfer {{ transferJob.status === 'running' ? 'in progress' : transferJob.status }}</span>
+        <button class="cs-up-btn" @click="closeTransferProgress">✕</button>
+      </div>
+      <div class="cs-up-bar">
+        <div
+          class="cs-up-fill"
+          :class="{ 'cs-up-fill--err': transferJob.status === 'failed' || transferJob.status === 'partial' }"
+          :style="{ width: transferProgressPct + '%' }"
+        ></div>
+      </div>
+      <div class="cs-transfer-progress-meta">
+        {{ transferJob.completed_items }}/{{ transferJob.total_items }} done
+        <span v-if="transferJob.failed_items">· {{ transferJob.failed_items }} failed</span>
+        <span v-if="transferJob.skipped_items">· {{ transferJob.skipped_items }} skipped</span>
+        · {{ formatBytes(transferJob.transferred_bytes) }}
+      </div>
+      <div v-if="transferJob.status === 'running' && transferJob.current_item" class="cs-transfer-current">{{ transferJob.current_item }}</div>
+      <div class="cs-up-actions">
+        <button v-if="transferJob.status === 'running'" class="cs-up-btn cs-up-btn--danger" @click="cancelTransfer">Cancel</button>
+      </div>
+      <div v-if="transferJob.status !== 'running' && transferJob.results.some((r) => r.status === 'failed')" class="cs-transfer-errors">
+        <div v-for="(r, i) in transferJob.results.filter((r) => r.status === 'failed').slice(0, 5)" :key="i" class="cs-transfer-error-row">
+          {{ r.source_key }}: {{ r.error }}
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -934,4 +1167,24 @@ onMounted(loadConnections)
 .cs-up-btn { background: none; border: none; padding: 0; font-size: 11px; color: var(--brand); cursor: pointer; }
 .cs-up-btn:hover { text-decoration: underline; }
 .cs-up-btn--danger { color: var(--danger); }
+
+/* Transfer modal */
+.cs-transfer-modal { width: 480px; max-width: 92vw; }
+.cs-transfer-source { max-height: 120px; overflow-y: auto; background: var(--bg-hover); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px 10px; margin-bottom: 14px; font-size: 12px; font-family: var(--mono); }
+.cs-transfer-source-item { display: flex; align-items: center; gap: 6px; word-break: break-all; padding: 2px 0; }
+.cs-transfer-more { color: var(--text-muted); padding: 2px 0; }
+.cs-transfer-radios { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.cs-transfer-radios label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.cs-transfer-dest { display: flex; flex-direction: column; gap: 6px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.cs-transfer-dest:last-child { border-bottom: none; }
+.cs-transfer-dest-check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.cs-transfer-dest-prefix { margin-left: 24px; width: calc(100% - 24px); font-size: 12px; }
+
+/* Transfer progress dock */
+.cs-transfer-dock { right: 352px; }
+.cs-transfer-dock .cs-uploads-head { display: flex; align-items: center; justify-content: space-between; }
+.cs-transfer-progress-meta { font-size: 11px; color: var(--text-muted); margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
+.cs-transfer-current { font-size: 11px; color: var(--text-secondary); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 4px; }
+.cs-transfer-errors { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; max-height: 100px; overflow-y: auto; }
+.cs-transfer-error-row { font-size: 11px; color: var(--danger); word-break: break-all; padding: 2px 0; }
 </style>

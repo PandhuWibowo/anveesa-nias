@@ -735,6 +735,8 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermCloudStorageAccess, handlers.PermCloudStorageManage)(handlers.CloudStorageGetMetadata())(w, r)
 			case sub == "storage" && len(parts) >= 3 && parts[2] == "metadata" && r.Method == http.MethodPost:
 				requireAny(handlers.PermCloudStorageManage)(handlers.CloudStorageUpdateMetadata())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "transfer" && r.Method == http.MethodPost:
+				requireAny(handlers.PermCloudStorageManage)(handlers.TransferToBuckets())(w, r)
 
 			default:
 				http.NotFound(w, r)
@@ -1398,6 +1400,16 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			http.NotFound(w, r)
 		}
 	})
+	mux.HandleFunc("/api/storage/transfer-jobs/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermCloudStorageManage)(handlers.GetTransferJobStatus())(w, r)
+		case http.MethodDelete:
+			requireAny(handlers.PermCloudStorageManage)(handlers.CancelTransferJob())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
 	mux.HandleFunc("/api/restore/jobs/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -1414,6 +1426,13 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			return
 		}
 		requireAny(handlers.PermBackupsManage)(handlers.ListBucketBackups())(w, r)
+	})
+	mux.HandleFunc("/api/backup/history", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		requireAny(handlers.PermBackupsManage)(handlers.ListBackupHistory())(w, r)
 	})
 	mux.HandleFunc("/api/backup/presign", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

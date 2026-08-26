@@ -424,6 +424,18 @@ func RestoreBackup() http.HandlerFunc {
 			return
 		}
 
+		username := r.Header.Get("X-Username")
+		if username == "" {
+			username = "anonymous"
+		}
+		connName := connectionNameByID(connID)
+		restoreTarget := "uploaded SQL file"
+		restoreSourceDesc := "uploaded SQL file"
+		if fromBucket {
+			restoreTarget = req.ObjectKey
+			restoreSourceDesc = "bucket:" + req.ObjectKey
+		}
+
 		jobCtx, jobCancel := context.WithCancel(context.Background())
 		job := &RestoreJob{
 			ID:        newJobID(),
@@ -595,18 +607,24 @@ func RestoreBackup() http.HandlerFunc {
 
 			now := time.Now()
 			job.mu.Lock()
-			defer job.mu.Unlock()
 			job.DoneAt = &now
 			if stepErr != nil {
 				if jobCtx.Err() != nil {
 					job.Status = RestoreJobCanceled
+					job.Error = "canceled"
 				} else {
 					job.Status = RestoreJobFailed
 					job.Error = stepErr.Error()
 				}
-				return
+			} else {
+				job.Status = RestoreJobDone
 			}
-			job.Status = RestoreJobDone
+			finalStatus, finalErr := job.Status, job.Error
+			execN, skipN, failN := atomic.LoadInt64(&job.Executed), atomic.LoadInt64(&job.Skipped), atomic.LoadInt64(&job.FailedRows)
+			job.mu.Unlock()
+
+			details := fmt.Sprintf("status=%s source=%s executed=%d skipped=%d failed_rows=%d", finalStatus, restoreSourceDesc, execN, skipN, failN)
+			writeBackupAudit("restore", restoreTarget, details, username, connID, connName, now.Sub(job.StartedAt).Milliseconds(), finalErr)
 		}()
 
 		w.WriteHeader(http.StatusAccepted)
@@ -1036,6 +1054,20 @@ func mssqlTableDDL(ctx context.Context, sb *strings.Builder, db *sql.DB, schema,
 
 // ── Data ──────────────────────────────────────────────────────────────────────
 
+// dataBatchMaxRows/dataBatchMaxBytes bound how many rows go into a single
+// multi-row "INSERT ... VALUES (t1),(t2),...;" statement. These deliberately
+// mirror execRestoreStream's own maxBatchRows/maxBatchBytes: a dump written
+// with these caps arrives at restore time already batch-sized, so the
+// restore side's on-the-fly batching (insertBatchParts/flushBatch) is a
+// cheap pass-through instead of having to undo a one-row-per-statement dump
+// itself. Emitting the batches here — rather than one INSERT per row — is
+// also what actually makes generating and gzip-compressing a multi-GB dump
+// fast: formatting/writing N/200 statements instead of N statements cuts
+// both the Go-side allocation churn and the redundant "INSERT INTO ... VALUES"
+// boilerplate gzip would otherwise have to re-compress on every row.
+const dataBatchMaxRows = 200
+const dataBatchMaxBytes = 4 * 1024 * 1024
+
 func writeData(ctx context.Context, w io.Writer, db *sql.DB, driver, schema string, tables []string, opts BackupOptions) error {
 	for _, tbl := range tables {
 		if ctx.Err() != nil {
@@ -1064,6 +1096,28 @@ func writeData(ctx context.Context, w io.Writer, db *sql.DB, driver, schema stri
 			colQuoted[i] = quoteIdentForDriver(driver, "", c)
 		}
 
+		var insertPrefix string
+		if opts.ColumnInsert {
+			insertPrefix = fmt.Sprintf("INSERT INTO %s (%s) VALUES ", tblQ, strings.Join(colQuoted, ", "))
+		} else {
+			insertPrefix = fmt.Sprintf("INSERT INTO %s VALUES ", tblQ)
+		}
+
+		batch := make([]string, 0, dataBatchMaxRows)
+		batchBytes := len(insertPrefix)
+		flushBatch := func() {
+			if len(batch) == 0 {
+				return
+			}
+			var sb strings.Builder
+			sb.WriteString(insertPrefix)
+			sb.WriteString(strings.Join(batch, ","))
+			sb.WriteString(";")
+			fmt.Fprintln(w, sb.String())
+			batch = batch[:0]
+			batchBytes = len(insertPrefix)
+		}
+
 		rowCount := 0
 		for rows.Next() {
 			vals := make([]interface{}, len(cols))
@@ -1078,21 +1132,16 @@ func writeData(ctx context.Context, w io.Writer, db *sql.DB, driver, schema stri
 			for i, v := range vals {
 				sqlVals[i] = sqlLiteral(v)
 			}
+			tuple := "(" + strings.Join(sqlVals, ", ") + ")"
 
-			var stmt string
-			if opts.ColumnInsert {
-				stmt = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s);",
-					tblQ,
-					strings.Join(colQuoted, ", "),
-					strings.Join(sqlVals, ", "))
-			} else {
-				stmt = fmt.Sprintf("INSERT INTO %s VALUES (%s);",
-					tblQ,
-					strings.Join(sqlVals, ", "))
+			if len(batch) >= dataBatchMaxRows || batchBytes+len(tuple) > dataBatchMaxBytes {
+				flushBatch()
 			}
-			fmt.Fprintln(w, stmt)
+			batch = append(batch, tuple)
+			batchBytes += len(tuple)
 			rowCount++
 		}
+		flushBatch()
 		rows.Close()
 
 		if opts.UseTransaction {
