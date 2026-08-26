@@ -634,6 +634,55 @@ async function submitRename() {
     toast.error(e?.response?.data?.error || 'Rename failed')
   }
 }
+// ── Move to folder (bulk, same connection) ──────────────────────
+// Reuses the existing rename endpoint (CloudStorageRename already supports
+// an arbitrary from/to path, including whole folders, recursively — it's
+// only the single-item Rename modal above that's restricted to staying in
+// the current directory). This just loops it over a selection with a new
+// parent path instead of a new name.
+const showMoveTo = ref(false)
+const moveToItems = ref<CsEntry[]>([])
+const moveToDestFolder = ref('')
+const moveToSubmitting = ref(false)
+const moveToError = ref('')
+
+function openMoveTo(items: CsEntry[]) {
+  if (!items.length) return
+  moveToItems.value = items
+  moveToDestFolder.value = parentPrefix(cwd.value).replace(/\/$/, '')
+  moveToError.value = ''
+  showMoveTo.value = true
+}
+function moveSelected() {
+  openMoveTo(filteredEntries.value.filter((e) => selected.value.has(e.name)))
+}
+async function submitMoveTo() {
+  const destFolder = moveToDestFolder.value.trim().replace(/^\/+|\/+$/g, '')
+  if (!destFolder) {
+    moveToError.value = 'Destination folder is required'
+    return
+  }
+  moveToSubmitting.value = true
+  moveToError.value = ''
+  let failed = 0
+  for (const entry of moveToItems.value) {
+    const to = destFolder + '/' + entry.name + (entry.isDir ? '/' : '')
+    if (to === entry.key) continue // already there
+    try {
+      await axios.post(`/api/connections/${connId.value}/storage/rename`, { from: entry.key, to })
+    } catch (e: any) {
+      failed++
+      toast.error(`${entry.name}: ${e?.response?.data?.error || 'move failed'}`)
+    }
+  }
+  moveToSubmitting.value = false
+  showMoveTo.value = false
+  const moved = moveToItems.value.length - failed
+  if (moved > 0) toast.success(`Moved ${moved} item${moved === 1 ? '' : 's'} to ${destFolder}/`)
+  selected.value = new Set()
+  await loadDir(cwd.value)
+}
+
 async function del(entry: CsEntry) {
   const ok = await confirm(
     `Delete "${entry.name}"${entry.isDir ? ' and everything in it' : ''}? This cannot be undone.`,
@@ -673,6 +722,7 @@ function rowActions(e: CsEntry): RowAction[] {
   }
   if (canManage.value) {
     actions.push({ key: 'transfer', label: 'Transfer…', icon: 'move', onClick: () => openTransfer([e]) })
+    actions.push({ key: 'move-to', label: 'Move to folder…', icon: 'move', onClick: () => openMoveTo([e]) })
     actions.push({ key: 'rename', label: 'Rename', icon: 'edit', onClick: () => rename(e) })
     actions.push({ key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => del(e) })
   }
@@ -783,6 +833,7 @@ onMounted(() => {
             <span>{{ selected.size }} selected</span>
             <button class="base-btn base-btn--sm base-btn--primary" @click="downloadSelected">↓ Download ZIP</button>
             <button v-if="canManage" class="base-btn base-btn--sm" @click="transferSelected">⇄ Transfer</button>
+            <button v-if="canManage" class="base-btn base-btn--sm" @click="moveSelected">→ Move to folder</button>
             <button class="base-btn base-btn--sm" @click="selected = new Set()">Clear</button>
           </div>
 
@@ -863,6 +914,33 @@ onMounted(() => {
         <div class="cs-modal-actions">
           <button class="base-btn base-btn--sm" @click="showRename = false">Cancel</button>
           <button class="base-btn base-btn--primary base-btn--sm" :disabled="!renameName.trim()" @click="submitRename">Rename</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Move to folder modal -->
+    <div v-if="showMoveTo" class="cs-modal-backdrop" @click.self="showMoveTo = false">
+      <div class="cs-modal page-card">
+        <div class="cs-modal-title">Move {{ moveToItems.length }} item{{ moveToItems.length === 1 ? '' : 's' }} to…</div>
+
+        <div class="cs-transfer-source">
+          <div v-for="e in moveToItems.slice(0, 8)" :key="e.key" class="cs-transfer-source-item">
+            <span class="cs-icon">{{ fileIcon(e) }}</span>{{ e.key }}
+          </div>
+          <div v-if="moveToItems.length > 8" class="cs-transfer-more">+{{ moveToItems.length - 8 }} more</div>
+        </div>
+
+        <label class="form-label">Destination folder (same bucket)</label>
+        <input v-model="moveToDestFolder" class="base-input cs-modal-input" placeholder="e.g. b2blocal" @keyup.enter="submitMoveTo" />
+        <p class="cs-meta-empty" style="margin-top:6px">Items keep their own name — only the parent folder changes. Overwrites anything already at the destination with the same name.</p>
+
+        <div v-if="moveToError" class="cs-msg cs-err">{{ moveToError }}</div>
+
+        <div class="cs-modal-actions">
+          <button class="base-btn base-btn--sm" @click="showMoveTo = false">Cancel</button>
+          <button class="base-btn base-btn--primary base-btn--sm" :disabled="moveToSubmitting || !moveToDestFolder.trim()" @click="submitMoveTo">
+            {{ moveToSubmitting ? 'Moving…' : 'Move' }}
+          </button>
         </div>
       </div>
     </div>
