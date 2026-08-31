@@ -127,6 +127,8 @@ interface CompareResult {
   extra_on_target: number
   differs: number
   in_sync: boolean
+  no_primary_key: boolean
+  format_mismatch_suspected: boolean
 }
 const showCheck = ref(false)
 const checkLink = ref<ReplicationLink | null>(null)
@@ -195,16 +197,23 @@ function compareLabel(table: string): string {
   if (r === undefined) return ''
   if (r === 'checking') return 'Checking…'
   if (r === 'error') return 'Check failed'
-  if (r.in_sync) return 'In sync'
+  if (r.format_mismatch_suspected)
+    return '⚠ No matching rows — likely a value-format difference, not real drift. Sync disabled.'
+  if (r.in_sync) return r.no_primary_key ? 'In sync (no PK — matched by full row content)' : 'In sync'
   const parts: string[] = []
   if (r.missing_on_target) parts.push(`${r.missing_on_target} missing`)
   if (r.differs) parts.push(`${r.differs} differ`)
   if (r.extra_on_target) parts.push(`${r.extra_on_target} extra on target (untouched)`)
+  if (r.no_primary_key) parts.push('no PK — matched by full row content')
   return parts.join(', ')
 }
 function needsPull(table: string): boolean {
   const r = compareResults.value[table]
-  return typeof r === 'object' && (r.missing_on_target > 0 || r.differs > 0)
+  return (
+    typeof r === 'object' &&
+    !r.format_mismatch_suspected &&
+    (r.missing_on_target > 0 || r.differs > 0)
+  )
 }
 
 // ── New Replication modal ─────────────────────────────────────────

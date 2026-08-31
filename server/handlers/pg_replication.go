@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -774,6 +776,87 @@ func quoteIdentList(names []string) string {
 	return strings.Join(q, ", ")
 }
 
+// rowContentHashExpr builds the SQL expression used to fingerprint a row for
+// drift comparison. It hashes an EXPLICIT column list — md5(ROW("a","b",…)::
+// text) — instead of the bare whole-row cast md5(t::text). The whole-row cast
+// serializes columns in each table's *physical* order, so the same logical
+// table stored with a different column order on the two servers (a column
+// dropped and re-added, or the table recreated) would fingerprint every row
+// differently: Compare would report the entire table as drifted and Sync would
+// duplicate all of it. Callers pass the same name-sorted column list (see
+// matchedColumns) to both sides, so the fingerprint depends only on values,
+// not on physical layout.
+func rowContentHashExpr(cols []string) string {
+	return "md5(ROW(" + quoteIdentList(cols) + ")::text)"
+}
+
+// errColumnMismatch (the two tables don't share the same columns) and
+// errFormatMismatch (a no-PK compare found zero overlapping rows despite both
+// sides having data) are the two "the caller's data, not our bug" outcomes of
+// compare/reconcile. They're wrapped into the returned error so the HTTP layer
+// can map them to a 4xx via httpStatusForCompareErr instead of a blanket 500.
+var (
+	errColumnMismatch = errors.New("column mismatch")
+	errFormatMismatch = errors.New("row-format mismatch")
+)
+
+// httpStatusForCompareErr classifies a compare/reconcile error: a schema
+// mismatch is a bad request, a suspected format mismatch is a conflict the
+// caller must resolve, and anything else is a genuine server-side failure.
+func httpStatusForCompareErr(err error) int {
+	switch {
+	case errors.Is(err, errColumnMismatch):
+		return http.StatusBadRequest
+	case errors.Is(err, errFormatMismatch):
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+// matchedColumns returns the columns of schema.table sorted by name, but only
+// after verifying both connections expose the exact same column *set*. A
+// mismatch (a column present on one side and not the other) is returned as an
+// error rather than silently producing rows that never fingerprint-match —
+// that would look like total drift and, on Sync, mass-duplicate the table. The
+// sort makes the order identical on both sides regardless of physical layout,
+// which is what makes rowContentHashExpr comparable across the two servers.
+func matchedColumns(ctx context.Context, srcDB, targetDB *sql.DB, schema, table string) ([]string, error) {
+	srcCols, err := tableColumns(ctx, srcDB, schema, table)
+	if err != nil {
+		return nil, fmt.Errorf("reading source columns: %w", err)
+	}
+	targetCols, err := tableColumns(ctx, targetDB, schema, table)
+	if err != nil {
+		return nil, fmt.Errorf("reading target columns: %w", err)
+	}
+	srcSet := make(map[string]bool, len(srcCols))
+	for _, c := range srcCols {
+		srcSet[c] = true
+	}
+	targetSet := make(map[string]bool, len(targetCols))
+	for _, c := range targetCols {
+		targetSet[c] = true
+	}
+	var onlySource, onlyTarget []string
+	for _, c := range srcCols {
+		if !targetSet[c] {
+			onlySource = append(onlySource, c)
+		}
+	}
+	for _, c := range targetCols {
+		if !srcSet[c] {
+			onlyTarget = append(onlyTarget, c)
+		}
+	}
+	if len(onlySource) > 0 || len(onlyTarget) > 0 {
+		return nil, fmt.Errorf("%w, refusing to compare: source-only %v, target-only %v", errColumnMismatch, onlySource, onlyTarget)
+	}
+	sorted := append([]string(nil), srcCols...)
+	sort.Strings(sorted)
+	return sorted, nil
+}
+
 // keyString joins scanned primary-key values into a single map key —
 // []byte and other driver-returned types are normalized via fmt.Sprint so
 // the same logical value hashes the same way regardless of which of the two
@@ -790,13 +873,13 @@ func keyString(vals []interface{}) string {
 	return strings.Join(parts, "\x1f")
 }
 
-// fetchKeyHashes reads (primary key -> md5 content hash) for every row of
-// schema.table — md5(t::text) fingerprints the whole row server-side, so
-// only a short hash per row crosses the wire instead of every column,
-// keeping a compare cheap even on wide tables.
-func fetchKeyHashes(ctx context.Context, db *sql.DB, schema, table string, pk []string) (map[string]string, error) {
+// fetchKeyHashes reads (primary key -> content hash) for every row of
+// schema.table — hashExpr fingerprints the row server-side (see
+// rowContentHashExpr), so only a short hash per row crosses the wire instead
+// of every column, keeping a compare cheap even on wide tables.
+func fetchKeyHashes(ctx context.Context, db *sql.DB, schema, table string, pk []string, hashExpr string) (map[string]string, error) {
 	qualified := quoteIdentPG(schema) + "." + quoteIdentPG(table)
-	query := fmt.Sprintf("SELECT %s, md5(t::text) FROM %s t", quoteIdentList(pk), qualified)
+	query := fmt.Sprintf("SELECT %s, %s FROM %s t", quoteIdentList(pk), hashExpr, qualified)
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -819,11 +902,66 @@ func fetchKeyHashes(ctx context.Context, db *sql.DB, schema, table string, pk []
 	return result, rows.Err()
 }
 
+// fetchRowHashCounts counts how many rows of each exact content a table has,
+// for a table with no primary key — REPLICA IDENTITY FULL (Postgres's own
+// fallback for PK-less tables) treats the entire row as its identity, so
+// this does the same: the hash IS the key. Counting (a multiset) rather than
+// just recording presence (a set) matters for tables that legitimately have
+// duplicate rows — otherwise a target that already has one copy of some
+// content would be wrongly treated as "has all copies" the source has.
+// GROUP BY does the counting server-side, so only one row per distinct
+// content crosses the wire rather than one per source row. hashExpr is the
+// shared fingerprint expression (see rowContentHashExpr) so both sides count
+// by an identical, physical-order-independent key.
+func fetchRowHashCounts(ctx context.Context, db *sql.DB, schema, table, hashExpr string) (map[string]int, error) {
+	qualified := quoteIdentPG(schema) + "." + quoteIdentPG(table)
+	rows, err := db.QueryContext(ctx, "SELECT "+hashExpr+", count(*) FROM "+qualified+" t GROUP BY 1")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]int)
+	var h string
+	var n int
+	for rows.Next() {
+		if err := rows.Scan(&h, &n); err != nil {
+			return nil, err
+		}
+		result[h] = n
+	}
+	return result, rows.Err()
+}
+
 type pgCompareResult struct {
 	MissingOnTarget int  `json:"missing_on_target"`
 	ExtraOnTarget   int  `json:"extra_on_target"`
 	Differs         int  `json:"differs"`
 	InSync          bool `json:"in_sync"`
+	NoPrimaryKey    bool `json:"no_primary_key"`
+	// FormatMismatchSuspected is set on a no-primary-key compare when both
+	// tables hold rows but share not a single identical fingerprint. Real
+	// drift almost never means *zero* rows match; total non-overlap instead
+	// points at values that serialize to text differently on the two servers
+	// (float precision, timestamp/timezone rendering, json whitespace) — in
+	// which case the "missing" count is an illusion and Sync would duplicate
+	// the whole table. Reconcile refuses in this state; the UI warns instead
+	// of offering a one-click Sync.
+	FormatMismatchSuspected bool `json:"format_mismatch_suspected"`
+}
+
+// countHashOverlap reports how many distinct fingerprints appear in both
+// multisets. Zero overlap while both sides are non-empty is the signal that a
+// no-primary-key compare is looking at a formatting mismatch rather than real
+// drift (see pgCompareResult.FormatMismatchSuspected). An empty target is not
+// suspicious — that is a legitimate first-time full copy.
+func countHashOverlap(a, b map[string]int) int {
+	overlap := 0
+	for h := range a {
+		if b[h] > 0 {
+			overlap++
+		}
+	}
+	return overlap
 }
 
 // ComparePgTables reports, without changing anything, how a target table
@@ -863,47 +1001,172 @@ func ComparePgTables() http.HandlerFunc {
 			http.Error(w, jsonError("target connection: "+err.Error()), http.StatusBadGateway)
 			return
 		}
-		pk, err := tablePrimaryKey(r.Context(), targetDB, schema, table)
+		result, err := comparePgTables(r.Context(), srcDB, targetDB, schema, table)
 		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
+			http.Error(w, jsonError(err.Error()), httpStatusForCompareErr(err))
 			return
 		}
-		if len(pk) == 0 {
-			http.Error(w, jsonError(fmt.Sprintf("%s.%s has no primary key — can't compare row-by-row", schema, table)), http.StatusBadRequest)
-			return
-		}
-		srcHashes, err := fetchKeyHashes(r.Context(), srcDB, schema, table, pk)
-		if err != nil {
-			http.Error(w, jsonError("reading source: "+err.Error()), http.StatusInternalServerError)
-			return
-		}
-		targetHashes, err := fetchKeyHashes(r.Context(), targetDB, schema, table, pk)
-		if err != nil {
-			http.Error(w, jsonError("reading target: "+err.Error()), http.StatusInternalServerError)
-			return
-		}
-		var result pgCompareResult
-		for k, srcHash := range srcHashes {
-			targetHash, ok := targetHashes[k]
-			if !ok {
-				result.MissingOnTarget++
-			} else if targetHash != srcHash {
-				result.Differs++
-			}
-		}
-		for k := range targetHashes {
-			if _, ok := srcHashes[k]; !ok {
-				result.ExtraOnTarget++
-			}
-		}
-		result.InSync = result.MissingOnTarget == 0 && result.Differs == 0
 		json.NewEncoder(w).Encode(result)
 	}
+}
+
+// comparePgTables computes how the target table has drifted from the source
+// without modifying anything. Errors wrap the sentinels above where relevant
+// (see httpStatusForCompareErr).
+func comparePgTables(ctx context.Context, srcDB, targetDB *sql.DB, schema, table string) (pgCompareResult, error) {
+	hashCols, err := matchedColumns(ctx, srcDB, targetDB, schema, table)
+	if err != nil {
+		return pgCompareResult{}, err
+	}
+	hashExpr := rowContentHashExpr(hashCols)
+	pk, err := tablePrimaryKey(ctx, targetDB, schema, table)
+	if err != nil {
+		return pgCompareResult{}, err
+	}
+	if len(pk) == 0 {
+		srcCounts, err := fetchRowHashCounts(ctx, srcDB, schema, table, hashExpr)
+		if err != nil {
+			return pgCompareResult{}, fmt.Errorf("reading source: %w", err)
+		}
+		targetCounts, err := fetchRowHashCounts(ctx, targetDB, schema, table, hashExpr)
+		if err != nil {
+			return pgCompareResult{}, fmt.Errorf("reading target: %w", err)
+		}
+		result := pgCompareResult{NoPrimaryKey: true}
+		for h, n := range srcCounts {
+			if deficit := n - targetCounts[h]; deficit > 0 {
+				result.MissingOnTarget += deficit
+			}
+		}
+		for h, n := range targetCounts {
+			if surplus := n - srcCounts[h]; surplus > 0 {
+				result.ExtraOnTarget += surplus
+			}
+		}
+		result.InSync = result.MissingOnTarget == 0
+		if len(srcCounts) > 0 && len(targetCounts) > 0 && countHashOverlap(srcCounts, targetCounts) == 0 {
+			result.FormatMismatchSuspected = true
+		}
+		return result, nil
+	}
+	srcHashes, err := fetchKeyHashes(ctx, srcDB, schema, table, pk, hashExpr)
+	if err != nil {
+		return pgCompareResult{}, fmt.Errorf("reading source: %w", err)
+	}
+	targetHashes, err := fetchKeyHashes(ctx, targetDB, schema, table, pk, hashExpr)
+	if err != nil {
+		return pgCompareResult{}, fmt.Errorf("reading target: %w", err)
+	}
+	var result pgCompareResult
+	for k, srcHash := range srcHashes {
+		targetHash, ok := targetHashes[k]
+		if !ok {
+			result.MissingOnTarget++
+		} else if targetHash != srcHash {
+			result.Differs++
+		}
+	}
+	for k := range targetHashes {
+		if _, ok := srcHashes[k]; !ok {
+			result.ExtraOnTarget++
+		}
+	}
+	result.InSync = result.MissingOnTarget == 0 && result.Differs == 0
+	return result, nil
 }
 
 type pgReconcileResult struct {
 	Inserted int `json:"inserted"`
 	Updated  int `json:"updated"`
+}
+
+// reconcileNoPrimaryKey inserts source rows into a target table that has no
+// primary key, matching by row content hash instead of a key column — see
+// fetchRowHashCounts. This is a multiset comparison: if the source holds three
+// identical copies of some content and the target holds one, two more are
+// inserted so the counts match. It never deletes, so content the target has in
+// surplus is left untouched. All inserts run inside a single transaction, so a
+// mid-run failure rolls back rather than leaving the table half-reconciled.
+// cols is the target's column list (INSERT order); hashExpr is the shared,
+// physical-order-independent fingerprint (see rowContentHashExpr) used to
+// match rows across the two servers.
+func reconcileNoPrimaryKey(ctx context.Context, srcDB, targetDB *sql.DB, schema, table string, cols []string, hashExpr string) (pgReconcileResult, error) {
+	var result pgReconcileResult
+	targetCounts, err := fetchRowHashCounts(ctx, targetDB, schema, table, hashExpr)
+	if err != nil {
+		return result, fmt.Errorf("reading target: %w", err)
+	}
+	srcCounts, err := fetchRowHashCounts(ctx, srcDB, schema, table, hashExpr)
+	if err != nil {
+		return result, fmt.Errorf("reading source: %w", err)
+	}
+	// Both sides hold rows yet not one fingerprint matches — almost certainly a
+	// value-formatting mismatch, not real drift (see FormatMismatchSuspected).
+	// Inserting here would duplicate the entire source table, so refuse.
+	if len(srcCounts) > 0 && len(targetCounts) > 0 && countHashOverlap(srcCounts, targetCounts) == 0 {
+		return result, fmt.Errorf("%w: source and target share no matching rows despite both having data — likely a value-format difference (float precision, timestamp/timezone, json whitespace), not real drift", errFormatMismatch)
+	}
+	// How many more copies of each distinct row content the target needs —
+	// computed once up front so streaming the source below can insert
+	// exactly that many and no more, instead of either skipping every
+	// duplicate outright (undercounts) or inserting every one unconditionally
+	// (overcounts into actual duplication).
+	needed := make(map[string]int, len(srcCounts))
+	for h, n := range srcCounts {
+		if deficit := n - targetCounts[h]; deficit > 0 {
+			needed[h] = deficit
+		}
+	}
+
+	qualified := quoteIdentPG(schema) + "." + quoteIdentPG(table)
+	srcRows, err := srcDB.QueryContext(ctx, "SELECT "+quoteIdentList(cols)+", "+hashExpr+" FROM "+qualified+" t")
+	if err != nil {
+		return result, fmt.Errorf("reading source rows: %w", err)
+	}
+	defer srcRows.Close()
+
+	tx, err := targetDB.BeginTx(ctx, nil)
+	if err != nil {
+		return result, fmt.Errorf("starting transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			tx.Rollback()
+		}
+	}()
+
+	insertSQL := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", qualified, quoteIdentList(cols), placeholders(len(cols)))
+
+	vals := make([]interface{}, len(cols))
+	ptrs := make([]interface{}, len(cols)+1)
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	var hash string
+	ptrs[len(cols)] = &hash
+
+	for srcRows.Next() {
+		if err := srcRows.Scan(ptrs...); err != nil {
+			return pgReconcileResult{}, fmt.Errorf("reading source rows: %w", err)
+		}
+		if needed[hash] <= 0 {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, insertSQL, vals...); err != nil {
+			return pgReconcileResult{}, fmt.Errorf("writing row: %w", err)
+		}
+		needed[hash]--
+		result.Inserted++
+	}
+	if err := srcRows.Err(); err != nil {
+		return pgReconcileResult{}, fmt.Errorf("reading source rows: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return pgReconcileResult{}, fmt.Errorf("committing: %w", err)
+	}
+	committed = true
+	return result, nil
 }
 
 // ReconcilePgTable pulls a target table back into sync with its source
@@ -949,111 +1212,151 @@ func ReconcilePgTable() http.HandlerFunc {
 			return
 		}
 
-		pk, err := tablePrimaryKey(r.Context(), targetDB, schema, table)
+		result, noPK, err := reconcilePgTable(r.Context(), srcDB, targetDB, schema, table)
 		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
+			http.Error(w, jsonError(err.Error()), httpStatusForCompareErr(err))
 			return
 		}
-		if len(pk) == 0 {
-			http.Error(w, jsonError(fmt.Sprintf("%s.%s has no primary key — can't reconcile row-by-row", schema, table)), http.StatusBadRequest)
-			return
+		detail := fmt.Sprintf("inserted %d, updated %d row(s) from connection %d into connection %d", result.Inserted, result.Updated, req.SourceConnectionID, req.TargetConnectionID)
+		if noPK {
+			detail = fmt.Sprintf("(no primary key, matched by row content) inserted %d row(s) from connection %d into connection %d", result.Inserted, req.SourceConnectionID, req.TargetConnectionID)
 		}
-		cols, err := tableColumns(r.Context(), targetDB, schema, table)
-		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
-			return
-		}
-		targetHashes, err := fetchKeyHashes(r.Context(), targetDB, schema, table, pk)
-		if err != nil {
-			http.Error(w, jsonError("reading target: "+err.Error()), http.StatusInternalServerError)
-			return
-		}
-
-		qualified := quoteIdentPG(schema) + "." + quoteIdentPG(table)
-		srcRows, err := srcDB.QueryContext(r.Context(), "SELECT "+quoteIdentList(cols)+", md5(t::text) FROM "+qualified+" t")
-		if err != nil {
-			http.Error(w, jsonError("reading source rows: "+err.Error()), http.StatusInternalServerError)
-			return
-		}
-		defer srcRows.Close()
-
-		pkPos := make([]int, len(pk))
-		for i, k := range pk {
-			for j, c := range cols {
-				if c == k {
-					pkPos[i] = j
-					break
-				}
-			}
-		}
-
-		conflictSet := make([]string, len(cols)-len(pk))
-		{
-			pkSet := make(map[string]bool, len(pk))
-			for _, k := range pk {
-				pkSet[k] = true
-			}
-			i := 0
-			for _, c := range cols {
-				if pkSet[c] {
-					continue
-				}
-				conflictSet[i] = quoteIdentPG(c) + " = EXCLUDED." + quoteIdentPG(c)
-				i++
-			}
-		}
-		upsertSQL := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s",
-			qualified, quoteIdentList(cols), placeholders(len(cols)), quoteIdentList(pk), strings.Join(conflictSet, ", "))
-		if len(conflictSet) == 0 {
-			// A table whose only columns are the primary key — nothing to
-			// update, so a plain "do nothing" avoids an empty SET clause.
-			upsertSQL = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING",
-				qualified, quoteIdentList(cols), placeholders(len(cols)), quoteIdentList(pk))
-		}
-
-		vals := make([]interface{}, len(cols))
-		ptrs := make([]interface{}, len(cols)+1)
-		for i := range vals {
-			ptrs[i] = &vals[i]
-		}
-		var hash string
-		ptrs[len(cols)] = &hash
-
-		var result pgReconcileResult
-		for srcRows.Next() {
-			if err := srcRows.Scan(ptrs...); err != nil {
-				http.Error(w, jsonError("reading source rows: "+err.Error()), http.StatusInternalServerError)
-				return
-			}
-			keyVals := make([]interface{}, len(pk))
-			for i, pos := range pkPos {
-				keyVals[i] = vals[pos]
-			}
-			key := keyString(keyVals)
-			targetHash, exists := targetHashes[key]
-			if exists && targetHash == hash {
-				continue // already identical — nothing to do
-			}
-			if _, err := targetDB.ExecContext(r.Context(), upsertSQL, vals...); err != nil {
-				http.Error(w, jsonError(fmt.Sprintf("writing row %v: %v", keyVals, err)), http.StatusInternalServerError)
-				return
-			}
-			if exists {
-				result.Updated++
-			} else {
-				result.Inserted++
-			}
-		}
-		if err := srcRows.Err(); err != nil {
-			http.Error(w, jsonError("reading source rows: "+err.Error()), http.StatusInternalServerError)
-			return
-		}
-
-		WriteFeatureAccessAudit(r.Header.Get("X-Username"), "pg_replication_reconcile", fmt.Sprintf("%s.%s", schema, table),
-			fmt.Sprintf("inserted %d, updated %d row(s) from connection %d into connection %d", result.Inserted, result.Updated, req.SourceConnectionID, req.TargetConnectionID))
+		WriteFeatureAccessAudit(r.Header.Get("X-Username"), "pg_replication_reconcile", fmt.Sprintf("%s.%s", schema, table), detail)
 
 		json.NewEncoder(w).Encode(result)
 	}
+}
+
+// reconcilePgTable dispatches to the primary-key or no-primary-key reconcile
+// path depending on whether the target table has a primary key, and reports
+// which path ran (for audit wording). See reconcileByPrimaryKey and
+// reconcileNoPrimaryKey.
+func reconcilePgTable(ctx context.Context, srcDB, targetDB *sql.DB, schema, table string) (pgReconcileResult, bool, error) {
+	hashCols, err := matchedColumns(ctx, srcDB, targetDB, schema, table)
+	if err != nil {
+		return pgReconcileResult{}, false, err
+	}
+	hashExpr := rowContentHashExpr(hashCols)
+	cols, err := tableColumns(ctx, targetDB, schema, table)
+	if err != nil {
+		return pgReconcileResult{}, false, err
+	}
+	pk, err := tablePrimaryKey(ctx, targetDB, schema, table)
+	if err != nil {
+		return pgReconcileResult{}, false, err
+	}
+	if len(pk) == 0 {
+		result, err := reconcileNoPrimaryKey(ctx, srcDB, targetDB, schema, table, cols, hashExpr)
+		return result, true, err
+	}
+	result, err := reconcileByPrimaryKey(ctx, srcDB, targetDB, schema, table, pk, cols, hashExpr)
+	return result, false, err
+}
+
+// reconcileByPrimaryKey upserts source rows into the target keyed by primary
+// key: rows the target is missing are inserted, rows whose content fingerprint
+// differs are updated to match the source, already-identical rows are skipped,
+// and rows that exist only on the target are never touched. Every write runs
+// inside one transaction, so a mid-run failure rolls the whole catch-up back
+// rather than leaving the table partially updated. hashExpr is the shared,
+// physical-order-independent fingerprint (see rowContentHashExpr).
+func reconcileByPrimaryKey(ctx context.Context, srcDB, targetDB *sql.DB, schema, table string, pk, cols []string, hashExpr string) (pgReconcileResult, error) {
+	var result pgReconcileResult
+	targetHashes, err := fetchKeyHashes(ctx, targetDB, schema, table, pk, hashExpr)
+	if err != nil {
+		return result, fmt.Errorf("reading target: %w", err)
+	}
+
+	qualified := quoteIdentPG(schema) + "." + quoteIdentPG(table)
+	srcRows, err := srcDB.QueryContext(ctx, "SELECT "+quoteIdentList(cols)+", "+hashExpr+" FROM "+qualified+" t")
+	if err != nil {
+		return result, fmt.Errorf("reading source rows: %w", err)
+	}
+	defer srcRows.Close()
+
+	pkPos := make([]int, len(pk))
+	for i, k := range pk {
+		for j, c := range cols {
+			if c == k {
+				pkPos[i] = j
+				break
+			}
+		}
+	}
+
+	conflictSet := make([]string, len(cols)-len(pk))
+	{
+		pkSet := make(map[string]bool, len(pk))
+		for _, k := range pk {
+			pkSet[k] = true
+		}
+		i := 0
+		for _, c := range cols {
+			if pkSet[c] {
+				continue
+			}
+			conflictSet[i] = quoteIdentPG(c) + " = EXCLUDED." + quoteIdentPG(c)
+			i++
+		}
+	}
+	upsertSQL := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s",
+		qualified, quoteIdentList(cols), placeholders(len(cols)), quoteIdentList(pk), strings.Join(conflictSet, ", "))
+	if len(conflictSet) == 0 {
+		// A table whose only columns are the primary key — nothing to
+		// update, so a plain "do nothing" avoids an empty SET clause.
+		upsertSQL = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING",
+			qualified, quoteIdentList(cols), placeholders(len(cols)), quoteIdentList(pk))
+	}
+
+	tx, err := targetDB.BeginTx(ctx, nil)
+	if err != nil {
+		return result, fmt.Errorf("starting transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			tx.Rollback()
+		}
+	}()
+
+	vals := make([]interface{}, len(cols))
+	ptrs := make([]interface{}, len(cols)+1)
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	var hash string
+	ptrs[len(cols)] = &hash
+
+	for srcRows.Next() {
+		if err := srcRows.Scan(ptrs...); err != nil {
+			return pgReconcileResult{}, fmt.Errorf("reading source rows: %w", err)
+		}
+		keyVals := make([]interface{}, len(pk))
+		for i, pos := range pkPos {
+			keyVals[i] = vals[pos]
+		}
+		key := keyString(keyVals)
+		targetHash, exists := targetHashes[key]
+		if exists && targetHash == hash {
+			continue // already identical — nothing to do
+		}
+		if _, err := tx.ExecContext(ctx, upsertSQL, vals...); err != nil {
+			return pgReconcileResult{}, fmt.Errorf("writing row %v: %w", keyVals, err)
+		}
+		if exists {
+			result.Updated++
+		} else {
+			result.Inserted++
+		}
+	}
+	if err := srcRows.Err(); err != nil {
+		return pgReconcileResult{}, fmt.Errorf("reading source rows: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return pgReconcileResult{}, fmt.Errorf("committing: %w", err)
+	}
+	committed = true
+	return result, nil
 }
 
 func placeholders(n int) string {
