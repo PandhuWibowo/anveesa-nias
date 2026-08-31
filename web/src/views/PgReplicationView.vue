@@ -525,7 +525,7 @@ onUnmounted(() => {
 
     <!-- Check & Sync modal -->
     <div v-if="showCheck" class="pr-modal-backdrop" @click.self="showCheck = false">
-      <div class="pr-modal page-card">
+      <div class="pr-modal pr-modal--wide page-card">
         <div class="pr-modal-title">Check &amp; Sync</div>
         <div class="pr-msg" style="text-align:left;padding:0 0 12px">
           Compares rows between <strong>{{ checkLink?.source_connection_name }}</strong> (publisher) and
@@ -534,32 +534,34 @@ onUnmounted(() => {
           on the target are left alone.
         </div>
 
-        <div v-if="checkLoading" class="pr-msg">Loading tables…</div>
-        <div v-else-if="!checkTables.length" class="pr-msg">No tables found in this publication.</div>
-        <table v-else class="pr-table">
-          <thead>
-            <tr>
-              <th>Table</th>
-              <th>Status</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="t in checkTables" :key="t">
-              <td class="pr-mono">{{ t }}</td>
-              <td class="pr-mono">{{ compareLabel(t) }}</td>
-              <td class="pr-act">
-                <button class="pr-link-btn" :disabled="compareResults[t] === 'checking'" @click="runCompare(t)">Check</button>
-                <button
-                  v-if="canManage && needsPull(t)"
-                  class="pr-link-btn"
-                  :disabled="reconcileBusy[t]"
-                  @click="runReconcile(t)"
-                >{{ reconcileBusy[t] ? 'Pulling…' : 'Pull from publisher' }}</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="pr-modal-scroll">
+          <div v-if="checkLoading" class="pr-msg">Loading tables…</div>
+          <div v-else-if="!checkTables.length" class="pr-msg">No tables found in this publication.</div>
+          <table v-else class="pr-table">
+            <thead>
+              <tr>
+                <th>Table</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="t in checkTables" :key="t">
+                <td class="pr-mono">{{ t }}</td>
+                <td class="pr-mono">{{ compareLabel(t) }}</td>
+                <td class="pr-act">
+                  <button class="pr-link-btn" :disabled="compareResults[t] === 'checking'" @click="runCompare(t)">Check</button>
+                  <button
+                    v-if="canManage && needsPull(t)"
+                    class="pr-link-btn"
+                    :disabled="reconcileBusy[t]"
+                    @click="runReconcile(t)"
+                  >{{ reconcileBusy[t] ? 'Pulling…' : 'Pull from publisher' }}</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
 
         <div class="pr-modal-actions">
           <button class="base-btn base-btn--sm" @click="showCheck = false">Close</button>
@@ -594,6 +596,8 @@ onUnmounted(() => {
 
 .pr-modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); display: flex; align-items: center; justify-content: center; z-index: 100; overflow-y: auto; padding: 24px 0; }
 .pr-modal { width: 480px; max-width: 92vw; padding: 20px; }
+.pr-modal--wide { width: 640px; }
+.pr-modal-scroll { max-height: 50vh; overflow-y: auto; }
 .pr-modal-title { font-size: 15px; font-weight: 600; color: var(--text-primary); margin-bottom: 14px; }
 .pr-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 
