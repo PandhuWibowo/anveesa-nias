@@ -180,6 +180,8 @@ const (
 	PermCloudStorageManage  = "cloudstorage.manage"
 	PermPgReplicationView   = "pgreplication.view"
 	PermPgReplicationManage = "pgreplication.manage"
+	PermPgParametersView    = "pgparameters.view"
+	PermPgParametersManage  = "pgparameters.manage"
 )
 
 // AllAppPermissions is the master list of every permission key.
@@ -262,6 +264,8 @@ var AllAppPermissions = []PermissionDef{
 	{Key: PermCloudStorageManage, Label: "Upload, Rename & Delete Files (Cloud Storage)", Group: "Infrastructure"},
 	{Key: PermPgReplicationView, Label: "View Postgres Replication Links & Status", Group: "Infrastructure"},
 	{Key: PermPgReplicationManage, Label: "Create & Manage Postgres Replication (Publications/Subscriptions)", Group: "Infrastructure"},
+	{Key: PermPgParametersView, Label: "View Postgres Parameters (pg_settings)", Group: "Infrastructure"},
+	{Key: PermPgParametersManage, Label: "Change Postgres Parameters (ALTER SYSTEM SET)", Group: "Infrastructure"},
 }
 
 // PermissionDef describes a single permission for the UI.

@@ -915,6 +915,31 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 
+	// ── Postgres parameters (pg_settings / ALTER SYSTEM SET) ───────────────
+	pgParamsView := requireAny(handlers.PermPgParametersView, handlers.PermPgParametersManage)
+	pgParamsManage := requireAny(handlers.PermPgParametersManage)
+	mux.HandleFunc("/api/pg-parameters/settings", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		pgParamsView(handlers.ListPgSettings())(w, r)
+	})
+	mux.HandleFunc("/api/pg-parameters/settings/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			http.NotFound(w, r)
+			return
+		}
+		pgParamsManage(handlers.UpdatePgSetting())(w, r)
+	})
+	mux.HandleFunc("/api/pg-parameters/reload", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		pgParamsManage(handlers.ReloadPgConfig())(w, r)
+	})
+
 	mux.HandleFunc("/api/docker/hosts", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:

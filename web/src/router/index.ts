@@ -261,6 +261,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['pgreplication.view', 'pgreplication.manage'] },
         },
         {
+          path: 'pg-parameters',
+          name: 'pg-parameters',
+          component: () => import('@/views/PgParametersView.vue'),
+          meta: { requiredPermissionsAny: ['pgparameters.view', 'pgparameters.manage'] },
+        },
+        {
           path: 'kube-clusters',
           name: 'kube-clusters',
           component: () => import('@/views/KubeClustersView.vue'),
