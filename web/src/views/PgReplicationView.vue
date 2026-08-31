@@ -45,7 +45,7 @@ const { confirm } = useConfirm()
 const { hasAnyPermission } = useAuth()
 const canManage = computed(() => hasAnyPermission(['pgreplication.manage']))
 
-const { fetchConnections } = useConnections()
+const { fetchConnections, connections } = useConnections()
 
 // ── Links list + live status polling ─────────────────────────────
 const links = ref<ReplicationLink[]>([])
@@ -121,6 +121,92 @@ async function dropLink(link: ReplicationLink) {
   }
 }
 
+// ── Check & Sync modal (non-destructive drift check + catch-up) ────
+interface CompareResult {
+  missing_on_target: number
+  extra_on_target: number
+  differs: number
+  in_sync: boolean
+}
+const showCheck = ref(false)
+const checkLink = ref<ReplicationLink | null>(null)
+const checkTables = ref<string[]>([])
+const checkLoading = ref(false)
+const compareResults = ref<Record<string, CompareResult | 'checking' | 'error' | undefined>>({})
+const reconcileBusy = ref<Record<string, boolean>>({})
+
+async function openCheck(link: ReplicationLink) {
+  checkLink.value = link
+  checkTables.value = []
+  compareResults.value = {}
+  showCheck.value = true
+  checkLoading.value = true
+  try {
+    const { data } = await axios.get<PublicationsResponse>('/api/pg-replication/publications', {
+      params: { connection_id: link.source_connection_id },
+    })
+    const pub = (data.publications as any[]).find((p) => p.name === link.publication_name)
+    checkTables.value = (pub?.tables || []).map((t: SchemaTable) => `${t.schema}.${t.table}`)
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to load tables for this publication')
+  } finally {
+    checkLoading.value = false
+  }
+}
+
+async function runCompare(table: string) {
+  if (!checkLink.value) return
+  compareResults.value = { ...compareResults.value, [table]: 'checking' }
+  try {
+    const { data } = await axios.get<CompareResult>('/api/pg-replication/compare', {
+      params: {
+        source_connection_id: checkLink.value.source_connection_id,
+        target_connection_id: checkLink.value.target_connection_id,
+        table,
+      },
+    })
+    compareResults.value = { ...compareResults.value, [table]: data }
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || `Failed to compare ${table}`)
+    compareResults.value = { ...compareResults.value, [table]: 'error' }
+  }
+}
+
+async function runReconcile(table: string) {
+  if (!checkLink.value) return
+  reconcileBusy.value = { ...reconcileBusy.value, [table]: true }
+  try {
+    const { data } = await axios.post<{ inserted: number; updated: number }>('/api/pg-replication/reconcile', {
+      sourceConnectionId: checkLink.value.source_connection_id,
+      targetConnectionId: checkLink.value.target_connection_id,
+      table,
+    })
+    toast.success(`${table}: inserted ${data.inserted}, updated ${data.updated} row(s) — nothing else touched`)
+    await runCompare(table)
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || `Failed to reconcile ${table}`)
+  } finally {
+    reconcileBusy.value = { ...reconcileBusy.value, [table]: false }
+  }
+}
+
+function compareLabel(table: string): string {
+  const r = compareResults.value[table]
+  if (r === undefined) return ''
+  if (r === 'checking') return 'Checking…'
+  if (r === 'error') return 'Check failed'
+  if (r.in_sync) return 'In sync'
+  const parts: string[] = []
+  if (r.missing_on_target) parts.push(`${r.missing_on_target} missing`)
+  if (r.differs) parts.push(`${r.differs} differ`)
+  if (r.extra_on_target) parts.push(`${r.extra_on_target} extra on target (untouched)`)
+  return parts.join(', ')
+}
+function needsPull(table: string): boolean {
+  const r = compareResults.value[table]
+  return typeof r === 'object' && (r.missing_on_target > 0 || r.differs > 0)
+}
+
 // ── New Replication modal ─────────────────────────────────────────
 const showCreate = ref(false)
 const sourceConnId = ref<number | null>(null)
@@ -132,6 +218,7 @@ const availableTables = ref<SchemaTable[]>([])
 const loadingTables = ref(false)
 const selectedTables = ref<Set<string>>(new Set())
 const copyData = ref(true)
+const truncateTarget = ref(false)
 const creating = ref(false)
 const createError = ref('')
 const walWarning = ref<{ walLevelOk: boolean; hasPriv: boolean } | null>(null)
@@ -147,6 +234,7 @@ function openCreate() {
   availableTables.value = []
   selectedTables.value = new Set()
   copyData.value = true
+  truncateTarget.value = false
   createError.value = ''
   walWarning.value = null
 }
@@ -195,6 +283,23 @@ async function submitCreate() {
     createError.value = 'Select at least one table, or choose "all tables"'
     return
   }
+  const tables = allTables.value
+    ? availableTables.value.map((t) => `${t.schema}.${t.table}`)
+    : Array.from(selectedTables.value)
+
+  // Checking the box alone isn't enough friction for a statement that
+  // deletes every row in every one of these tables — "All tables" on a real
+  // database can silently mean dozens of tables, not just the one the user
+  // was thinking about when they checked it.
+  if (copyData.value && truncateTarget.value) {
+    const targetName = connections.value.find((c) => c.id === targetConnId.value)?.name || `connection #${targetConnId.value}`
+    const ok = await confirm(
+      `This will run TRUNCATE on ${tables.length} table(s) on "${targetName}" before the copy starts: ${tables.join(', ')}. A timestamped backup copy of each table (e.g. "${tables[0]?.split('.').pop()}_bak_<timestamp>") is created first, but the live tables themselves will be emptied immediately — restoring from a backup afterward is a manual step, not automatic.`,
+      'Truncate & start replication',
+    )
+    if (!ok) return
+  }
+
   creating.value = true
   createError.value = ''
   // Publication creation and subscription creation are two separate calls
@@ -217,6 +322,8 @@ async function submitCreate() {
       name: subName.value.trim(),
       publicationName: pubName.value.trim(),
       copyData: copyData.value,
+      truncateFirst: copyData.value && truncateTarget.value,
+      tables,
     })
     toast.success('Replication started')
     showCreate.value = false
@@ -327,6 +434,7 @@ onUnmounted(() => {
                 <td class="pr-mono">{{ formatLag(link) }}</td>
                 <td class="pr-time">{{ formatTime(link.created_at) }}<span v-if="link.created_by"> · {{ link.created_by }}</span></td>
                 <td class="pr-act">
+                  <button class="pr-link-btn" @click="openCheck(link)">Check &amp; Sync</button>
                   <template v-if="canManage">
                     <button class="pr-link-btn" @click="toggleEnabled(link)">{{ isEnabled(link) ? 'Disable' : 'Enable' }}</button>
                     <button class="pr-link-btn pr-link-btn--danger" @click="dropLink(link)">Drop</button>
@@ -397,6 +505,12 @@ onUnmounted(() => {
         <div class="form-group">
           <label class="pr-checkline"><input type="checkbox" v-model="copyData" /> Copy existing data on creation</label>
         </div>
+        <div v-if="copyData" class="form-group">
+          <label class="pr-checkline"><input type="checkbox" v-model="truncateTarget" /> Replace existing data in target tables first</label>
+          <div v-if="truncateTarget" class="pr-warning">
+            This runs <code>TRUNCATE</code> on the selected target table(s) right before the copy starts, deleting whatever rows are already there — a timestamped backup table is created first, but restoring from it is a manual step. Use this when the target already has rows that would collide with the source's — otherwise the initial copy fails on the first duplicate key and never completes.
+          </div>
+        </div>
 
         <div v-if="createError" class="pr-msg pr-err">{{ createError }}</div>
 
@@ -405,6 +519,50 @@ onUnmounted(() => {
           <button class="base-btn base-btn--primary base-btn--sm" :disabled="creating" @click="submitCreate">
             {{ creating ? 'Starting…' : 'Start Replication' }}
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Check & Sync modal -->
+    <div v-if="showCheck" class="pr-modal-backdrop" @click.self="showCheck = false">
+      <div class="pr-modal page-card">
+        <div class="pr-modal-title">Check &amp; Sync</div>
+        <div class="pr-msg" style="text-align:left;padding:0 0 12px">
+          Compares rows between <strong>{{ checkLink?.source_connection_name }}</strong> (publisher) and
+          <strong>{{ checkLink?.target_connection_name }}</strong> (subscriber) by primary key. "Pull from publisher"
+          only inserts missing rows and updates ones that differ — nothing is ever deleted, and rows that exist only
+          on the target are left alone.
+        </div>
+
+        <div v-if="checkLoading" class="pr-msg">Loading tables…</div>
+        <div v-else-if="!checkTables.length" class="pr-msg">No tables found in this publication.</div>
+        <table v-else class="pr-table">
+          <thead>
+            <tr>
+              <th>Table</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="t in checkTables" :key="t">
+              <td class="pr-mono">{{ t }}</td>
+              <td class="pr-mono">{{ compareLabel(t) }}</td>
+              <td class="pr-act">
+                <button class="pr-link-btn" :disabled="compareResults[t] === 'checking'" @click="runCompare(t)">Check</button>
+                <button
+                  v-if="canManage && needsPull(t)"
+                  class="pr-link-btn"
+                  :disabled="reconcileBusy[t]"
+                  @click="runReconcile(t)"
+                >{{ reconcileBusy[t] ? 'Pulling…' : 'Pull from publisher' }}</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="pr-modal-actions">
+          <button class="base-btn base-btn--sm" @click="showCheck = false">Close</button>
         </div>
       </div>
     </div>

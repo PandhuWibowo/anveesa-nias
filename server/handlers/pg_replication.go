@@ -113,15 +113,25 @@ func requirePostgresDB(connID int64) (*sql.DB, error) {
 	return db, nil
 }
 
+// splitSchemaTable splits a "schema.table" reference into its two raw
+// (unquoted) parts.
+func splitSchemaTable(schemaTable string) (schema, table string, err error) {
+	parts := strings.SplitN(schemaTable, ".", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("invalid table reference %q — expected schema.table", schemaTable)
+	}
+	return parts[0], parts[1], nil
+}
+
 // quoteSchemaTable quotes a "schema.table" reference as two separately
 // quoted identifiers (schema."table" style quoting is wrong; each part
 // needs its own quotes) for use in CREATE PUBLICATION ... FOR TABLE.
 func quoteSchemaTable(schemaTable string) (string, error) {
-	parts := strings.SplitN(schemaTable, ".", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", fmt.Errorf("invalid table reference %q — expected schema.table", schemaTable)
+	schema, table, err := splitSchemaTable(schemaTable)
+	if err != nil {
+		return "", err
 	}
-	return quoteIdentPG(parts[0]) + "." + quoteIdentPG(parts[1]), nil
+	return quoteIdentPG(schema) + "." + quoteIdentPG(table), nil
 }
 
 // ── Publications ─────────────────────────────────────────────────────────
@@ -445,11 +455,13 @@ func ListSubscriptions() http.HandlerFunc {
 }
 
 type createSubscriptionRequest struct {
-	TargetConnectionID int64  `json:"targetConnectionId"`
-	SourceConnectionID int64  `json:"sourceConnectionId"`
-	Name               string `json:"name"`
-	PublicationName    string `json:"publicationName"`
-	CopyData           *bool  `json:"copyData"` // nil = Postgres default (true)
+	TargetConnectionID int64    `json:"targetConnectionId"`
+	SourceConnectionID int64    `json:"sourceConnectionId"`
+	Name               string   `json:"name"`
+	PublicationName    string   `json:"publicationName"`
+	CopyData           *bool    `json:"copyData"`      // nil = Postgres default (true)
+	TruncateFirst      bool     `json:"truncateFirst"` // wipe Tables on the target before the initial copy
+	Tables             []string `json:"tables"`        // "schema.table" list to truncate when TruncateFirst is set
 }
 
 // CreateSubscription builds a CONNECTION string from the source connection's
@@ -505,6 +517,47 @@ func CreateSubscription() http.HandlerFunc {
 		if err != nil {
 			http.Error(w, jsonError("target connection: "+err.Error()), http.StatusBadGateway)
 			return
+		}
+
+		// Postgres's initial data copy (copy_data=true) is a raw insert of every
+		// source row — it has no upsert/merge behavior, so any table on the
+		// target that already holds rows (e.g. from before this subscription
+		// existed) makes the copy fail outright on the first duplicate key and
+		// keeps failing on every retry. TruncateFirst clears those tables right
+		// before CREATE SUBSCRIPTION runs so the copy lands on a clean table
+		// instead of erroring forever in the background.
+		if req.TruncateFirst && len(req.Tables) > 0 {
+			quoted := make([]string, len(req.Tables))
+			backupRefs := make([]string, len(req.Tables))
+			backupTS := time.Now().Format("20060102150405")
+			for i, t := range req.Tables {
+				schema, table, err := splitSchemaTable(t)
+				if err != nil {
+					http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+					return
+				}
+				qualified := quoteIdentPG(schema) + "." + quoteIdentPG(table)
+				quoted[i] = qualified
+				// A row-for-row snapshot taken right before TRUNCATE — the only
+				// way back if this table shouldn't have been wiped turns out to
+				// be "restore from here," since TRUNCATE itself has no undo.
+				backupTable := fmt.Sprintf("%s_bak_%s", table, backupTS)
+				backupQualified := quoteIdentPG(schema) + "." + quoteIdentPG(backupTable)
+				backupRefs[i] = schema + "." + backupTable
+				if _, err := targetDB.ExecContext(r.Context(), "CREATE TABLE "+backupQualified+" AS SELECT * FROM "+qualified); err != nil {
+					http.Error(w, jsonError(fmt.Sprintf("backing up %s before truncate: %v", t, err)), http.StatusInternalServerError)
+					return
+				}
+			}
+			if _, err := targetDB.ExecContext(r.Context(), "TRUNCATE TABLE "+strings.Join(quoted, ", ")); err != nil {
+				http.Error(w, jsonError("truncating target tables before copy: "+err.Error()), http.StatusInternalServerError)
+				return
+			}
+			var targetName string
+			appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT name FROM connections WHERE id=?`), req.TargetConnectionID).Scan(&targetName)
+			WriteFeatureAccessAudit(username, "pg_replication_truncate", targetName,
+				fmt.Sprintf("Truncated %s before creating subscription %q (backup tables: %s)",
+					strings.Join(req.Tables, ", "), name, strings.Join(backupRefs, ", ")))
 		}
 
 		connStr := pgConnInfoString(srcInfo)
@@ -645,6 +698,370 @@ func DropSubscription() http.HandlerFunc {
 
 		json.NewEncoder(w).Encode(map[string]string{"status": "dropped"})
 	}
+}
+
+// ── Reconcile (non-destructive drift check + catch-up) ──────────────────
+//
+// Native logical replication's initial "copy_data" is a one-shot, all-or-
+// nothing table copy — it has no notion of "the target already has some of
+// these rows, just add what's missing." Reconcile fills that gap without
+// ever deleting anything: it compares rows by primary key + a content hash,
+// then only INSERTs rows the target is missing and UPDATEs rows whose
+// content differs from the source. Rows that exist only on the target are
+// left completely untouched — this is what makes it safe to run repeatedly
+// (e.g. to catch up after a subscription was down, or before bidirectional
+// replication exists at all) without risking data that only ever lived on
+// one side.
+
+// tableColumns returns schema.table's column names in declaration order.
+func tableColumns(ctx context.Context, db *sql.DB, schema, table string) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT column_name FROM information_schema.columns
+		WHERE table_schema = $1 AND table_name = $2
+		ORDER BY ordinal_position`, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		cols = append(cols, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(cols) == 0 {
+		return nil, fmt.Errorf("table %s.%s not found", schema, table)
+	}
+	return cols, nil
+}
+
+// tablePrimaryKey returns schema.table's primary key column names, in key
+// order — quote_ident($1)||'.'||quote_ident($2) lets Postgres do the
+// identifier quoting safely instead of string-concatenating it ourselves.
+func tablePrimaryKey(ctx context.Context, db *sql.DB, schema, table string) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT a.attname
+		FROM pg_index i
+		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+		WHERE i.indrelid = (quote_ident($1) || '.' || quote_ident($2))::regclass
+		  AND i.indisprimary
+		ORDER BY array_position(i.indkey, a.attnum)`, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		cols = append(cols, c)
+	}
+	return cols, rows.Err()
+}
+
+func quoteIdentList(names []string) string {
+	q := make([]string, len(names))
+	for i, n := range names {
+		q[i] = quoteIdentPG(n)
+	}
+	return strings.Join(q, ", ")
+}
+
+// keyString joins scanned primary-key values into a single map key —
+// []byte and other driver-returned types are normalized via fmt.Sprint so
+// the same logical value hashes the same way regardless of which of the two
+// connections it was read from.
+func keyString(vals []interface{}) string {
+	parts := make([]string, len(vals))
+	for i, v := range vals {
+		if b, ok := v.([]byte); ok {
+			parts[i] = string(b)
+		} else {
+			parts[i] = fmt.Sprint(v)
+		}
+	}
+	return strings.Join(parts, "\x1f")
+}
+
+// fetchKeyHashes reads (primary key -> md5 content hash) for every row of
+// schema.table — md5(t::text) fingerprints the whole row server-side, so
+// only a short hash per row crosses the wire instead of every column,
+// keeping a compare cheap even on wide tables.
+func fetchKeyHashes(ctx context.Context, db *sql.DB, schema, table string, pk []string) (map[string]string, error) {
+	qualified := quoteIdentPG(schema) + "." + quoteIdentPG(table)
+	query := fmt.Sprintf("SELECT %s, md5(t::text) FROM %s t", quoteIdentList(pk), qualified)
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]string)
+	pkVals := make([]interface{}, len(pk))
+	pkPtrs := make([]interface{}, len(pk))
+	for i := range pkVals {
+		pkPtrs[i] = &pkVals[i]
+	}
+	var hash string
+	scanDest := append(append([]interface{}{}, pkPtrs...), &hash)
+	for rows.Next() {
+		if err := rows.Scan(scanDest...); err != nil {
+			return nil, err
+		}
+		result[keyString(pkVals)] = hash
+	}
+	return result, rows.Err()
+}
+
+type pgCompareResult struct {
+	MissingOnTarget int  `json:"missing_on_target"`
+	ExtraOnTarget   int  `json:"extra_on_target"`
+	Differs         int  `json:"differs"`
+	InSync          bool `json:"in_sync"`
+}
+
+// ComparePgTables reports, without changing anything, how a target table
+// has drifted from its source: rows the target is missing, rows the target
+// has that the source doesn't (never touched by Reconcile), and rows whose
+// content differs under the same primary key.
+// GET /api/pg-replication/compare?source_connection_id=X&target_connection_id=Y&table=schema.table
+func ComparePgTables() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		srcID, err := strconv.ParseInt(r.URL.Query().Get("source_connection_id"), 10, 64)
+		if err != nil {
+			http.Error(w, jsonError("source_connection_id is required"), http.StatusBadRequest)
+			return
+		}
+		targetID, err := strconv.ParseInt(r.URL.Query().Get("target_connection_id"), 10, 64)
+		if err != nil {
+			http.Error(w, jsonError("target_connection_id is required"), http.StatusBadRequest)
+			return
+		}
+		schema, table, err := splitSchemaTable(r.URL.Query().Get("table"))
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		if !CheckReadPermission(r, srcID) || !CheckReadPermission(r, targetID) {
+			http.Error(w, jsonError("permission denied"), http.StatusForbidden)
+			return
+		}
+		srcDB, err := requirePostgresDB(srcID)
+		if err != nil {
+			http.Error(w, jsonError("source connection: "+err.Error()), http.StatusBadGateway)
+			return
+		}
+		targetDB, err := requirePostgresDB(targetID)
+		if err != nil {
+			http.Error(w, jsonError("target connection: "+err.Error()), http.StatusBadGateway)
+			return
+		}
+		pk, err := tablePrimaryKey(r.Context(), targetDB, schema, table)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
+			return
+		}
+		if len(pk) == 0 {
+			http.Error(w, jsonError(fmt.Sprintf("%s.%s has no primary key — can't compare row-by-row", schema, table)), http.StatusBadRequest)
+			return
+		}
+		srcHashes, err := fetchKeyHashes(r.Context(), srcDB, schema, table, pk)
+		if err != nil {
+			http.Error(w, jsonError("reading source: "+err.Error()), http.StatusInternalServerError)
+			return
+		}
+		targetHashes, err := fetchKeyHashes(r.Context(), targetDB, schema, table, pk)
+		if err != nil {
+			http.Error(w, jsonError("reading target: "+err.Error()), http.StatusInternalServerError)
+			return
+		}
+		var result pgCompareResult
+		for k, srcHash := range srcHashes {
+			targetHash, ok := targetHashes[k]
+			if !ok {
+				result.MissingOnTarget++
+			} else if targetHash != srcHash {
+				result.Differs++
+			}
+		}
+		for k := range targetHashes {
+			if _, ok := srcHashes[k]; !ok {
+				result.ExtraOnTarget++
+			}
+		}
+		result.InSync = result.MissingOnTarget == 0 && result.Differs == 0
+		json.NewEncoder(w).Encode(result)
+	}
+}
+
+type pgReconcileResult struct {
+	Inserted int `json:"inserted"`
+	Updated  int `json:"updated"`
+}
+
+// ReconcilePgTable pulls a target table back into sync with its source
+// without ever deleting anything: rows missing on the target are inserted,
+// rows present under the same primary key but with different content are
+// updated to match the source, and rows that only exist on the target are
+// left exactly as they are. Safe to call repeatedly — already-matching rows
+// are skipped, not rewritten.
+// POST /api/pg-replication/reconcile { sourceConnectionId, targetConnectionId, table }
+func ReconcilePgTable() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req struct {
+			SourceConnectionID int64  `json:"sourceConnectionId"`
+			TargetConnectionID int64  `json:"targetConnectionId"`
+			Table              string `json:"table"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, jsonError("invalid request body"), http.StatusBadRequest)
+			return
+		}
+		schema, table, err := splitSchemaTable(req.Table)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		if !CheckReadPermission(r, req.SourceConnectionID) {
+			http.Error(w, jsonError("permission denied on source connection"), http.StatusForbidden)
+			return
+		}
+		if !CheckWritePermission(r, req.TargetConnectionID) {
+			http.Error(w, jsonError("permission denied on target connection"), http.StatusForbidden)
+			return
+		}
+		srcDB, err := requirePostgresDB(req.SourceConnectionID)
+		if err != nil {
+			http.Error(w, jsonError("source connection: "+err.Error()), http.StatusBadGateway)
+			return
+		}
+		targetDB, err := requirePostgresDB(req.TargetConnectionID)
+		if err != nil {
+			http.Error(w, jsonError("target connection: "+err.Error()), http.StatusBadGateway)
+			return
+		}
+
+		pk, err := tablePrimaryKey(r.Context(), targetDB, schema, table)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
+			return
+		}
+		if len(pk) == 0 {
+			http.Error(w, jsonError(fmt.Sprintf("%s.%s has no primary key — can't reconcile row-by-row", schema, table)), http.StatusBadRequest)
+			return
+		}
+		cols, err := tableColumns(r.Context(), targetDB, schema, table)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
+			return
+		}
+		targetHashes, err := fetchKeyHashes(r.Context(), targetDB, schema, table, pk)
+		if err != nil {
+			http.Error(w, jsonError("reading target: "+err.Error()), http.StatusInternalServerError)
+			return
+		}
+
+		qualified := quoteIdentPG(schema) + "." + quoteIdentPG(table)
+		srcRows, err := srcDB.QueryContext(r.Context(), "SELECT "+quoteIdentList(cols)+", md5(t::text) FROM "+qualified+" t")
+		if err != nil {
+			http.Error(w, jsonError("reading source rows: "+err.Error()), http.StatusInternalServerError)
+			return
+		}
+		defer srcRows.Close()
+
+		pkPos := make([]int, len(pk))
+		for i, k := range pk {
+			for j, c := range cols {
+				if c == k {
+					pkPos[i] = j
+					break
+				}
+			}
+		}
+
+		conflictSet := make([]string, len(cols)-len(pk))
+		{
+			pkSet := make(map[string]bool, len(pk))
+			for _, k := range pk {
+				pkSet[k] = true
+			}
+			i := 0
+			for _, c := range cols {
+				if pkSet[c] {
+					continue
+				}
+				conflictSet[i] = quoteIdentPG(c) + " = EXCLUDED." + quoteIdentPG(c)
+				i++
+			}
+		}
+		upsertSQL := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s",
+			qualified, quoteIdentList(cols), placeholders(len(cols)), quoteIdentList(pk), strings.Join(conflictSet, ", "))
+		if len(conflictSet) == 0 {
+			// A table whose only columns are the primary key — nothing to
+			// update, so a plain "do nothing" avoids an empty SET clause.
+			upsertSQL = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO NOTHING",
+				qualified, quoteIdentList(cols), placeholders(len(cols)), quoteIdentList(pk))
+		}
+
+		vals := make([]interface{}, len(cols))
+		ptrs := make([]interface{}, len(cols)+1)
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		var hash string
+		ptrs[len(cols)] = &hash
+
+		var result pgReconcileResult
+		for srcRows.Next() {
+			if err := srcRows.Scan(ptrs...); err != nil {
+				http.Error(w, jsonError("reading source rows: "+err.Error()), http.StatusInternalServerError)
+				return
+			}
+			keyVals := make([]interface{}, len(pk))
+			for i, pos := range pkPos {
+				keyVals[i] = vals[pos]
+			}
+			key := keyString(keyVals)
+			targetHash, exists := targetHashes[key]
+			if exists && targetHash == hash {
+				continue // already identical — nothing to do
+			}
+			if _, err := targetDB.ExecContext(r.Context(), upsertSQL, vals...); err != nil {
+				http.Error(w, jsonError(fmt.Sprintf("writing row %v: %v", keyVals, err)), http.StatusInternalServerError)
+				return
+			}
+			if exists {
+				result.Updated++
+			} else {
+				result.Inserted++
+			}
+		}
+		if err := srcRows.Err(); err != nil {
+			http.Error(w, jsonError("reading source rows: "+err.Error()), http.StatusInternalServerError)
+			return
+		}
+
+		WriteFeatureAccessAudit(r.Header.Get("X-Username"), "pg_replication_reconcile", fmt.Sprintf("%s.%s", schema, table),
+			fmt.Sprintf("inserted %d, updated %d row(s) from connection %d into connection %d", result.Inserted, result.Updated, req.SourceConnectionID, req.TargetConnectionID))
+
+		json.NewEncoder(w).Encode(result)
+	}
+}
+
+func placeholders(n int) string {
+	p := make([]string, n)
+	for i := range p {
+		p[i] = fmt.Sprintf("$%d", i+1)
+	}
+	return strings.Join(p, ", ")
 }
 
 // ── Links (bookkeeping listing) ─────────────────────────────────────────

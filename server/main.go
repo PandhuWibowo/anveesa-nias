@@ -904,6 +904,20 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			http.NotFound(w, r)
 		}
 	})
+	mux.HandleFunc("/api/pg-replication/compare", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		pgReplView(handlers.ComparePgTables())(w, r)
+	})
+	mux.HandleFunc("/api/pg-replication/reconcile", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		pgReplManage(handlers.ReconcilePgTable())(w, r)
+	})
 	mux.HandleFunc("/api/pg-replication/subscriptions/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPatch:
