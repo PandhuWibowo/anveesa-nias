@@ -34,7 +34,8 @@ func ExplainQuery() http.HandlerFunc {
 			return
 		}
 
-		db, driver, err := GetDB(connID)
+		execUserID, _, _ := currentUserFromHeaders(r)
+		db, driver, err := GetDBForUser(execUserID, connID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return

@@ -729,3 +729,88 @@ func CheckWritePermission(r *http.Request, connID int64) bool {
 	}
 	return false
 }
+
+// CheckOperationPermission checks whether the user holds a specific per-connection
+// DB permission (select/insert/update/delete/create/alter/drop) for the given
+// connection. Unlike CheckWritePermission it enforces the exact operation rather
+// than collapsing all writes into one bucket, so a user granted only SELECT can
+// no longer run UPDATE/INSERT/DELETE, and a user granted only INSERT can no
+// longer DELETE or DROP.
+//
+// Precedence (kept consistent with CheckRead/CheckWritePermission):
+//   - auth disabled or admin        → allow
+//   - connection owner              → allow (owners keep full access)
+//   - user has an explicit grant    → allow ONLY if that grant includes `required`
+//   - no explicit grant             → allow (legacy backward-compatible default)
+//   - otherwise                     → deny
+func CheckOperationPermission(r *http.Request, connID int64, required DbPerm) bool {
+	if required == "" {
+		// Unknown/unclassified statement — fall back to the coarse write gate.
+		return CheckWritePermission(r, connID)
+	}
+	if !isAuthEnabled() {
+		return true
+	}
+
+	role := r.Header.Get("X-User-Role")
+	if role == "admin" {
+		return true
+	}
+
+	userIDStr := r.Header.Get("X-User-ID")
+	if userIDStr == "" {
+		return false
+	}
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil {
+		return false
+	}
+
+	// GetUserConnectionPermissions already returns the full permission set for a
+	// connection's owner, so ownership keeps full access here.
+	perms, err := db.GetUserConnectionPermissions(userID, role, connID)
+	if err != nil {
+		return false
+	}
+
+	// No explicit per-connection grant at all → preserve the legacy permissive
+	// default (mirrors CheckRead/CheckWritePermission, which allow when the
+	// permission list is empty). This keeps unassigned/legacy connections usable.
+	if len(perms) == 0 {
+		return true
+	}
+
+	// An explicit grant (direct or via group) is enforced strictly for the
+	// specific operation — this closes the reported hole where a SELECT-only
+	// grant still allowed UPDATE/INSERT/DELETE (for non-owners).
+	for _, p := range perms {
+		if string(p) == string(required) {
+			return true
+		}
+	}
+	return false
+}
+
+// RequiredPermForSQL maps a SQL statement to the single DB permission it needs.
+// It uses firstSQLKeyword so leading comments/semicolons are skipped. Returns ""
+// for statements it can't classify (caller decides how to treat those).
+func RequiredPermForSQL(sqlText string) DbPerm {
+	switch firstSQLKeyword(sqlText) {
+	case "SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "PRAGMA":
+		return DbPermSelect
+	case "INSERT":
+		return DbPermInsert
+	case "UPDATE":
+		return DbPermUpdate
+	case "DELETE", "TRUNCATE":
+		return DbPermDelete
+	case "CREATE":
+		return DbPermCreate
+	case "ALTER", "RENAME", "COMMENT":
+		return DbPermAlter
+	case "DROP":
+		return DbPermDrop
+	default:
+		return ""
+	}
+}

@@ -65,14 +65,22 @@ func RunScript() http.HandlerFunc {
 			// gate below and (in the per-statement loop further down) makes
 			// a real SELECT get routed through ExecContext, silently
 			// discarding its result rows.
-			if !isReadSQLKeyword(firstSQLKeyword(stmt)) {
-				hasWrite = true
-				break
+			if isReadSQLKeyword(firstSQLKeyword(stmt)) {
+				continue
 			}
-		}
-		if hasWrite && !CheckWritePermission(r, connID) {
-			http.Error(w, `{"error":"write permission denied"}`, http.StatusForbidden)
-			return
+			hasWrite = true
+			// Enforce each write statement's specific permission — a batch that
+			// contains a DELETE requires the delete grant even if the user can
+			// insert/update.
+			required := RequiredPermForSQL(stmt)
+			if !CheckOperationPermission(r, connID, required) {
+				msg := "write permission denied"
+				if required != "" {
+					msg = "permission denied for operation: " + string(required)
+				}
+				http.Error(w, jsonError(msg), http.StatusForbidden)
+				return
+			}
 		}
 		if hasWrite && isAuthEnabled() {
 			userID, _, role := currentUserFromHeaders(r)
@@ -94,7 +102,8 @@ func RunScript() http.HandlerFunc {
 			}
 		}
 
-		db, driver, err := GetDB(connID)
+		execUserID, _, _ := currentUserFromHeaders(r)
+		db, driver, err := GetDBForUser(execUserID, connID)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return

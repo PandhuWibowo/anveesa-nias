@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,10 +37,19 @@ type poolEntry struct {
 var dbPool struct {
 	sync.RWMutex
 	entries map[int64]*poolEntry
+	// userEntries holds per-user native sessions, keyed by "connID:userID", so a
+	// user connecting with their own DB login never shares a pool with the
+	// connection's shared login or with another user.
+	userEntries map[string]*poolEntry
 }
 
 func init() {
 	dbPool.entries = make(map[int64]*poolEntry)
+	dbPool.userEntries = make(map[string]*poolEntry)
+}
+
+func userPoolKey(userID, connID int64) string {
+	return strconv.FormatInt(connID, 10) + ":" + strconv.FormatInt(userID, 10)
 }
 
 // GetDB returns a long-lived pooled connection for connID.
@@ -98,6 +108,91 @@ func EvictFromPool(connID int64) {
 		}
 		delete(dbPool.entries, connID)
 	}
+	// Also drop any per-user sessions for this connection.
+	prefix := strconv.FormatInt(connID, 10) + ":"
+	for key, entry := range dbPool.userEntries {
+		if strings.HasPrefix(key, prefix) {
+			entry.db.Close()
+			delete(dbPool.userEntries, key)
+		}
+	}
+}
+
+// EvictUserFromPool closes and removes a single user's native session for a
+// connection — call this whenever that user's stored credentials change so a
+// stale login can never be reused.
+func EvictUserFromPool(userID, connID int64) {
+	key := userPoolKey(userID, connID)
+	dbPool.Lock()
+	defer dbPool.Unlock()
+	if entry, ok := dbPool.userEntries[key]; ok {
+		entry.db.Close()
+		delete(dbPool.userEntries, key)
+	}
+}
+
+// GetDBForUser returns a pooled connection that authenticates to the target
+// database as the given user's own DB login when they have stored per-user
+// credentials. Behaviour:
+//   - user has personal credentials    → pooled native session (DB enforces
+//     natively as that login)
+//   - no credentials, auth_mode shared → shared connection login (GetDB)
+//   - no credentials, auth_mode per_user → error (personal login required)
+//
+// Callers must NOT close the returned *sql.DB.
+func GetDBForUser(userID, connID int64) (*sql.DB, string, error) {
+	if userID <= 0 {
+		return GetDB(connID)
+	}
+
+	dbUser, encPass, hasCred := loadUserConnCredential(userID, connID)
+	if !hasCred {
+		if loadConnAuthMode(connID) == "per_user" {
+			return nil, "", fmt.Errorf("this connection requires your own database login — ask an admin to set your credentials")
+		}
+		return GetDB(connID)
+	}
+
+	key := userPoolKey(userID, connID)
+
+	dbPool.RLock()
+	entry, ok := dbPool.userEntries[key]
+	dbPool.RUnlock()
+	if ok {
+		if err := pingDB(entry.db); err == nil {
+			dbPool.Lock()
+			if e, still := dbPool.userEntries[key]; still {
+				e.lastUsed = time.Now()
+			}
+			dbPool.Unlock()
+			return entry.db, entry.driver, nil
+		}
+		dbPool.Lock()
+		if current, still := dbPool.userEntries[key]; still && current == entry {
+			entry.db.Close()
+			delete(dbPool.userEntries, key)
+		}
+		dbPool.Unlock()
+	}
+
+	password, err := decryptCredential(encPass)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to decrypt stored credentials")
+	}
+	db, driver, err := openRemoteDBWithCreds(connID, dbUser, password, true)
+	if err != nil {
+		return nil, "", err
+	}
+	// Keep per-user native pools small — many users can each hold a session.
+	db.SetMaxOpenConns(3)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(15 * time.Minute)
+
+	dbPool.Lock()
+	dbPool.userEntries[key] = &poolEntry{db: db, driver: driver, lastUsed: time.Now()}
+	dbPool.Unlock()
+
+	return db, driver, nil
 }
 
 // SSHConfig holds SSH tunnel configuration.

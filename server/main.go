@@ -316,6 +316,8 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsEdit)(handlers.UpdateConnectionFolder())(w, r)
 			case sub == "visibility" && r.Method == http.MethodPatch:
 				requireAny(handlers.PermConnectionsEdit)(handlers.UpdateConnectionVisibility())(w, r)
+			case sub == "auth-mode" && r.Method == http.MethodPatch:
+				requireAny(handlers.PermConnectionsEdit)(handlers.SetConnectionAuthMode())(w, r)
 			case sub == "query" && r.Method == http.MethodPost:
 				handlers.ExecuteQuery()(w, r)
 			case sub == "explain" && r.Method == http.MethodPost:
@@ -1372,6 +1374,21 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		parts := strings.Split(path, "/")
 
 		if len(parts) >= 2 && parts[1] == "connections" {
+			// Per-user native DB credential:
+			// /api/users/{id}/connections/{connId}/credential
+			if len(parts) >= 4 && parts[3] == "credential" {
+				switch r.Method {
+				case http.MethodGet:
+					requireAny(handlers.PermUsersManage)(handlers.GetUserConnCredential())(w, r)
+				case http.MethodPut:
+					requireAny(handlers.PermUsersManage)(handlers.SetUserConnCredential())(w, r)
+				case http.MethodDelete:
+					requireAny(handlers.PermUsersManage)(handlers.DeleteUserConnCredential())(w, r)
+				default:
+					http.NotFound(w, r)
+				}
+				return
+			}
 			switch r.Method {
 			case http.MethodGet:
 				requireAny(handlers.PermUsersManage)(handlers.GetUserConnections())(w, r)
@@ -1831,6 +1848,35 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 	mux.HandleFunc("/api/folders/", func(w http.ResponseWriter, r *http.Request) {
+		// Sub-resources: /api/folders/{id}/members and /api/folders/{id}/connections
+		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/folders/"), "/")
+		parts := strings.Split(rest, "/")
+		if len(parts) >= 2 {
+			switch parts[1] {
+			case "members":
+				switch r.Method {
+				case http.MethodGet:
+					requireAny(handlers.PermFoldersManage, handlers.PermWorkflowsManage)(handlers.GroupMembers())(w, r)
+				case http.MethodPut:
+					requireAny(handlers.PermFoldersManage)(handlers.SetGroupMembers())(w, r)
+				default:
+					http.NotFound(w, r)
+				}
+				return
+			case "connections":
+				switch r.Method {
+				case http.MethodGet:
+					requireAny(handlers.PermFoldersManage, handlers.PermWorkflowsManage)(handlers.GroupConnections())(w, r)
+				case http.MethodPut:
+					requireAny(handlers.PermFoldersManage)(handlers.SetGroupConnections())(w, r)
+				default:
+					http.NotFound(w, r)
+				}
+				return
+			}
+			http.NotFound(w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodPut:
 			requireAny(handlers.PermFoldersManage)(handlers.UpdateFolder())(w, r)

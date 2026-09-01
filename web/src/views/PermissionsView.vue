@@ -226,7 +226,39 @@ const groupForm = reactive({
   visibility: 'shared',
   role_restrict: '',
   color: '#3B82F6',
+  is_active: true,
+  member_ids: [] as number[],
+  connection_assignments: [] as Array<{ conn_id: number; permissions: string[] }>,
 })
+
+function toggleGroupMember(userId: number) {
+  const i = groupForm.member_ids.indexOf(userId)
+  if (i >= 0) groupForm.member_ids.splice(i, 1)
+  else groupForm.member_ids.push(userId)
+}
+
+function isGroupConnSelected(connId: number) {
+  return groupForm.connection_assignments.some(a => a.conn_id === connId)
+}
+
+function toggleGroupConnection(connId: number) {
+  const i = groupForm.connection_assignments.findIndex(a => a.conn_id === connId)
+  if (i >= 0) groupForm.connection_assignments.splice(i, 1)
+  else groupForm.connection_assignments.push({ conn_id: connId, permissions: ['select', 'insert', 'update', 'delete'] })
+}
+
+function toggleGroupConnPerm(connId: number, perm: string) {
+  const a = groupForm.connection_assignments.find(x => x.conn_id === connId)
+  if (!a) return
+  const i = a.permissions.indexOf(perm)
+  if (i >= 0) a.permissions.splice(i, 1)
+  else a.permissions.push(perm)
+}
+
+function groupConnHasPerm(connId: number, perm: string) {
+  const a = groupForm.connection_assignments.find(x => x.conn_id === connId)
+  return !!a && a.permissions.includes(perm)
+}
 
 async function fetchGroups() {
   groupsLoading.value = true
@@ -240,18 +272,37 @@ async function fetchGroups() {
   }
 }
 
-function openGroupForm(group: AccessGroup | null = null) {
+async function openGroupForm(group: AccessGroup | null = null) {
   editingGroup.value = group
   if (group) {
     groupForm.name = group.name
     groupForm.visibility = group.visibility || 'shared'
     groupForm.role_restrict = group.role_restrict || ''
     groupForm.color = group.color || '#3B82F6'
+    groupForm.is_active = group.is_active !== false
+    groupForm.member_ids = []
+    groupForm.connection_assignments = []
+    try {
+      const [membersRes, connRes] = await Promise.all([
+        axios.get(`/api/folders/${group.id}/members`),
+        axios.get(`/api/folders/${group.id}/connections`),
+      ])
+      groupForm.member_ids = (membersRes.data || []).map((m: any) => m.user_id)
+      groupForm.connection_assignments = (connRes.data || []).map((c: any) => ({
+        conn_id: c.conn_id,
+        permissions: (c.permissions && c.permissions.length ? c.permissions : ['select', 'insert', 'update', 'delete']),
+      }))
+    } catch (error) {
+      toast.error(readableError(error, { action: 'Load access group members', fallback: 'Failed to load group members' }))
+    }
   } else {
     groupForm.name = ''
     groupForm.visibility = 'shared'
     groupForm.role_restrict = ''
     groupForm.color = '#3B82F6'
+    groupForm.is_active = true
+    groupForm.member_ids = []
+    groupForm.connection_assignments = []
   }
   showGroupForm.value = true
 }
@@ -264,22 +315,32 @@ async function saveGroup() {
 
   groupSaving.value = true
   try {
+    let groupId: number
     if (editingGroup.value) {
       await axios.put(`/api/folders/${editingGroup.value.id}`, {
         name: groupForm.name,
         visibility: groupForm.visibility,
         role_restrict: groupForm.role_restrict,
+        is_active: groupForm.is_active,
       })
+      groupId = editingGroup.value.id
       toast.success('Access group updated')
     } else {
-      await axios.post('/api/folders', {
+      const { data } = await axios.post('/api/folders', {
         name: groupForm.name,
         visibility: groupForm.visibility,
         color: groupForm.color,
         role_restrict: groupForm.role_restrict,
       })
+      groupId = data.id
       toast.success('Access group created')
     }
+    // Persist team members and connection grants (drives access + workflow scope)
+    await axios.put(`/api/folders/${groupId}/members`, { user_ids: groupForm.member_ids })
+    await axios.put(`/api/folders/${groupId}/connections`, {
+      connection_ids: groupForm.connection_assignments.map(a => a.conn_id),
+      connection_permissions: groupForm.connection_assignments,
+    })
     showGroupForm.value = false
     await fetchGroups()
   } catch (error) {
@@ -419,6 +480,65 @@ function isGroupAssigned(connId: number): boolean {
   )
 }
 
+// ── Per-user native DB credentials ("connect as yourself") ──
+const connCreds = ref<Record<number, { username: string; password: string; configured: boolean }>>({})
+
+function credFor(connId: number) {
+  if (!connCreds.value[connId]) {
+    connCreds.value[connId] = { username: '', password: '', configured: false }
+  }
+  return connCreds.value[connId]
+}
+
+async function loadConnCreds(userId: number) {
+  connCreds.value = {}
+  await Promise.all(
+    userForm.connection_assignments.map(async a => {
+      try {
+        const { data } = await axios.get(`/api/users/${userId}/connections/${a.conn_id}/credential`)
+        connCreds.value[a.conn_id] = {
+          username: data.db_username || '',
+          password: '',
+          configured: !!data.configured,
+        }
+      } catch {
+        connCreds.value[a.conn_id] = { username: '', password: '', configured: false }
+      }
+    })
+  )
+}
+
+async function saveConnCred(connId: number) {
+  if (!editingUser.value) return
+  const c = credFor(connId)
+  if (!c.username.trim()) {
+    toast.error('DB username is required')
+    return
+  }
+  try {
+    await axios.put(`/api/users/${editingUser.value.id}/connections/${connId}/credential`, {
+      db_username: c.username,
+      db_password: c.password,
+    })
+    c.configured = true
+    c.password = ''
+    toast.success('Native DB login saved')
+  } catch (e) {
+    toast.error(readableError(e, { action: 'Save DB login', fallback: 'Failed to save DB login' }))
+  }
+}
+
+async function removeConnCred(connId: number) {
+  if (!editingUser.value) return
+  try {
+    await axios.delete(`/api/users/${editingUser.value.id}/connections/${connId}/credential`)
+    connCreds.value[connId] = { username: '', password: '', configured: false }
+    toast.success('Native DB login removed')
+  } catch (e) {
+    toast.error(readableError(e, { action: 'Remove DB login', fallback: 'Failed to remove DB login' }))
+  }
+}
+
 async function fetchUsers() {
   usersLoading.value = true
   try {
@@ -472,6 +592,8 @@ async function openUserForm(user: User | null = null) {
         return
       }
     }
+    // Load which assigned connections already have a native DB login configured.
+    await loadConnCreds(user.id)
   } else {
     userForm.username = ''
     userForm.password = ''
@@ -845,7 +967,7 @@ onMounted(async () => {
   if (canManageGroups.value) {
     tasks.push(fetchGroups())
   }
-  if (canManageUsers.value) {
+  if (canManageUsers.value || canManageGroups.value) {
     tasks.push(fetchUsers(), fetchConnections())
     if (!canManageRoles.value) {
       tasks.push(fetchRoles())
@@ -1385,6 +1507,42 @@ watch(() => route.query.tab, () => {
 
             <label class="perm-label" v-if="!editingGroup">Color</label>
             <input v-if="!editingGroup" class="perm-color-input" type="color" v-model="groupForm.color" />
+
+            <label class="perm-label" v-if="editingGroup">Status</label>
+            <label v-if="editingGroup" class="perm-check-row">
+              <input type="checkbox" v-model="groupForm.is_active" />
+              <span>Active <span class="perm-td-dim">(inactive groups grant no access and are skipped by approval workflows)</span></span>
+            </label>
+
+            <label class="perm-label">Members <span class="perm-td-dim">({{ groupForm.member_ids.length }} selected)</span></label>
+            <div class="perm-picker-list">
+              <label v-for="u in users" :key="u.id" class="perm-check-row">
+                <input type="checkbox" :checked="groupForm.member_ids.includes(u.id)" @change="toggleGroupMember(u.id)" />
+                <span>{{ u.username }} <span class="perm-td-dim">· {{ u.role }}</span></span>
+              </label>
+              <div v-if="users.length === 0" class="perm-td-dim">No users available</div>
+            </div>
+
+            <label class="perm-label">Connections <span class="perm-td-dim">({{ groupForm.connection_assignments.length }} granted)</span></label>
+            <div class="perm-picker-list">
+              <div v-for="c in connections" :key="c.id" class="perm-conn-row">
+                <label class="perm-check-row">
+                  <input type="checkbox" :checked="isGroupConnSelected(c.id)" @change="toggleGroupConnection(c.id)" />
+                  <span>{{ c.name }} <span class="perm-td-dim">· {{ c.driver }}</span></span>
+                </label>
+                <div v-if="isGroupConnSelected(c.id)" class="perm-perm-chips">
+                  <button
+                    v-for="p in dbPermissions"
+                    :key="p.key"
+                    type="button"
+                    class="perm-chip"
+                    :class="{ 'perm-chip--on': groupConnHasPerm(c.id, p.key) }"
+                    @click="toggleGroupConnPerm(c.id, p.key)"
+                  >{{ p.key }}</button>
+                </div>
+              </div>
+              <div v-if="connections.length === 0" class="perm-td-dim">No connections available</div>
+            </div>
           </div>
 
           <div class="perm-dialog-footer">
@@ -1528,7 +1686,7 @@ watch(() => route.query.tab, () => {
 
                     <div v-if="conn.selected || isGroupAssigned(conn.conn_id)" class="perm-conn-perms">
                       <label v-for="perm in dbPermissions" :key="perm.key" class="perm-perm-checkbox">
-                        <input 
+                        <input
                           type="checkbox"
                           :value="perm.key"
                           :checked="conn.permissions.includes(perm.key)"
@@ -1541,6 +1699,22 @@ watch(() => route.query.tab, () => {
                         />
                         <span>{{ perm.label }}</span>
                       </label>
+                    </div>
+
+                    <!-- Per-user native DB login: connect to this DB as a specific database user -->
+                    <div v-if="editingUser && conn.selected" class="perm-conn-cred">
+                      <div class="perm-cred-head">
+                        Native DB login <span class="perm-td-dim">(optional — connect to this database as its own user; the DB enforces natively)</span>
+                        <span v-if="credFor(conn.conn_id).configured" class="perm-cred-ok">✓ configured</span>
+                      </div>
+                      <div class="perm-cred-row">
+                        <input class="perm-input perm-input--sm" placeholder="DB username" v-model="credFor(conn.conn_id).username" />
+                        <input class="perm-input perm-input--sm" type="password"
+                          :placeholder="credFor(conn.conn_id).configured ? '•••••• (leave blank to keep)' : 'DB password'"
+                          v-model="credFor(conn.conn_id).password" />
+                        <button type="button" class="base-btn base-btn--ghost base-btn--xs" @click="saveConnCred(conn.conn_id)">Save login</button>
+                        <button v-if="credFor(conn.conn_id).configured" type="button" class="base-btn base-btn--ghost base-btn--xs perm-btn-del" @click="removeConnCred(conn.conn_id)">Remove</button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1923,6 +2097,64 @@ watch(() => route.query.tab, () => {
   cursor: pointer;
 }
 
+/* Access group member / connection pickers */
+.perm-picker-list {
+  margin-top: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--bg-surface);
+}
+
+.perm-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.perm-check-row input {
+  cursor: pointer;
+}
+
+.perm-conn-row {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.perm-conn-row:last-child {
+  border-bottom: none;
+}
+
+.perm-perm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 0 6px 24px;
+}
+
+.perm-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.perm-chip--on {
+  background: var(--accent, #14b8a6);
+  border-color: var(--accent, #14b8a6);
+  color: #fff;
+}
+
 /* ─────────────────────────────────────────────────────────────── */
 /* Permissions Container */
 /* ─────────────────────────────────────────────────────────────── */
@@ -2161,6 +2393,42 @@ watch(() => route.query.tab, () => {
   font-weight: 700;
   background: var(--brand);
   color: var(--brand-fg);
+}
+
+.perm-conn-cred {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.perm-cred-head {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.perm-cred-ok {
+  color: var(--brand, #14b8a6);
+  font-weight: 600;
+}
+
+.perm-cred-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.perm-input--sm {
+  width: auto;
+  flex: 1 1 160px;
+  min-width: 120px;
+  padding: 4px 8px;
+  font-size: 12px;
 }
 
 .perm-conn-perms {

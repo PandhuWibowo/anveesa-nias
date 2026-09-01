@@ -638,6 +638,21 @@ func migrate() error {
 			PRIMARY KEY (user_id, conn_id)
 		)`,
 
+		// Per-user native DB credentials: lets a user connect to the target
+		// database as their own DB login (native per-user enforcement) instead of
+		// the connection's shared login. db_password is AES-encrypted at rest.
+		`CREATE TABLE IF NOT EXISTS user_connection_credentials (
+			user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			conn_id     INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+			db_username TEXT NOT NULL,
+			db_password TEXT NOT NULL DEFAULT '',
+			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (user_id, conn_id)
+		)`,
+		// auth_mode: 'shared' (default, existing behaviour) or 'per_user'
+		// (each user must supply their own DB login before they can query).
+		`ALTER TABLE connections ADD COLUMN auth_mode TEXT DEFAULT 'shared'`,
+
 		// ── Approval Workflows ──
 		`CREATE TABLE IF NOT EXISTS approval_workflow (
 			id                     INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -90,9 +90,20 @@ func ExecuteQuery() http.HandlerFunc {
 		isReadKeyword := isReadSQLKeyword(firstSQLKeyword(req.SQL))
 		isWrite := !isReadKeyword
 
-		if isWrite && !CheckWritePermission(r, connID) {
-			http.Error(w, `{"error":"write permission denied"}`, http.StatusForbidden)
-			return
+		// Enforce the *specific* DB permission the statement requires (insert vs
+		// update vs delete vs create/alter/drop) rather than a coarse "any write"
+		// bucket — a user granted only SELECT must not be able to run writes, and
+		// a user granted only INSERT must not be able to DELETE or DROP.
+		if isWrite {
+			required := RequiredPermForSQL(req.SQL)
+			if !CheckOperationPermission(r, connID, required) {
+				msg := "write permission denied"
+				if required != "" {
+					msg = "permission denied for operation: " + string(required)
+				}
+				http.Error(w, jsonError(msg), http.StatusForbidden)
+				return
+			}
 		}
 
 		if isWrite && isAuthEnabled() {
@@ -115,7 +126,8 @@ func ExecuteQuery() http.HandlerFunc {
 			}
 		}
 
-		db, driver, err := GetDB(connID)
+		execUserID, _, _ := currentUserFromHeaders(r)
+		db, driver, err := GetDBForUser(execUserID, connID)
 		if err != nil {
 			http.Error(w, `{"error":"database connection error"}`, http.StatusBadGateway)
 			return

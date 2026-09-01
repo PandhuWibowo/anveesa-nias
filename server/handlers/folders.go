@@ -11,15 +11,16 @@ import (
 )
 
 type ConnectionFolder struct {
-	ID         int64  `json:"id"`
-	Name       string `json:"name"`
-	ParentID   *int64 `json:"parent_id"`
-	OwnerID    int64  `json:"owner_id"`
-	Visibility string `json:"visibility"` // "private" | "shared"
-	IsActive   bool   `json:"is_active"`
-	Color      string `json:"color"`
-	SortOrder  int    `json:"sort_order"`
-	CreatedAt  string `json:"created_at"`
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	ParentID     *int64 `json:"parent_id"`
+	OwnerID      int64  `json:"owner_id"`
+	Visibility   string `json:"visibility"`    // "private" | "shared"
+	RoleRestrict string `json:"role_restrict"` // "" = all roles, otherwise a role name
+	IsActive     bool   `json:"is_active"`
+	Color        string `json:"color"`
+	SortOrder    int    `json:"sort_order"`
+	CreatedAt    string `json:"created_at"`
 }
 
 func ListFolders() http.HandlerFunc {
@@ -35,7 +36,7 @@ func ListFolders() http.HandlerFunc {
 		// Admin or no auth enabled: see all folders
 		if userRole == "admin" || !isAuthEnabled() {
 			rows, err = appdb.DB.Query(
-				`SELECT id, name, parent_id, owner_id, visibility, COALESCE(is_active,1), color, COALESCE(sort_order,0), created_at
+				`SELECT id, name, parent_id, owner_id, visibility, COALESCE(role_restrict,''), COALESCE(is_active,1), color, COALESCE(sort_order,0), created_at
 				 FROM connection_folders ORDER BY sort_order, name`,
 			)
 		} else {
@@ -45,11 +46,11 @@ func ListFolders() http.HandlerFunc {
 				userID, _ = strconv.ParseInt(userIDStr, 10, 64)
 			}
 			rows, err = appdb.DB.Query(
-				`SELECT DISTINCT cf.id, cf.name, cf.parent_id, cf.owner_id, cf.visibility, COALESCE(cf.is_active,1), cf.color, COALESCE(cf.sort_order,0), cf.created_at
+				appdb.ConvertQuery(`SELECT DISTINCT cf.id, cf.name, cf.parent_id, cf.owner_id, cf.visibility, COALESCE(cf.role_restrict,''), COALESCE(cf.is_active,1), cf.color, COALESCE(cf.sort_order,0), cf.created_at
 				 FROM connection_folders cf
 				 LEFT JOIN folder_members fm ON cf.id = fm.folder_id AND fm.user_id = ?
 				 WHERE cf.visibility='shared' OR cf.owner_id=? OR fm.folder_id IS NOT NULL
-				 ORDER BY cf.sort_order, cf.name`,
+				 ORDER BY cf.sort_order, cf.name`),
 				userID, userID,
 			)
 		}
@@ -63,7 +64,7 @@ func ListFolders() http.HandlerFunc {
 		for rows.Next() {
 			var f ConnectionFolder
 			var isActive int
-			rows.Scan(&f.ID, &f.Name, &f.ParentID, &f.OwnerID, &f.Visibility, &isActive, &f.Color, &f.SortOrder, &f.CreatedAt)
+			rows.Scan(&f.ID, &f.Name, &f.ParentID, &f.OwnerID, &f.Visibility, &f.RoleRestrict, &isActive, &f.Color, &f.SortOrder, &f.CreatedAt)
 			f.IsActive = isActive == 1
 			folders = append(folders, f)
 		}
@@ -96,16 +97,25 @@ func CreateFolder() http.HandlerFunc {
 	var nextOrder int
 	appdb.DB.QueryRow(`SELECT COALESCE(MAX(sort_order),0)+1 FROM connection_folders`).Scan(&nextOrder)
 
-	res, err := appdb.DB.Exec(
-		appdb.ConvertQuery(`INSERT INTO connection_folders (name, parent_id, owner_id, visibility, color, sort_order)
-		 VALUES (?,?,?,?,?,?)`),
-		f.Name, f.ParentID, f.OwnerID, f.Visibility, f.Color, nextOrder,
-	)
+	// lib/pq (postgres) does not support LastInsertId, so use RETURNING there.
+	var err error
+	insert := `INSERT INTO connection_folders (name, parent_id, owner_id, visibility, role_restrict, color, sort_order)
+		 VALUES (?,?,?,?,?,?,?)`
+	if appdb.IsPostgreSQL() {
+		err = appdb.DB.QueryRow(appdb.ConvertQuery(insert+" RETURNING id"),
+			f.Name, f.ParentID, f.OwnerID, f.Visibility, f.RoleRestrict, f.Color, nextOrder).Scan(&f.ID)
+	} else {
+		var res sql.Result
+		res, err = appdb.DB.Exec(appdb.ConvertQuery(insert),
+			f.Name, f.ParentID, f.OwnerID, f.Visibility, f.RoleRestrict, f.Color, nextOrder)
+		if err == nil {
+			f.ID, _ = res.LastInsertId()
+		}
+	}
 	if err != nil {
 		http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 		return
 	}
-		f.ID, _ = res.LastInsertId()
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(f)
 	}
@@ -123,14 +133,64 @@ func UpdateFolder() http.HandlerFunc {
 			return
 		}
 
-		var f ConnectionFolder
-		if err := json.NewDecoder(r.Body).Decode(&f); err != nil {
+		// Partial update: only fields present in the request body are changed,
+		// so editing name/visibility/role never wipes color, sort_order, etc.
+		var req struct {
+			Name         *string `json:"name"`
+			ParentID     *int64  `json:"parent_id"`
+			Visibility   *string `json:"visibility"`
+			RoleRestrict *string `json:"role_restrict"`
+			Color        *string `json:"color"`
+			SortOrder    *int    `json:"sort_order"`
+			IsActive     *bool   `json:"is_active"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
 			return
 		}
-		_, err := appdb.DB.Exec(
-			appdb.ConvertQuery(`UPDATE connection_folders SET name=?, parent_id=?, visibility=?, color=?, sort_order=? WHERE id=?`),
-			f.Name, f.ParentID, f.Visibility, f.Color, f.SortOrder, id,
+
+		// Load current row and overlay provided fields.
+		var cur ConnectionFolder
+		var isActive int
+		err := appdb.DB.QueryRow(
+			appdb.ConvertQuery(`SELECT name, parent_id, visibility, COALESCE(role_restrict,''), color, COALESCE(sort_order,0), COALESCE(is_active,1) FROM connection_folders WHERE id=?`),
+			id,
+		).Scan(&cur.Name, &cur.ParentID, &cur.Visibility, &cur.RoleRestrict, &cur.Color, &cur.SortOrder, &isActive)
+		if err != nil {
+			http.Error(w, `{"error":"folder not found"}`, http.StatusNotFound)
+			return
+		}
+		cur.IsActive = isActive == 1
+
+		if req.Name != nil {
+			cur.Name = *req.Name
+		}
+		if req.ParentID != nil {
+			cur.ParentID = req.ParentID
+		}
+		if req.Visibility != nil {
+			cur.Visibility = *req.Visibility
+		}
+		if req.RoleRestrict != nil {
+			cur.RoleRestrict = *req.RoleRestrict
+		}
+		if req.Color != nil {
+			cur.Color = *req.Color
+		}
+		if req.SortOrder != nil {
+			cur.SortOrder = *req.SortOrder
+		}
+		if req.IsActive != nil {
+			cur.IsActive = *req.IsActive
+		}
+
+		activeVal := 0
+		if cur.IsActive {
+			activeVal = 1
+		}
+		_, err = appdb.DB.Exec(
+			appdb.ConvertQuery(`UPDATE connection_folders SET name=?, parent_id=?, visibility=?, role_restrict=?, color=?, sort_order=?, is_active=? WHERE id=?`),
+			cur.Name, cur.ParentID, cur.Visibility, cur.RoleRestrict, cur.Color, cur.SortOrder, activeVal, id,
 		)
 		if err != nil {
 			http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
@@ -275,4 +335,126 @@ func canAccessFolder(r *http.Request, folderID int64) bool {
 		return false
 	}
 	return visibility == "shared" || ownerID == userID
+}
+
+// folderIDFromSubPath extracts the numeric folder id from paths like
+// /api/folders/{id}/members or /api/folders/{id}/connections.
+func folderIDFromSubPath(path string) (string, bool) {
+	rest := strings.TrimPrefix(path, "/api/folders/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) < 1 || parts[0] == "" {
+		return "", false
+	}
+	return parts[0], true
+}
+
+// GroupMembers returns the users assigned to an access group.
+func GroupMembers() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		idStr, ok := folderIDFromSubPath(r.URL.Path)
+		if !ok {
+			http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
+			return
+		}
+		id, _ := strconv.ParseInt(idStr, 10, 64)
+		members, err := appdb.GetGroupMembers(id)
+		if err != nil {
+			http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+			return
+		}
+		if members == nil {
+			members = []map[string]interface{}{}
+		}
+		json.NewEncoder(w).Encode(members)
+	}
+}
+
+// SetGroupMembers replaces the full member list of an access group.
+func SetGroupMembers() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		idStr, ok := folderIDFromSubPath(r.URL.Path)
+		if !ok {
+			http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
+			return
+		}
+		if !canModifyFolder(r, idStr) {
+			http.Error(w, `{"error":"permission denied"}`, http.StatusForbidden)
+			return
+		}
+		id, _ := strconv.ParseInt(idStr, 10, 64)
+		var req struct {
+			UserIDs []int64 `json:"user_ids"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+			return
+		}
+		if err := appdb.SetGroupMembers(id, req.UserIDs); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}
+}
+
+// GroupConnections returns the connections granted through an access group.
+func GroupConnections() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		idStr, ok := folderIDFromSubPath(r.URL.Path)
+		if !ok {
+			http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
+			return
+		}
+		id, _ := strconv.ParseInt(idStr, 10, 64)
+		conns, err := appdb.GetGroupConnections(id)
+		if err != nil {
+			http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+			return
+		}
+		if conns == nil {
+			conns = []map[string]interface{}{}
+		}
+		json.NewEncoder(w).Encode(conns)
+	}
+}
+
+// SetGroupConnections replaces the connection grants of an access group.
+func SetGroupConnections() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		idStr, ok := folderIDFromSubPath(r.URL.Path)
+		if !ok {
+			http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
+			return
+		}
+		if !canModifyFolder(r, idStr) {
+			http.Error(w, `{"error":"permission denied"}`, http.StatusForbidden)
+			return
+		}
+		id, _ := strconv.ParseInt(idStr, 10, 64)
+		var req struct {
+			ConnectionIDs         []int64                `json:"connection_ids"`
+			ConnectionPermissions []ConnectionPermission `json:"connection_permissions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+			return
+		}
+		permsMap := make(map[int64][]appdb.DbPerm, len(req.ConnectionPermissions))
+		for _, cp := range req.ConnectionPermissions {
+			perms := make([]appdb.DbPerm, 0, len(cp.Permissions))
+			for _, p := range cp.Permissions {
+				perms = append(perms, appdb.DbPerm(string(p)))
+			}
+			permsMap[cp.ConnID] = perms
+		}
+		if err := appdb.SetGroupConnections(id, req.ConnectionIDs, permsMap); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}
 }
