@@ -43,18 +43,38 @@ type DockerHost struct {
 	SSHPassword string `json:"ssh_password,omitempty"`
 	SSHKey      string `json:"ssh_key,omitempty"`
 	SocketPath  string `json:"socket_path"`
+	JumpHostID  int64  `json:"jump_host_id,omitempty"`
+	Visibility  string `json:"visibility"`
 	OwnerID     int64  `json:"owner_id"`
 	CreatedAt   string `json:"created_at"`
+	// MyAccessLevel is computed per-request (not stored) so the frontend can
+	// hide edit/delete/share affordances for a read-only 'viewer' grantee on
+	// someone else's private host, instead of showing them and 403ing.
+	MyAccessLevel string `json:"my_access_level,omitempty"`
 }
 
 type DockerHostInput struct {
-	Name        string `json:"name"`
-	SSHHost     string `json:"ssh_host"`
-	SSHPort     int    `json:"ssh_port"`
-	SSHUser     string `json:"ssh_user"`
-	SSHPassword string `json:"ssh_password"`
-	SSHKey      string `json:"ssh_key"`
-	SocketPath  string `json:"socket_path"`
+	Name        string                  `json:"name"`
+	SSHHost     string                  `json:"ssh_host"`
+	SSHPort     int                     `json:"ssh_port"`
+	SSHUser     string                  `json:"ssh_user"`
+	SSHPassword string                  `json:"ssh_password"`
+	SSHKey      string                  `json:"ssh_key"`
+	SocketPath  string                  `json:"socket_path"`
+	JumpHostID  int64                   `json:"jump_host_id"`
+	Visibility  string                  `json:"visibility"`
+	Access      []DockerHostAccessEntry `json:"access"`
+}
+
+// DockerHostAccessEntry grants one user viewer/manager access to a private
+// host. Ignored for 'shared' hosts, where the existing coarse role
+// permission (docker.view/docker.manage/sftp.access/etc) already governs
+// everyone — this table only ever narrows access among role-permitted
+// users, never grants it to someone who lacks the role permission.
+type DockerHostAccessEntry struct {
+	UserID      int64  `json:"user_id"`
+	Username    string `json:"username,omitempty"`
+	AccessLevel string `json:"access_level"`
 }
 
 // Output structs use lowercase json tags. Go's JSON decoder matches keys
@@ -138,8 +158,23 @@ func dialDocker(h *DockerHost) (*dockerConn, error) {
 	}, nil
 }
 
-// sshClientForHost opens an SSH connection to a remote Docker host.
+// maxJumpDepth bounds how many hops a jump-host chain may have, guarding
+// against misconfigured cycles (host A jumps via B, B jumps via A, ...).
+const maxJumpDepth = 4
+
+// sshClientForHost opens an SSH connection to a remote Docker host. If the
+// host has a JumpHostID set, it is not reachable directly — the connection is
+// tunneled through the jump host's own SSH session instead (e.g. a partner's
+// SFTP server that only has a private IP reachable from inside another VM we
+// already manage).
 func sshClientForHost(h *DockerHost) (*ssh.Client, error) {
+	return sshClientForHostDepth(h, 0)
+}
+
+func sshClientForHostDepth(h *DockerHost, depth int) (*ssh.Client, error) {
+	if depth > maxJumpDepth {
+		return nil, fmt.Errorf("jump host chain too deep (possible cycle)")
+	}
 	authMethods := []ssh.AuthMethod{}
 	if strings.TrimSpace(h.SSHKey) != "" {
 		signer, err := ssh.ParsePrivateKey([]byte(h.SSHKey))
@@ -158,17 +193,57 @@ func sshClientForHost(h *DockerHost) (*ssh.Client, error) {
 	if port == 0 {
 		port = 22
 	}
+	addr := fmt.Sprintf("%s:%d", h.SSHHost, port)
 	cfg := &ssh.ClientConfig{
 		User:            h.SSHUser,
 		Auth:            authMethods,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec
 		Timeout:         10 * time.Second,
 	}
-	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", h.SSHHost, port), cfg)
-	if err != nil {
-		return nil, fmt.Errorf("ssh dial: %w", err)
+
+	if h.JumpHostID == 0 {
+		client, err := ssh.Dial("tcp", addr, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("ssh dial: %w", err)
+		}
+		return client, nil
 	}
-	return client, nil
+
+	bastion, err := loadDockerHost(h.JumpHostID)
+	if err != nil {
+		return nil, fmt.Errorf("load jump host: %w", err)
+	}
+	bastionClient, err := sshClientForHostDepth(bastion, depth+1)
+	if err != nil {
+		return nil, fmt.Errorf("jump host %q: %w", bastion.Name, err)
+	}
+	conn, err := bastionClient.Dial("tcp", addr)
+	if err != nil {
+		bastionClient.Close()
+		return nil, fmt.Errorf("dial %s via jump host %q: %w", addr, bastion.Name, err)
+	}
+	ncc, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
+	if err != nil {
+		conn.Close()
+		bastionClient.Close()
+		return nil, fmt.Errorf("ssh handshake via jump host %q: %w", bastion.Name, err)
+	}
+	// Wrap the connection so closing the returned client also tears down the
+	// bastion hop it tunnels through.
+	return ssh.NewClient(&jumpConn{Conn: ncc, bastion: bastionClient}, chans, reqs), nil
+}
+
+// jumpConn wraps an ssh.Conn established through a bastion client so that
+// Close()ing the resulting *ssh.Client also closes the bastion connection.
+type jumpConn struct {
+	ssh.Conn
+	bastion *ssh.Client
+}
+
+func (j *jumpConn) Close() error {
+	err := j.Conn.Close()
+	j.bastion.Close()
+	return err
 }
 
 // dialDockerSocket opens a single raw connection to the Docker socket. It is
@@ -274,16 +349,270 @@ func loadDockerHost(id int64) (*DockerHost, error) {
 	err := appdb.DB.QueryRow(appdb.ConvertQuery(
 		`SELECT id, name, ssh_host, ssh_port, ssh_user, COALESCE(ssh_password,''),
 		        COALESCE(ssh_key,''), COALESCE(socket_path,'/var/run/docker.sock'),
-		        COALESCE(owner_id,0), created_at
+		        COALESCE(jump_host_id,0), COALESCE(visibility,'shared'), COALESCE(owner_id,0), created_at
 		 FROM docker_hosts WHERE id = ?`), id).
 		Scan(&h.ID, &h.Name, &h.SSHHost, &h.SSHPort, &h.SSHUser, &encPw, &encKey,
-			&h.SocketPath, &h.OwnerID, &h.CreatedAt)
+			&h.SocketPath, &h.JumpHostID, &h.Visibility, &h.OwnerID, &h.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	h.SSHPassword, _ = decryptCredential(encPw)
 	h.SSHKey, _ = decryptCredential(encKey)
 	return &h, nil
+}
+
+// normalizeHostVisibility collapses any stored/input value to one of the two
+// supported visibilities, defaulting to today's behavior ('shared').
+func normalizeHostVisibility(v string) string {
+	if strings.TrimSpace(v) == "private" {
+		return "private"
+	}
+	return "shared"
+}
+
+// normalizeHostAccessLevel collapses any stored/input value to one of the
+// two supported access levels, defaulting to the least-privileged ('viewer').
+func normalizeHostAccessLevel(level string) string {
+	if strings.TrimSpace(level) == "manager" {
+		return "manager"
+	}
+	return "viewer"
+}
+
+// dockerHostAccessAllowed reports whether the current request's user may see
+// (requireManage=false) or edit/delete/reshare (requireManage=true) h. This
+// only ever narrows access for 'private' hosts among role-permitted users —
+// it is checked in ADDITION to (never instead of) the existing coarse
+// docker.view/docker.manage/sftp.access/etc permission gates, so it can
+// never grant access to someone who lacks the role permission entirely.
+func dockerHostAccessAllowed(h *DockerHost, r *http.Request, requireManage bool) bool {
+	if !isAuthEnabled() {
+		return true
+	}
+	userID, _, role := currentUserFromHeaders(r)
+	if strings.TrimSpace(role) == "admin" {
+		return true
+	}
+	if h.OwnerID != 0 && h.OwnerID == userID {
+		return true
+	}
+	if normalizeHostVisibility(h.Visibility) != "private" {
+		return true
+	}
+	level, err := getDockerHostAccessLevel(h.ID, userID)
+	if err != nil {
+		return false
+	}
+	if requireManage {
+		return level == "manager"
+	}
+	return true
+}
+
+// dockerHostMyAccessLevel reports the current request's user's standing on
+// h, for the frontend to decide whether to show edit/delete/share
+// affordances. Only meaningful once dockerHostAccessAllowed(h, r, false) has
+// already passed (e.g. via the ListDockerHosts filter) — callers shouldn't
+// call this for a host the user can't see at all.
+func dockerHostMyAccessLevel(h *DockerHost, r *http.Request) string {
+	if !isAuthEnabled() {
+		return "owner"
+	}
+	userID, _, role := currentUserFromHeaders(r)
+	if strings.TrimSpace(role) == "admin" {
+		return "admin"
+	}
+	if h.OwnerID != 0 && h.OwnerID == userID {
+		return "owner"
+	}
+	if normalizeHostVisibility(h.Visibility) != "private" {
+		return "shared"
+	}
+	level, _ := getDockerHostAccessLevel(h.ID, userID)
+	return level
+}
+
+// HostAccessGate parses hostIDStr (a path segment expected to be a
+// docker_hosts ID) and enforces dockerHostAccessAllowed for it, writing an
+// error response and returning false if access should be denied. Segments
+// that aren't numeric (e.g. the literal "test" path used to validate unsaved
+// credentials) have nothing to gate and always pass.
+func HostAccessGate(w http.ResponseWriter, r *http.Request, hostIDStr string, requireManage bool) bool {
+	id, err := strconv.ParseInt(hostIDStr, 10, 64)
+	if err != nil {
+		return true
+	}
+	h, err := loadDockerHost(id)
+	if err != nil {
+		http.Error(w, `{"error":"host not found"}`, http.StatusNotFound)
+		return false
+	}
+	if !dockerHostAccessAllowed(h, r, requireManage) {
+		http.Error(w, jsonError("you don't have access to this host"), http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+func getDockerHostAccessLevel(hostID, userID int64) (string, error) {
+	var level string
+	err := appdb.DB.QueryRow(appdb.ConvertQuery(`
+		SELECT COALESCE(access_level,'') FROM docker_host_access WHERE host_id = ? AND user_id = ?
+	`), hostID, userID).Scan(&level)
+	if err != nil {
+		return "", err
+	}
+	return normalizeHostAccessLevel(level), nil
+}
+
+func listDockerHostAccess(hostID int64) []DockerHostAccessEntry {
+	rows, err := appdb.DB.Query(appdb.ConvertQuery(`
+		SELECT a.user_id, COALESCE(u.username,''), COALESCE(a.access_level,'viewer')
+		FROM docker_host_access a
+		LEFT JOIN users u ON u.id = a.user_id
+		WHERE a.host_id = ?
+		ORDER BY COALESCE(u.username,''), a.user_id
+	`), hostID)
+	if err != nil {
+		return []DockerHostAccessEntry{}
+	}
+	defer rows.Close()
+	items := []DockerHostAccessEntry{}
+	for rows.Next() {
+		var item DockerHostAccessEntry
+		if err := rows.Scan(&item.UserID, &item.Username, &item.AccessLevel); err != nil {
+			return []DockerHostAccessEntry{}
+		}
+		item.AccessLevel = normalizeHostAccessLevel(item.AccessLevel)
+		items = append(items, item)
+	}
+	return items
+}
+
+// replaceDockerHostAccess replaces the full grant list for hostID (delete +
+// reinsert), mirroring the analytics-dashboard sharing pattern.
+func replaceDockerHostAccess(hostID int64, entries []DockerHostAccessEntry) error {
+	if _, err := appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM docker_host_access WHERE host_id = ?`), hostID); err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	for _, entry := range entries {
+		if entry.UserID <= 0 {
+			continue
+		}
+		if _, err := appdb.DB.Exec(appdb.ConvertQuery(`
+			INSERT INTO docker_host_access (host_id, user_id, access_level, created_at)
+			VALUES (?, ?, ?, ?)
+		`), hostID, entry.UserID, normalizeHostAccessLevel(entry.AccessLevel), now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ListDockerHostUsers lists active users eligible to be granted host access,
+// for the "share with" picker on a private host.
+func ListDockerHostUsers() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		rows, err := appdb.DB.Query(appdb.ConvertQuery(`
+			SELECT u.id, u.username, COALESCE(r.name, u.role) AS role
+			FROM users u
+			LEFT JOIN roles r ON r.id = u.role_id
+			WHERE COALESCE(u.is_active, 1) = 1
+			ORDER BY u.username ASC, u.id ASC
+		`))
+		if err != nil {
+			http.Error(w, jsonError("failed to list users"), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+		items := []map[string]any{}
+		for rows.Next() {
+			var id int64
+			var username, role string
+			if err := rows.Scan(&id, &username, &role); err != nil {
+				http.Error(w, jsonError("failed to read users"), http.StatusInternalServerError)
+				return
+			}
+			items = append(items, map[string]any{"id": id, "username": username, "role": role})
+		}
+		json.NewEncoder(w).Encode(items)
+	}
+}
+
+// GetDockerHostAccess returns the current visibility + grant list for a
+// host, for the "Share" panel. Only the owner, an admin, or an existing
+// 'manager' grantee may view/manage sharing settings.
+func GetDockerHostAccess() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := dockerHostIDFromPath(r)
+		if err != nil {
+			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
+			return
+		}
+		h, err := loadDockerHost(id)
+		if err != nil {
+			http.Error(w, `{"error":"host not found"}`, http.StatusNotFound)
+			return
+		}
+		if !dockerHostAccessAllowed(h, r, true) {
+			http.Error(w, jsonError("you don't have permission to manage sharing for this host"), http.StatusForbidden)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"visibility": normalizeHostVisibility(h.Visibility),
+			"owner_id":   h.OwnerID,
+			"access":     listDockerHostAccess(id),
+		})
+	}
+}
+
+// SetDockerHostAccess replaces a host's visibility and full grant list in
+// one call — the "Share" panel's save action. Kept separate from
+// UpdateDockerHost so that editing a host's name/credentials never has the
+// side effect of resetting who it's shared with.
+func SetDockerHostAccess() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id, err := dockerHostIDFromPath(r)
+		if err != nil {
+			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
+			return
+		}
+		h, err := loadDockerHost(id)
+		if err != nil {
+			http.Error(w, `{"error":"host not found"}`, http.StatusNotFound)
+			return
+		}
+		if !dockerHostAccessAllowed(h, r, true) {
+			http.Error(w, jsonError("you don't have permission to manage sharing for this host"), http.StatusForbidden)
+			return
+		}
+		var body struct {
+			Visibility string                  `json:"visibility"`
+			Access     []DockerHostAccessEntry `json:"access"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+			return
+		}
+		visibility := normalizeHostVisibility(body.Visibility)
+		if _, err := appdb.DB.Exec(appdb.ConvertQuery(
+			`UPDATE docker_hosts SET visibility=? WHERE id=?`), visibility, id); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
+			return
+		}
+		if err := replaceDockerHostAccess(id, body.Access); err != nil {
+			http.Error(w, jsonError("failed to save sharing: "+err.Error()), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"visibility": visibility,
+			"access":     listDockerHostAccess(id),
+		})
+	}
 }
 
 // connectHostByID loads a host and opens a Docker connection to it. The caller
@@ -317,7 +646,8 @@ func ListDockerHosts() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		rows, err := appdb.DB.Query(appdb.ConvertQuery(
 			`SELECT id, name, ssh_host, ssh_port, ssh_user,
-			        COALESCE(socket_path,'/var/run/docker.sock'), COALESCE(owner_id,0), created_at
+			        COALESCE(socket_path,'/var/run/docker.sock'), COALESCE(jump_host_id,0),
+			        COALESCE(visibility,'shared'), COALESCE(owner_id,0), created_at
 			 FROM docker_hosts ORDER BY name ASC`))
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
@@ -328,9 +658,13 @@ func ListDockerHosts() http.HandlerFunc {
 		for rows.Next() {
 			var h DockerHost
 			if err := rows.Scan(&h.ID, &h.Name, &h.SSHHost, &h.SSHPort, &h.SSHUser,
-				&h.SocketPath, &h.OwnerID, &h.CreatedAt); err != nil {
+				&h.SocketPath, &h.JumpHostID, &h.Visibility, &h.OwnerID, &h.CreatedAt); err != nil {
 				continue
 			}
+			if !dockerHostAccessAllowed(&h, r, false) {
+				continue
+			}
+			h.MyAccessLevel = dockerHostMyAccessLevel(&h, r)
 			// Never expose stored credentials in list responses.
 			list = append(list, h)
 		}
@@ -356,6 +690,30 @@ func validateDockerHostInput(in *DockerHostInput) error {
 	return nil
 }
 
+// validateJumpHostID checks that an optional jump-host reference points at a
+// real, different host. selfID is 0 on create (no self to compare against).
+func validateJumpHostID(jumpID, selfID int64) error {
+	if jumpID == 0 {
+		return nil
+	}
+	if jumpID == selfID {
+		return fmt.Errorf("a host cannot jump via itself")
+	}
+	if _, err := loadDockerHost(jumpID); err != nil {
+		return fmt.Errorf("jump host not found")
+	}
+	return nil
+}
+
+// nullableID returns nil for the SQL driver when id is unset (0), so the
+// column stores NULL instead of a bogus foreign key.
+func nullableID(id int64) interface{} {
+	if id == 0 {
+		return nil
+	}
+	return id
+}
+
 func CreateDockerHost() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -365,6 +723,10 @@ func CreateDockerHost() http.HandlerFunc {
 			return
 		}
 		if err := validateDockerHostInput(&in); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		if err := validateJumpHostID(in.JumpHostID, 0); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
 		}
@@ -385,19 +747,20 @@ func CreateDockerHost() http.HandlerFunc {
 			return
 		}
 		ownerID, _ := currentUserID(r)
+		visibility := normalizeHostVisibility(in.Visibility)
 
 		var id int64
-		insert := `INSERT INTO docker_hosts (name, ssh_host, ssh_port, ssh_user, ssh_password, ssh_key, socket_path, owner_id)
-			 VALUES (?,?,?,?,?,?,?,?)`
+		insert := `INSERT INTO docker_hosts (name, ssh_host, ssh_port, ssh_user, ssh_password, ssh_key, socket_path, jump_host_id, visibility, owner_id)
+			 VALUES (?,?,?,?,?,?,?,?,?,?)`
 		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
 			err = appdb.DB.QueryRow(appdb.ConvertQuery(insert+" RETURNING id"),
-				in.Name, in.SSHHost, in.SSHPort, in.SSHUser, encPw, encKey, in.SocketPath, ownerID).Scan(&id)
+				in.Name, in.SSHHost, in.SSHPort, in.SSHUser, encPw, encKey, in.SocketPath, nullableID(in.JumpHostID), visibility, ownerID).Scan(&id)
 		} else {
 			var res interface {
 				LastInsertId() (int64, error)
 			}
 			res, err = appdb.DB.Exec(appdb.ConvertQuery(insert),
-				in.Name, in.SSHHost, in.SSHPort, in.SSHUser, encPw, encKey, in.SocketPath, ownerID)
+				in.Name, in.SSHHost, in.SSHPort, in.SSHUser, encPw, encKey, in.SocketPath, nullableID(in.JumpHostID), visibility, ownerID)
 			if err == nil {
 				id, _ = res.LastInsertId()
 			}
@@ -405,6 +768,12 @@ func CreateDockerHost() http.HandlerFunc {
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
+		}
+		if visibility == "private" && len(in.Access) > 0 {
+			if err := replaceDockerHostAccess(id, in.Access); err != nil {
+				http.Error(w, jsonError("host created, but failed to save sharing: "+err.Error()), http.StatusInternalServerError)
+				return
+			}
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"id": id})
 	}
@@ -427,6 +796,10 @@ func UpdateDockerHost() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
 			return
 		}
+		if err := validateJumpHostID(in.JumpHostID, id); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
 		if in.SSHPort == 0 {
 			in.SSHPort = 22
 		}
@@ -440,6 +813,10 @@ func UpdateDockerHost() http.HandlerFunc {
 			http.Error(w, `{"error":"host not found"}`, http.StatusNotFound)
 			return
 		}
+		if !dockerHostAccessAllowed(existing, r, true) {
+			http.Error(w, jsonError("you don't have permission to edit this host"), http.StatusForbidden)
+			return
+		}
 		pwPlain := in.SSHPassword
 		if strings.TrimSpace(pwPlain) == "" {
 			pwPlain = existing.SSHPassword
@@ -451,10 +828,14 @@ func UpdateDockerHost() http.HandlerFunc {
 		encPw, _ := encryptCredential(pwPlain)
 		encKey, _ := encryptCredential(keyPlain)
 
+		// Sharing (visibility + grants) is managed separately via
+		// GetDockerHostAccess/SetDockerHostAccess — this endpoint only ever
+		// touches connection fields, so editing a host's name/credentials
+		// never has a side effect of resetting who it's shared with.
 		_, err = appdb.DB.Exec(appdb.ConvertQuery(
 			`UPDATE docker_hosts SET name=?, ssh_host=?, ssh_port=?, ssh_user=?,
-			        ssh_password=?, ssh_key=?, socket_path=? WHERE id=?`),
-			in.Name, in.SSHHost, in.SSHPort, in.SSHUser, encPw, encKey, in.SocketPath, id)
+			        ssh_password=?, ssh_key=?, socket_path=?, jump_host_id=? WHERE id=?`),
+			in.Name, in.SSHHost, in.SSHPort, in.SSHUser, encPw, encKey, in.SocketPath, nullableID(in.JumpHostID), id)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
@@ -471,6 +852,22 @@ func DeleteDockerHost() http.HandlerFunc {
 			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
 			return
 		}
+		existing, err := loadDockerHost(id)
+		if err != nil {
+			http.Error(w, `{"error":"host not found"}`, http.StatusNotFound)
+			return
+		}
+		if !dockerHostAccessAllowed(existing, r, true) {
+			http.Error(w, jsonError("you don't have permission to delete this host"), http.StatusForbidden)
+			return
+		}
+		// Clear any hosts that jump via this one before deleting it, so they
+		// don't end up pointing at a nonexistent bastion.
+		if _, err := appdb.DB.Exec(appdb.ConvertQuery(
+			`UPDATE docker_hosts SET jump_host_id=NULL WHERE jump_host_id=?`), id); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
+			return
+		}
 		if _, err := appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM docker_hosts WHERE id=?`), id); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
@@ -479,8 +876,10 @@ func DeleteDockerHost() http.HandlerFunc {
 	}
 }
 
-// dockerPing reports daemon reachability + version for a given connection.
-func dockerPing(w http.ResponseWriter, d *dockerConn) {
+// dockerVersion fetches basic daemon info over an established connection.
+// The returned error means the Docker socket specifically isn't reachable —
+// distinct from (and often occurring despite) a successful SSH connection.
+func dockerVersion(d *dockerConn) (map[string]interface{}, error) {
 	var ver struct {
 		Version    string `json:"version"`
 		APIVersion string `json:"apiVersion"`
@@ -488,15 +887,39 @@ func dockerPing(w http.ResponseWriter, d *dockerConn) {
 		Arch       string `json:"arch"`
 	}
 	if err := d.getJSON("/version", nil, &ver); err != nil {
-		http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
-		return
+		return nil, err
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	return map[string]interface{}{
 		"ok":          true,
 		"version":     ver.Version,
 		"api_version": ver.APIVersion,
 		"os":          ver.Os,
 		"arch":        ver.Arch,
+	}, nil
+}
+
+// dockerPing reports daemon reachability + version for a given connection.
+func dockerPing(w http.ResponseWriter, d *dockerConn) {
+	info, err := dockerVersion(d)
+	if err != nil {
+		http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+		return
+	}
+	json.NewEncoder(w).Encode(info)
+}
+
+// writeDockerUnreachable responds when SSH (and any jump hop) authenticated
+// fine but the Docker socket itself couldn't be reached — expected for hosts
+// only ever used for SFTP/Nginx, or restricted SFTP-only accounts that
+// reject non-SFTP channels. Still a failed response (the handler's contract
+// is "is Docker up"), but callers can check ssh_ok to phrase it as a soft
+// warning instead of a hard connection error.
+func writeDockerUnreachable(w http.ResponseWriter, err error) {
+	w.WriteHeader(http.StatusBadGateway)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"error":      err.Error(),
+		"ssh_ok":     true,
+		"docker_err": err.Error(),
 	})
 }
 
@@ -516,18 +939,56 @@ func TestDockerHost() http.HandlerFunc {
 		h := &DockerHost{
 			SSHHost: in.SSHHost, SSHPort: in.SSHPort, SSHUser: in.SSHUser,
 			SSHPassword: in.SSHPassword, SSHKey: in.SSHKey, SocketPath: in.SocketPath,
+			JumpHostID: in.JumpHostID,
 		}
-		d, err := dialDocker(h)
+
+		// Local mode talks straight to the socket — there's no separate SSH
+		// layer to verify, so a Docker ping failure is the whole answer.
+		if strings.TrimSpace(h.SSHHost) == "" {
+			d, err := dialDocker(h)
+			if err != nil {
+				http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+				return
+			}
+			defer d.Close()
+			dockerPing(w, d)
+			return
+		}
+
+		// Remote mode: this host record may end up used for SFTP or Nginx
+		// only, never Docker — and a restricted SFTP-only account (or a
+		// jump host with forwarding disabled) will reject the Docker socket
+		// channel even when SSH auth itself is fine. Verify SSH (and any
+		// jump hop) succeeds first, independently of Docker reachability.
+		sshClient, err := sshClientForHost(h)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
 		}
+		sshClient.Close()
+
+		d, err := dialDocker(h)
+		if err != nil {
+			writeDockerUnreachable(w, err)
+			return
+		}
 		defer d.Close()
-		dockerPing(w, d)
+		info, err := dockerVersion(d)
+		if err != nil {
+			writeDockerUnreachable(w, err)
+			return
+		}
+		json.NewEncoder(w).Encode(info)
 	}
 }
 
-// DockerPing tests connectivity for a saved host.
+// DockerPing tests connectivity for a saved host. It still reports failure
+// (non-2xx) whenever the Docker socket itself isn't reachable — callers that
+// gate Docker-specific features on this (DockerView, NginxView) need that —
+// but for a remote host it also confirms whether SSH itself (and any jump
+// hop) got through, so a caller like the host-form "Test connection" button
+// can tell "wrong credentials" apart from "this host just isn't running
+// Docker" (e.g. an SFTP-only account, or a jump host used only for SFTP).
 func DockerPing() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -536,13 +997,30 @@ func DockerPing() http.HandlerFunc {
 			http.Error(w, `{"error":"invalid host id"}`, http.StatusBadRequest)
 			return
 		}
-		d, err := connectHostByID(id)
+		h, err := loadDockerHost(id)
+		if err != nil {
+			http.Error(w, `{"error":"host not found"}`, http.StatusNotFound)
+			return
+		}
+		d, err := dialDocker(h)
 		if err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
 		}
 		defer d.Close()
-		dockerPing(w, d)
+		info, err := dockerVersion(d)
+		if err != nil {
+			if strings.TrimSpace(h.SSHHost) != "" {
+				if sc, sshErr := sshClientForHost(h); sshErr == nil {
+					sc.Close()
+					writeDockerUnreachable(w, err)
+					return
+				}
+			}
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(info)
 	}
 }
 

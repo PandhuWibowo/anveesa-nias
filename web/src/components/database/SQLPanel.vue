@@ -15,6 +15,7 @@ import { useDatabases } from '@/composables/useDatabases'
 import { useSchemaCompletion } from '@/composables/useSchemaCompletion'
 import { useConnections } from '@/composables/useConnections'
 import { formatSQL } from '@/utils/sqlFormat'
+import { splitSQLStatements } from '@/utils/sqlSplit'
 import { downloadCSV, downloadJSON, downloadExcel, downloadSQL } from '@/utils/export'
 import { readableError, readableFetchError } from '@/utils/httpError'
 
@@ -270,11 +271,25 @@ async function runQuery(sqlOverride?: string) {
   const tab = activeTab.value
   const sql = sqlOverride ?? getActiveSQLFromEditor()
   if (!sql.trim()) return
+  tab.error = ''
+  tab.notice = ''
+
+  // A selection (or occasionally the cursor's "active statement" text) can
+  // span more than one SQL statement — sending that raw multi-statement text
+  // to /query hits a single-result-set endpoint with undefined per-driver
+  // behavior (Postgres returns only the first statement's rows, MySQL
+  // errors outright, SQLite returns only the last statement's rows). Route
+  // those through the same multi-statement path as the "Script" button
+  // instead, which already splits, runs, and renders one result per
+  // statement.
+  if (splitSQLStatements(sql).length > 1) {
+    await runScript(sql)
+    return
+  }
+
   const ctrl = new AbortController()
   abortControllers.set(tab.id, ctrl)
   tab.running = true
-  tab.error = ''
-  tab.notice = ''
   try {
     const { data } = await axios.post<QueryResult>(
       `/api/connections/${props.connId}/query`,
@@ -365,6 +380,12 @@ async function runStreamQuery(sqlOverride?: string) {
   const tab = activeTab.value
   const sql = sqlOverride ?? getActiveSQLFromEditor()
   if (!sql.trim()) return
+  if (splitSQLStatements(sql).length > 1) {
+    tab.error = 'Streaming runs one statement at a time — turn off Stream mode to run multiple statements together.'
+    tab.notice = ''
+    tab.noticeTone = 'error'
+    return
+  }
   tab.running = true
   const cols: string[] = []
   const rows: unknown[][] = []
@@ -424,13 +445,14 @@ function stopStream() { streamAbort?.abort() }
 // ── Multi-statement script ────────────────────────────────────────
 const scriptRunning = ref(false)
 
-async function runScript() {
+async function runScript(sqlOverride?: string) {
   if (!props.connId || !activeTab.value?.sql) return
+  const sqlText = sqlOverride ?? activeTab.value.sql
   scriptRunning.value = true
   try {
     const { data } = await axios.post<ScriptResult[]>(
       `/api/connections/${props.connId}/script`,
-      { sql: buildParamSQL(activeTab.value.sql), database: selectedDatabase.value || undefined }
+      { sql: buildParamSQL(sqlText), database: selectedDatabase.value || undefined }
     )
     emit('result', { kind: 'script', results: data })
     const schemaChangingResult = data.find((item) => !item.error && isSchemaChangingSQL(item.sql))
@@ -439,7 +461,7 @@ async function runScript() {
     const responseData = e?.response?.data
     if (activeTab.value && responseData?.approval_required) {
       try {
-        await handleApprovalRequired(activeTab.value.sql, responseData)
+        await handleApprovalRequired(sqlText, responseData)
       } catch (submitErr) {
         setActiveError(readableError(submitErr, { action: 'Submit approval request', fallback: 'Failed to submit approval request' }))
       }
@@ -586,7 +608,7 @@ defineExpose({ loadSQL, currentSQL, exportCurrentResult })
       </button>
 
       <!-- Script -->
-      <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!connId || !activeTab?.sql.trim() || scriptRunning" @click="runScript" title="Run all statements">
+      <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!connId || !activeTab?.sql.trim() || scriptRunning" @click="runScript()" title="Run all statements">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
         Script
       </button>

@@ -66,15 +66,16 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 			isActive    int
 			totpEnabled int
 			totpSecret  string
+			mfaExempt   int
 		)
 
 		// Use appropriate parameter placeholder for database
-		query := `SELECT id, username, password, role, COALESCE(is_active, 1), COALESCE(totp_enabled, 0), COALESCE(totp_secret, '') FROM users WHERE username = ?`
+		query := `SELECT id, username, password, role, COALESCE(is_active, 1), COALESCE(totp_enabled, 0), COALESCE(totp_secret, ''), COALESCE(mfa_exempt, 0) FROM users WHERE username = ?`
 		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
-			query = `SELECT id, username, password, role, COALESCE(is_active, 1), COALESCE(totp_enabled, 0), COALESCE(totp_secret, '') FROM users WHERE username = $1`
+			query = `SELECT id, username, password, role, COALESCE(is_active, 1), COALESCE(totp_enabled, 0), COALESCE(totp_secret, ''), COALESCE(mfa_exempt, 0) FROM users WHERE username = $1`
 		}
 
-		err := appdb.DB.QueryRow(query, body.Username).Scan(&id, &username, &hash, &role, &isActive, &totpEnabled, &totpSecret)
+		err := appdb.DB.QueryRow(query, body.Username).Scan(&id, &username, &hash, &role, &isActive, &totpEnabled, &totpSecret, &mfaExempt)
 		if err != nil {
 			_ = appdb.RecordLoginEvent(nil, body.Username, clientIP(r), r.UserAgent(), false, "invalid_credentials")
 			// Use constant-time comparison to prevent timing attacks
@@ -165,11 +166,11 @@ func LoginHandler(cfg *config.Config) http.HandlerFunc {
 			return
 		}
 		mfaEnforced := isMFAEnforced()
-		mfaRequiredSetup := mfaEnforced && totpEnabled != 1
+		mfaRequiredSetup := mfaEnforced && totpEnabled != 1 && mfaExempt != 1
 
 		json.NewEncoder(w).Encode(map[string]any{
 			"token": tokenStr,
-			"user":  map[string]any{"id": id, "username": username, "role": role, "permissions": perms, "mfa_enabled": totpEnabled == 1, "mfa_enforced": mfaEnforced, "mfa_required_setup": mfaRequiredSetup},
+			"user":  map[string]any{"id": id, "username": username, "role": role, "permissions": perms, "mfa_enabled": totpEnabled == 1, "mfa_enforced": mfaEnforced, "mfa_exempt": mfaExempt == 1, "mfa_required_setup": mfaRequiredSetup},
 		})
 		_ = appdb.RecordLoginEvent(&id, username, clientIP(r), r.UserAgent(), true, "")
 	}
@@ -352,6 +353,7 @@ func MeHandler() http.HandlerFunc {
 		}
 		mfaEnabled := userMFAEnabled(claims.UserID)
 		mfaEnforced := isMFAEnforced()
+		mfaExempt := userMFAExempt(claims.UserID)
 
 		json.NewEncoder(w).Encode(map[string]any{
 			"id":                 claims.UserID,
@@ -360,7 +362,8 @@ func MeHandler() http.HandlerFunc {
 			"permissions":        perms,
 			"mfa_enabled":        mfaEnabled,
 			"mfa_enforced":       mfaEnforced,
-			"mfa_required_setup": mfaEnforced && !mfaEnabled,
+			"mfa_exempt":         mfaExempt,
+			"mfa_required_setup": mfaEnforced && !mfaEnabled && !mfaExempt,
 		})
 	}
 }

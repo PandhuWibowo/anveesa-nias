@@ -1,17 +1,29 @@
 package handlers
 
 import (
+	"bufio"
 	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// errRestoreStreamRead marks an error as coming from reading the source
+// stream (network drop, truncated bucket object) rather than a SQL statement
+// failing to execute — see execRestoreStream. Callers use errors.Is against
+// this to decide whether a fresh download + retry is worth attempting.
+var errRestoreStreamRead = errors.New("restore stream read error")
 
 // ── Options ───────────────────────────────────────────────────────────────────
 
@@ -25,16 +37,16 @@ type BackupOptions struct {
 	IfNotExists  bool `json:"if_not_exists"` // use CREATE TABLE IF NOT EXISTS
 
 	// Data options
-	ColumnInsert    bool `json:"column_insert"`    // INSERT INTO t (c1,c2) VALUES (...)
-	UseTransaction  bool `json:"use_transaction"`  // BEGIN/COMMIT per table
+	ColumnInsert    bool `json:"column_insert"`     // INSERT INTO t (c1,c2) VALUES (...)
+	UseTransaction  bool `json:"use_transaction"`   // BEGIN/COMMIT per table
 	DisableFKChecks bool `json:"disable_fk_checks"` // SET FOREIGN_KEY_CHECKS=0 wrapper
 
 	// Post-data / extra DDL
-	IncludeIndexes  bool `json:"include_indexes"`  // emit CREATE INDEX after data
-	IncludeFKs      bool `json:"include_fks"`      // emit ADD CONSTRAINT … FOREIGN KEY
-	IncludeViews    bool `json:"include_views"`    // emit CREATE VIEW definitions
+	IncludeIndexes   bool `json:"include_indexes"`   // emit CREATE INDEX after data
+	IncludeFKs       bool `json:"include_fks"`       // emit ADD CONSTRAINT … FOREIGN KEY
+	IncludeViews     bool `json:"include_views"`     // emit CREATE VIEW definitions
 	IncludeSequences bool `json:"include_sequences"` // emit CREATE SEQUENCE (PG only)
-	IncludeTriggers bool `json:"include_triggers"` // emit CREATE TRIGGER (best-effort)
+	IncludeTriggers  bool `json:"include_triggers"`  // emit CREATE TRIGGER (best-effort)
 
 	// Output
 	Compress bool `json:"compress"` // gzip the output (.sql.gz)
@@ -48,18 +60,18 @@ type BackupOptions struct {
 // DefaultBackupOptions returns sensible defaults matching pgAdmin's defaults.
 func DefaultBackupOptions() BackupOptions {
 	return BackupOptions{
-		Sections:        "all",
-		DropExisting:    false,
-		IfNotExists:     false,
-		ColumnInsert:    true,
-		UseTransaction:  false,
-		DisableFKChecks: true,
-		IncludeIndexes:  true,
-		IncludeFKs:      true,
-		IncludeViews:    false,
+		Sections:         "all",
+		DropExisting:     false,
+		IfNotExists:      false,
+		ColumnInsert:     true,
+		UseTransaction:   false,
+		DisableFKChecks:  true,
+		IncludeIndexes:   true,
+		IncludeFKs:       true,
+		IncludeViews:     false,
 		IncludeSequences: false,
-		IncludeTriggers: false,
-		Compress:        false,
+		IncludeTriggers:  false,
+		Compress:         false,
 	}
 }
 
@@ -112,9 +124,18 @@ func backupOptionsFromQuery(r *http.Request) BackupOptions {
 
 // ── Restore allow-list ────────────────────────────────────────────────────────
 
+// allowedRestoreStatements must cover every statement shape writeBackupDump
+// can emit (see generateTableDDL, writePGCreateSequences, writePGEnums,
+// writePGSequenceReset, writeViews, fkDisable/EnableStatement) — otherwise a
+// restore of the app's own backups silently drops statements a later one
+// depends on (e.g. a CREATE TABLE ... DEFAULT nextval(seq) failing because the
+// CREATE SEQUENCE before it was skipped).
 var allowedRestoreStatements = []string{
 	"INSERT ", "CREATE TABLE", "CREATE INDEX", "CREATE UNIQUE INDEX",
+	"CREATE SEQUENCE", "CREATE TYPE", "CREATE OR REPLACE VIEW", "CREATE VIEW",
+	"SELECT SETVAL(",
 	"DROP TABLE", "DROP INDEX", "ALTER TABLE", "SET ", "BEGIN", "COMMIT", "ROLLBACK", "DO ",
+	"EXEC SP_MSFOREACHTABLE",
 }
 
 func isAllowedRestoreStatement(stmt string) bool {
@@ -125,6 +146,81 @@ func isAllowedRestoreStatement(stmt string) bool {
 		}
 	}
 	return false
+}
+
+// ── Restore progress labels ─────────────────────────────────────────────────
+//
+// describeStatement turns a raw SQL statement into a short human-readable
+// label ("Inserting into orders") for live progress display — a running
+// count alone doesn't tell an operator what's actually happening during a
+// multi-minute restore. Best-effort only: an unrecognized shape falls back to
+// a truncated statement preview rather than failing.
+
+var (
+	reInsertInto  = regexp.MustCompile(`(?is)^INSERT\s+INTO\s+([^\s(]+)`)
+	reCreateTable = regexp.MustCompile(`(?is)^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s(]+)`)
+	reCreateIndex = regexp.MustCompile(`(?is)^CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\S+\s+ON\s+([^\s(]+)`)
+	reCreateSeq   = regexp.MustCompile(`(?is)^CREATE\s+SEQUENCE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)`)
+	reCreateType  = regexp.MustCompile(`(?is)^CREATE\s+TYPE\s+(\S+)`)
+	reCreateView  = regexp.MustCompile(`(?is)^CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(\S+)`)
+	reAlterTable  = regexp.MustCompile(`(?is)^ALTER\s+TABLE\s+([^\s(]+)`)
+	reDropTable   = regexp.MustCompile(`(?is)^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([^\s(]+)`)
+	reDropIndex   = regexp.MustCompile(`(?is)^DROP\s+INDEX\s+(?:IF\s+EXISTS\s+)?([^\s(]+)`)
+	reSetval      = regexp.MustCompile(`(?is)^SELECT\s+SETVAL\(\s*'([^']+)'`)
+	reDoTable     = regexp.MustCompile(`(?is)ALTER\s+TABLE\s+([^\s(]+)`)
+)
+
+// cleanIdent strips quoting/brackets and collapses `"schema"."table"` down to
+// `schema.table` for a readable label.
+func cleanIdent(s string) string {
+	s = strings.ReplaceAll(s, `"."`, ".")
+	s = strings.Trim(s, `"`+"`"+`[]`)
+	return s
+}
+
+func describeStatement(stmt string) string {
+	s := strings.TrimSpace(stmt)
+	upper := strings.ToUpper(s)
+	switch {
+	case reInsertInto.MatchString(s):
+		return "Inserting into " + cleanIdent(reInsertInto.FindStringSubmatch(s)[1])
+	case reCreateTable.MatchString(s):
+		return "Creating table " + cleanIdent(reCreateTable.FindStringSubmatch(s)[1])
+	case reCreateIndex.MatchString(s):
+		return "Indexing " + cleanIdent(reCreateIndex.FindStringSubmatch(s)[1])
+	case reCreateSeq.MatchString(s):
+		return "Creating sequence " + cleanIdent(reCreateSeq.FindStringSubmatch(s)[1])
+	case reCreateType.MatchString(s):
+		return "Creating type " + cleanIdent(reCreateType.FindStringSubmatch(s)[1])
+	case reCreateView.MatchString(s):
+		return "Creating view " + cleanIdent(reCreateView.FindStringSubmatch(s)[1])
+	case reSetval.MatchString(s):
+		return "Resetting sequence " + cleanIdent(reSetval.FindStringSubmatch(s)[1])
+	case strings.HasPrefix(upper, "DO "):
+		if m := reDoTable.FindStringSubmatch(s); m != nil {
+			return "Repairing constraints on " + cleanIdent(m[1])
+		}
+		return "Applying constraint repair"
+	case reDropTable.MatchString(s):
+		return "Dropping table " + cleanIdent(reDropTable.FindStringSubmatch(s)[1])
+	case reDropIndex.MatchString(s):
+		return "Dropping index " + cleanIdent(reDropIndex.FindStringSubmatch(s)[1])
+	case reAlterTable.MatchString(s):
+		return "Altering table " + cleanIdent(reAlterTable.FindStringSubmatch(s)[1])
+	case strings.HasPrefix(upper, "SET "):
+		return "Configuring session"
+	case strings.HasPrefix(upper, "BEGIN"):
+		return "Starting transaction block"
+	case strings.HasPrefix(upper, "COMMIT"):
+		return "Committing"
+	case strings.HasPrefix(upper, "EXEC"):
+		return "Toggling foreign key checks"
+	default:
+		if len(s) > 48 {
+			return s[:48] + "…"
+		}
+		return s
+	}
 }
 
 // ── HTTP Handlers ─────────────────────────────────────────────────────────────
@@ -178,7 +274,92 @@ func GetBackup() http.HandlerFunc {
 	}
 }
 
-// RestoreBackup executes uploaded SQL statements.
+// ── Async restore job store ───────────────────────────────────────────────────
+//
+// Restores of real-world dumps can run for many minutes (multi-GB files,
+// hundreds of thousands of statements). Running that synchronously inside one
+// HTTP request is fragile — it's at the mercy of the server's WriteTimeout,
+// reverse proxies, and the browser tab staying open — so instead the request
+// just kicks off a background job (mirroring BackupToBucket's job pattern)
+// and the frontend polls for live progress.
+
+type RestoreJobStatus string
+
+// RestoreRowFailure pairs a failed statement's human-readable label (e.g.
+// "Inserting into public.accounts") with its error, for diagnostics.
+type RestoreRowFailure struct {
+	Statement string `json:"statement"`
+	Error     string `json:"error"`
+}
+
+// maxTrackedRowFailures caps how many individual failures RestoreJob keeps
+// full detail on — FailedRows (the atomic counter) always reflects the true
+// total regardless of this cap.
+const maxTrackedRowFailures = 50
+
+const (
+	RestoreJobRunning  RestoreJobStatus = "running"
+	RestoreJobDone     RestoreJobStatus = "done"
+	RestoreJobFailed   RestoreJobStatus = "failed"
+	RestoreJobCanceled RestoreJobStatus = "canceled"
+)
+
+type RestoreJob struct {
+	ID        string           `json:"id"`
+	Status    RestoreJobStatus `json:"status"`
+	StartedAt time.Time        `json:"started_at"`
+	DoneAt    *time.Time       `json:"done_at,omitempty"`
+
+	// Executed/Skipped/FailedRows are updated live via atomic ops from the
+	// streaming executor — read with atomic.LoadInt64, never under mu.
+	Executed int64 `json:"executed"`
+	Skipped  int64 `json:"skipped"`
+	// FailedRows counts INSERTs that errored and were rolled back to a
+	// per-statement savepoint instead of aborting the whole restore — only
+	// nonzero when the caller opted into continueOnError.
+	FailedRows int64 `json:"failed_rows"`
+
+	// FirstRowError mirrors FailedRowDetails[0].Error for older frontend
+	// builds that only read this field — kept in sync, not a separate value.
+	FirstRowError string `json:"first_row_error,omitempty"`
+	// FailedRowDetails captures up to maxTrackedRowFailures individual row
+	// failures (which statement, and why) for diagnostics — mu-protected.
+	// Capped rather than unbounded: a badly-formed dump can produce millions
+	// of identical failures, and there's no value in storing each one;
+	// FailedRows still tracks the true total count separately via atomic ops.
+	FailedRowDetails []RestoreRowFailure `json:"failed_row_details,omitempty"`
+
+	// Current/CurrentCount/Recent give a human-readable window into what the
+	// executor is actually doing right now (e.g. "Inserting into orders"), not
+	// just a running total — all mu-protected since they're plain values, not
+	// atomics. Recent only gets a new entry when the label actually changes
+	// (a bulk insert into one table can be the identical label for hundreds of
+	// thousands of consecutive statements — repeating that line in a log is
+	// noise, not information); CurrentCount tracks how many times the current
+	// label has repeated in a row instead.
+	Current      string   `json:"current,omitempty"`
+	CurrentCount int64    `json:"current_count,omitempty"`
+	Recent       []string `json:"recent,omitempty"`
+
+	Error string `json:"error,omitempty"`
+
+	cancel context.CancelFunc
+	mu     sync.Mutex
+}
+
+var restoreJobs sync.Map // id → *RestoreJob
+
+func getRestoreJob(id string) (*RestoreJob, bool) {
+	v, ok := restoreJobs.Load(id)
+	if !ok {
+		return nil, false
+	}
+	return v.(*RestoreJob), true
+}
+
+// RestoreBackup starts an async restore job and returns a job ID immediately.
+// The actual download/decompress/execute runs in a background goroutine;
+// callers poll GET /api/restore/jobs/:id for status.
 // POST /api/connections/{id}/restore
 func RestoreBackup() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -200,53 +381,312 @@ func RestoreBackup() http.HandlerFunc {
 		}
 
 		var req struct {
-			SQL string `json:"sql"`
+			SQL             string `json:"sql"`
+			DestConnID      int64  `json:"dest_conn_id"`
+			ObjectKey       string `json:"object_key"`
+			SkipConflicts   bool   `json:"skip_conflicts"`
+			ContinueOnError bool   `json:"continue_on_error"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.SQL) == "" {
-			http.Error(w, `{"error":"sql required"}`, http.StatusBadRequest)
-			return
-		}
-		if len(req.SQL) > 50*1024*1024 {
-			http.Error(w, `{"error":"SQL too large (max 50MB)"}`, http.StatusBadRequest)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 			return
 		}
 
-		db, _, err := GetDB(connID)
+		fromBucket := strings.TrimSpace(req.SQL) == "" && req.DestConnID != 0 && strings.TrimSpace(req.ObjectKey) != ""
+		if !fromBucket && strings.TrimSpace(req.SQL) == "" {
+			http.Error(w, `{"error":"sql required"}`, http.StatusBadRequest)
+			return
+		}
+
+		// The upload path posts SQL text inline as JSON from the browser, so it
+		// stays tight. The bucket path streams the object straight through
+		// (download → gunzip → statement executor) without ever buffering the
+		// whole dump in memory, so multi-GB restores are fine there.
+		const maxUploadBytes = 50 * 1024 * 1024
+		if !fromBucket && len(req.SQL) > maxUploadBytes {
+			http.Error(w, `{"error":"SQL too large (max 50MB, use a bucket source for larger dumps)"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Fail fast on bad inputs before committing to a background job: these
+		// are quick metadata/pool lookups, not the slow part.
+		var dest *bucketConnRow
+		if fromBucket {
+			dest, err = fetchBucketConn(req.DestConnID)
+			if err != nil {
+				http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+				return
+			}
+		}
+		db, driver, err := GetDB(connID)
 		if err != nil {
 			http.Error(w, `{"error":"connection error"}`, http.StatusBadGateway)
 			return
 		}
 
-		tx, err := db.BeginTx(r.Context(), nil)
-		if err != nil {
-			http.Error(w, `{"error":"transaction error"}`, http.StatusInternalServerError)
-			return
+		username := r.Header.Get("X-Username")
+		if username == "" {
+			username = "anonymous"
+		}
+		connName := connectionNameByID(connID)
+		restoreTarget := "uploaded SQL file"
+		restoreSourceDesc := "uploaded SQL file"
+		if fromBucket {
+			restoreTarget = req.ObjectKey
+			restoreSourceDesc = "bucket:" + req.ObjectKey
 		}
 
-		stmts := splitSQL(req.SQL)
-		executed, skipped := 0, 0
-		for _, stmt := range stmts {
-			stmt = strings.TrimSpace(stmt)
-			if stmt == "" || strings.HasPrefix(stmt, "--") {
-				continue
-			}
-			if !isAllowedRestoreStatement(stmt) {
-				skipped++
-				continue
-			}
-			if _, err := tx.ExecContext(r.Context(), stmt); err != nil {
-				tx.Rollback()
-				http.Error(w, `{"error":"execution error at statement `+strconv.Itoa(executed+1)+`"}`, http.StatusBadRequest)
-				return
-			}
-			executed++
+		jobCtx, jobCancel := context.WithCancel(context.Background())
+		job := &RestoreJob{
+			ID:        newJobID(),
+			Status:    RestoreJobRunning,
+			StartedAt: time.Now(),
+			cancel:    jobCancel,
 		}
+		restoreJobs.Store(job.ID, job)
 
-		if err := tx.Commit(); err != nil {
-			http.Error(w, `{"error":"commit error"}`, http.StatusInternalServerError)
+		go func() {
+			defer jobCancel()
+
+			onExec := func(stmt string, n int) {
+				label := describeStatement(stmt)
+				job.mu.Lock()
+				if label == job.Current {
+					job.CurrentCount += int64(n)
+				} else {
+					job.Current = label
+					job.CurrentCount = int64(n)
+					job.Recent = append([]string{label}, job.Recent...)
+					if len(job.Recent) > 8 {
+						job.Recent = job.Recent[:8]
+					}
+				}
+				job.mu.Unlock()
+			}
+			onFail := func(stmt string, rowErr error) {
+				job.mu.Lock()
+				if job.FirstRowError == "" {
+					job.FirstRowError = rowErr.Error()
+				}
+				if len(job.FailedRowDetails) < maxTrackedRowFailures {
+					job.FailedRowDetails = append(job.FailedRowDetails, RestoreRowFailure{
+						Statement: describeStatement(stmt),
+						Error:     rowErr.Error(),
+					})
+				}
+				job.mu.Unlock()
+			}
+
+			// Two-tier strategy: the first attempt streams directly from the
+			// bucket, overlapping network transfer with DB execution — the
+			// fast path, and the right choice for the overwhelming majority
+			// of restores on a healthy connection. Only if that stream breaks
+			// mid-flight do later attempts switch to downloading the object
+			// to a local temp file first (resumable via HTTP Range requests)
+			// and processing it from disk — slower, since download and exec
+			// no longer overlap, but immune to further network drops. Paying
+			// that cost only once actually needed (rather than by default)
+			// keeps the common case fast while still recovering the case that
+			// motivated this at all: a connection that reliably drops at a
+			// similar point every time, which plain retries alone can't fix.
+			const maxAttempts = 4
+			var stepErr error
+			var useResumable bool
+
+			for attempt := 1; attempt <= maxAttempts; attempt++ {
+				var reader io.Reader
+				var closer io.Closer
+				var tempPath string
+
+				if fromBucket {
+					if !useResumable {
+						resp, err := openBucketObjectStream(jobCtx, dest, req.ObjectKey, 0)
+						if err != nil {
+							stepErr = fmt.Errorf("failed to fetch object from bucket: %w", err)
+							break
+						}
+						closer = resp.Body
+						reader = resp.Body
+					} else {
+						job.mu.Lock()
+						job.Current = "Downloading from bucket…"
+						job.Recent = []string{job.Current}
+						job.mu.Unlock()
+
+						path, dlErr := downloadObjectToTempFile(jobCtx, dest, req.ObjectKey, func(downloaded int64) {
+							job.mu.Lock()
+							job.Current = "Downloading from bucket… " + formatByteCount(downloaded)
+							job.Recent = []string{job.Current}
+							job.mu.Unlock()
+						})
+						if dlErr != nil {
+							stepErr = fmt.Errorf("failed to download object from bucket: %w", dlErr)
+							break
+						}
+						tempPath = path
+						f, err := os.Open(path)
+						if err != nil {
+							os.Remove(path)
+							stepErr = fmt.Errorf("failed to reopen downloaded file: %w", err)
+							break
+						}
+						closer = f
+						reader = f
+					}
+					if strings.HasSuffix(strings.ToLower(req.ObjectKey), ".gz") {
+						gz, gzErr := gzip.NewReader(reader)
+						if gzErr != nil {
+							closer.Close()
+							if tempPath != "" {
+								os.Remove(tempPath)
+							}
+							stepErr = fmt.Errorf("failed to decompress object: %w", gzErr)
+							break
+						}
+						reader = gz
+					}
+				} else {
+					reader = strings.NewReader(req.SQL)
+				}
+
+				tx, err := db.BeginTx(jobCtx, nil)
+				if err != nil {
+					if closer != nil {
+						closer.Close()
+					}
+					if tempPath != "" {
+						os.Remove(tempPath)
+					}
+					stepErr = fmt.Errorf("transaction error: %w", err)
+					break
+				}
+
+				executed, _, execErr := execRestoreStream(jobCtx, tx, reader, driver, req.SkipConflicts, req.ContinueOnError, &job.Executed, &job.Skipped, &job.FailedRows, onExec, onFail)
+				if closer != nil {
+					closer.Close()
+				}
+				if tempPath != "" {
+					os.Remove(tempPath)
+				}
+
+				if execErr != nil {
+					tx.Rollback()
+					if fromBucket && errors.Is(execErr, errRestoreStreamRead) && attempt < maxAttempts {
+						useResumable = true
+						atomic.StoreInt64(&job.Executed, 0)
+						atomic.StoreInt64(&job.Skipped, 0)
+						atomic.StoreInt64(&job.FailedRows, 0)
+						retryMsg := fmt.Sprintf("Connection dropped after %d statements — switching to a resumable download (attempt %d/%d)", executed, attempt+1, maxAttempts)
+						job.mu.Lock()
+						job.Current = retryMsg
+						job.CurrentCount = 0
+						job.Recent = []string{retryMsg}
+						job.FirstRowError = ""
+						job.FailedRowDetails = nil
+						job.mu.Unlock()
+						select {
+						case <-time.After(3 * time.Second):
+						case <-jobCtx.Done():
+						}
+						continue
+					}
+					if errors.Is(execErr, errRestoreStreamRead) {
+						stepErr = fmt.Errorf("download interrupted after %d statements (%d attempts): %w", executed, attempt, execErr)
+					} else {
+						stepErr = fmt.Errorf("execution error at statement %d: %w", executed+1, execErr)
+					}
+					break
+				}
+				if err := tx.Commit(); err != nil {
+					stepErr = fmt.Errorf("commit error: %w", err)
+					break
+				}
+				stepErr = nil
+				break
+			}
+
+			now := time.Now()
+			job.mu.Lock()
+			job.DoneAt = &now
+			if stepErr != nil {
+				if jobCtx.Err() != nil {
+					job.Status = RestoreJobCanceled
+					job.Error = "canceled"
+				} else {
+					job.Status = RestoreJobFailed
+					job.Error = stepErr.Error()
+				}
+			} else {
+				job.Status = RestoreJobDone
+			}
+			finalStatus, finalErr := job.Status, job.Error
+			execN, skipN, failN := atomic.LoadInt64(&job.Executed), atomic.LoadInt64(&job.Skipped), atomic.LoadInt64(&job.FailedRows)
+			job.mu.Unlock()
+
+			details := fmt.Sprintf("status=%s source=%s executed=%d skipped=%d failed_rows=%d", finalStatus, restoreSourceDesc, execN, skipN, failN)
+			writeBackupAudit("restore", restoreTarget, details, username, connID, connName, now.Sub(job.StartedAt).Milliseconds(), finalErr)
+		}()
+
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{"job_id": job.ID})
+	}
+}
+
+// GetRestoreJobStatus returns the current status of a restore job.
+// GET /api/restore/jobs/:id
+func GetRestoreJobStatus() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id := strings.TrimPrefix(r.URL.Path, "/api/restore/jobs/")
+		job, ok := getRestoreJob(id)
+		if !ok {
+			http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "executed": executed, "skipped": skipped})
+		job.mu.Lock()
+		status, doneAt, errMsg := job.Status, job.DoneAt, job.Error
+		current, currentCount, recent := job.Current, job.CurrentCount, job.Recent
+		firstRowError := job.FirstRowError
+		failedRowDetails := job.FailedRowDetails
+		job.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":                 job.ID,
+			"status":             status,
+			"started_at":         job.StartedAt,
+			"done_at":            doneAt,
+			"executed":           atomic.LoadInt64(&job.Executed),
+			"skipped":            atomic.LoadInt64(&job.Skipped),
+			"failed_rows":        atomic.LoadInt64(&job.FailedRows),
+			"first_row_error":    firstRowError,
+			"failed_row_details": failedRowDetails,
+			"current":            current,
+			"current_count":      currentCount,
+			"recent":             recent,
+			"error":              errMsg,
+		})
+	}
+}
+
+// CancelRestoreJob cancels a running restore job. The in-flight transaction
+// is rolled back (its statements were never committed), so cancelling is
+// always safe.
+// DELETE /api/restore/jobs/:id
+func CancelRestoreJob() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id := strings.TrimPrefix(r.URL.Path, "/api/restore/jobs/")
+		job, ok := getRestoreJob(id)
+		if !ok {
+			http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
+			return
+		}
+		job.mu.Lock()
+		if job.Status == RestoreJobRunning {
+			job.cancel()
+			job.Status = RestoreJobCanceled
+		}
+		job.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
@@ -614,6 +1054,20 @@ func mssqlTableDDL(ctx context.Context, sb *strings.Builder, db *sql.DB, schema,
 
 // ── Data ──────────────────────────────────────────────────────────────────────
 
+// dataBatchMaxRows/dataBatchMaxBytes bound how many rows go into a single
+// multi-row "INSERT ... VALUES (t1),(t2),...;" statement. These deliberately
+// mirror execRestoreStream's own maxBatchRows/maxBatchBytes: a dump written
+// with these caps arrives at restore time already batch-sized, so the
+// restore side's on-the-fly batching (insertBatchParts/flushBatch) is a
+// cheap pass-through instead of having to undo a one-row-per-statement dump
+// itself. Emitting the batches here — rather than one INSERT per row — is
+// also what actually makes generating and gzip-compressing a multi-GB dump
+// fast: formatting/writing N/200 statements instead of N statements cuts
+// both the Go-side allocation churn and the redundant "INSERT INTO ... VALUES"
+// boilerplate gzip would otherwise have to re-compress on every row.
+const dataBatchMaxRows = 200
+const dataBatchMaxBytes = 4 * 1024 * 1024
+
 func writeData(ctx context.Context, w io.Writer, db *sql.DB, driver, schema string, tables []string, opts BackupOptions) error {
 	for _, tbl := range tables {
 		if ctx.Err() != nil {
@@ -642,6 +1096,28 @@ func writeData(ctx context.Context, w io.Writer, db *sql.DB, driver, schema stri
 			colQuoted[i] = quoteIdentForDriver(driver, "", c)
 		}
 
+		var insertPrefix string
+		if opts.ColumnInsert {
+			insertPrefix = fmt.Sprintf("INSERT INTO %s (%s) VALUES ", tblQ, strings.Join(colQuoted, ", "))
+		} else {
+			insertPrefix = fmt.Sprintf("INSERT INTO %s VALUES ", tblQ)
+		}
+
+		batch := make([]string, 0, dataBatchMaxRows)
+		batchBytes := len(insertPrefix)
+		flushBatch := func() {
+			if len(batch) == 0 {
+				return
+			}
+			var sb strings.Builder
+			sb.WriteString(insertPrefix)
+			sb.WriteString(strings.Join(batch, ","))
+			sb.WriteString(";")
+			fmt.Fprintln(w, sb.String())
+			batch = batch[:0]
+			batchBytes = len(insertPrefix)
+		}
+
 		rowCount := 0
 		for rows.Next() {
 			vals := make([]interface{}, len(cols))
@@ -656,21 +1132,16 @@ func writeData(ctx context.Context, w io.Writer, db *sql.DB, driver, schema stri
 			for i, v := range vals {
 				sqlVals[i] = sqlLiteral(v)
 			}
+			tuple := "(" + strings.Join(sqlVals, ", ") + ")"
 
-			var stmt string
-			if opts.ColumnInsert {
-				stmt = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s);",
-					tblQ,
-					strings.Join(colQuoted, ", "),
-					strings.Join(sqlVals, ", "))
-			} else {
-				stmt = fmt.Sprintf("INSERT INTO %s VALUES (%s);",
-					tblQ,
-					strings.Join(sqlVals, ", "))
+			if len(batch) >= dataBatchMaxRows || batchBytes+len(tuple) > dataBatchMaxBytes {
+				flushBatch()
 			}
-			fmt.Fprintln(w, stmt)
+			batch = append(batch, tuple)
+			batchBytes += len(tuple)
 			rowCount++
 		}
+		flushBatch()
 		rows.Close()
 
 		if opts.UseTransaction {
@@ -1249,26 +1720,417 @@ func addIfNotExistsToIndex(def string) string {
 	return def
 }
 
-func splitSQL(sql string) []string {
-	var stmts []string
+// maxRestoreStatementBytes bounds a single statement's buffered size — a
+// defensive cap in case a dump is malformed (e.g. a missing terminating
+// semicolon swallows the rest of the file into one "statement"), not a limit
+// on overall dump size.
+const maxRestoreStatementBytes = 512 * 1024 * 1024
+
+// ── Skip-conflicts rewriting ─────────────────────────────────────────────────
+//
+// Re-running a restore against a target that already has the data fails on
+// the first primary-key collision (by design — see execRestoreStream's single
+// transaction). When the caller explicitly opts in to skipConflicts, these
+// rewrite each statement to be a no-op on conflict instead of erroring, so a
+// restore can be safely re-run.
+
+// addStatementIfNotExists makes schema-creating statements idempotent even if
+// the dump wasn't generated with the backup-time "IF NOT EXISTS" option —
+// without this, CREATE TABLE would still fail immediately, before even
+// reaching the INSERTs that addConflictSkip protects.
+func addStatementIfNotExists(stmt string) string {
+	upper := strings.ToUpper(stmt)
+	switch {
+	case strings.HasPrefix(upper, "CREATE TABLE ") && !strings.Contains(upper, "IF NOT EXISTS"):
+		return "CREATE TABLE IF NOT EXISTS " + stmt[len("CREATE TABLE "):]
+	case strings.HasPrefix(upper, "CREATE SEQUENCE ") && !strings.Contains(upper, "IF NOT EXISTS"):
+		return "CREATE SEQUENCE IF NOT EXISTS " + stmt[len("CREATE SEQUENCE "):]
+	case strings.HasPrefix(upper, "CREATE UNIQUE INDEX ") || strings.HasPrefix(upper, "CREATE INDEX "):
+		return addIfNotExistsToIndex(stmt)
+	default:
+		return stmt
+	}
+}
+
+// addConflictSkip rewrites a plain INSERT into this driver's "ignore on
+// conflict" form. Assumes the statement text is exactly what writeData
+// generates ("INSERT INTO " uppercase) since restore only ever runs against
+// this app's own dumps. MSSQL has no simple equivalent syntax, so it's left
+// unmodified there — skip-conflicts only actually skips on the other drivers.
+func addConflictSkip(stmt, driver string) string {
+	const prefix = "INSERT INTO "
+	if !strings.HasPrefix(stmt, prefix) {
+		return stmt
+	}
+	switch driver {
+	case "postgres":
+		return stmt + " ON CONFLICT DO NOTHING"
+	case "mysql", "mariadb":
+		return "INSERT IGNORE INTO " + stmt[len(prefix):]
+	case "sqlite":
+		return "INSERT OR IGNORE INTO " + stmt[len(prefix):]
+	default:
+		return stmt
+	}
+}
+
+// savepointStatements returns this driver's syntax for a named savepoint
+// used to isolate a single risky statement within the larger restore
+// transaction. MSSQL has no separate "release" step — a SAVE TRANSACTION
+// marker just stays valid until the outer transaction ends — so release is
+// returned empty there and callers should skip that step.
+func savepointStatements(driver string) (save, rollbackTo, release string) {
+	switch driver {
+	case "mssql", "sqlserver":
+		return "SAVE TRANSACTION restore_row", "ROLLBACK TRANSACTION restore_row", ""
+	default: // postgres, mysql, mariadb, sqlite
+		return "SAVEPOINT restore_row", "ROLLBACK TO SAVEPOINT restore_row", "RELEASE SAVEPOINT restore_row"
+	}
+}
+
+// execWithSavepoint runs stmt inside a driver-appropriate SAVEPOINT. The two
+// return values are deliberately distinct: rowErr is stmt's own failure
+// (data problem — the savepoint already cleanly absorbed it, caller decides
+// whether to record-and-move-on or retry differently), while fatalErr means
+// the savepoint mechanism itself broke (can't create/roll back a savepoint)
+// and the whole restore must abort — conflating the two would let a real
+// infrastructure failure get silently swallowed as "just a bad row."
+func execWithSavepoint(ctx context.Context, tx *sql.Tx, driver, stmt string) (rowErr, fatalErr error) {
+	save, rollbackTo, release := savepointStatements(driver)
+	if _, err := tx.ExecContext(ctx, save); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, stmt); err != nil {
+		if _, rbErr := tx.ExecContext(ctx, rollbackTo); rbErr != nil {
+			return nil, rbErr
+		}
+		return err, nil
+	}
+	if release != "" {
+		if _, err := tx.ExecContext(ctx, release); err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
+}
+
+// insertBatchParts splits a single-row "INSERT INTO t (cols) VALUES (tuple)"
+// statement — exactly the shape writeData generates, one row per INSERT —
+// into a reusable prefix ("INSERT INTO t (cols) VALUES ") and its value
+// tuple, so consecutive rows for the same table can be joined into one
+// multi-row INSERT instead of one network round-trip per row. Anything else
+// (a different statement shape) returns ok=false and is left to execute
+// as-is.
+func insertBatchParts(stmt string) (prefix, tuple string, ok bool) {
+	const marker = " VALUES ("
+	if !strings.HasPrefix(stmt, "INSERT INTO ") || !strings.HasSuffix(stmt, ")") {
+		return "", "", false
+	}
+	idx := strings.Index(stmt, marker)
+	if idx < 0 {
+		return "", "", false
+	}
+	return stmt[:idx+len(marker)-1], stmt[idx+len(marker)-1:], true
+}
+
+// execRestoreStream reads SQL statements from r as they are parsed — buffering
+// only the current statement, never the whole dump — and executes each
+// allowed one against tx. This lets restores from bucket-hosted dumps scale to
+// multi-GB files without holding the file (or its decompressed form) in
+// memory.
+//
+// Comment lines (outside a string literal) are stripped per-line rather than
+// checked only on the fully-accumulated statement: our own dumps always open
+// with several "-- ..." header lines directly followed by the first real
+// statement with no semicolon in between, so treating the whole
+// semicolon-delimited chunk as "a comment if it starts with --" silently
+// drops that first statement (notably `SET search_path`) along with the
+// header.
+// executedCounter/skippedCounter/failedCounter, if non-nil, are incremented
+// atomically as statements complete — a live progress feed for a caller
+// polling a job status endpoint on another goroutine, independent of the
+// (executed, skipped int) totals returned at the end. onExec, if non-nil, is
+// called with the raw statement text right after each successful execution,
+// for callers that want a human-readable "what's happening right now" feed
+// rather than just a running count. When skipConflicts is true, statements
+// are rewritten (see addStatementIfNotExists/addConflictSkip) so re-running a
+// restore against a target that already has the data no-ops instead of
+// erroring. When continueOnError is true, INSERTs run inside a per-statement
+// SAVEPOINT — a row that fails (bad data, e.g. an out-of-range date) is
+// rolled back to that savepoint and counted as failed instead of aborting the
+// whole (potentially hours-long, multi-million-statement) transaction; onFail,
+// if non-nil, is called with the failed statement's text and its error.
+func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver string, skipConflicts, continueOnError bool, executedCounter, skippedCounter, failedCounter *int64, onExec func(stmt string, n int), onFail func(stmt string, err error)) (executed, skipped int, err error) {
+	br := bufio.NewReaderSize(r, 256*1024)
 	var cur strings.Builder
 	inStr := false
-	for i, ch := range sql {
-		if ch == '\'' && (i == 0 || sql[i-1] != '\\') {
-			inStr = !inStr
+	// inDollar tracks PostgreSQL's "$$ ... $$" dollar-quoting (used by the PK/FK
+	// repair DO-blocks this app's own dumps emit). Only the untagged "$$" form
+	// is generated, so a bare toggle-on-"$$" is enough — no need to match a
+	// custom $tag$. Without this, a semicolon INSIDE the DO block (terminating
+	// one of its internal statements) is misread as ending the whole
+	// statement, splitting it and leaving an "unterminated dollar-quoted
+	// string" for Postgres to choke on.
+	inDollar := false
+	pendingDollar := false
+	// pendingQuote defers the "is this `'` a close, or the first half of a
+	// doubled `''` escape?" decision across a line-read boundary — needed
+	// because a string literal's data can legitimately contain '\n'. A quote
+	// inside a string is only ever resolved by looking at the NEXT character
+	// (standard SQL: '' inside a string is one literal quote, not a close);
+	// there is no backslash-escaping in this app's own dumps (sqlLiteral
+	// doubles quotes), so backslashes in the data — e.g. JSON payloads like
+	// "application\/json" — are just ordinary bytes and must never be treated
+	// as an escape character for the surrounding quote.
+	pendingQuote := false
+
+	// Consecutive same-shape single-row INSERTs get folded into one multi-row
+	// INSERT instead of one network round-trip per row — see insertBatchParts
+	// and flushBatch. This is the single biggest lever for restore throughput,
+	// since INSERT statements dominate any real dump and each round-trip's
+	// network+DB latency otherwise dwarfs the actual work being done.
+	const maxBatchRows = 200
+	const maxBatchBytes = 4 * 1024 * 1024
+	var batchPrefix string
+	var batchTuples []string
+	var batchBytes int
+
+	// execStatement runs one statement outside the batching path — DDL, DO
+	// blocks, SET, or a lone (unbatched) INSERT.
+	execStatement := func(stmt string) error {
+		if skipConflicts {
+			stmt = addStatementIfNotExists(stmt)
+			stmt = addConflictSkip(stmt, driver)
 		}
-		if ch == ';' && !inStr {
-			s := strings.TrimSpace(cur.String())
-			if s != "" {
-				stmts = append(stmts, s)
+
+		// INSERTs and "DO $$ ... $$" blocks get the savepoint treatment — both
+		// are the data-dependent statements where bad rows shouldn't sink an
+		// otherwise-good multi-million-row restore:
+		//   - INSERT: the obvious case, one malformed row.
+		//   - DO blocks: this app's own post-data PK/FK repair statements
+		//     (generatePKsDDL/generateFKsDDL) ADD a constraint against
+		//     already-inserted data. Postgres validates existing rows when
+		//     adding a FOREIGN KEY, using the identical "insert or update on
+		//     table X violates..." wording as a live INSERT failure — so an
+		//     orphaned reference in the source data (or a row this same
+		//     restore already skipped) fails here with SQLSTATE 23503
+		//     (foreign_key_violation), which the DO block's own exception
+		//     handler doesn't catch (it only catches duplicate_object/42830).
+		// A plain DDL statement failing (bad CREATE TABLE, etc.) is still a
+		// real problem worth aborting for, so nothing else gets this treatment.
+		if continueOnError && (strings.HasPrefix(stmt, "INSERT") || strings.HasPrefix(stmt, "DO ")) {
+			rowErr, fatalErr := execWithSavepoint(ctx, tx, driver, stmt)
+			if fatalErr != nil {
+				return fatalErr
 			}
-			cur.Reset()
-		} else {
-			cur.WriteRune(ch)
+			if rowErr != nil {
+				if failedCounter != nil {
+					atomic.AddInt64(failedCounter, 1)
+				}
+				if onFail != nil {
+					onFail(stmt, rowErr)
+				}
+				return nil
+			}
+		} else if _, execErr := tx.ExecContext(ctx, stmt); execErr != nil {
+			return execErr
+		}
+
+		executed++
+		if executedCounter != nil {
+			atomic.AddInt64(executedCounter, 1)
+		}
+		if onExec != nil {
+			onExec(stmt, 1)
+		}
+		return nil
+	}
+
+	// flushBatch executes (and clears) whatever rows are currently buffered.
+	flushBatch := func() error {
+		if len(batchTuples) == 0 {
+			return nil
+		}
+		n := len(batchTuples)
+		tuples := batchTuples
+		prefix := batchPrefix
+		batchPrefix, batchTuples, batchBytes = "", nil, 0
+
+		if n == 1 {
+			// No batching benefit for a single row.
+			return execStatement(prefix + tuples[0])
+		}
+
+		combined := prefix + strings.Join(tuples, ", ")
+		rewritten := combined
+		if skipConflicts {
+			rewritten = addStatementIfNotExists(rewritten)
+			rewritten = addConflictSkip(rewritten, driver)
+		}
+
+		runBatch := func() (rowErr, fatalErr error) {
+			if continueOnError {
+				return execWithSavepoint(ctx, tx, driver, rewritten)
+			}
+			_, err := tx.ExecContext(ctx, rewritten)
+			return err, nil
+		}
+
+		rowErr, fatalErr := runBatch()
+		if fatalErr != nil {
+			return fatalErr
+		}
+		if rowErr == nil {
+			executed += n
+			if executedCounter != nil {
+				atomic.AddInt64(executedCounter, int64(n))
+			}
+			if onExec != nil {
+				onExec(prefix+tuples[n-1], n)
+			}
+			return nil
+		}
+		if !continueOnError {
+			// No fallback without continueOnError — a batch failing aborts the
+			// restore exactly like a single statement failing always has.
+			return rowErr
+		}
+
+		// The batch failed as a whole (its savepoint already absorbed that
+		// cleanly) — fall back to row-by-row so only the actually-bad row(s)
+		// get skipped instead of losing every good row it was bundled with.
+		for _, tuple := range tuples {
+			if err := execStatement(prefix + tuple); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	flush := func() error {
+		stmt := strings.TrimSpace(cur.String())
+		cur.Reset()
+		if stmt == "" {
+			return nil
+		}
+		if !isAllowedRestoreStatement(stmt) {
+			skipped++
+			if skippedCounter != nil {
+				atomic.AddInt64(skippedCounter, 1)
+			}
+			return nil
+		}
+
+		if prefix, tuple, ok := insertBatchParts(stmt); ok {
+			if batchPrefix != "" && (batchPrefix != prefix || len(batchTuples) >= maxBatchRows || batchBytes+len(stmt) > maxBatchBytes) {
+				if err := flushBatch(); err != nil {
+					return err
+				}
+			}
+			batchPrefix = prefix
+			batchTuples = append(batchTuples, tuple)
+			batchBytes += len(stmt)
+			return nil
+		}
+
+		if err := flushBatch(); err != nil {
+			return err
+		}
+		return execStatement(stmt)
+	}
+
+	for {
+		line, readErr := br.ReadString('\n')
+		if len(line) > 0 {
+			// A "--" line comment only counts as one outside a string literal
+			// or dollar-quoted block (state carried over from prior lines);
+			// otherwise it's just literal content that happens to contain dashes.
+			if !inStr && !inDollar && strings.HasPrefix(strings.TrimSpace(line), "--") {
+				// nothing to do — the whole line is discarded
+			} else {
+				for i := 0; i < len(line); i++ {
+					b := line[i]
+
+					if pendingQuote {
+						pendingQuote = false
+						if b == '\'' {
+							// doubled quote spanning the line boundary: one
+							// literal `'` in the data, string stays open.
+							cur.WriteByte(b)
+							continue
+						}
+						// the deferred quote from the previous byte was the
+						// real close; fall through and process b normally.
+						inStr = false
+					}
+
+					if !inDollar && b == '\'' {
+						if inStr {
+							if i+1 < len(line) {
+								if line[i+1] == '\'' {
+									cur.WriteByte(b)
+									cur.WriteByte(line[i+1])
+									i++
+									continue
+								}
+								inStr = false
+								cur.WriteByte(b)
+								continue
+							}
+							// last byte of this line — defer to the next line's first byte
+							pendingQuote = true
+							cur.WriteByte(b)
+							continue
+						}
+						inStr = true
+						cur.WriteByte(b)
+						continue
+					}
+
+					if !inStr && !inDollar {
+						if b == '$' {
+							if pendingDollar {
+								inDollar = !inDollar
+								pendingDollar = false
+							} else {
+								pendingDollar = true
+							}
+						} else {
+							pendingDollar = false
+						}
+					}
+
+					if b == ';' && !inStr && !inDollar {
+						if ferr := flush(); ferr != nil {
+							return executed, skipped, ferr
+						}
+					} else {
+						cur.WriteByte(b)
+						if cur.Len() > maxRestoreStatementBytes {
+							return executed, skipped, fmt.Errorf("single statement exceeds %dMB — dump may be missing a terminating semicolon", maxRestoreStatementBytes/(1024*1024))
+						}
+					}
+				}
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				break
+			}
+			// Distinguish "the source stream broke" (network drop, truncated
+			// bucket object) from "a statement failed to execute" — they were
+			// previously indistinguishable to the caller, which produced a
+			// misleading "execution error at statement N" for what was really
+			// a download interruption, and gave callers no way to tell this
+			// class of failure is worth retrying with a fresh download.
+			return executed, skipped, fmt.Errorf("%w: %v", errRestoreStreamRead, readErr)
 		}
 	}
-	if s := strings.TrimSpace(cur.String()); s != "" {
-		stmts = append(stmts, s)
+	if err := flush(); err != nil {
+		return executed, skipped, err
 	}
-	return stmts
+	if err := flushBatch(); err != nil {
+		return executed, skipped, err
+	}
+	return executed, skipped, nil
 }

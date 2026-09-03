@@ -1029,6 +1029,14 @@ func ReconnectConnection() http.HandlerFunc {
 
 // openRemoteDB opens a connection to the stored remote database by ID.
 func openRemoteDB(connID int64) (*sql.DB, string, error) {
+	return openRemoteDBWithCreds(connID, "", "", false)
+}
+
+// openRemoteDBWithCreds opens the target database for connID. When useOverride is
+// true it authenticates with overrideUser/overridePass (already decrypted) — the
+// per-user "connect as yourself" path — instead of the connection's shared login.
+// Everything else (host, port, database, SSL, driver) comes from the connection.
+func openRemoteDBWithCreds(connID int64, overrideUser, overridePass string, useOverride bool) (*sql.DB, string, error) {
 	var in ConnectionInput
 	var ssl, disconnected int
 	var encPassword string
@@ -1043,12 +1051,17 @@ func openRemoteDB(connID int64) (*sql.DB, string, error) {
 	}
 	in.SSL = ssl == 1
 
-	// Decrypt password
-	password, err := decryptCredential(encPassword)
-	if err != nil {
-		return nil, "", fmt.Errorf("decryption error")
+	if useOverride {
+		in.Username = overrideUser
+		in.Password = overridePass
+	} else {
+		// Decrypt the connection's shared password
+		password, err := decryptCredential(encPassword)
+		if err != nil {
+			return nil, "", fmt.Errorf("decryption error")
+		}
+		in.Password = password
 	}
-	in.Password = password
 
 	dsn, err := buildDSN(in)
 	if err != nil {

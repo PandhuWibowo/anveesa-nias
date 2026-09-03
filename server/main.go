@@ -316,6 +316,8 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsEdit)(handlers.UpdateConnectionFolder())(w, r)
 			case sub == "visibility" && r.Method == http.MethodPatch:
 				requireAny(handlers.PermConnectionsEdit)(handlers.UpdateConnectionVisibility())(w, r)
+			case sub == "auth-mode" && r.Method == http.MethodPatch:
+				requireAny(handlers.PermConnectionsEdit)(handlers.SetConnectionAuthMode())(w, r)
 			case sub == "query" && r.Method == http.MethodPost:
 				handlers.ExecuteQuery()(w, r)
 			case sub == "explain" && r.Method == http.MethodPost:
@@ -538,6 +540,8 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchListIndices())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "aggregate" && r.Method == http.MethodPost:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchAggregate())(w, r)
+			case sub == "search" && len(parts) >= 3 && parts[2] == "backup-to-bucket" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchBackupToBucket())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "fields" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchIndexFields())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "watcher-stats" && r.Method == http.MethodGet:
@@ -708,6 +712,36 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 					http.NotFound(w, r)
 				}
 
+			// ── Cloud Storage (browse s3_aws/s3_gcp/s3_oss/s3_obs connections) ──
+			// download/zip self-authenticate via ?token= (browser-native streaming),
+			// same pattern as SFTP's download/zip.
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "list" && r.Method == http.MethodGet:
+				requireAny(handlers.PermCloudStorageAccess, handlers.PermCloudStorageManage)(handlers.CloudStorageList())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "download" && r.Method == http.MethodGet:
+				handlers.CloudStorageDownload()(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "zip" && r.Method == http.MethodGet:
+				handlers.CloudStorageDownloadZip()(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "upload" && r.Method == http.MethodPost:
+				requireAny(handlers.PermCloudStorageManage)(handlers.CloudStorageUpload())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "delete" && r.Method == http.MethodPost:
+				requireAny(handlers.PermCloudStorageManage)(handlers.CloudStorageDelete())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "delete-prefix" && r.Method == http.MethodPost:
+				requireAny(handlers.PermCloudStorageManage)(handlers.CloudStorageDeletePrefix())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "rename" && r.Method == http.MethodPost:
+				requireAny(handlers.PermCloudStorageManage)(handlers.CloudStorageRename())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "mkdir" && r.Method == http.MethodPost:
+				requireAny(handlers.PermCloudStorageManage)(handlers.CloudStorageMkdir())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "read" && r.Method == http.MethodGet:
+				requireAny(handlers.PermCloudStorageAccess, handlers.PermCloudStorageManage)(handlers.CloudStorageRead())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "metadata" && r.Method == http.MethodGet:
+				requireAny(handlers.PermCloudStorageAccess, handlers.PermCloudStorageManage)(handlers.CloudStorageGetMetadata())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "metadata" && r.Method == http.MethodPost:
+				requireAny(handlers.PermCloudStorageManage)(handlers.CloudStorageUpdateMetadata())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "transfer" && r.Method == http.MethodPost:
+				requireAny(handlers.PermCloudStorageManage)(handlers.TransferToBuckets())(w, r)
+			case sub == "storage" && len(parts) >= 3 && parts[2] == "move" && r.Method == http.MethodPost:
+				requireAny(handlers.PermCloudStorageManage)(handlers.MoveWithinBucket())(w, r)
+
 			default:
 				http.NotFound(w, r)
 			}
@@ -835,10 +869,105 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 
+	// ── Postgres logical replication (publications/subscriptions) ──────────
+	pgReplView := requireAny(handlers.PermPgReplicationView, handlers.PermPgReplicationManage)
+	pgReplManage := requireAny(handlers.PermPgReplicationManage)
+	mux.HandleFunc("/api/pg-replication/links", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		pgReplView(handlers.ListReplicationLinks())(w, r)
+	})
+	mux.HandleFunc("/api/pg-replication/publications", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			pgReplView(handlers.ListPublications())(w, r)
+		case http.MethodPost:
+			pgReplManage(handlers.CreatePublication())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/pg-replication/publications/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.NotFound(w, r)
+			return
+		}
+		pgReplManage(handlers.DropPublication())(w, r)
+	})
+	mux.HandleFunc("/api/pg-replication/subscriptions", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			pgReplView(handlers.ListSubscriptions())(w, r)
+		case http.MethodPost:
+			pgReplManage(handlers.CreateSubscription())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/pg-replication/compare", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		pgReplView(handlers.ComparePgTables())(w, r)
+	})
+	mux.HandleFunc("/api/pg-replication/reconcile", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		pgReplManage(handlers.ReconcilePgTable())(w, r)
+	})
+	mux.HandleFunc("/api/pg-replication/subscriptions/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPatch:
+			pgReplManage(handlers.AlterSubscriptionState())(w, r)
+		case http.MethodDelete:
+			pgReplManage(handlers.DropSubscription())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	// ── Postgres parameters (pg_settings / ALTER SYSTEM SET) ───────────────
+	pgParamsView := requireAny(handlers.PermPgParametersView, handlers.PermPgParametersManage)
+	pgParamsManage := requireAny(handlers.PermPgParametersManage)
+	mux.HandleFunc("/api/pg-parameters/settings", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		pgParamsView(handlers.ListPgSettings())(w, r)
+	})
+	mux.HandleFunc("/api/pg-parameters/settings/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			http.NotFound(w, r)
+			return
+		}
+		pgParamsManage(handlers.UpdatePgSetting())(w, r)
+	})
+	mux.HandleFunc("/api/pg-parameters/reload", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		pgParamsManage(handlers.ReloadPgConfig())(w, r)
+	})
+
 	mux.HandleFunc("/api/docker/hosts", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			requireAny(handlers.PermDockerView, handlers.PermDockerManage)(handlers.ListDockerHosts())(w, r)
+			// Hosts are shared infrastructure across Docker, SFTP, and Nginx —
+			// anyone permitted to use any one of those tools needs to be able
+			// to list them, not just docker.view/docker.manage holders.
+			// Per-host visibility (owner/shared/grant) is still enforced
+			// inside ListDockerHosts(); this only gates reaching the list at
+			// all.
+			requireAny(handlers.PermDockerView, handlers.PermDockerManage,
+				handlers.PermSftpAccess, handlers.PermSftpManage,
+				handlers.PermNginxView, handlers.PermNginxManage, handlers.PermNginxReload)(handlers.ListDockerHosts())(w, r)
 		case http.MethodPost:
 			requireAny(handlers.PermDockerManage)(handlers.CreateDockerHost())(w, r)
 		default:
@@ -848,6 +977,19 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/docker/hosts/", func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/docker/hosts/"), "/")
 		parts := strings.Split(rest, "/")
+		// Private hosts are additionally restricted to their owner, an admin,
+		// or a user granted access in docker_host_access — on top of (never
+		// instead of) the coarse permission checks below. Non-ID segments
+		// like "test"/"users" have nothing to gate and pass straight through.
+		// WebSocket routes self-authenticate via ?token= (browsers can't set
+		// a Bearer header on them) and never get X-User-ID/X-User-Role from
+		// InjectUserContext, so they're excluded here the same way they skip
+		// the coarse permission checks below.
+		selfAuthed := len(parts) == 4 && parts[1] == "containers" &&
+			(parts[3] == "terminal" || parts[3] == "logstream" || parts[3] == "statstream")
+		if !selfAuthed && !handlers.HostAccessGate(w, r, parts[0], false) {
+			return
+		}
 		view := requireAny(handlers.PermDockerView, handlers.PermDockerManage)
 		manage := requireAny(handlers.PermDockerManage)
 		exec := requireAny(handlers.PermDockerExec)
@@ -855,11 +997,19 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		// /api/docker/hosts/test  — validate unsaved credentials
 		case len(parts) == 1 && parts[0] == "test" && r.Method == http.MethodPost:
 			manage(handlers.TestDockerHost())(w, r)
+		// /api/docker/hosts/users  — active users, for the "share with" picker
+		case len(parts) == 1 && parts[0] == "users" && r.Method == http.MethodGet:
+			manage(handlers.ListDockerHostUsers())(w, r)
 		// /api/docker/hosts/{id}
 		case len(parts) == 1 && r.Method == http.MethodPut:
 			manage(handlers.UpdateDockerHost())(w, r)
 		case len(parts) == 1 && r.Method == http.MethodDelete:
 			manage(handlers.DeleteDockerHost())(w, r)
+		// /api/docker/hosts/{id}/access  — view/manage per-user sharing
+		case len(parts) == 2 && parts[1] == "access" && r.Method == http.MethodGet:
+			manage(handlers.GetDockerHostAccess())(w, r)
+		case len(parts) == 2 && parts[1] == "access" && r.Method == http.MethodPut:
+			manage(handlers.SetDockerHostAccess())(w, r)
 		// /api/docker/hosts/{id}/ping
 		case len(parts) == 2 && parts[1] == "ping" && r.Method == http.MethodGet:
 			view(handlers.DockerPing())(w, r)
@@ -1082,6 +1232,15 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/sftp/hosts/", func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/sftp/hosts/"), "/")
 		parts := strings.Split(rest, "/")
+		// Private hosts are additionally restricted to their owner, an admin,
+		// or a user granted access in docker_host_access. download/zip
+		// self-authenticate via ?token= (no Bearer header, so no
+		// X-User-ID/X-User-Role) — excluded here the same way they skip the
+		// coarse permission checks below.
+		selfAuthed := len(parts) == 2 && (parts[1] == "download" || parts[1] == "zip")
+		if !selfAuthed && !handlers.HostAccessGate(w, r, parts[0], false) {
+			return
+		}
 		access := requireAny(handlers.PermSftpAccess, handlers.PermSftpManage)
 		manage := requireAny(handlers.PermSftpManage)
 		switch {
@@ -1093,9 +1252,11 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			access(handlers.SftpArchiveList())(w, r)
 		case len(parts) == 2 && parts[1] == "extract" && r.Method == http.MethodPost:
 			manage(handlers.SftpExtract())(w, r)
-		// download self-authenticates via ?token= (browser-native streaming)
+		// download/zip self-authenticate via ?token= (browser-native streaming)
 		case len(parts) == 2 && parts[1] == "download" && r.Method == http.MethodGet:
 			handlers.SftpDownload()(w, r)
+		case len(parts) == 2 && parts[1] == "zip" && r.Method == http.MethodGet:
+			handlers.SftpDownloadZip()(w, r)
 		case len(parts) == 2 && parts[1] == "upload" && r.Method == http.MethodPost:
 			manage(handlers.SftpUpload())(w, r)
 		case len(parts) == 2 && parts[1] == "mkdir" && r.Method == http.MethodPost:
@@ -1106,6 +1267,8 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			manage(handlers.SftpRename())(w, r)
 		case len(parts) == 2 && parts[1] == "compress" && r.Method == http.MethodPost:
 			manage(handlers.SftpCompress())(w, r)
+		case len(parts) == 2 && parts[1] == "backup-to-bucket" && r.Method == http.MethodPost:
+			access(handlers.SftpBackupToBucket())(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1124,6 +1287,14 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 	mux.HandleFunc("/api/nginx/hosts/", func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/nginx/hosts/"), "/")
 		parts := strings.Split(rest, "/")
+		// Private hosts are additionally restricted to their owner, an admin,
+		// or a user granted access in docker_host_access. logs/stream
+		// self-authenticates via ?token= (browser EventSource, no Bearer
+		// header) — excluded here the same way it skips the checks below.
+		selfAuthed := len(parts) == 3 && parts[1] == "logs" && parts[2] == "stream"
+		if !selfAuthed && !handlers.HostAccessGate(w, r, parts[0], false) {
+			return
+		}
 		view := requireAny(handlers.PermNginxView, handlers.PermNginxManage, handlers.PermNginxReload)
 		manage := requireAny(handlers.PermNginxManage)
 		reload := requireAny(handlers.PermNginxReload)
@@ -1183,6 +1354,10 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermUsersManage)(handlers.ResetPasswordHandler())(w, r)
 				return
 			}
+			if strings.HasSuffix(r.URL.Path, "/reset-mfa") {
+				requireAny(handlers.PermUsersManage)(handlers.ResetUserMFA())(w, r)
+				return
+			}
 			http.NotFound(w, r)
 		case http.MethodPut:
 			requireAny(handlers.PermUsersManage)(handlers.UpdateUser())(w, r)
@@ -1199,6 +1374,21 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		parts := strings.Split(path, "/")
 
 		if len(parts) >= 2 && parts[1] == "connections" {
+			// Per-user native DB credential:
+			// /api/users/{id}/connections/{connId}/credential
+			if len(parts) >= 4 && parts[3] == "credential" {
+				switch r.Method {
+				case http.MethodGet:
+					requireAny(handlers.PermUsersManage)(handlers.GetUserConnCredential())(w, r)
+				case http.MethodPut:
+					requireAny(handlers.PermUsersManage)(handlers.SetUserConnCredential())(w, r)
+				case http.MethodDelete:
+					requireAny(handlers.PermUsersManage)(handlers.DeleteUserConnCredential())(w, r)
+				default:
+					http.NotFound(w, r)
+				}
+				return
+			}
 			switch r.Method {
 			case http.MethodGet:
 				requireAny(handlers.PermUsersManage)(handlers.GetUserConnections())(w, r)
@@ -1316,12 +1506,49 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 			http.NotFound(w, r)
 		}
 	})
+	mux.HandleFunc("/api/storage/transfer-jobs/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermCloudStorageManage)(handlers.GetTransferJobStatus())(w, r)
+		case http.MethodDelete:
+			requireAny(handlers.PermCloudStorageManage)(handlers.CancelTransferJob())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/storage/move-jobs/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermCloudStorageManage)(handlers.GetMoveJobStatus())(w, r)
+		case http.MethodDelete:
+			requireAny(handlers.PermCloudStorageManage)(handlers.CancelMoveJob())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/api/restore/jobs/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			requireAny(handlers.PermBackupsManage)(handlers.GetRestoreJobStatus())(w, r)
+		case http.MethodDelete:
+			requireAny(handlers.PermBackupsManage)(handlers.CancelRestoreJob())(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
 	mux.HandleFunc("/api/backup/bucket-list", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.NotFound(w, r)
 			return
 		}
 		requireAny(handlers.PermBackupsManage)(handlers.ListBucketBackups())(w, r)
+	})
+	mux.HandleFunc("/api/backup/history", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		requireAny(handlers.PermBackupsManage)(handlers.ListBackupHistory())(w, r)
 	})
 	mux.HandleFunc("/api/backup/presign", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -1621,6 +1848,35 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 		}
 	})
 	mux.HandleFunc("/api/folders/", func(w http.ResponseWriter, r *http.Request) {
+		// Sub-resources: /api/folders/{id}/members and /api/folders/{id}/connections
+		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/folders/"), "/")
+		parts := strings.Split(rest, "/")
+		if len(parts) >= 2 {
+			switch parts[1] {
+			case "members":
+				switch r.Method {
+				case http.MethodGet:
+					requireAny(handlers.PermFoldersManage, handlers.PermWorkflowsManage)(handlers.GroupMembers())(w, r)
+				case http.MethodPut:
+					requireAny(handlers.PermFoldersManage)(handlers.SetGroupMembers())(w, r)
+				default:
+					http.NotFound(w, r)
+				}
+				return
+			case "connections":
+				switch r.Method {
+				case http.MethodGet:
+					requireAny(handlers.PermFoldersManage, handlers.PermWorkflowsManage)(handlers.GroupConnections())(w, r)
+				case http.MethodPut:
+					requireAny(handlers.PermFoldersManage)(handlers.SetGroupConnections())(w, r)
+				default:
+					http.NotFound(w, r)
+				}
+				return
+			}
+			http.NotFound(w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodPut:
 			requireAny(handlers.PermFoldersManage)(handlers.UpdateFolder())(w, r)

@@ -80,18 +80,30 @@ func ExecuteQuery() http.HandlerFunc {
 			return
 		}
 
-		// Check if this is a write operation and if user has permission
-		upper := strings.ToUpper(strings.TrimSpace(req.SQL))
-		isWrite := !strings.HasPrefix(upper, "SELECT") &&
-			!strings.HasPrefix(upper, "WITH") &&
-			!strings.HasPrefix(upper, "SHOW") &&
-			!strings.HasPrefix(upper, "DESCRIBE") &&
-			!strings.HasPrefix(upper, "EXPLAIN") &&
-			!strings.HasPrefix(upper, "PRAGMA")
+		// Check if this is a write operation and if user has permission. Uses
+		// firstSQLKeyword rather than a raw prefix check on the trimmed text —
+		// SQL handed to this endpoint can start with a "-- comment" line (e.g.
+		// a leading commented-out statement left in an editor), and a naive
+		// HasPrefix(upper, "SELECT") would then misclassify a real SELECT as a
+		// write, routing it through ExecContext and silently discarding its
+		// result rows instead of returning them.
+		isReadKeyword := isReadSQLKeyword(firstSQLKeyword(req.SQL))
+		isWrite := !isReadKeyword
 
-		if isWrite && !CheckWritePermission(r, connID) {
-			http.Error(w, `{"error":"write permission denied"}`, http.StatusForbidden)
-			return
+		// Enforce the *specific* DB permission the statement requires (insert vs
+		// update vs delete vs create/alter/drop) rather than a coarse "any write"
+		// bucket — a user granted only SELECT must not be able to run writes, and
+		// a user granted only INSERT must not be able to DELETE or DROP.
+		if isWrite {
+			required := RequiredPermForSQL(req.SQL)
+			if !CheckOperationPermission(r, connID, required) {
+				msg := "write permission denied"
+				if required != "" {
+					msg = "permission denied for operation: " + string(required)
+				}
+				http.Error(w, jsonError(msg), http.StatusForbidden)
+				return
+			}
 		}
 
 		if isWrite && isAuthEnabled() {
@@ -114,7 +126,8 @@ func ExecuteQuery() http.HandlerFunc {
 			}
 		}
 
-		db, driver, err := GetDB(connID)
+		execUserID, _, _ := currentUserFromHeaders(r)
+		db, driver, err := GetDBForUser(execUserID, connID)
 		if err != nil {
 			http.Error(w, `{"error":"database connection error"}`, http.StatusBadGateway)
 			return
@@ -126,26 +139,30 @@ func ExecuteQuery() http.HandlerFunc {
 				http.Error(w, `{"error":"invalid database name"}`, http.StatusBadRequest)
 				return
 			}
+			var useErr error
 			switch driver {
 			case "mysql":
 				// Use backticks for MySQL, escape any embedded backticks
 				safeName := strings.ReplaceAll(req.Database, "`", "``")
-				db.ExecContext(r.Context(), "USE `"+safeName+"`")
+				_, useErr = db.ExecContext(r.Context(), "USE `"+safeName+"`")
 			case "sqlserver":
 				// Use brackets for SQL Server, escape any embedded brackets
 				safeName := strings.ReplaceAll(req.Database, "]", "]]")
-				db.ExecContext(r.Context(), "USE ["+safeName+"]")
+				_, useErr = db.ExecContext(r.Context(), "USE ["+safeName+"]")
+			}
+			// A failed USE must not fall through to running the query against
+			// whatever database the pooled connection happened to be on
+			// before this request — that silently queries the wrong database
+			// instead of the one the caller explicitly asked for.
+			if useErr != nil {
+				http.Error(w, jsonError("failed to switch database: "+useErr.Error()), http.StatusBadGateway)
+				return
 			}
 		}
 
 		start := time.Now()
 
-		isSelect := strings.HasPrefix(upper, "SELECT") ||
-			strings.HasPrefix(upper, "WITH") ||
-			strings.HasPrefix(upper, "SHOW") ||
-			strings.HasPrefix(upper, "DESCRIBE") ||
-			strings.HasPrefix(upper, "EXPLAIN") ||
-			strings.HasPrefix(upper, "PRAGMA")
+		isSelect := isReadKeyword
 
 		result := &QueryResult{
 			Columns: []string{},
@@ -228,18 +245,27 @@ func ExecuteQuery() http.HandlerFunc {
 
 		// Write to audit log (non-blocking)
 		go func() {
-			connName := ""
-			if db != nil {
-				// best-effort: look up conn name
-			}
 			username := r.Header.Get("X-Username")
 			if username == "" {
 				username = "user"
 			}
-			WriteAuditLog(username, connID, connName, req.SQL, result.DurationMs, int64(result.RowCount+int(result.AffectedRows)), "")
+			WriteAuditLog(username, connID, connectionNameByID(connID), req.SQL, result.DurationMs, int64(result.RowCount+int(result.AffectedRows)), "")
 		}()
 
 		json.NewEncoder(w).Encode(result)
+	}
+}
+
+// isReadSQLKeyword reports whether keyword (as returned by firstSQLKeyword)
+// is one of the read-only statement types — shared by ExecuteQuery and
+// RunScript so both classify a statement identically instead of each
+// keeping its own drifting copy of this list.
+func isReadSQLKeyword(keyword string) bool {
+	switch keyword {
+	case "SELECT", "WITH", "SHOW", "DESCRIBE", "EXPLAIN", "PRAGMA":
+		return true
+	default:
+		return false
 	}
 }
 

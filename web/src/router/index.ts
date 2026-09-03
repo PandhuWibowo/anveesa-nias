@@ -249,6 +249,24 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['sftp.access', 'sftp.manage'] },
         },
         {
+          path: 'cloud-storage',
+          name: 'cloud-storage',
+          component: () => import('@/views/CloudStorageView.vue'),
+          meta: { requiredPermissionsAny: ['cloudstorage.access', 'cloudstorage.manage'] },
+        },
+        {
+          path: 'pg-replication',
+          name: 'pg-replication',
+          component: () => import('@/views/PgReplicationView.vue'),
+          meta: { requiredPermissionsAny: ['pgreplication.view', 'pgreplication.manage'] },
+        },
+        {
+          path: 'pg-parameters',
+          name: 'pg-parameters',
+          component: () => import('@/views/PgParametersView.vue'),
+          meta: { requiredPermissionsAny: ['pgparameters.view', 'pgparameters.manage'] },
+        },
+        {
           path: 'kube-clusters',
           name: 'kube-clusters',
           component: () => import('@/views/KubeClustersView.vue'),

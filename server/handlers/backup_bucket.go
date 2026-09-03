@@ -12,6 +12,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,14 +42,15 @@ type BackupJob struct {
 	DoneAt    *time.Time      `json:"done_at,omitempty"`
 
 	// Live upload progress (updated atomically, no lock needed)
-	Stage         string `json:"stage"`           // "dumping" | "uploading"
-	UploadedBytes int64  `json:"uploaded_bytes"`  // bytes sent to bucket so far
+	Stage         string `json:"stage"`          // "dumping" | "uploading"
+	UploadedBytes int64  `json:"uploaded_bytes"` // bytes sent to bucket so far
 
 	// Result (populated on done)
 	ObjectKey         string `json:"object_key,omitempty"`
 	Bucket            string `json:"bucket,omitempty"`
 	SizeBytes         int64  `json:"size_bytes,omitempty"`
 	UncompressedBytes int64  `json:"uncompressed_bytes,omitempty"`
+	RecordsExported   int64  `json:"records_exported,omitempty"` // log/document count (search backups only)
 
 	// Error (populated on failed)
 	Error string `json:"error,omitempty"`
@@ -58,7 +61,7 @@ type BackupJob struct {
 }
 
 var (
-	backupJobs   sync.Map          // id → *BackupJob
+	backupJobs   sync.Map // id → *BackupJob
 	jobIDCounter uint64
 )
 
@@ -192,6 +195,12 @@ func BackupToBucket() http.HandlerFunc {
 			return
 		}
 
+		username := r.Header.Get("X-Username")
+		if username == "" {
+			username = "anonymous"
+		}
+		srcConnName := connectionNameByID(req.SourceConnID)
+
 		// Build object key
 		ext := ".sql"
 		if req.Options.Compress {
@@ -233,7 +242,12 @@ func BackupToBucket() http.HandlerFunc {
 				var gz *gzip.Writer
 				var pipeOut io.Writer = pw
 				if req.Options.Compress {
-					gz, _ = gzip.NewWriterLevel(pw, gzip.BestCompression)
+					// BestCompression (9) spends a lot of CPU for only a
+					// marginal size gain over DefaultCompression (6) — on an
+					// 8GB+ dump that difference is the dominant cost of the
+					// whole backup, since compression is single-threaded and
+					// serialized with dump generation in this same goroutine.
+					gz, _ = gzip.NewWriterLevel(pw, gzip.DefaultCompression)
 					pipeOut = gz
 				}
 				cw := &countingWriter{w: pipeOut}
@@ -258,11 +272,11 @@ func BackupToBucket() http.HandlerFunc {
 
 			now := time.Now()
 			job.mu.Lock()
-			defer job.mu.Unlock()
 			job.DoneAt = &now
 			if uploadErr != nil || jobCtx.Err() != nil {
 				if jobCtx.Err() != nil && uploadErr == nil {
 					job.Status = BackupJobCanceled
+					job.Error = "canceled"
 				} else {
 					job.Status = BackupJobFailed
 					if uploadErr != nil {
@@ -271,12 +285,18 @@ func BackupToBucket() http.HandlerFunc {
 						job.Error = jobCtx.Err().Error()
 					}
 				}
-				return
+			} else {
+				job.Status = BackupJobDone
+				job.ObjectKey = objectName
+				job.Bucket = dest.Bucket
+				job.SizeBytes = atomic.LoadInt64(&cr.n)
 			}
-			job.Status = BackupJobDone
-			job.ObjectKey = objectName
-			job.Bucket = dest.Bucket
-			job.SizeBytes = atomic.LoadInt64(&cr.n)
+			finalStatus, finalErr, sizeBytes := job.Status, job.Error, job.SizeBytes
+			job.mu.Unlock()
+
+			details := fmt.Sprintf("status=%s db=%s dest=%s/%s compressed=%v size=%s",
+				finalStatus, req.Database, dest.Bucket, objectName, req.Options.Compress, formatByteCount(sizeBytes))
+			writeBackupAudit("backup_to_bucket", objectName, details, username, req.SourceConnID, srcConnName, now.Sub(job.StartedAt).Milliseconds(), finalErr)
 		}()
 
 		w.WriteHeader(http.StatusAccepted)
@@ -325,6 +345,87 @@ func CancelBackupJob() http.HandlerFunc {
 	}
 }
 
+// ── Action history (audit) ───────────────────────────────────────────────
+//
+// Every action a user can take on the Backup & Restore page — running a
+// bucket backup, restoring from a file, or downloading an existing backup —
+// gets a row in the shared audit_log table under event_type "backup". This
+// reuses the same table/writer the rest of the app already logs to (see
+// handlers/audit.go) rather than adding a page-specific table, but is
+// deliberately exposed through its own endpoint/permission gate
+// (PermBackupsManage) instead of the admin-only /api/admin/audit — anyone
+// who can run a backup should be able to see what backups have run.
+
+// connectionNameByID is a best-effort lookup used purely for audit-log
+// readability — a missing/renamed connection just shows up as an empty
+// conn_name rather than failing the action being logged.
+func connectionNameByID(id int64) string {
+	if id == 0 {
+		return ""
+	}
+	var name string
+	appdb.DB.QueryRow(appdb.ConvertQuery(`SELECT name FROM connections WHERE id=?`), id).Scan(&name)
+	return name
+}
+
+// writeBackupAudit records one backup/restore/download action. errMsg == ""
+// means success; a "canceled" errMsg means the user canceled it; anything
+// else is a failure — the frontend derives its status pill from this instead
+// of a separate status column.
+func writeBackupAudit(action, target, details, username string, connID int64, connName string, durationMs int64, errMsg string) {
+	var connIDPtr *int64
+	if connID > 0 {
+		connIDPtr = &connID
+	}
+	writeAuditEvent("backup", action, target, details, username, connIDPtr, connName, "", durationMs, 0, errMsg)
+}
+
+type BackupHistoryEntry struct {
+	ID         int64  `json:"id"`
+	Action     string `json:"action"`
+	Target     string `json:"target"`
+	Details    string `json:"details"`
+	Username   string `json:"username"`
+	ConnID     *int64 `json:"conn_id"`
+	ConnName   string `json:"conn_name"`
+	DurationMs int64  `json:"duration_ms"`
+	Error      string `json:"error"`
+	ExecutedAt string `json:"executed_at"`
+}
+
+// ListBackupHistory returns recent backup/restore/download actions taken on
+// the Backup & Restore page, newest first.
+// GET /api/backup/history?limit=N
+func ListBackupHistory() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		limit := 100
+		if l := r.URL.Query().Get("limit"); l != "" {
+			if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 500 {
+				limit = n
+			}
+		}
+		rows, err := appdb.DB.Query(appdb.ConvertQuery(`
+			SELECT id, action, COALESCE(target,''), COALESCE(details,''), username, conn_id, COALESCE(conn_name,''), duration_ms, COALESCE(error,''), executed_at
+			FROM audit_log WHERE event_type = 'backup' ORDER BY id DESC LIMIT ?`), limit)
+		if err != nil {
+			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		entries := []BackupHistoryEntry{}
+		for rows.Next() {
+			var e BackupHistoryEntry
+			if err := rows.Scan(&e.ID, &e.Action, &e.Target, &e.Details, &e.Username, &e.ConnID, &e.ConnName, &e.DurationMs, &e.Error, &e.ExecutedAt); err != nil {
+				continue
+			}
+			entries = append(entries, e)
+		}
+		json.NewEncoder(w).Encode(entries)
+	}
+}
+
 // uploadToBucketStream uploads body to S3 using chunked transfer encoding and
 // UNSIGNED-PAYLOAD signing so the entire content never needs to be held in
 // memory.  The HTTP client timeout is set to 4 hours to accommodate GB+ dumps.
@@ -334,6 +435,20 @@ func uploadToBucketStream(ctx interface {
 	Err() error
 	Deadline() (time.Time, bool)
 }, dest *bucketConnRow, objectKey string, body io.Reader) error {
+	return uploadToBucketStreamTyped(ctx, dest, objectKey, body, "application/octet-stream")
+}
+
+// uploadToBucketStreamTyped is uploadToBucketStream with a caller-supplied
+// Content-Type — the browser-uploaded-file path (cloud_storage.go) wants the
+// real MIME type so downloads/inline-previews behave correctly; the backup
+// paths (SQL dumps, gzipped NDJSON, zip archives) are fine with the generic
+// default, so they keep calling the untyped wrapper above.
+func uploadToBucketStreamTyped(ctx interface {
+	Done() <-chan struct{}
+	Value(interface{}) interface{}
+	Err() error
+	Deadline() (time.Time, bool)
+}, dest *bucketConnRow, objectKey string, body io.Reader, contentType string) error {
 	endpointHost := buildS3Host(dest)
 	scheme := "https"
 	if !dest.SSL {
@@ -343,7 +458,7 @@ func uploadToBucketStream(ctx interface {
 	key := strings.TrimPrefix(objectKey, "/")
 
 	virtualHost := bucket + "." + endpointHost
-	uploadURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, url.PathEscape(key))
+	uploadURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, s3KeyPathEscape(key))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, body)
 	if err != nil {
@@ -353,7 +468,10 @@ func uploadToBucketStream(ctx interface {
 	// Chunked transfer — no Content-Length needed, no full-body hash required
 	req.ContentLength = -1
 	req.TransferEncoding = []string{"chunked"}
-	req.Header.Set("Content-Type", "application/octet-stream")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	req.Header.Set("Content-Type", contentType)
 
 	region := objectStorageRegion(dest.Driver, endpointHost)
 	service := objectStorageService(dest.Driver)
@@ -434,6 +552,11 @@ func uploadToBucket(ctx interface {
 func PresignDownload() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		start := time.Now()
+		username := r.Header.Get("X-Username")
+		if username == "" {
+			username = "anonymous"
+		}
 		destIDStr := r.URL.Query().Get("dest_conn_id")
 		destID, err := strconv.ParseInt(destIDStr, 10, 64)
 		if err != nil || destID == 0 {
@@ -453,10 +576,17 @@ func PresignDownload() http.HandlerFunc {
 		}
 
 		signed, err := presignedDownloadURL(dest, objectKey, 60*time.Minute)
+		// Logged here rather than in DownloadFromBucket: the browser downloads
+		// straight from the bucket using this URL and never routes through our
+		// server again, so this request is the only reliable server-side signal
+		// that a download was requested for objectKey — DownloadFromBucket only
+		// fires on the (uncommon) proxied fallback path.
 		if err != nil {
+			writeBackupAudit("direct_download", objectKey, "bucket="+dest.Bucket, username, destID, connectionNameByID(destID), time.Since(start).Milliseconds(), err.Error())
 			http.Error(w, `{"error":"failed to sign URL: `+err.Error()+`"}`, http.StatusInternalServerError)
 			return
 		}
+		writeBackupAudit("direct_download", objectKey, "bucket="+dest.Bucket, username, destID, connectionNameByID(destID), time.Since(start).Milliseconds(), "")
 
 		json.NewEncoder(w).Encode(map[string]string{"url": signed})
 	}
@@ -467,6 +597,11 @@ func PresignDownload() http.HandlerFunc {
 // GET /api/backup/bucket-download?dest_conn_id=N&object_key=path/to/file.sql.gz
 func DownloadFromBucket() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		username := r.Header.Get("X-Username")
+		if username == "" {
+			username = "anonymous"
+		}
 		destIDStr := r.URL.Query().Get("dest_conn_id")
 		destID, err := strconv.ParseInt(destIDStr, 10, 64)
 		if err != nil || destID == 0 {
@@ -485,39 +620,13 @@ func DownloadFromBucket() http.HandlerFunc {
 			return
 		}
 
-		endpointHost := buildS3Host(dest)
-		scheme := "https"
-		if !dest.SSL {
-			scheme = "http"
-		}
-		bucket := strings.Trim(dest.Bucket, "/")
-		virtualHost := bucket + "." + endpointHost
-		downloadURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, url.PathEscape(objectKey))
-
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, downloadURL, nil)
+		resp, err := openBucketObjectStream(r.Context(), dest, objectKey, 0)
 		if err != nil {
-			http.Error(w, `{"error":"failed to build request: `+err.Error()+`"}`, http.StatusInternalServerError)
-			return
-		}
-
-		payloadHash := sha256.Sum256([]byte{})
-		payloadHashHex := hex.EncodeToString(payloadHash[:])
-		region := objectStorageRegion(dest.Driver, endpointHost)
-		service := objectStorageService(dest.Driver)
-		signObjectStorageRequestFull(req, dest.Username, dest.Password, region, service, payloadHashHex, nil)
-
-		client := &http.Client{Timeout: 4 * time.Hour}
-		resp, err := client.Do(req)
-		if err != nil {
+			writeBackupAudit("direct_download", objectKey, "bucket="+dest.Bucket+" (proxied)", username, destID, connectionNameByID(destID), time.Since(start).Milliseconds(), err.Error())
 			http.Error(w, `{"error":"download failed: `+err.Error()+`"}`, http.StatusBadGateway)
 			return
 		}
 		defer resp.Body.Close()
-
-		if resp.StatusCode >= 400 {
-			http.Error(w, fmt.Sprintf(`{"error":"bucket returned HTTP %d"}`, resp.StatusCode), http.StatusBadGateway)
-			return
-		}
 
 		parts := strings.Split(objectKey, "/")
 		filename := parts[len(parts)-1]
@@ -526,8 +635,141 @@ func DownloadFromBucket() http.HandlerFunc {
 		if cl := resp.Header.Get("Content-Length"); cl != "" {
 			w.Header().Set("Content-Length", cl)
 		}
-		io.Copy(w, resp.Body)
+		n, copyErr := io.Copy(w, resp.Body)
+		errMsg := ""
+		if copyErr != nil {
+			errMsg = copyErr.Error()
+		}
+		writeBackupAudit("direct_download", objectKey, fmt.Sprintf("bucket=%s (proxied) size=%s", dest.Bucket, formatByteCount(n)), username, destID, connectionNameByID(destID), time.Since(start).Milliseconds(), errMsg)
 	}
+}
+
+// openBucketObjectStream issues a signed GET for an object and returns the
+// live HTTP response for streaming — callers must Close resp.Body. Used where
+// the full object must never be buffered in memory (restore-from-bucket,
+// DownloadFromBucket), unlike listBucketObjects/presign which only need
+// metadata or a URL. rangeStart, if > 0, requests only the suffix starting at
+// that byte offset (a plain "bytes=N-" range) — used to resume a download
+// that was cut off partway rather than re-transferring the whole object.
+func openBucketObjectStream(ctx context.Context, dest *bucketConnRow, objectKey string, rangeStart int64) (*http.Response, error) {
+	endpointHost := buildS3Host(dest)
+	scheme := "https"
+	if !dest.SSL {
+		scheme = "http"
+	}
+	bucket := strings.Trim(dest.Bucket, "/")
+	virtualHost := bucket + "." + endpointHost
+	downloadURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, s3KeyPathEscape(objectKey))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if rangeStart > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", rangeStart))
+	}
+
+	payloadHash := sha256.Sum256([]byte{})
+	payloadHashHex := hex.EncodeToString(payloadHash[:])
+	region := objectStorageRegion(dest.Driver, endpointHost)
+	service := objectStorageService(dest.Driver)
+	signObjectStorageRequestFull(req, dest.Username, dest.Password, region, service, payloadHashHex, nil)
+
+	// Generous timeout — restore/download sources can be multi-GB dumps.
+	client := &http.Client{Timeout: 4 * time.Hour}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		resp.Body.Close()
+		return nil, fmt.Errorf("bucket returned HTTP %d", resp.StatusCode)
+	}
+	return resp, nil
+}
+
+// downloadObjectToTempFile downloads objectKey to a local temp file, resuming
+// via HTTP Range requests when the connection drops instead of restarting the
+// whole transfer. This is what actually gets a multi-GB download past a
+// fixed-duration or fixed-size limit somewhere in the network path (a proxy,
+// load balancer, or the bucket service itself) — each retry only has to
+// survive transferring the remaining bytes, not the whole object again, so
+// the transfer keeps making forward progress even if no single connection
+// can survive the full duration.
+//
+// The reason this downloads to disk instead of streaming straight into the
+// SQL parser (like the rest of this app's bucket reads do) is that gzip
+// can't be resumed mid-decompression: DEFLATE's back-references depend on
+// everything decoded before a given point, so there's no way to "seek" into
+// a gzip stream at an arbitrary compressed-byte offset. Materializing the
+// compressed bytes on disk first decouples "reliably get the bytes" (network,
+// resumable) from "process the SQL" (disk-only from here, so a later DB
+// hiccup doesn't require touching the bucket again either).
+func downloadObjectToTempFile(ctx context.Context, dest *bucketConnRow, objectKey string, onProgress func(downloaded int64)) (path string, err error) {
+	f, err := os.CreateTemp("", "nias-restore-*.download")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	path = f.Name()
+	defer f.Close()
+	cleanup := func() { os.Remove(path) }
+
+	const maxAttempts = 8
+	var downloaded int64
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		resp, reqErr := openBucketObjectStream(ctx, dest, objectKey, downloaded)
+		if reqErr != nil {
+			if attempt >= maxAttempts || ctx.Err() != nil {
+				cleanup()
+				return "", reqErr
+			}
+		} else {
+			// If we asked for a range but the server ignored it and sent the
+			// whole object again (status 200 instead of 206), whatever we'd
+			// already written is now the wrong prefix — start the file over.
+			if downloaded > 0 && resp.StatusCode != http.StatusPartialContent {
+				if _, err := f.Seek(0, io.SeekStart); err == nil {
+					f.Truncate(0)
+					downloaded = 0
+				}
+			}
+			n, copyErr := io.Copy(f, resp.Body)
+			resp.Body.Close()
+			downloaded += n
+			if onProgress != nil {
+				onProgress(downloaded)
+			}
+			if copyErr == nil {
+				return path, nil
+			}
+			if attempt >= maxAttempts || ctx.Err() != nil {
+				cleanup()
+				return "", fmt.Errorf("download failed after %d attempts (%s transferred): %w", attempt, formatByteCount(downloaded), copyErr)
+			}
+		}
+		select {
+		case <-time.After(3 * time.Second):
+		case <-ctx.Done():
+			cleanup()
+			return "", ctx.Err()
+		}
+	}
+	cleanup()
+	return "", fmt.Errorf("download failed after %d attempts", maxAttempts)
+}
+
+func formatByteCount(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%dB", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 // presignedDownloadURL returns a time-limited pre-signed GET URL for an object.
@@ -542,7 +784,7 @@ func presignedDownloadURL(dest *bucketConnRow, objectKey string, expires time.Du
 	bucket := strings.Trim(dest.Bucket, "/")
 	key := strings.TrimPrefix(objectKey, "/")
 	virtualHost := bucket + "." + endpointHost
-	objectURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, url.PathEscape(key))
+	objectURL := fmt.Sprintf("%s://%s/%s", scheme, virtualHost, s3KeyPathEscape(key))
 
 	now := time.Now().UTC()
 	amzDate := now.Format("20060102T150405Z")
@@ -564,14 +806,14 @@ func presignedDownloadURL(dest *bucketConnRow, objectKey string, expires time.Du
 	canonicalQuery := q.Encode() // url.Values.Encode() sorts keys
 
 	canonicalHeaders := "host:" + virtualHost + "\n"
-	canonicalURI := "/" + url.PathEscape(key)
+	canonicalURI := "/" + s3KeyPathEscape(key)
 
 	canonicalRequest := strings.Join([]string{
 		"GET",
 		canonicalURI,
 		canonicalQuery,
 		canonicalHeaders,
-		"host",           // signed headers
+		"host", // signed headers
 		"UNSIGNED-PAYLOAD",
 	}, "\n")
 
@@ -626,6 +868,13 @@ type s3Object struct {
 	LastModified string `json:"last_modified"`
 }
 
+// maxListedObjects caps how many objects listBucketObjects will accumulate
+// across pages — a safety bound, not an expected bucket size, so pagination
+// and sorting in the UI always have the true full listing to work with
+// (S3 has no server-side "sort by size/date", so callers that want that need
+// the whole listing up front).
+const maxListedObjects = 5000
+
 func listBucketObjects(ctx interface {
 	Done() <-chan struct{}
 	Value(interface{}) interface{}
@@ -638,62 +887,89 @@ func listBucketObjects(ctx interface {
 		scheme = "http"
 	}
 	bucket := strings.Trim(dest.Bucket, "/")
-
 	virtualHost := bucket + "." + endpointHost
-	listURL := fmt.Sprintf("%s://%s/?list-type=2&max-keys=200", scheme, virtualHost)
-	if prefix != "" {
-		listURL += "&prefix=" + url.QueryEscape(prefix+"/")
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	payloadHash := sha256.Sum256([]byte{})
-	payloadHashHex := hex.EncodeToString(payloadHash[:])
-	region := objectStorageRegion(dest.Driver, endpointHost)
-	service := objectStorageService(dest.Driver)
-	signObjectStorageRequestFull(req, dest.Username, dest.Password, region, service, payloadHashHex, nil)
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("bucket list returned HTTP %d", resp.StatusCode)
-	}
 
 	var objects []s3Object
-	body := new(bytes.Buffer)
-	body.ReadFrom(resp.Body)
-	xml := body.String()
+	continuationToken := ""
 
 	for {
-		start := strings.Index(xml, "<Contents>")
-		if start < 0 {
-			break
+		// AWS SigV4 requires the canonical query string sorted alphabetically
+		// by key — url.Values.Encode() does that, so we build params via it
+		// rather than string-concatenating (the old fixed "list-type&max-keys"
+		// order only happened to already be sorted; appending a third param
+		// like continuation-token breaks that by coincidence).
+		q := url.Values{}
+		q.Set("list-type", "2")
+		q.Set("max-keys", "1000")
+		if prefix != "" {
+			q.Set("prefix", prefix+"/")
 		}
-		end := strings.Index(xml[start:], "</Contents>")
-		if end < 0 {
-			break
+		if continuationToken != "" {
+			q.Set("continuation-token", continuationToken)
 		}
-		block := xml[start : start+end+len("</Contents>")]
-		xml = xml[start+end+len("</Contents>"):]
+		listURL := fmt.Sprintf("%s://%s/?%s", scheme, virtualHost, q.Encode())
 
-		obj := s3Object{}
-		if k := extractXMLTag(block, "Key"); k != "" {
-			obj.Key = k
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
+		if err != nil {
+			return nil, err
 		}
-		if s := extractXMLTag(block, "Size"); s != "" {
-			obj.Size, _ = strconv.ParseInt(s, 10, 64)
+
+		payloadHash := sha256.Sum256([]byte{})
+		payloadHashHex := hex.EncodeToString(payloadHash[:])
+		region := objectStorageRegion(dest.Driver, endpointHost)
+		service := objectStorageService(dest.Driver)
+		signObjectStorageRequestFull(req, dest.Username, dest.Password, region, service, payloadHashHex, nil)
+
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
 		}
-		if lm := extractXMLTag(block, "LastModified"); lm != "" {
-			obj.LastModified = lm
+		body := new(bytes.Buffer)
+		body.ReadFrom(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			return nil, fmt.Errorf("bucket list returned HTTP %d", resp.StatusCode)
 		}
-		objects = append(objects, obj)
+
+		xmlBody := body.String()
+		rest := xmlBody
+		for {
+			start := strings.Index(rest, "<Contents>")
+			if start < 0 {
+				break
+			}
+			end := strings.Index(rest[start:], "</Contents>")
+			if end < 0 {
+				break
+			}
+			block := rest[start : start+end+len("</Contents>")]
+			rest = rest[start+end+len("</Contents>"):]
+
+			obj := s3Object{}
+			if k := extractXMLTag(block, "Key"); k != "" {
+				obj.Key = k
+			}
+			if s := extractXMLTag(block, "Size"); s != "" {
+				obj.Size, _ = strconv.ParseInt(s, 10, 64)
+			}
+			if lm := extractXMLTag(block, "LastModified"); lm != "" {
+				obj.LastModified = lm
+			}
+			objects = append(objects, obj)
+		}
+
+		if len(objects) >= maxListedObjects {
+			break
+		}
+		if extractXMLTag(xmlBody, "IsTruncated") != "true" {
+			break
+		}
+		nextToken := extractXMLTag(xmlBody, "NextContinuationToken")
+		if nextToken == "" {
+			break
+		}
+		continuationToken = nextToken
 	}
 	return objects, nil
 }
@@ -722,7 +998,59 @@ func buildS3Host(dest *bucketConnRow) string {
 	return h
 }
 
-// signObjectStorageRequestFull signs with the actual payload hash (used for GET/HEAD/LIST).
+// awsURIEncode implements AWS's own strict SigV4 URI-encoding rule — only
+// A-Z, a-z, 0-9, '-', '.', '_', '~' are left unescaped; every other byte is
+// percent-encoded (uppercase hex), full stop. This is deliberately NOT
+// Go's url.PathEscape/QueryEscape: those follow RFC 3986's more permissive
+// pchar/sub-delims rules and leave characters like '&', '(', ')', '+', and
+// space unescaped in a path segment — which AWS's spec requires encoded.
+// Confirmed against a local MinIO: a key containing any of those characters
+// fails signature verification when built with url.PathEscape instead of
+// this function, since the client and server end up computing the
+// canonical URI differently.
+func awsURIEncode(s string) string {
+	var sb strings.Builder
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') ||
+			b == '-' || b == '.' || b == '_' || b == '~' {
+			sb.WriteByte(b)
+		} else {
+			fmt.Fprintf(&sb, "%%%02X", b)
+		}
+	}
+	return sb.String()
+}
+
+// s3KeyPathEscape AWS-URI-encodes each path segment of an S3 object key
+// separately, joined by a literal "/" — the slash between segments must
+// stay literal per the SigV4 canonical-URI spec (only segment content gets
+// percent-encoded), which is also why this isn't just awsURIEncode(key)
+// directly. Huawei OBS tolerates the more lenient url.PathEscape encoding
+// this replaces — which is why the subfolder-backup feature has worked in
+// testing so far — but strict implementations (MinIO, likely real AWS
+// S3/GCS/Alibaba OSS) reject it.
+func s3KeyPathEscape(key string) string {
+	segs := strings.Split(strings.TrimPrefix(key, "/"), "/")
+	for i, s := range segs {
+		segs[i] = awsURIEncode(s)
+	}
+	return strings.Join(segs, "/")
+}
+
+// signObjectStorageRequestFull signs with the actual payload hash (used for
+// GET/HEAD/LIST/PUT-copy/DELETE). Every header actually present on the
+// request gets included in SignedHeaders — not just a fixed host/date/hash
+// baseline — because strict implementations reject a request outright if
+// any header it carries is left out of the signature. This bit real:
+// Alibaba OSS returned "SignatureDoesNotMatch: HeadersNotSigned:
+// X-AMZ-COPY-SOURCE" on same-bucket moves/renames, since the old fixed
+// baseline never signed x-amz-copy-source (set by copyBucketObjectWithHeaders
+// before calling in here) even though it was sent on the wire. The same gap
+// existed for Range (openBucketObjectStream's resume support) and
+// Content-MD5/Content-Type (batchDeleteBucketObjects) — Huawei OBS and MinIO
+// just didn't enforce the check, which is why this went unnoticed until a
+// stricter provider hit it.
 func signObjectStorageRequestFull(req *http.Request, accessKey, secretKey, region, service, payloadHash string, _ []byte) {
 	now := time.Now().UTC()
 	amzDate := now.Format("20060102T150405Z")
@@ -736,10 +1064,25 @@ func signObjectStorageRequestFull(req *http.Request, accessKey, secretKey, regio
 		canonicalURI = "/"
 	}
 	canonicalQuery := req.URL.RawQuery
-	canonicalHeaders := "host:" + req.URL.Host + "\n" +
-		"x-amz-content-sha256:" + payloadHash + "\n" +
-		"x-amz-date:" + amzDate + "\n"
-	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
+
+	headerValues := map[string]string{"host": req.URL.Host}
+	names := []string{"host"}
+	for k, vals := range req.Header {
+		lower := strings.ToLower(k)
+		headerValues[lower] = strings.TrimSpace(strings.Join(vals, ","))
+		names = append(names, lower)
+	}
+	sort.Strings(names)
+
+	var canonicalHeadersBuilder strings.Builder
+	for _, name := range names {
+		canonicalHeadersBuilder.WriteString(name)
+		canonicalHeadersBuilder.WriteString(":")
+		canonicalHeadersBuilder.WriteString(headerValues[name])
+		canonicalHeadersBuilder.WriteString("\n")
+	}
+	canonicalHeaders := canonicalHeadersBuilder.String()
+	signedHeaders := strings.Join(names, ";")
 	canonicalRequest := strings.Join([]string{
 		req.Method,
 		canonicalURI,

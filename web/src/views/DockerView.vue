@@ -22,6 +22,7 @@ interface DockerHost {
   ssh_port: number
   ssh_user: string
   socket_path: string
+  jump_host_id?: number
   owner_id: number
   created_at: string
 }
@@ -133,6 +134,7 @@ interface HostForm {
   ssh_password: string
   ssh_key: string
   socket_path: string
+  jump_host_id: number
 }
 
 const router = useRouter()
@@ -268,15 +270,27 @@ const emptyForm = (): HostForm => ({
   ssh_user: '',
   ssh_password: '',
   ssh_key: '',
-  socket_path: '/var/run/docker.sock',
+  socket_path: '',
+  jump_host_id: 0,
 })
+
+// Hosts that can serve as a bastion: must have their own remote SSH
+// connection (a local host has no SSH session to tunnel through), and a
+// host can't jump via itself.
+const jumpHostOptions = computed(() =>
+  hosts.value.filter((h) => h.ssh_host && h.id !== editingHostId.value),
+)
+const jumpHostSelectOptions = computed(() => [
+  { value: 0, label: 'Connect directly' },
+  ...jumpHostOptions.value.map((h) => ({ value: h.id, label: h.name })),
+])
 
 // Strip SSH fields when saving a local host so the backend connects to the
 // daemon socket on this machine directly (empty ssh_host = local mode).
 function hostPayload() {
   const f = form.value
   if (f.mode === 'local') {
-    return { name: f.name, ssh_host: '', ssh_user: '', ssh_password: '', ssh_key: '', socket_path: f.socket_path }
+    return { name: f.name, ssh_host: '', ssh_user: '', ssh_password: '', ssh_key: '', socket_path: f.socket_path, jump_host_id: 0 }
   }
   return {
     name: f.name,
@@ -286,6 +300,7 @@ function hostPayload() {
     ssh_password: f.ssh_password,
     ssh_key: f.ssh_key,
     socket_path: f.socket_path,
+    jump_host_id: f.jump_host_id,
   }
 }
 const form = ref<HostForm>(emptyForm())
@@ -1781,6 +1796,7 @@ function openEditHost(h: DockerHost) {
     ssh_password: '',
     ssh_key: '',
     socket_path: h.socket_path || '/var/run/docker.sock',
+    jump_host_id: h.jump_host_id || 0,
   }
   showHostForm.value = true
 }
@@ -1798,7 +1814,11 @@ async function testHost() {
       toast.success(`Connected — Docker ${data.version ?? ''} (${data.os ?? ''}/${data.arch ?? ''})`)
     }
   } catch (e: any) {
-    toast.error(e?.response?.data?.error || 'Connection test failed')
+    if (e?.response?.data?.ssh_ok) {
+      toast.info('SSH connection OK — Docker daemon not reachable on this host')
+    } else {
+      toast.error(e?.response?.data?.error || 'Connection test failed')
+    }
   } finally {
     testing.value = false
   }
@@ -2502,9 +2522,25 @@ onMounted(loadHosts)
               SSH private key (optional)
               <textarea v-model="form.ssh_key" class="base-input dk-textarea" rows="3" :placeholder="editingHostId !== null ? '(unchanged)' : '-----BEGIN OPENSSH PRIVATE KEY-----'"></textarea>
             </label>
+            <label>
+              Jump via (optional)
+              <SearchSelect
+                :model-value="form.jump_host_id"
+                :options="jumpHostSelectOptions"
+                placeholder="Connect directly"
+                @update:model-value="(v) => (form.jump_host_id = Number(v))"
+              />
+            </label>
+            <p v-if="form.jump_host_id" class="dk-hint">
+              This host is only reachable from inside "{{ jumpHostOptions.find(j => j.id === form.jump_host_id)?.name }}" —
+              connections will be tunneled through that host's SSH session instead of dialed directly.
+            </p>
           </template>
 
-          <label>Docker socket path<input v-model="form.socket_path" class="base-input" /></label>
+          <label>
+            Docker socket path (optional)
+            <input v-model="form.socket_path" class="base-input" placeholder="/var/run/docker.sock" />
+          </label>
         </div>
         <div class="dk-modal-actions">
           <button class="base-btn base-btn--sm" :disabled="testing" @click="testHost">{{ testing ? 'Testing…' : 'Test connection' }}</button>

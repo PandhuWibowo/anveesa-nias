@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
+import SearchSelect from '@/components/ui/SearchSelect.vue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
@@ -15,8 +16,23 @@ interface DockerHost {
   ssh_port: number
   ssh_user: string
   socket_path: string
+  jump_host_id?: number
+  visibility?: 'shared' | 'private'
   owner_id: number
   created_at: string
+  my_access_level?: 'owner' | 'admin' | 'shared' | 'viewer' | 'manager' | ''
+}
+
+interface HostAccessEntry {
+  user_id: number
+  username: string
+  access_level: 'viewer' | 'manager'
+}
+
+interface HostUser {
+  id: number
+  username: string
+  role: string
 }
 
 interface HostSummary {
@@ -47,6 +63,7 @@ interface HostForm {
   ssh_password: string
   ssh_key: string
   socket_path: string
+  jump_host_id: number
 }
 
 const router = useRouter()
@@ -80,14 +97,106 @@ function emptyForm(): HostForm {
     ssh_user: '',
     ssh_password: '',
     ssh_key: '',
-    socket_path: '/var/run/docker.sock',
+    socket_path: '',
+    jump_host_id: 0,
+  }
+}
+
+// Hosts that can serve as a bastion: must have their own remote SSH
+// connection (a local host has no SSH session to tunnel through), and a
+// host can't jump via itself.
+const jumpHostOptions = computed(() =>
+  hosts.value.filter((h) => h.ssh_host && h.id !== editingHostId.value),
+)
+const jumpHostSelectOptions = computed(() => [
+  { value: 0, label: 'Connect directly' },
+  ...jumpHostOptions.value.map((h) => ({ value: h.id, label: h.name })),
+])
+
+// A read-only 'viewer' grant on someone else's private host shows the host
+// but shouldn't offer edit/delete/share — those need 'manager' or above.
+function canManageHost(h: DockerHost): boolean {
+  return canManage.value && h.my_access_level !== 'viewer'
+}
+
+// ── Sharing (private hosts) ───────────────────────────────────────
+const showShareModal = ref(false)
+const sharingHost = ref<DockerHost | null>(null)
+const loadingShare = ref(false)
+const savingShare = ref(false)
+const shareVisibility = ref<'shared' | 'private'>('shared')
+const shareAccess = ref<HostAccessEntry[]>([])
+const shareUsers = ref<HostUser[]>([])
+const shareAddUserId = ref<number>(0)
+const shareAddLevel = ref<'viewer' | 'manager'>('viewer')
+const shareUserSelectOptions = computed(() => [
+  { value: 0, label: 'Select a user…' },
+  ...shareUsers.value
+    .filter((u) => !shareAccess.value.some((a) => a.user_id === u.id))
+    .map((u) => ({ value: u.id, label: `${u.username} (${u.role})` })),
+])
+
+async function openShare(h: DockerHost) {
+  sharingHost.value = h
+  showShareModal.value = true
+  shareAddUserId.value = 0
+  shareAddLevel.value = 'viewer'
+  loadingShare.value = true
+  try {
+    const [{ data: access }, { data: users }] = await Promise.all([
+      axios.get(`/api/docker/hosts/${h.id}/access`),
+      shareUsers.value.length ? Promise.resolve({ data: shareUsers.value }) : axios.get<HostUser[]>('/api/docker/hosts/users'),
+    ])
+    shareVisibility.value = access.visibility
+    shareAccess.value = access.access
+    shareUsers.value = users
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to load sharing settings')
+    showShareModal.value = false
+  } finally {
+    loadingShare.value = false
+  }
+}
+
+function closeShare() {
+  showShareModal.value = false
+  sharingHost.value = null
+}
+
+function addShareUser() {
+  if (!shareAddUserId.value) return
+  const u = shareUsers.value.find((u) => u.id === shareAddUserId.value)
+  shareAccess.value.push({ user_id: shareAddUserId.value, username: u?.username ?? '', access_level: shareAddLevel.value })
+  shareAddUserId.value = 0
+  shareAddLevel.value = 'viewer'
+}
+
+function removeShareUser(userId: number) {
+  shareAccess.value = shareAccess.value.filter((a) => a.user_id !== userId)
+}
+
+async function saveShare() {
+  if (!sharingHost.value) return
+  savingShare.value = true
+  try {
+    await axios.put(`/api/docker/hosts/${sharingHost.value.id}/access`, {
+      visibility: shareVisibility.value,
+      access: shareAccess.value.map((a) => ({ user_id: a.user_id, access_level: a.access_level })),
+    })
+    toast.success('Sharing updated')
+    closeShare()
+    await loadHosts()
+  } catch (e: any) {
+    toast.error(e?.response?.data?.error || 'Failed to update sharing')
+  } finally {
+    savingShare.value = false
   }
 }
 
 function hostPayload() {
   const f = form.value
   if (f.mode === 'local') {
-    return { name: f.name, ssh_host: '', ssh_user: '', ssh_password: '', ssh_key: '', socket_path: f.socket_path }
+    return { name: f.name, ssh_host: '', ssh_user: '', ssh_password: '', ssh_key: '', socket_path: f.socket_path, jump_host_id: 0 }
   }
   return {
     name: f.name,
@@ -97,11 +206,16 @@ function hostPayload() {
     ssh_password: f.ssh_password,
     ssh_key: f.ssh_key,
     socket_path: f.socket_path,
+    jump_host_id: f.jump_host_id,
   }
 }
 
 function summaryFor(h: DockerHost): HostSummary | undefined {
   return summaryMap.value.get(h.id)
+}
+
+function hostNameById(id: number): string {
+  return hosts.value.find((h) => h.id === id)?.name || `#${id}`
 }
 
 async function loadHosts() {
@@ -195,6 +309,7 @@ function openEditHost(h: DockerHost) {
     ssh_password: '',
     ssh_key: '',
     socket_path: h.socket_path || '/var/run/docker.sock',
+    jump_host_id: h.jump_host_id || 0,
   }
   showHostForm.value = true
 }
@@ -210,7 +325,11 @@ async function testHost() {
       toast.success(`Connected — Docker ${data.version ?? ''} (${data.os ?? ''}/${data.arch ?? ''})`)
     }
   } catch (e: any) {
-    toast.error(e?.response?.data?.error || 'Connection test failed')
+    if (e?.response?.data?.ssh_ok) {
+      toast.info('SSH connection OK — Docker daemon not reachable (expected if this host is only used for SFTP/Nginx)')
+    } else {
+      toast.error(e?.response?.data?.error || 'Connection test failed')
+    }
   } finally {
     testing.value = false
   }
@@ -274,7 +393,8 @@ function cardActions(h: DockerHost): RowAction[] {
     actions.push({ key: 'test', label: pingingId.value === h.id ? 'Testing…' : 'Test', icon: 'check', primary: true, disabled: pingingId.value === h.id, onClick: () => pingHost(h) })
     actions.push({ key: 'disconnect', label: 'Disconnect', icon: 'power', onClick: () => disconnectHost(h) })
   }
-  if (canManage.value) {
+  if (canManageHost(h)) {
+    actions.push({ key: 'share', label: 'Share', icon: 'share', onClick: () => openShare(h) })
     actions.push({ key: 'edit', label: 'Edit', icon: 'edit', onClick: () => openEditHost(h) })
     actions.push({ key: 'delete', label: 'Delete', icon: 'delete', danger: true, onClick: () => deleteHost(h) })
   }
@@ -336,6 +456,8 @@ onMounted(async () => {
                   {{ h.ssh_user ? h.ssh_user + '@' : '' }}{{ h.ssh_host }}{{ h.ssh_port && h.ssh_port !== 22 ? ':' + h.ssh_port : '' }}
                 </span>
                 <span v-else class="ssh-local">local daemon</span>
+                <span v-if="h.jump_host_id" class="ssh-local">via {{ hostNameById(h.jump_host_id) }}</span>
+                <span v-if="h.visibility === 'private'" class="ssh-local" title="Only visible to the owner and shared users">Private</span>
               </div>
             </div>
 
@@ -451,9 +573,25 @@ onMounted(async () => {
               SSH private key (optional)
               <textarea v-model="form.ssh_key" class="base-input dk-textarea" rows="3" :placeholder="editingHostId !== null ? '(unchanged)' : '-----BEGIN OPENSSH PRIVATE KEY-----'"></textarea>
             </label>
+            <label>
+              Jump via (optional)
+              <SearchSelect
+                :model-value="form.jump_host_id"
+                :options="jumpHostSelectOptions"
+                placeholder="Connect directly"
+                @update:model-value="(v) => (form.jump_host_id = Number(v))"
+              />
+            </label>
+            <p v-if="form.jump_host_id" class="dk-hint">
+              This host is only reachable from inside "{{ jumpHostOptions.find(j => j.id === form.jump_host_id)?.name }}" —
+              connections will be tunneled through that host's SSH session instead of dialed directly.
+            </p>
           </template>
 
-          <label>Docker socket path<input v-model="form.socket_path" class="base-input" /></label>
+          <label>
+            Docker socket path (optional)
+            <input v-model="form.socket_path" class="base-input" placeholder="/var/run/docker.sock" />
+          </label>
         </div>
         <div class="dk-modal-actions">
           <button class="base-btn base-btn--sm" :disabled="testing" @click="testHost">{{ testing ? 'Testing…' : 'Test connection' }}</button>
@@ -461,6 +599,72 @@ onMounted(async () => {
           <button class="base-btn base-btn--sm" @click="showHostForm = false">Cancel</button>
           <button class="base-btn base-btn--primary base-btn--sm" :disabled="savingHost" @click="saveHost">{{ savingHost ? 'Saving…' : 'Save' }}</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Share modal -->
+    <div v-if="showShareModal" class="dk-modal-backdrop" @click.self="closeShare">
+      <div class="dk-modal page-card">
+        <div class="dk-modal-title">Share "{{ sharingHost?.name }}"</div>
+        <div v-if="loadingShare" class="ssh-loading">Loading…</div>
+        <template v-else>
+          <div class="dk-form">
+            <div class="dk-mode">
+              <button
+                type="button"
+                :class="['dk-mode-opt', { 'dk-mode-opt--active': shareVisibility === 'shared' }]"
+                @click="shareVisibility = 'shared'"
+              >Shared</button>
+              <button
+                type="button"
+                :class="['dk-mode-opt', { 'dk-mode-opt--active': shareVisibility === 'private' }]"
+                @click="shareVisibility = 'private'"
+              >Private</button>
+            </div>
+            <p class="dk-hint">
+              <template v-if="shareVisibility === 'shared'">
+                Visible to anyone with Docker/SFTP/Nginx access, same as today.
+              </template>
+              <template v-else>
+                Only the owner, admins, and the users listed below can see or use this host.
+              </template>
+            </p>
+
+            <template v-if="shareVisibility === 'private'">
+              <div v-if="shareAccess.length" class="share-list">
+                <div v-for="entry in shareAccess" :key="entry.user_id" class="share-row">
+                  <span class="share-row-name">{{ entry.username || `#${entry.user_id}` }}</span>
+                  <select v-model="entry.access_level" class="base-input share-row-level">
+                    <option value="viewer">Viewer</option>
+                    <option value="manager">Manager</option>
+                  </select>
+                  <button type="button" class="base-btn base-btn--sm" @click="removeShareUser(entry.user_id)">Remove</button>
+                </div>
+              </div>
+              <p v-else class="dk-hint">No one has been given access yet — only the owner and admins can see this host.</p>
+
+              <div class="dk-form-row share-add-row">
+                <SearchSelect
+                  class="dk-grow"
+                  :model-value="shareAddUserId"
+                  :options="shareUserSelectOptions"
+                  placeholder="Select a user…"
+                  @update:model-value="(v) => (shareAddUserId = Number(v))"
+                />
+                <select v-model="shareAddLevel" class="base-input share-row-level">
+                  <option value="viewer">Viewer</option>
+                  <option value="manager">Manager</option>
+                </select>
+                <button type="button" class="base-btn base-btn--sm" :disabled="!shareAddUserId" @click="addShareUser">Add</button>
+              </div>
+            </template>
+          </div>
+          <div class="dk-modal-actions">
+            <div class="dk-spacer"></div>
+            <button class="base-btn base-btn--sm" @click="closeShare">Cancel</button>
+            <button class="base-btn base-btn--primary base-btn--sm" :disabled="savingShare" @click="saveShare">{{ savingShare ? 'Saving…' : 'Save' }}</button>
+          </div>
+        </template>
       </div>
     </div>
   </div>
@@ -494,7 +698,7 @@ onMounted(async () => {
 .ssh-dot--unknown { background: var(--text-muted); opacity: 0.5; }
 .ssh-dot--off     { background: var(--text-muted); opacity: 0.3; }
 .ssh-name { font-size: 15px; font-weight: 600; color: var(--text-primary); }
-.ssh-meta { padding-left: 16px; }
+.ssh-meta { padding-left: 16px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .ssh-addr { font-size: 12px; font-family: var(--mono); color: var(--text-muted); }
 .ssh-local { font-size: 12px; color: var(--text-muted); font-style: italic; }
 
@@ -562,6 +766,11 @@ onMounted(async () => {
 .dk-grow { flex: 1; }
 .dk-port-field { width: 90px; }
 .dk-textarea { font-family: var(--mono); font-size: 11px; resize: vertical; }
+.share-list { display: flex; flex-direction: column; gap: 6px; }
+.share-row { display: flex; align-items: center; gap: 8px; }
+.share-row-name { flex: 1; font-size: 12.5px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.share-row-level { width: 110px; flex-shrink: 0; }
+.share-add-row { align-items: center; }
 .dk-modal-actions { display: flex; gap: 8px; margin-top: 16px; align-items: center; }
 .dk-spacer { flex: 1; }
 </style>

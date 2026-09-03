@@ -580,6 +580,12 @@ func migrate() error {
 		`ALTER TABLE users ADD COLUMN totp_secret TEXT DEFAULT NULL`,
 		`ALTER TABLE users ADD COLUMN totp_enabled INTEGER DEFAULT 0`,
 		`ALTER TABLE users ADD COLUMN backup_codes TEXT DEFAULT NULL`,
+		// Lets a specific user bypass org-wide MFA enforcement — set
+		// automatically when an admin resets their MFA (so the account isn't
+		// immediately walled off again before they've had a chance to
+		// re-enroll), and clearable by an admin, or automatically once the
+		// user sets MFA up again themselves.
+		`ALTER TABLE users ADD COLUMN mfa_exempt INTEGER NOT NULL DEFAULT 0`,
 		`CREATE TABLE IF NOT EXISTS connection_folders (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			name        TEXT NOT NULL,
@@ -631,6 +637,21 @@ func migrate() error {
 			permissions TEXT DEFAULT '["select","insert","update","delete","create","alter","drop"]',
 			PRIMARY KEY (user_id, conn_id)
 		)`,
+
+		// Per-user native DB credentials: lets a user connect to the target
+		// database as their own DB login (native per-user enforcement) instead of
+		// the connection's shared login. db_password is AES-encrypted at rest.
+		`CREATE TABLE IF NOT EXISTS user_connection_credentials (
+			user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			conn_id     INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+			db_username TEXT NOT NULL,
+			db_password TEXT NOT NULL DEFAULT '',
+			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (user_id, conn_id)
+		)`,
+		// auth_mode: 'shared' (default, existing behaviour) or 'per_user'
+		// (each user must supply their own DB login before they can query).
+		`ALTER TABLE connections ADD COLUMN auth_mode TEXT DEFAULT 'shared'`,
 
 		// ── Approval Workflows ──
 		`CREATE TABLE IF NOT EXISTS approval_workflow (
@@ -1124,6 +1145,28 @@ func migrate() error {
 			owner_id     INTEGER,
 			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+		// Optional bastion: when set, connections to this host are dialed
+		// through another saved host's SSH session instead of directly —
+		// for targets only reachable from inside that host's network.
+		`ALTER TABLE docker_hosts ADD COLUMN jump_host_id INTEGER`,
+
+		// 'shared' (default, today's behavior) means visible to anyone who
+		// holds the coarse docker.view/docker.manage/sftp.access/etc role
+		// permission, same as before this column existed. 'private' means
+		// only the owner, an admin, or a user listed in docker_host_access
+		// may see or use it — narrowing access among role-permitted users,
+		// never granting access to someone who lacks the role permission.
+		`ALTER TABLE docker_hosts ADD COLUMN visibility TEXT NOT NULL DEFAULT 'shared'`,
+		`CREATE TABLE IF NOT EXISTS docker_host_access (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			host_id      INTEGER NOT NULL REFERENCES docker_hosts(id) ON DELETE CASCADE,
+			user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			access_level TEXT NOT NULL DEFAULT 'viewer',
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(host_id, user_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_docker_host_access_host ON docker_host_access(host_id, access_level)`,
+		`CREATE INDEX IF NOT EXISTS idx_docker_host_access_user ON docker_host_access(user_id, host_id)`,
 
 		// Per-host nginx UI settings — remembers sudo/paths/binary per docker host
 		`CREATE TABLE IF NOT EXISTS nginx_host_settings (
@@ -1177,6 +1220,24 @@ func migrate() error {
 
 		// Cron scheduler manages each host's *native* crontab live over SSH
 		// (crontab -l / crontab -), so no cron tables are stored here.
+
+		// Postgres logical replication links — bookkeeping only. Postgres
+		// itself has no concept of a Nias connection id (a subscription just
+		// stores a raw libpq connection string), so this table is what lets
+		// the UI show "connection A's publication X -> connection B's
+		// subscription Y" as one row instead of the user having to
+		// correlate host/port strings by hand.
+		`CREATE TABLE IF NOT EXISTS pg_replication_links (
+			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+			source_connection_id INTEGER NOT NULL,
+			target_connection_id INTEGER NOT NULL,
+			publication_name    TEXT NOT NULL,
+			subscription_name   TEXT NOT NULL,
+			created_by          TEXT NOT NULL DEFAULT '',
+			created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_pg_replication_links_target ON pg_replication_links(target_connection_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_pg_replication_links_source ON pg_replication_links(source_connection_id)`,
 	}
 	for _, s := range stmts {
 		convertedSQL := convertSQL(s)

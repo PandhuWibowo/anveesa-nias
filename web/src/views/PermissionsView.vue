@@ -226,7 +226,39 @@ const groupForm = reactive({
   visibility: 'shared',
   role_restrict: '',
   color: '#3B82F6',
+  is_active: true,
+  member_ids: [] as number[],
+  connection_assignments: [] as Array<{ conn_id: number; permissions: string[] }>,
 })
+
+function toggleGroupMember(userId: number) {
+  const i = groupForm.member_ids.indexOf(userId)
+  if (i >= 0) groupForm.member_ids.splice(i, 1)
+  else groupForm.member_ids.push(userId)
+}
+
+function isGroupConnSelected(connId: number) {
+  return groupForm.connection_assignments.some(a => a.conn_id === connId)
+}
+
+function toggleGroupConnection(connId: number) {
+  const i = groupForm.connection_assignments.findIndex(a => a.conn_id === connId)
+  if (i >= 0) groupForm.connection_assignments.splice(i, 1)
+  else groupForm.connection_assignments.push({ conn_id: connId, permissions: ['select', 'insert', 'update', 'delete'] })
+}
+
+function toggleGroupConnPerm(connId: number, perm: string) {
+  const a = groupForm.connection_assignments.find(x => x.conn_id === connId)
+  if (!a) return
+  const i = a.permissions.indexOf(perm)
+  if (i >= 0) a.permissions.splice(i, 1)
+  else a.permissions.push(perm)
+}
+
+function groupConnHasPerm(connId: number, perm: string) {
+  const a = groupForm.connection_assignments.find(x => x.conn_id === connId)
+  return !!a && a.permissions.includes(perm)
+}
 
 async function fetchGroups() {
   groupsLoading.value = true
@@ -240,18 +272,37 @@ async function fetchGroups() {
   }
 }
 
-function openGroupForm(group: AccessGroup | null = null) {
+async function openGroupForm(group: AccessGroup | null = null) {
   editingGroup.value = group
   if (group) {
     groupForm.name = group.name
     groupForm.visibility = group.visibility || 'shared'
     groupForm.role_restrict = group.role_restrict || ''
     groupForm.color = group.color || '#3B82F6'
+    groupForm.is_active = group.is_active !== false
+    groupForm.member_ids = []
+    groupForm.connection_assignments = []
+    try {
+      const [membersRes, connRes] = await Promise.all([
+        axios.get(`/api/folders/${group.id}/members`),
+        axios.get(`/api/folders/${group.id}/connections`),
+      ])
+      groupForm.member_ids = (membersRes.data || []).map((m: any) => m.user_id)
+      groupForm.connection_assignments = (connRes.data || []).map((c: any) => ({
+        conn_id: c.conn_id,
+        permissions: (c.permissions && c.permissions.length ? c.permissions : ['select', 'insert', 'update', 'delete']),
+      }))
+    } catch (error) {
+      toast.error(readableError(error, { action: 'Load access group members', fallback: 'Failed to load group members' }))
+    }
   } else {
     groupForm.name = ''
     groupForm.visibility = 'shared'
     groupForm.role_restrict = ''
     groupForm.color = '#3B82F6'
+    groupForm.is_active = true
+    groupForm.member_ids = []
+    groupForm.connection_assignments = []
   }
   showGroupForm.value = true
 }
@@ -264,22 +315,32 @@ async function saveGroup() {
 
   groupSaving.value = true
   try {
+    let groupId: number
     if (editingGroup.value) {
       await axios.put(`/api/folders/${editingGroup.value.id}`, {
         name: groupForm.name,
         visibility: groupForm.visibility,
         role_restrict: groupForm.role_restrict,
+        is_active: groupForm.is_active,
       })
+      groupId = editingGroup.value.id
       toast.success('Access group updated')
     } else {
-      await axios.post('/api/folders', {
+      const { data } = await axios.post('/api/folders', {
         name: groupForm.name,
         visibility: groupForm.visibility,
         color: groupForm.color,
         role_restrict: groupForm.role_restrict,
       })
+      groupId = data.id
       toast.success('Access group created')
     }
+    // Persist team members and connection grants (drives access + workflow scope)
+    await axios.put(`/api/folders/${groupId}/members`, { user_ids: groupForm.member_ids })
+    await axios.put(`/api/folders/${groupId}/connections`, {
+      connection_ids: groupForm.connection_assignments.map(a => a.conn_id),
+      connection_permissions: groupForm.connection_assignments,
+    })
     showGroupForm.value = false
     await fetchGroups()
   } catch (error) {
@@ -311,6 +372,8 @@ interface User {
   is_active: boolean
   permissions: string[]
   effective_permissions: string[]
+  mfa_enabled: boolean
+  mfa_exempt: boolean
   created_at: string
 }
 
@@ -417,6 +480,65 @@ function isGroupAssigned(connId: number): boolean {
   )
 }
 
+// ── Per-user native DB credentials ("connect as yourself") ──
+const connCreds = ref<Record<number, { username: string; password: string; configured: boolean }>>({})
+
+function credFor(connId: number) {
+  if (!connCreds.value[connId]) {
+    connCreds.value[connId] = { username: '', password: '', configured: false }
+  }
+  return connCreds.value[connId]
+}
+
+async function loadConnCreds(userId: number) {
+  connCreds.value = {}
+  await Promise.all(
+    userForm.connection_assignments.map(async a => {
+      try {
+        const { data } = await axios.get(`/api/users/${userId}/connections/${a.conn_id}/credential`)
+        connCreds.value[a.conn_id] = {
+          username: data.db_username || '',
+          password: '',
+          configured: !!data.configured,
+        }
+      } catch {
+        connCreds.value[a.conn_id] = { username: '', password: '', configured: false }
+      }
+    })
+  )
+}
+
+async function saveConnCred(connId: number) {
+  if (!editingUser.value) return
+  const c = credFor(connId)
+  if (!c.username.trim()) {
+    toast.error('DB username is required')
+    return
+  }
+  try {
+    await axios.put(`/api/users/${editingUser.value.id}/connections/${connId}/credential`, {
+      db_username: c.username,
+      db_password: c.password,
+    })
+    c.configured = true
+    c.password = ''
+    toast.success('Native DB login saved')
+  } catch (e) {
+    toast.error(readableError(e, { action: 'Save DB login', fallback: 'Failed to save DB login' }))
+  }
+}
+
+async function removeConnCred(connId: number) {
+  if (!editingUser.value) return
+  try {
+    await axios.delete(`/api/users/${editingUser.value.id}/connections/${connId}/credential`)
+    connCreds.value[connId] = { username: '', password: '', configured: false }
+    toast.success('Native DB login removed')
+  } catch (e) {
+    toast.error(readableError(e, { action: 'Remove DB login', fallback: 'Failed to remove DB login' }))
+  }
+}
+
 async function fetchUsers() {
   usersLoading.value = true
   try {
@@ -470,6 +592,8 @@ async function openUserForm(user: User | null = null) {
         return
       }
     }
+    // Load which assigned connections already have a native DB login configured.
+    await loadConnCreds(user.id)
   } else {
     userForm.username = ''
     userForm.password = ''
@@ -563,6 +687,53 @@ async function deleteUser(user: User) {
     await fetchUsers()
   } catch (error: any) {
     toast.error(error.response?.data || 'Failed to delete user')
+  }
+}
+
+const resettingMFA = ref(false)
+const togglingMFAExempt = ref(false)
+
+// Clears the user's TOTP enrollment so they can log in without MFA again —
+// for when someone's locked out after losing their authenticator device.
+// Also grants an MFA-enforcement exemption (backend-side) so they aren't
+// immediately walled off again by an org-wide MFA policy before they've had
+// a chance to re-enroll.
+async function resetUserMFA(user: User) {
+  if (!confirm(`Reset MFA for "${user.username}"? They'll be able to log in without it until they set it up again.`)) return
+
+  resettingMFA.value = true
+  try {
+    await axios.post(`/api/admin/users/${user.id}/reset-mfa`)
+    toast.success('MFA reset — user can log in without it')
+    user.mfa_enabled = false
+    user.mfa_exempt = true
+    if (editingUser.value?.id === user.id) {
+      editingUser.value.mfa_enabled = false
+      editingUser.value.mfa_exempt = true
+    }
+    await fetchUsers()
+  } catch (error: any) {
+    toast.error(readableError(error, { action: 'Reset MFA', fallback: 'Failed to reset MFA' }))
+  } finally {
+    resettingMFA.value = false
+  }
+}
+
+// Manually grant/revoke the MFA-enforcement exemption, independent of a
+// reset — e.g. to permanently exempt a service account, or to put a
+// previously-reset user back under enforcement.
+async function toggleMFAExempt(user: User) {
+  const next = !user.mfa_exempt
+  togglingMFAExempt.value = true
+  try {
+    await axios.put(`/api/admin/users/${user.id}`, { mfa_exempt: next })
+    toast.success(next ? 'User exempted from MFA enforcement' : 'MFA exemption revoked')
+    user.mfa_exempt = next
+    if (editingUser.value?.id === user.id) editingUser.value.mfa_exempt = next
+  } catch (error: any) {
+    toast.error(readableError(error, { action: 'Update MFA exemption', fallback: 'Failed to update MFA exemption' }))
+  } finally {
+    togglingMFAExempt.value = false
   }
 }
 
@@ -716,6 +887,69 @@ function closeAllColMenus() {
   showRoleColMenu.value = false
   showGroupColMenu.value = false
   showUserColMenu.value = false
+  showUserExportMenu.value = false
+}
+
+// ── Export users to CSV ──
+// Superset of the on-screen columns (adds fields like ID/MFA that aren't
+// shown in the table but are useful in an export) — defaults to "export all".
+const exportUserColDefs = [
+  { key: 'id' as const, label: 'ID' },
+  { key: 'username' as const, label: 'Username' },
+  { key: 'role' as const, label: 'Role' },
+  { key: 'effective_access' as const, label: 'Effective Access' },
+  { key: 'is_active' as const, label: 'Status' },
+  { key: 'mfa_enabled' as const, label: 'MFA Enabled' },
+  { key: 'mfa_exempt' as const, label: 'MFA Exempt' },
+  { key: 'created_at' as const, label: 'Created' },
+]
+const exportUserColumns = ref<Record<string, boolean>>(
+  Object.fromEntries(exportUserColDefs.map((c) => [c.key, true])),
+)
+const showUserExportMenu = ref(false)
+
+function setAllExportUserColumns(val: boolean) {
+  exportUserColDefs.forEach((c) => { exportUserColumns.value[c.key] = val })
+}
+
+function userExportValue(u: User, key: string): string {
+  switch (key) {
+    case 'id': return String(u.id)
+    case 'username': return u.username
+    case 'role': return u.role
+    case 'effective_access': return getUserEffectivePermissions(u).map(getPermissionLabel).join('; ')
+    case 'is_active': return u.is_active ? 'Active' : 'Inactive'
+    case 'mfa_enabled': return u.mfa_enabled ? 'Yes' : 'No'
+    case 'mfa_exempt': return u.mfa_exempt ? 'Yes' : 'No'
+    case 'created_at': return new Date(u.created_at).toLocaleDateString()
+    default: return ''
+  }
+}
+
+function csvEscape(v: string): string {
+  return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v
+}
+
+function exportUsersCsv() {
+  const cols = exportUserColDefs.filter((c) => exportUserColumns.value[c.key])
+  if (!cols.length) {
+    toast.error('Select at least one column to export')
+    return
+  }
+  const rows = filteredUsers.value.map((u) => cols.map((c) => csvEscape(userExportValue(u, c.key))).join(','))
+  const csv = [cols.map((c) => csvEscape(c.label)).join(','), ...rows].join('\r\n')
+  // Leading BOM so Excel opens UTF-8 (non-ASCII usernames/emails) correctly.
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `users-export-${new Date().toISOString().slice(0, 10)}.csv`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+  showUserExportMenu.value = false
+  toast.success(`Exported ${filteredUsers.value.length} user${filteredUsers.value.length === 1 ? '' : 's'}`)
 }
 
 // ── Init ──
@@ -733,7 +967,7 @@ onMounted(async () => {
   if (canManageGroups.value) {
     tasks.push(fetchGroups())
   }
-  if (canManageUsers.value) {
+  if (canManageUsers.value || canManageGroups.value) {
     tasks.push(fetchUsers(), fetchConnections())
     if (!canManageRoles.value) {
       tasks.push(fetchRoles())
@@ -1075,6 +1309,27 @@ watch(() => route.query.tab, () => {
               </label>
             </div>
           </div>
+          <div class="perm-col-toggle" @click.stop>
+            <button class="base-btn base-btn--ghost base-btn--xs" @click="showUserExportMenu = !showUserExportMenu">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Export
+            </button>
+            <div v-if="showUserExportMenu" class="perm-col-menu">
+              <div class="perm-col-menu-title">
+                Export Columns
+                <div class="perm-col-menu-links">
+                  <button type="button" class="perm-col-menu-link" @click="setAllExportUserColumns(true)">All</button>
+                  <button type="button" class="perm-col-menu-link" @click="setAllExportUserColumns(false)">None</button>
+                </div>
+              </div>
+              <label v-for="col in exportUserColDefs" :key="col.key" class="perm-col-item">
+                <input type="checkbox" v-model="exportUserColumns[col.key]" /> {{ col.label }}
+              </label>
+              <button class="base-btn base-btn--primary base-btn--xs perm-col-menu-export" @click="exportUsersCsv">
+                Export CSV ({{ filteredUsers.length }} users)
+              </button>
+            </div>
+          </div>
           <select class="perm-filter-sel" v-model="userPageSize">
             <option :value="10">10 / page</option>
             <option :value="25">25 / page</option>
@@ -1252,6 +1507,42 @@ watch(() => route.query.tab, () => {
 
             <label class="perm-label" v-if="!editingGroup">Color</label>
             <input v-if="!editingGroup" class="perm-color-input" type="color" v-model="groupForm.color" />
+
+            <label class="perm-label" v-if="editingGroup">Status</label>
+            <label v-if="editingGroup" class="perm-check-row">
+              <input type="checkbox" v-model="groupForm.is_active" />
+              <span>Active <span class="perm-td-dim">(inactive groups grant no access and are skipped by approval workflows)</span></span>
+            </label>
+
+            <label class="perm-label">Members <span class="perm-td-dim">({{ groupForm.member_ids.length }} selected)</span></label>
+            <div class="perm-picker-list">
+              <label v-for="u in users" :key="u.id" class="perm-check-row">
+                <input type="checkbox" :checked="groupForm.member_ids.includes(u.id)" @change="toggleGroupMember(u.id)" />
+                <span>{{ u.username }} <span class="perm-td-dim">· {{ u.role }}</span></span>
+              </label>
+              <div v-if="users.length === 0" class="perm-td-dim">No users available</div>
+            </div>
+
+            <label class="perm-label">Connections <span class="perm-td-dim">({{ groupForm.connection_assignments.length }} granted)</span></label>
+            <div class="perm-picker-list">
+              <div v-for="c in connections" :key="c.id" class="perm-conn-row">
+                <label class="perm-check-row">
+                  <input type="checkbox" :checked="isGroupConnSelected(c.id)" @change="toggleGroupConnection(c.id)" />
+                  <span>{{ c.name }} <span class="perm-td-dim">· {{ c.driver }}</span></span>
+                </label>
+                <div v-if="isGroupConnSelected(c.id)" class="perm-perm-chips">
+                  <button
+                    v-for="p in dbPermissions"
+                    :key="p.key"
+                    type="button"
+                    class="perm-chip"
+                    :class="{ 'perm-chip--on': groupConnHasPerm(c.id, p.key) }"
+                    @click="toggleGroupConnPerm(c.id, p.key)"
+                  >{{ p.key }}</button>
+                </div>
+              </div>
+              <div v-if="connections.length === 0" class="perm-td-dim">No connections available</div>
+            </div>
           </div>
 
           <div class="perm-dialog-footer">
@@ -1312,6 +1603,35 @@ watch(() => route.query.tab, () => {
               <option :value="false">Locked</option>
             </select>
 
+            <template v-if="editingUser">
+              <label class="perm-label">Multi-Factor Authentication</label>
+              <div class="perm-mfa-row">
+                <span class="perm-status" :class="{ 'perm-status--active': editingUser.mfa_enabled }">
+                  {{ editingUser.mfa_enabled ? 'Enabled' : 'Disabled' }}
+                </span>
+                <button
+                  v-if="editingUser.mfa_enabled"
+                  type="button"
+                  class="base-btn base-btn--ghost base-btn--xs perm-btn-del"
+                  :disabled="resettingMFA"
+                  @click="resetUserMFA(editingUser)"
+                >{{ resettingMFA ? 'Resetting…' : 'Reset MFA' }}</button>
+                <span v-else class="perm-hint">User hasn't set up MFA.</span>
+              </div>
+              <div class="perm-mfa-row">
+                <span class="perm-status" :class="{ 'perm-status--active': editingUser.mfa_exempt }">
+                  {{ editingUser.mfa_exempt ? 'Exempt' : 'Not exempt' }}
+                </span>
+                <button
+                  type="button"
+                  class="base-btn base-btn--ghost base-btn--xs"
+                  :disabled="togglingMFAExempt"
+                  @click="toggleMFAExempt(editingUser)"
+                >{{ togglingMFAExempt ? 'Updating…' : (editingUser.mfa_exempt ? 'Revoke exemption' : 'Exempt from enforcement') }}</button>
+                <span class="perm-hint">Bypasses the org-wide "require MFA" policy for this user only.</span>
+              </div>
+            </template>
+
             <label class="perm-label">Direct Feature Permissions</label>
             <div class="perm-perms-container perm-perms-container--compact">
               <div v-for="(perms, group) in groupedPermissions" :key="group" class="perm-perm-group">
@@ -1366,7 +1686,7 @@ watch(() => route.query.tab, () => {
 
                     <div v-if="conn.selected || isGroupAssigned(conn.conn_id)" class="perm-conn-perms">
                       <label v-for="perm in dbPermissions" :key="perm.key" class="perm-perm-checkbox">
-                        <input 
+                        <input
                           type="checkbox"
                           :value="perm.key"
                           :checked="conn.permissions.includes(perm.key)"
@@ -1379,6 +1699,22 @@ watch(() => route.query.tab, () => {
                         />
                         <span>{{ perm.label }}</span>
                       </label>
+                    </div>
+
+                    <!-- Per-user native DB login: connect to this DB as a specific database user -->
+                    <div v-if="editingUser && conn.selected" class="perm-conn-cred">
+                      <div class="perm-cred-head">
+                        Native DB login <span class="perm-td-dim">(optional — connect to this database as its own user; the DB enforces natively)</span>
+                        <span v-if="credFor(conn.conn_id).configured" class="perm-cred-ok">✓ configured</span>
+                      </div>
+                      <div class="perm-cred-row">
+                        <input class="perm-input perm-input--sm" placeholder="DB username" v-model="credFor(conn.conn_id).username" />
+                        <input class="perm-input perm-input--sm" type="password"
+                          :placeholder="credFor(conn.conn_id).configured ? '•••••• (leave blank to keep)' : 'DB password'"
+                          v-model="credFor(conn.conn_id).password" />
+                        <button type="button" class="base-btn base-btn--ghost base-btn--xs" @click="saveConnCred(conn.conn_id)">Save login</button>
+                        <button v-if="credFor(conn.conn_id).configured" type="button" class="base-btn base-btn--ghost base-btn--xs perm-btn-del" @click="removeConnCred(conn.conn_id)">Remove</button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1605,6 +1941,13 @@ watch(() => route.query.tab, () => {
   justify-content: flex-end;
 }
 
+.perm-mfa-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
 .perm-btn-del {
   color: #dc2626 !important;
 }
@@ -1752,6 +2095,64 @@ watch(() => route.query.tab, () => {
   border: 1px solid var(--border);
   border-radius: 6px;
   cursor: pointer;
+}
+
+/* Access group member / connection pickers */
+.perm-picker-list {
+  margin-top: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--bg-surface);
+}
+
+.perm-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.perm-check-row input {
+  cursor: pointer;
+}
+
+.perm-conn-row {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.perm-conn-row:last-child {
+  border-bottom: none;
+}
+
+.perm-perm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 0 6px 24px;
+}
+
+.perm-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.perm-chip--on {
+  background: var(--accent, #14b8a6);
+  border-color: var(--accent, #14b8a6);
+  color: #fff;
 }
 
 /* ─────────────────────────────────────────────────────────────── */
@@ -1994,6 +2395,42 @@ watch(() => route.query.tab, () => {
   color: var(--brand-fg);
 }
 
+.perm-conn-cred {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.perm-cred-head {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.perm-cred-ok {
+  color: var(--brand, #14b8a6);
+  font-weight: 600;
+}
+
+.perm-cred-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.perm-input--sm {
+  width: auto;
+  flex: 1 1 160px;
+  min-width: 120px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
 .perm-conn-perms {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -2154,6 +2591,7 @@ watch(() => route.query.tab, () => {
   box-shadow: 0 8px 24px rgba(0,0,0,0.3); z-index: 200;
 }
 .perm-col-menu-title {
+  display: flex; align-items: center; justify-content: space-between;
   font-size: 10px; font-weight: 700; text-transform: uppercase;
   letter-spacing: 0.1em; color: var(--text-muted); margin-bottom: 8px;
 }
@@ -2161,6 +2599,14 @@ watch(() => route.query.tab, () => {
   display: flex; align-items: center; gap: 8px;
   font-size: 13px; color: var(--text-primary);
   padding: 4px 0; cursor: pointer;
+  white-space: nowrap;
 }
 .perm-col-item input { cursor: pointer; }
+.perm-col-menu-links { display: flex; gap: 6px; text-transform: none; letter-spacing: normal; }
+.perm-col-menu-link {
+  background: none; border: none; color: var(--brand); cursor: pointer;
+  font-size: 10px; font-weight: 600; padding: 0;
+}
+.perm-col-menu-link:hover { text-decoration: underline; }
+.perm-col-menu-export { width: 100%; margin-top: 10px; justify-content: center; white-space: nowrap; }
 </style>

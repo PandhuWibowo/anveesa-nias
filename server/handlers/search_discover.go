@@ -1,10 +1,15 @@
 package handlers
 
 import (
+	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 // decodeRawField handles two forms that frontend clients may send:
@@ -105,6 +110,191 @@ func SearchAggregate() http.HandlerFunc {
 			return
 		}
 		json.NewEncoder(w).Encode(result)
+	}
+}
+
+// SearchBackupToBucket exports every document matching a Discover/Search
+// query as gzip-compressed NDJSON and streams the archive straight to an
+// existing object storage connection — the same async job pattern SFTP and
+// database backups use. It pages through the index with search_after (the
+// client-supplied sort must include a unique tiebreaker, e.g. "_id") so an
+// index far larger than memory streams through in bounded chunks.
+//
+// POST /api/connections/{id}/search/backup-to-bucket
+func SearchBackupToBucket() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		connID, err := connectionIDFromPath(r.URL.Path)
+		if err != nil {
+			http.Error(w, jsonError("invalid connection id"), http.StatusBadRequest)
+			return
+		}
+		var req struct {
+			Index      string          `json:"index"`
+			Query      json.RawMessage `json:"query"`
+			Sort       json.RawMessage `json:"sort"`
+			DestConnID int64           `json:"dest_conn_id"`
+			Prefix     string          `json:"prefix"`
+			Subfolder  string          `json:"subfolder"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, jsonError("invalid request body"), http.StatusBadRequest)
+			return
+		}
+		req.Index = strings.Trim(req.Index, "/ ")
+		if req.Index == "" {
+			http.Error(w, jsonError("index is required"), http.StatusBadRequest)
+			return
+		}
+		if req.DestConnID == 0 {
+			http.Error(w, jsonError("dest_conn_id is required"), http.StatusBadRequest)
+			return
+		}
+		sortVal := decodeRawField(req.Sort)
+		if sortVal == nil {
+			http.Error(w, jsonError("sort is required (must include a unique tiebreaker field)"), http.StatusBadRequest)
+			return
+		}
+		queryVal := decodeRawField(req.Query)
+
+		client, err := openSearchClient(connID)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
+			return
+		}
+		dest, err := fetchBucketConn(req.DestConnID)
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+
+		ts := time.Now().UTC().Format("20060102_150405")
+		prefix := strings.TrimSpace(req.Prefix)
+		if prefix == "" {
+			prefix = "logs"
+		}
+		objectName := fmt.Sprintf("%s_%s.ndjson.gz", prefix, ts)
+		if sub := strings.Trim(strings.TrimSpace(req.Subfolder), "/"); sub != "" {
+			objectName = sub + "/" + objectName
+		}
+
+		jobCtx, jobCancel := context.WithCancel(context.Background())
+		job := &BackupJob{
+			ID:        newJobID(),
+			Status:    BackupJobRunning,
+			Stage:     "exporting",
+			StartedAt: time.Now(),
+			cancel:    jobCancel,
+		}
+		backupJobs.Store(job.ID, job)
+
+		searchPath := fmt.Sprintf("/%s/_search", searchIndexExpressionPath(req.Index))
+
+		go func() {
+			defer jobCancel()
+
+			pr, pw := io.Pipe()
+			exportErrCh := make(chan error, 1)
+			var exported int64
+
+			go func() {
+				gz, _ := gzip.NewWriterLevel(pw, gzip.BestCompression)
+				var searchAfter any
+				const pageSize = 1000
+				const maxDocs = 5_000_000
+				var exportErr error
+
+				for {
+					if jobCtx.Err() != nil {
+						exportErr = jobCtx.Err()
+						break
+					}
+					body := map[string]any{"size": pageSize, "sort": sortVal, "track_total_hits": false}
+					if queryVal != nil {
+						body["query"] = queryVal
+					}
+					if searchAfter != nil {
+						body["search_after"] = searchAfter
+					}
+					bodyBytes, _ := json.Marshal(body)
+					var result map[string]any
+					if err := client.doJSON(jobCtx, http.MethodPost, searchPath, bodyBytes, &result); err != nil {
+						exportErr = err
+						break
+					}
+					if esErr := searchResponseError(result); esErr != "" {
+						exportErr = fmt.Errorf("%s", esErr)
+						break
+					}
+					hitsWrap, _ := result["hits"].(map[string]any)
+					hitsArr, _ := hitsWrap["hits"].([]any)
+					if len(hitsArr) == 0 {
+						break
+					}
+					for _, h := range hitsArr {
+						hit, _ := h.(map[string]any)
+						line, err := json.Marshal(hit["_source"])
+						if err != nil {
+							continue
+						}
+						gz.Write(line)
+						gz.Write([]byte("\n"))
+						exported++
+						if sv, ok := hit["sort"]; ok {
+							searchAfter = sv
+						}
+					}
+					if len(hitsArr) < pageSize || exported >= maxDocs {
+						break
+					}
+				}
+				if exportErr == nil {
+					exportErr = gz.Close()
+				}
+				pw.CloseWithError(exportErr)
+				exportErrCh <- exportErr
+			}()
+
+			cr := &countingReader{r: pr}
+			job.mu.Lock()
+			job.Stage = "uploading"
+			job.uploadCounter = &cr.n
+			job.mu.Unlock()
+			uploadErr := uploadToBucketStream(jobCtx, dest, objectName, cr)
+			if uploadErr != nil {
+				pr.CloseWithError(uploadErr)
+			}
+			exportErr := <-exportErrCh
+
+			now := time.Now()
+			job.mu.Lock()
+			defer job.mu.Unlock()
+			job.DoneAt = &now
+			if uploadErr != nil || exportErr != nil || jobCtx.Err() != nil {
+				if jobCtx.Err() != nil && uploadErr == nil && exportErr == nil {
+					job.Status = BackupJobCanceled
+				} else {
+					job.Status = BackupJobFailed
+					switch {
+					case uploadErr != nil:
+						job.Error = uploadErr.Error()
+					case exportErr != nil:
+						job.Error = exportErr.Error()
+					default:
+						job.Error = jobCtx.Err().Error()
+					}
+				}
+				return
+			}
+			job.Status = BackupJobDone
+			job.ObjectKey = objectName
+			job.Bucket = dest.Bucket
+			job.SizeBytes = atomic.LoadInt64(&cr.n)
+			job.RecordsExported = exported
+		}()
+
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{"job_id": job.ID})
 	}
 }
 

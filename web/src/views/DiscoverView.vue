@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
-import { useConnections } from '@/composables/useConnections'
+import { useConnections, type DbDriver } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
 import Pagination from '@/components/ui/Pagination.vue'
+import ConnectionPicker from '@/components/ui/ConnectionPicker.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -698,6 +699,80 @@ async function run(keepPage = false) {
   }
 }
 
+// ── Backup logs to bucket ─────────────────────────────────────
+// Exports every doc matching the current filters/time range (not just the
+// current page) server-side and streams it to an existing OSS/S3 connection,
+// same async-job pattern as the SFTP and database "backup to bucket" features.
+const OSS_DRIVERS: DbDriver[] = ['s3_aws', 's3_gcp', 's3_oss', 's3_obs']
+const showBackup = ref(false)
+const backupDestConnId = ref<number | null>(null)
+const backupPrefix = ref('logs')
+const backupSubfolder = ref('')
+const backupRunning = ref(false)
+const backupStage = ref('')
+
+function openBackup() {
+  if (!activeConn.value || !indexPattern.value.trim()) {
+    toast.error('Select a cluster and index pattern first')
+    return
+  }
+  backupDestConnId.value = null
+  backupSubfolder.value = ''
+  showBackup.value = true
+}
+
+async function submitBackup() {
+  if (!activeConn.value || !backupDestConnId.value) return
+  backupRunning.value = true
+  backupStage.value = 'Exporting logs…'
+  try {
+    const tsField = timestampField.value
+    const sort = [
+      { [tsField]: { order: sortOrder.value, unmapped_type: 'date' } },
+      { _id: 'asc' }, // unique tiebreaker required for search_after pagination
+    ]
+    const { data: jobData } = await axios.post(`/api/connections/${activeConn.value.id}/search/backup-to-bucket`, {
+      index: normalizeIndexPattern(indexPattern.value),
+      query: buildQuery(),
+      sort,
+      dest_conn_id: backupDestConnId.value,
+      prefix: backupPrefix.value || 'logs',
+      subfolder: backupSubfolder.value,
+    })
+    const jobId = jobData.job_id
+
+    while (true) {
+      await new Promise((r) => setTimeout(r, 2000))
+      const { data: status } = await axios.get(`/api/backup/jobs/${jobId}`)
+
+      if (status.stage === 'uploading' && status.uploaded_bytes > 0) {
+        const mb = (status.uploaded_bytes / 1024 / 1024).toFixed(1)
+        backupStage.value = `Uploading to bucket… ${mb} MB uploaded`
+      } else if (status.stage === 'exporting') {
+        backupStage.value = 'Exporting logs…'
+      }
+
+      if (status.status === 'done') {
+        toast.success(`Exported ${status.records_exported ?? 0} logs → ${status.object_key}`)
+        showBackup.value = false
+        return
+      }
+      if (status.status === 'failed') {
+        throw new Error(status.error || 'Backup job failed')
+      }
+      if (status.status === 'canceled') {
+        toast.info('Backup cancelled')
+        return
+      }
+    }
+  } catch (e: any) {
+    toast.error(axiosErrorMessage(e, 'Backup to bucket failed'))
+  } finally {
+    backupRunning.value = false
+    backupStage.value = ''
+  }
+}
+
 async function loadFields() {
   if (!activeConn.value || !indexPattern.value.trim()) return
   try {
@@ -904,6 +979,10 @@ function hitKey(hit: Hit, idx: number): string {
         </div>
       </div>
       <div class="disc-toolbar-right">
+        <button class="base-btn base-btn--ghost base-btn--sm" title="Export matching logs to an object storage bucket" @click="openBackup">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Backup to bucket
+        </button>
         <select v-model.number="autoRefresh" class="base-input disc-rf-sel" title="Auto-refresh">
           <option :value="0">Off</option>
           <option :value="5">5s</option>
@@ -1169,6 +1248,51 @@ function hitKey(hit: Hit, idx: number): string {
     </template>
   </div>
 
+  <!-- ── Backup to bucket modal ──────────────────────────────── -->
+  <Teleport to="body">
+    <Transition name="modal">
+      <div v-if="showBackup" class="modal-backdrop" @click.self="!backupRunning && (showBackup = false)">
+        <div class="modal modal--md">
+          <div class="modal-hd">
+            <span class="modal-title">Backup logs to bucket</span>
+            <button class="base-btn base-btn--ghost base-btn--xs" :disabled="backupRunning" @click="showBackup = false">×</button>
+          </div>
+          <div class="modal-bd">
+            <div class="disc-backup-hint">
+              Exports every log matching the current index, filters, and time range ({{ activeTimeLabel }}) — not just what's on screen.
+            </div>
+            <div class="form-group">
+              <label class="form-label">Destination bucket</label>
+              <ConnectionPicker
+                v-model="backupDestConnId"
+                :drivers="OSS_DRIVERS"
+                placeholder="Select destination bucket…"
+                full-width
+              />
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Filename prefix</label>
+                <input v-model="backupPrefix" class="base-input" placeholder="logs" :disabled="backupRunning" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Subfolder in bucket</label>
+                <input v-model="backupSubfolder" class="base-input" placeholder="backups/logs" :disabled="backupRunning" />
+              </div>
+            </div>
+            <div v-if="backupRunning" class="disc-backup-status">{{ backupStage }}</div>
+          </div>
+          <div class="modal-ft">
+            <button class="base-btn base-btn--ghost base-btn--sm" :disabled="backupRunning" @click="showBackup = false">Cancel</button>
+            <button class="base-btn base-btn--primary base-btn--sm" :disabled="backupRunning || !backupDestConnId" @click="submitBackup">
+              {{ backupRunning ? 'Uploading…' : 'Start backup' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
   <!-- ── Log Detail Slide-over ──────────────────────────────── -->
   <Teleport to="body">
     <Transition name="detail-slide">
@@ -1338,6 +1462,9 @@ export { flatSource }
 .disc-rf-sel   { width:66px; }
 .disc-live { width:7px; height:7px; border-radius:50%; background:var(--success); box-shadow:0 0 5px var(--success); animation:live-pulse 2s infinite; }
 @keyframes live-pulse { 0%,100%{opacity:1}50%{opacity:.3} }
+
+.disc-backup-hint { font-size:12px; color:var(--text-muted); line-height:1.5; }
+.disc-backup-status { font-size:12.5px; color:var(--text-muted); }
 
 /* Quick patterns */
 .disc-quick-row { display:flex; gap:4px; flex-wrap:wrap; }

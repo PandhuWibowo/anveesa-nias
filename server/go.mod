@@ -3,17 +3,17 @@ module github.com/anveesa/nias
 go 1.25.0
 
 require (
-	github.com/apache/cassandra-gocql-driver/v2 v2.1.1
+	github.com/apache/cassandra-gocql-driver/v2 v2.1.2
 	github.com/coder/websocket v1.8.15
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/joho/godotenv v1.5.1
 	github.com/lib/pq v1.12.3
-	github.com/mattn/go-sqlite3 v1.14.32
+	github.com/mattn/go-sqlite3 v1.14.47
 	github.com/pkg/sftp v1.13.10
 	github.com/pquerna/otp v1.5.0
 	github.com/segmentio/kafka-go v0.4.49
-	go.mongodb.org/mongo-driver/v2 v2.6.0
+	go.mongodb.org/mongo-driver/v2 v2.7.0
 	golang.org/x/crypto v0.51.0
 	gopkg.in/yaml.v3 v3.0.1
 )

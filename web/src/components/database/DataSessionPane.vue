@@ -75,6 +75,7 @@ const tableTabs = ref<TableTab[]>([])
 const activeTableTabId = ref<string>('')
 const activeTab = computed(() => tableTabs.value.find(t => t.id === activeTableTabId.value) ?? null)
 const dataTableRefs = ref<Record<string, InstanceType<typeof DataTable>>>({})
+const browseSqlEditorRefs = ref<Record<string, InstanceType<typeof QueryEditor>>>({})
 
 // Keep a virtual `selected` alias so legacy references (SQLPanel default-db, ColumnProfiler, etc.) still work
 const selected = computed(() => activeTab.value ? { db: activeTab.value.db, table: activeTab.value.table } : null)
@@ -121,7 +122,13 @@ function defaultBrowseSQL(db: string, table: string) {
 async function runBrowseSQL(sqlArg?: string) {
   const t = activeTab.value
   if (!t || !props.connId) return
-  const sql = (sqlArg ?? t.sqlText).trim()
+  // Ctrl+Enter already passes the cursor's active statement (comment-stripped)
+  // via QueryEditor's @run handler. The toolbar "Run" button calls this with
+  // no argument, so it must resolve the same way instead of falling back to
+  // t.sqlText raw — otherwise clicking Run sends the whole box verbatim,
+  // including any commented-out or extra statements sitting above the one
+  // you meant to run.
+  const sql = (sqlArg ?? browseSqlEditorRefs.value[t.id]?.getActiveSQL() ?? t.sqlText).trim()
   if (!sql) return
   if (!confirmDiscardPendingEdits('run this query')) return
   t.hasUnsavedEdits = false
@@ -1109,7 +1116,12 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
             </button>
           </div>
           <div v-show="browseSqlVisible" class="browse-sql__editor">
-            <QueryEditor v-model="activeTab.sqlText" :dark-mode="darkMode" @run="runBrowseSQL" />
+            <QueryEditor
+              :ref="(el: any) => { if (!activeTab) return; if (el) browseSqlEditorRefs[activeTab.id] = el; else delete browseSqlEditorRefs[activeTab.id] }"
+              v-model="activeTab.sqlText"
+              :dark-mode="darkMode"
+              @run="runBrowseSQL"
+            />
           </div>
         </div>
         <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;position:relative">

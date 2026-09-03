@@ -139,9 +139,21 @@ defineProps<{ name: string }>()
     <template v-else-if="name === 'check'">
       <polyline points="20 6 9 17 4 12" />
     </template>
+    <template v-else-if="name === 'share'">
+      <circle cx="18" cy="5" r="3" />
+      <circle cx="6" cy="12" r="3" />
+      <circle cx="18" cy="19" r="3" />
+      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+      <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+    </template>
     <template v-else-if="name === 'arrow-right'">
       <line x1="5" y1="12" x2="19" y2="12" />
       <polyline points="12 5 19 12 12 19" />
+    </template>
+    <template v-else-if="name === 'info'">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="16" x2="12" y2="12" />
+      <line x1="12" y1="8" x2="12.01" y2="8" />
     </template>
     <template v-else>
       <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" />

@@ -7,6 +7,7 @@ import { useToast } from '@/composables/useToast'
 import { useAuth } from '@/composables/useAuth'
 import { downloadBlob } from '@/utils/export'
 import DriverIcon from '@/components/ui/DriverIcon.vue'
+import ConnectionPicker from '@/components/ui/ConnectionPicker.vue'
 
 // ── Types ─────────────────────────────────────────────────────────────
 interface BackupDownloadRequest {
@@ -41,6 +42,19 @@ interface BucketObject {
   key: string
   size: number
   last_modified: string
+}
+
+interface BackupHistoryEntry {
+  id: number
+  action: 'backup_to_bucket' | 'restore' | 'direct_download' | string
+  target: string
+  details: string
+  username: string
+  conn_id: number | null
+  conn_name: string
+  duration_ms: number
+  error: string
+  executed_at: string
 }
 
 // ── Auth / global ─────────────────────────────────────────────────────
@@ -305,6 +319,7 @@ async function runBucketBackup() {
     clearInterval(progressTimer)
     bucketRunning.value = false
     bucketAbortController.value = null
+    loadActivityHistory()
   }
 }
 
@@ -331,6 +346,51 @@ watch(() => bucketForm.dest_conn_id, () => {
   bucketHistory.value = []
   if (bucketForm.dest_conn_id) loadBucketHistory()
 })
+
+// ── Activity History (all actions on this page) ───────────────────────
+const activityHistory = ref<BackupHistoryEntry[]>([])
+const activityLoading = ref(false)
+const activityFilter = ref<'all' | 'backup_to_bucket' | 'restore' | 'direct_download'>('all')
+
+const filteredActivity = computed(() =>
+  activityFilter.value === 'all'
+    ? activityHistory.value
+    : activityHistory.value.filter(e => e.action === activityFilter.value)
+)
+
+function activityStatus(e: BackupHistoryEntry): 'success' | 'canceled' | 'failed' {
+  if (!e.error) return 'success'
+  if (/^cancel/i.test(e.error)) return 'canceled'
+  return 'failed'
+}
+
+function activityActionLabel(action: string): string {
+  const map: Record<string, string> = {
+    backup_to_bucket: 'Backup to bucket',
+    restore: 'Restore',
+    direct_download: 'Download',
+  }
+  return map[action] ?? action
+}
+
+function formatDurationMs(ms: number): string {
+  if (!ms || ms < 1000) return `${ms || 0}ms`
+  const s = ms / 1000
+  if (s < 60) return `${s.toFixed(1)}s`
+  return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`
+}
+
+async function loadActivityHistory() {
+  activityLoading.value = true
+  try {
+    const { data } = await axios.get<BackupHistoryEntry[]>('/api/backup/history', { params: { limit: 100 } })
+    activityHistory.value = data ?? []
+  } catch {
+    activityHistory.value = []
+  } finally {
+    activityLoading.value = false
+  }
+}
 
 function formatBytes(b: number): string {
   if (b < 1024) return `${b} B`
@@ -578,6 +638,7 @@ async function downloadFromBucket(key: string) {
     setTimeout(() => {
       dlBucketDownloading.value = new Set([...dlBucketDownloading.value].filter(k => k !== key))
     }, 1500)
+    loadActivityHistory()
   }
 }
 
@@ -594,6 +655,8 @@ const restoreSQL = ref('')
 const restoreResult = ref('')
 const restoreLoading = ref(false)
 const restoreError = ref('')
+const restoreSkipConflicts = ref(false)
+const restoreContinueOnError = ref(false)
 
 async function uploadFile(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
@@ -601,18 +664,260 @@ async function uploadFile(e: Event) {
   restoreSQL.value = await file.text()
 }
 
-async function runRestore() {
-  if (!restoreConnId.value || !restoreSQL.value) return
+// ── Restore from Bucket ─────────────────────────────────────────────
+const restoreSource = ref<'upload' | 'bucket'>('upload')
+const restoreBucketConnId = ref<number | null>(null)
+const restoreBucketSubfolder = ref('')
+const restoreBucketFiles = ref<BucketObject[]>([])
+const restoreBucketLoading = ref(false)
+const restoreBucketBrowsed = ref(false)
+const restoreSelectedKey = ref<string | null>(null)
+
+type RestoreSortKey = 'key' | 'size' | 'last_modified'
+const restoreSortKey = ref<RestoreSortKey>('last_modified')
+const restoreSortDir = ref<'asc' | 'desc'>('desc')
+const restorePage = ref(1)
+const restorePageSize = ref(20)
+
+const restoreSortedFiles = computed(() => {
+  const dir = restoreSortDir.value === 'asc' ? 1 : -1
+  return [...restoreBucketFiles.value].sort((a, b) => {
+    let cmp = 0
+    if (restoreSortKey.value === 'key') cmp = a.key.localeCompare(b.key)
+    else if (restoreSortKey.value === 'size') cmp = a.size - b.size
+    else cmp = a.last_modified.localeCompare(b.last_modified)
+    return cmp * dir
+  })
+})
+
+const restoreTotalPages = computed(() =>
+  Math.max(1, Math.ceil(restoreSortedFiles.value.length / restorePageSize.value))
+)
+
+const restorePagedFiles = computed(() => {
+  const start = (restorePage.value - 1) * restorePageSize.value
+  return restoreSortedFiles.value.slice(start, start + restorePageSize.value)
+})
+
+function toggleRestoreSort(key: RestoreSortKey) {
+  if (restoreSortKey.value === key) {
+    restoreSortDir.value = restoreSortDir.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    restoreSortKey.value = key
+    restoreSortDir.value = key === 'key' ? 'asc' : 'desc'
+  }
+  restorePage.value = 1
+}
+
+watch([restorePageSize, restoreBucketFiles], () => { restorePage.value = 1 })
+
+async function loadRestoreBucketFiles() {
+  if (!restoreBucketConnId.value) return
+  restoreBucketLoading.value = true
+  restoreBucketFiles.value = []
+  restorePage.value = 1
+  try {
+    const { data } = await axios.get('/api/backup/bucket-list', {
+      params: {
+        dest_conn_id: restoreBucketConnId.value,
+        subfolder: restoreBucketSubfolder.value.trim(),
+      },
+    })
+    restoreBucketFiles.value = (data.objects ?? [])
+      .filter((o: BucketObject) => o.key.endsWith('.sql') || o.key.endsWith('.sql.gz'))
+    restoreBucketBrowsed.value = true
+  } catch (err: any) {
+    toast.error(err?.response?.data?.error || 'Failed to list bucket files')
+  } finally {
+    restoreBucketLoading.value = false
+  }
+}
+
+watch(restoreBucketConnId, () => {
+  restoreBucketFiles.value = []
+  restoreBucketSubfolder.value = ''
+  restoreBucketBrowsed.value = false
+  restoreSelectedKey.value = null
+  if (restoreBucketConnId.value) loadRestoreBucketFiles()
+})
+
+watch(restoreSource, () => {
+  restoreResult.value = ''
+  restoreError.value = ''
+})
+
+// ── Restore progress (async job, polled) ────────────────────────────────
+const restoreProgress = reactive({ executed: 0, skipped: 0, failedRows: 0 })
+const restoreFirstRowError = ref('')
+const restoreFailedRowDetails = ref<{ statement: string; error: string }[]>([])
+const restoreFailedRowsOpen = ref(false)
+const restoreCurrentCount = ref(0)
+const restoreRecent = ref<string[]>([])
+const restoreCancelled = ref(false)
+const restoreElapsedSec = ref(0)
+const restoreReconnecting = ref(false)
+const restoreReconnectAttempt = ref(0)
+let restoreElapsedTimer: ReturnType<typeof setInterval> | null = null
+let activeRestoreJobId: string | null = null
+
+// A dropped client connection (wifi blip, laptop sleep) must not read as "the
+// restore failed" — the actual work runs server-side on a context detached
+// from this HTTP request, so it keeps going regardless of whether we can
+// currently reach the server to ask about it. The job id is also persisted so
+// reloading the page (or the tab having been closed) can reattach instead of
+// losing visibility into a restore that's still running.
+const RESTORE_JOB_STORAGE_KEY = 'nias_restore_job'
+const MAX_RECONNECT_ATTEMPTS = 40 // ~60s of retrying at the 1.5s poll interval
+
+function saveActiveJob(jobId: string, connId: number) {
+  try {
+    localStorage.setItem(RESTORE_JOB_STORAGE_KEY, JSON.stringify({ jobId, connId, savedAt: Date.now() }))
+  } catch { /* localStorage unavailable — not fatal, just lose reattach-on-reload */ }
+}
+function clearActiveJob() {
+  try { localStorage.removeItem(RESTORE_JOB_STORAGE_KEY) } catch { /* ignore */ }
+}
+function loadActiveJob(): { jobId: string; connId: number; savedAt: number } | null {
+  try {
+    const raw = localStorage.getItem(RESTORE_JOB_STORAGE_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+function restoreElapsedLabel(sec: number): string {
+  if (sec < 60) return `${sec}s`
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return `${m}m ${s}s`
+}
+
+function cancelRestore() {
+  restoreCancelled.value = true
+  if (activeRestoreJobId) {
+    axios.delete(`/api/restore/jobs/${activeRestoreJobId}`).catch(() => {})
+  }
+  clearActiveJob()
+}
+
+async function pollRestoreJob(jobId: string) {
   restoreLoading.value = true
+  restoreCancelled.value = false
+  restoreReconnecting.value = false
+  restoreReconnectAttempt.value = 0
+  restoreElapsedSec.value = 0
+  activeRestoreJobId = jobId
+  const startedAt = Date.now()
+  restoreElapsedTimer = setInterval(() => {
+    restoreElapsedSec.value = Math.floor((Date.now() - startedAt) / 1000)
+  }, 1000)
+
+  try {
+    while (true) {
+      if (restoreCancelled.value) break
+      await new Promise(r => setTimeout(r, 1500))
+      if (restoreCancelled.value) break
+
+      let status: any
+      try {
+        const resp = await axios.get(`/api/restore/jobs/${jobId}`)
+        status = resp.data
+        restoreReconnecting.value = false
+        restoreReconnectAttempt.value = 0
+      } catch (pollErr: any) {
+        if (!pollErr.response) {
+          // No response reached us at all — this is OUR connection dropping,
+          // not the server's. The restore keeps running regardless; just keep
+          // trying to check on it instead of declaring it failed.
+          restoreReconnectAttempt.value++
+          restoreReconnecting.value = true
+          if (restoreReconnectAttempt.value >= MAX_RECONNECT_ATTEMPTS) {
+            restoreError.value = "Lost connection to the server. The restore is likely still running — reopen this page once you're back online and it will resume watching progress."
+            break
+          }
+          continue
+        }
+        if (pollErr.response.status === 404) {
+          restoreError.value = 'Lost track of this restore (the server may have restarted). Check the target database directly to see what was applied.'
+          clearActiveJob()
+          break
+        }
+        restoreError.value = pollErr.response?.data?.error || 'Failed to check restore status'
+        break
+      }
+
+      restoreProgress.executed = status.executed ?? 0
+      restoreProgress.skipped = status.skipped ?? 0
+      restoreProgress.failedRows = status.failed_rows ?? 0
+      restoreFirstRowError.value = status.first_row_error ?? ''
+      restoreFailedRowDetails.value = status.failed_row_details ?? []
+      restoreCurrentCount.value = status.current_count ?? 0
+      restoreRecent.value = status.recent ?? []
+
+      if (status.status === 'done') {
+        restoreResult.value = `Executed ${status.executed} statement(s) successfully` +
+          (status.skipped ? ` (${status.skipped} skipped)` : '') +
+          (status.failed_rows ? ` — ${status.failed_rows} row(s) failed and were skipped (e.g. ${status.first_row_error})` : '') +
+          '.'
+        toast.success('Restore complete')
+        clearActiveJob()
+        break
+      }
+      if (status.status === 'failed') {
+        restoreError.value = status.error || 'Restore failed'
+        clearActiveJob()
+        break
+      }
+      if (status.status === 'canceled') {
+        toast.info('Restore cancelled')
+        clearActiveJob()
+        break
+      }
+    }
+
+    if (restoreCancelled.value) {
+      toast.info('Restore cancelled')
+    }
+  } finally {
+    if (restoreElapsedTimer) clearInterval(restoreElapsedTimer)
+    restoreElapsedTimer = null
+    restoreLoading.value = false
+    restoreReconnecting.value = false
+    activeRestoreJobId = null
+    loadActivityHistory()
+  }
+}
+
+async function runRestore() {
+  if (!restoreConnId.value) return
+  if (restoreSource.value === 'upload' && !restoreSQL.value) return
+  if (restoreSource.value === 'bucket' && (!restoreBucketConnId.value || !restoreSelectedKey.value)) return
+
   restoreError.value = ''
   restoreResult.value = ''
+  restoreProgress.executed = 0
+  restoreProgress.skipped = 0
+  restoreProgress.failedRows = 0
+  restoreFirstRowError.value = ''
+  restoreFailedRowDetails.value = []
+  restoreFailedRowsOpen.value = false
+  restoreCurrentCount.value = 0
+  restoreRecent.value = []
+
   try {
-    const { data } = await axios.post(`/api/connections/${restoreConnId.value}/restore`, { sql: restoreSQL.value })
-    restoreResult.value = `Executed ${data.executed} statement(s) successfully.`
+    const payload = restoreSource.value === 'bucket'
+      ? { dest_conn_id: restoreBucketConnId.value, object_key: restoreSelectedKey.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value }
+      : { sql: restoreSQL.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value }
+    // POST returns immediately with a job_id (HTTP 202) — the restore itself
+    // runs in a background goroutine so it isn't bound by the request/response
+    // lifetime (a big dump can take many minutes; a blocking request would be
+    // at the mercy of proxy/server write timeouts and the tab staying open).
+    const { data: jobData } = await axios.post(`/api/connections/${restoreConnId.value}/restore`, payload)
+    saveActiveJob(jobData.job_id, restoreConnId.value)
+    await pollRestoreJob(jobData.job_id)
   } catch (error: any) {
     restoreError.value = error?.response?.data?.error ?? 'Restore failed'
-  } finally {
-    restoreLoading.value = false
   }
 }
 
@@ -626,6 +931,30 @@ watch(filteredRequests, async (items) => {
 onMounted(async () => {
   await fetchConnections()
   await fetchRequests()
+  loadActivityHistory()
+
+  const saved = loadActiveJob()
+  if (saved) {
+    const isStale = Date.now() - saved.savedAt > 24 * 60 * 60 * 1000
+    if (isStale) {
+      clearActiveJob()
+    } else {
+      try {
+        const { data: status } = await axios.get(`/api/restore/jobs/${saved.jobId}`)
+        if (status.status === 'running') {
+          restoreSource.value = 'bucket'
+          restoreConnId.value = saved.connId
+          activeTab.value = 'restore'
+          toast.info('Reattached to a restore already in progress')
+          pollRestoreJob(saved.jobId) // fire-and-forget — same as a freshly started one
+        } else {
+          clearActiveJob()
+        }
+      } catch {
+        clearActiveJob()
+      }
+    }
+  }
 })
 </script>
 
@@ -682,24 +1011,13 @@ onMounted(async () => {
                 No database connections found. <a href="/connections" style="color:var(--brand)">Add one →</a>
               </div>
               <template v-else>
-                <div class="bv-conn-grid">
-                  <button
-                    v-for="c in dbConnections"
-                    :key="c.id"
-                    class="bv-conn-card"
-                    :class="{ 'is-active': bucketForm.source_conn_id === c.id }"
-                    @click="bucketForm.source_conn_id = c.id; onSourceConnChange()"
-                  >
-                    <div class="bv-conn-card__badge" :class="`conn-badge--${c.driver}`">
-                      <DriverIcon :driver="c.driver" :size="14" />
-                    </div>
-                    <div class="bv-conn-card__info">
-                      <span class="bv-conn-card__name">{{ c.name }}</span>
-                      <span class="bv-conn-card__driver">{{ driverLabel(c.driver) }}</span>
-                    </div>
-                    <svg v-if="bucketForm.source_conn_id === c.id" class="bv-conn-card__check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                  </button>
-                </div>
+                <ConnectionPicker
+                  :model-value="bucketForm.source_conn_id"
+                  @update:model-value="(id) => { bucketForm.source_conn_id = id; onSourceConnChange() }"
+                  :drivers="DB_DRIVERS"
+                  placeholder="Select source database…"
+                  full-width
+                />
 
                 <div v-if="bucketForm.source_conn_id" class="form-group">
                   <label class="form-label">Database / Schema</label>
@@ -719,24 +1037,13 @@ onMounted(async () => {
               <div v-if="bucketConnections.length === 0" class="bv-empty-hint">
                 No object storage connection found. Go to <a href="/connections" style="color:var(--brand)">Connections → Add connection</a> and select your provider (Huawei OBS, AWS S3, GCP Storage, or Alibaba OSS), then enter your endpoint, access key, secret key, and bucket name.
               </div>
-              <div v-else class="bv-conn-grid">
-                <button
-                  v-for="c in bucketConnections"
-                  :key="c.id"
-                  class="bv-conn-card"
-                  :class="{ 'is-active': bucketForm.dest_conn_id === c.id }"
-                  @click="bucketForm.dest_conn_id = c.id"
-                >
-                  <div class="bv-conn-card__badge" :class="`conn-badge--${c.driver}`">
-                    <DriverIcon :driver="c.driver" :size="14" />
-                  </div>
-                  <div class="bv-conn-card__info">
-                    <span class="bv-conn-card__name">{{ c.name }}</span>
-                    <span class="bv-conn-card__driver">{{ c.database || driverLabel(c.driver) }}</span>
-                  </div>
-                  <svg v-if="bucketForm.dest_conn_id === c.id" class="bv-conn-card__check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                </button>
-              </div>
+              <ConnectionPicker
+                v-else
+                v-model="bucketForm.dest_conn_id"
+                :drivers="S3_DRIVERS"
+                placeholder="Select destination bucket…"
+                full-width
+              />
 
               <!-- File info -->
               <div class="bv-section-label" style="margin-top:4px">
@@ -1309,27 +1616,260 @@ onMounted(async () => {
             </div>
           </div>
           <div class="page-card__body bv-card-body">
-            <select class="base-input" v-model.number="restoreConnId">
-              <option :value="null">Select connection…</option>
-              <option v-for="c in dbConnections" :key="c.id" :value="c.id">{{ c.name }}</option>
-            </select>
-            <div class="bv-drop" @dragover.prevent @drop.prevent="(e) => { const f = e.dataTransfer?.files?.[0]; if (f) f.text().then(t => restoreSQL = t) }">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-              <span>Drop a .sql file here or</span>
-              <label class="bv-file-btn">Browse <input type="file" accept=".sql,.txt" style="display:none" @change="uploadFile" /></label>
+            <ConnectionPicker v-model="restoreConnId" :drivers="DB_DRIVERS" placeholder="Select connection…" full-width />
+
+            <div class="page-tabs bv-tabs">
+              <button class="page-tab" :class="{ 'is-active': restoreSource === 'upload' }" @click="restoreSource = 'upload'">
+                Upload File
+              </button>
+              <button class="page-tab" :class="{ 'is-active': restoreSource === 'bucket' }" @click="restoreSource = 'bucket'">
+                Browse Bucket
+              </button>
             </div>
-            <div v-if="restoreSQL" class="bv-preview">
-              <div class="bv-preview-header">
-                <span>{{ restoreSQL.split('\n').length }} lines loaded</span>
-                <button class="base-btn base-btn--ghost base-btn--sm" @click="restoreSQL = ''">Clear</button>
+
+            <template v-if="restoreSource === 'upload'">
+              <div class="bv-drop" @dragover.prevent @drop.prevent="(e) => { const f = e.dataTransfer?.files?.[0]; if (f) f.text().then(t => restoreSQL = t) }">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <span>Drop a .sql file here or</span>
+                <label class="bv-file-btn">Browse <input type="file" accept=".sql,.txt" style="display:none" @change="uploadFile" /></label>
               </div>
-              <pre class="bv-preview-pre">{{ restoreSQL.slice(0, 500) }}{{ restoreSQL.length > 500 ? '\n…' : '' }}</pre>
+              <div v-if="restoreSQL" class="bv-preview">
+                <div class="bv-preview-header">
+                  <span>{{ restoreSQL.split('\n').length }} lines loaded</span>
+                  <button class="base-btn base-btn--ghost base-btn--sm" @click="restoreSQL = ''">Clear</button>
+                </div>
+                <pre class="bv-preview-pre">{{ restoreSQL.slice(0, 500) }}{{ restoreSQL.length > 500 ? '\n…' : '' }}</pre>
+              </div>
+            </template>
+
+            <template v-else>
+              <div v-if="bucketConnections.length === 0" class="bv-empty-hint">
+                No bucket connections found. <a href="/connections" style="color:var(--brand)">Add one →</a>
+              </div>
+              <template v-else>
+                <div class="bv-conn-grid">
+                  <button
+                    v-for="c in bucketConnections"
+                    :key="c.id"
+                    class="bv-conn-card"
+                    :class="{ 'is-active': restoreBucketConnId === c.id }"
+                    @click="restoreBucketConnId = c.id"
+                  >
+                    <div class="bv-conn-card__badge" :class="`conn-badge--${c.driver}`">
+                      <DriverIcon :driver="c.driver" :size="14" />
+                    </div>
+                    <div class="bv-conn-card__info">
+                      <span class="bv-conn-card__name">{{ c.name }}</span>
+                      <span class="bv-conn-card__driver">{{ driverLabel(c.driver) }}</span>
+                    </div>
+                    <svg v-if="restoreBucketConnId === c.id" class="bv-conn-card__check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  </button>
+                </div>
+
+                <div v-if="restoreBucketConnId" class="bv-dl-path-row">
+                  <input
+                    class="base-input"
+                    v-model="restoreBucketSubfolder"
+                    placeholder="Path / subfolder (e.g. database/prod)"
+                    style="flex:1"
+                    @keydown.enter="loadRestoreBucketFiles"
+                  />
+                  <button class="base-btn base-btn--secondary" :disabled="restoreBucketLoading" @click="loadRestoreBucketFiles">
+                    <svg v-if="restoreBucketLoading" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                    <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    {{ restoreBucketLoading ? 'Loading…' : 'Browse' }}
+                  </button>
+                </div>
+
+                <div v-if="restoreBucketFiles.length > 0" class="bv-dl-files">
+                  <div class="bv-dl-files__header bv-dl-files__header--sortable">
+                    <button type="button" class="bv-sort-th" @click="toggleRestoreSort('key')">
+                      File
+                      <svg v-if="restoreSortKey === 'key'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" :style="{ transform: restoreSortDir === 'asc' ? 'rotate(180deg)' : '' }"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <button type="button" class="bv-sort-th" @click="toggleRestoreSort('size')">
+                      Size
+                      <svg v-if="restoreSortKey === 'size'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" :style="{ transform: restoreSortDir === 'asc' ? 'rotate(180deg)' : '' }"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <button type="button" class="bv-sort-th" @click="toggleRestoreSort('last_modified')">
+                      Last Modified
+                      <svg v-if="restoreSortKey === 'last_modified'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" :style="{ transform: restoreSortDir === 'asc' ? 'rotate(180deg)' : '' }"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <span></span>
+                  </div>
+                  <div v-for="f in restorePagedFiles" :key="f.key" class="bv-dl-files__row">
+                    <span class="bv-dl-files__name" :title="f.key">{{ f.key.split('/').pop() }}</span>
+                    <span class="bv-dl-files__meta">{{ formatBytes(f.size) }}</span>
+                    <span class="bv-dl-files__meta">{{ formatDate(f.last_modified) }}</span>
+                    <button
+                      class="base-btn base-btn--sm bv-dl-btn"
+                      :class="restoreSelectedKey === f.key ? 'base-btn--primary' : 'base-btn--secondary'"
+                      @click="restoreSelectedKey = f.key"
+                    >
+                      <svg v-if="restoreSelectedKey === f.key" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                      {{ restoreSelectedKey === f.key ? 'Selected' : 'Select' }}
+                    </button>
+                  </div>
+
+                  <div class="bv-pagination">
+                    <span class="bv-pagination__summary">
+                      {{ restoreBucketFiles.length }} file{{ restoreBucketFiles.length === 1 ? '' : 's' }}
+                      · page {{ restorePage }} of {{ restoreTotalPages }}
+                    </span>
+                    <select class="base-input bv-pagination__size" v-model.number="restorePageSize">
+                      <option :value="10">10 / page</option>
+                      <option :value="20">20 / page</option>
+                      <option :value="50">50 / page</option>
+                      <option :value="100">100 / page</option>
+                    </select>
+                    <div class="bv-pagination__nav">
+                      <button class="base-btn base-btn--ghost base-btn--sm" :disabled="restorePage <= 1" @click="restorePage = 1">«</button>
+                      <button class="base-btn base-btn--ghost base-btn--sm" :disabled="restorePage <= 1" @click="restorePage--">‹ Prev</button>
+                      <button class="base-btn base-btn--ghost base-btn--sm" :disabled="restorePage >= restoreTotalPages" @click="restorePage++">Next ›</button>
+                      <button class="base-btn base-btn--ghost base-btn--sm" :disabled="restorePage >= restoreTotalPages" @click="restorePage = restoreTotalPages">»</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div v-else-if="restoreBucketConnId && !restoreBucketLoading && restoreBucketBrowsed" class="bv-empty-hint">
+                  No backup files (.sql / .sql.gz) found in this path.
+                </div>
+              </template>
+            </template>
+
+            <label class="bv-skip-conflicts">
+              <input type="checkbox" v-model="restoreSkipConflicts" :disabled="restoreLoading" />
+              <span>
+                Skip rows that already exist
+                <span class="bv-skip-conflicts__hint">Safe to re-run — makes CREATE TABLE/INDEX/SEQUENCE idempotent and INSERTs ignore primary-key conflicts instead of failing. MSSQL targets aren't supported for the insert-skip part.</span>
+              </span>
+            </label>
+
+            <label class="bv-skip-conflicts">
+              <input type="checkbox" v-model="restoreContinueOnError" :disabled="restoreLoading" />
+              <span>
+                Continue past row errors
+                <span class="bv-skip-conflicts__hint">Skips individual rows that fail (bad data, orphaned foreign keys) instead of rolling back the entire restore — recommended for large production dumps where one bad row shouldn't cost you everything else. Failed rows are counted and reported, not silently dropped.</span>
+              </span>
+            </label>
+
+            <div v-if="restoreLoading" class="bv-restore-progress">
+              <div v-if="restoreReconnecting" class="bv-restore-reconnect">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                Connection to server lost — reconnecting… (attempt {{ restoreReconnectAttempt }}/{{ MAX_RECONNECT_ATTEMPTS }})
+                <span class="bv-restore-reconnect__hint">The restore keeps running on the server — this only affects your view of its progress.</span>
+              </div>
+              <div class="bv-restore-progress__head">
+                <div class="bv-restore-progress__row">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                  <span>{{ restoreProgress.executed.toLocaleString() }} statement{{ restoreProgress.executed === 1 ? '' : 's' }} executed</span>
+                  <span v-if="restoreProgress.skipped" class="bv-restore-progress__muted">({{ restoreProgress.skipped.toLocaleString() }} skipped)</span>
+                  <span v-if="restoreProgress.failedRows" class="bv-restore-progress__failed">{{ restoreProgress.failedRows.toLocaleString() }} row{{ restoreProgress.failedRows === 1 ? '' : 's' }} failed</span>
+                  <span class="bv-restore-progress__elapsed">{{ restoreElapsedLabel(restoreElapsedSec) }}</span>
+                </div>
+                <button class="base-btn base-btn--ghost base-btn--sm" @click="cancelRestore">Cancel</button>
+              </div>
+
+              <div v-if="restoreRecent.length" class="bv-restore-log">
+                <div
+                  v-for="(op, i) in restoreRecent"
+                  :key="i"
+                  class="bv-restore-log-row"
+                  :class="i === 0 ? 'bv-restore-log-row--active' : 'bv-restore-log-row--done'"
+                >
+                  <span class="bv-restore-log-icon">
+                    <svg v-if="i === 0" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                    <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  </span>
+                  <span class="bv-restore-log-label">{{ op }}</span>
+                  <span v-if="i === 0 && restoreCurrentCount > 1" class="bv-restore-log-count">×{{ restoreCurrentCount.toLocaleString() }}</span>
+                </div>
+              </div>
             </div>
+
             <div v-if="restoreResult" class="notice notice--ok">{{ restoreResult }}</div>
+
+            <div v-if="restoreFailedRowDetails.length" class="bv-failed-rows">
+              <button type="button" class="bv-failed-rows__toggle" @click="restoreFailedRowsOpen = !restoreFailedRowsOpen">
+                <svg :style="{ transform: restoreFailedRowsOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                {{ restoreFailedRowsOpen ? 'Hide' : 'Show' }} failed rows ({{ restoreFailedRowDetails.length }}{{ restoreProgress.failedRows > restoreFailedRowDetails.length ? ` of ${restoreProgress.failedRows}` : '' }})
+              </button>
+              <div v-if="restoreFailedRowsOpen" class="bv-failed-rows__list">
+                <div v-for="(f, i) in restoreFailedRowDetails" :key="i" class="bv-failed-rows__row">
+                  <span class="bv-failed-rows__stmt">{{ f.statement }}</span>
+                  <span class="bv-failed-rows__err">{{ f.error }}</span>
+                </div>
+                <div v-if="restoreProgress.failedRows > restoreFailedRowDetails.length" class="bv-failed-rows__more">
+                  + {{ (restoreProgress.failedRows - restoreFailedRowDetails.length).toLocaleString() }} more not shown
+                </div>
+              </div>
+            </div>
+
             <div v-if="restoreError" class="notice notice--error">{{ restoreError }}</div>
-            <button class="base-btn base-btn--primary" :disabled="!restoreConnId || !restoreSQL || restoreLoading" @click="runRestore">
+            <button
+              class="base-btn base-btn--primary"
+              :disabled="!restoreConnId || (restoreSource === 'upload' ? !restoreSQL : !restoreSelectedKey) || restoreLoading"
+              @click="runRestore"
+            >
               {{ restoreLoading ? 'Restoring…' : 'Run Restore' }}
             </button>
+          </div>
+        </div>
+
+        <!-- ══ ACTIVITY HISTORY (all actions on this page) ═══════════════ -->
+        <div class="page-card bv-card">
+          <div class="page-card__head">
+            <div>
+              <div class="page-card__title">Activity History</div>
+              <div class="page-card__sub">Backups, restores, and downloads run on this page, newest first.</div>
+            </div>
+            <div class="bv-activity-head-actions">
+              <select class="base-input bv-filter" v-model="activityFilter">
+                <option value="all">All actions</option>
+                <option value="backup_to_bucket">Backups</option>
+                <option value="restore">Restores</option>
+                <option value="direct_download">Downloads</option>
+              </select>
+              <button class="base-btn base-btn--secondary base-btn--sm" :disabled="activityLoading" @click="loadActivityHistory">
+                <svg v-if="activityLoading" class="bv-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/><path d="M21 3v6h-6"/></svg>
+                Refresh
+              </button>
+            </div>
+          </div>
+          <div class="page-card__body">
+            <div v-if="activityLoading && !activityHistory.length" class="bv-empty">
+              <svg class="spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+              Loading…
+            </div>
+            <div v-else-if="!filteredActivity.length" class="bv-empty">
+              No activity recorded yet — actions taken on this page will show up here.
+            </div>
+            <div v-else class="bv-activity-list">
+              <div v-for="e in filteredActivity" :key="e.id" class="bv-activity-item">
+                <div class="bv-activity-item__icon" :data-status="activityStatus(e)">
+                  <svg v-if="e.action === 'backup_to_bucket'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  <svg v-else-if="e.action === 'restore'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.14"/></svg>
+                  <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                </div>
+                <div class="bv-activity-item__body">
+                  <div class="bv-activity-item__top">
+                    <span class="bv-activity-item__action">{{ activityActionLabel(e.action) }}</span>
+                    <span class="bv-status" :data-status="activityStatus(e)">{{ activityStatus(e) }}</span>
+                    <span v-if="e.conn_name" class="bv-activity-item__conn">{{ e.conn_name }}</span>
+                  </div>
+                  <div class="bv-activity-item__target" :title="e.target">{{ e.target }}</div>
+                  <div class="bv-activity-item__meta">
+                    <span>{{ e.username || 'unknown' }}</span>
+                    <span>·</span>
+                    <span>{{ formatDate(e.executed_at) }}</span>
+                    <span>·</span>
+                    <span>{{ formatDurationMs(e.duration_ms) }}</span>
+                  </div>
+                  <div v-if="activityStatus(e) === 'failed' && e.error" class="bv-activity-item__error">{{ e.error }}</div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -2173,13 +2713,101 @@ onMounted(async () => {
 }
 
 .bv-status[data-status="approved"],
-.bv-status[data-status="done"] { background: rgba(34, 197, 94, 0.15); color: #16a34a; }
+.bv-status[data-status="done"],
+.bv-status[data-status="success"] { background: rgba(34, 197, 94, 0.15); color: #16a34a; }
 
 .bv-status[data-status="pending_review"],
 .bv-status[data-status="executing"] { background: rgba(245, 158, 11, 0.16); color: #d97706; }
 
 .bv-status[data-status="rejected"],
 .bv-status[data-status="failed"] { background: rgba(239, 68, 68, 0.14); color: #dc2626; }
+
+.bv-status[data-status="canceled"] { background: var(--bg-surface); color: var(--text-muted); }
+
+/* ── Activity History ── */
+.bv-activity-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bv-activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bv-activity-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 8px;
+  transition: background 0.1s;
+}
+
+.bv-activity-item:hover { background: var(--bg-body); }
+
+.bv-activity-item__icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--bg-body);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.bv-activity-item__icon[data-status="success"] { color: #16a34a; }
+.bv-activity-item__icon[data-status="failed"] { color: #dc2626; }
+.bv-activity-item__icon[data-status="canceled"] { color: var(--text-muted); }
+
+.bv-activity-item__body { flex: 1; min-width: 0; }
+
+.bv-activity-item__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.bv-activity-item__action {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.bv-activity-item__conn {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.bv-activity-item__target {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  word-break: break-all;
+  margin-top: 2px;
+}
+
+.bv-activity-item__meta {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+.bv-activity-item__error {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #dc2626;
+  word-break: break-word;
+}
 
 .bv-empty {
   display: flex;
@@ -2354,6 +2982,226 @@ onMounted(async () => {
 }
 
 .bv-dl-btn { min-width: 104px; justify-content: center; }
+
+.bv-dl-files__header--sortable { padding: 0; }
+.bv-sort-th {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: left;
+}
+.bv-sort-th:first-child { padding-left: 14px; }
+.bv-sort-th:hover { color: var(--text-primary); }
+.bv-sort-th svg { flex-shrink: 0; transition: transform 0.15s; }
+
+.bv-pagination {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-2);
+  flex-wrap: wrap;
+}
+.bv-pagination__summary {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-right: auto;
+}
+.bv-pagination__size {
+  width: auto;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.bv-pagination__nav {
+  display: flex;
+  gap: 4px;
+}
+
+.bv-skip-conflicts {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+.bv-skip-conflicts input {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+.bv-skip-conflicts__hint {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-weight: 400;
+  margin-top: 1px;
+}
+
+.bv-restore-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+.bv-restore-progress__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.bv-restore-progress__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+  min-width: 0;
+}
+.bv-restore-progress__muted {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.bv-restore-progress__failed {
+  color: #d97706;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.bv-failed-rows {
+  border: 1px solid color-mix(in srgb, #d97706 35%, var(--border));
+  border-radius: 8px;
+  overflow: hidden;
+}
+.bv-failed-rows__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  background: color-mix(in srgb, #d97706 8%, transparent);
+  border: none;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #d97706;
+  text-align: left;
+}
+.bv-failed-rows__list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+.bv-failed-rows__row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.bv-failed-rows__stmt {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.bv-failed-rows__err {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.bv-failed-rows__more {
+  padding: 8px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.bv-restore-reconnect {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+  margin-bottom: 2px;
+  border-radius: 6px;
+  background: color-mix(in srgb, #d97706 12%, transparent);
+  color: #d97706;
+  font-size: 12px;
+  font-weight: 600;
+}
+.bv-restore-reconnect__hint {
+  flex-basis: 100%;
+  font-size: 11px;
+  font-weight: 400;
+  color: color-mix(in srgb, #d97706 80%, var(--text-muted));
+}
+.bv-restore-progress__elapsed {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+}
+.bv-restore-log {
+  margin-top: 2px;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: 8px;
+  overflow: hidden auto;
+  max-height: 260px;
+  background: color-mix(in srgb, var(--bg-secondary, #1a1a1a) 60%, transparent);
+}
+.bv-restore-log-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+}
+.bv-restore-log-row:last-child { border-bottom: none; }
+
+.bv-restore-log-row--active {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--brand) 6%, transparent);
+}
+.bv-restore-log-row--done {
+  color: var(--text-muted);
+}
+
+.bv-restore-log-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.bv-restore-log-row--active .bv-restore-log-icon { color: var(--brand); }
+.bv-restore-log-row--done .bv-restore-log-icon { color: var(--success, #4caf8a); }
+
+.bv-restore-log-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bv-restore-log-count {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--brand);
+}
 
 @keyframes bv-spin { to { transform: rotate(360deg); } }
 .bv-spin { animation: bv-spin 0.8s linear infinite; }

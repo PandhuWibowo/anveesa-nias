@@ -49,7 +49,23 @@ func StreamQuery() http.HandlerFunc {
 			return
 		}
 
-		db, driver, err := GetDB(connID)
+		// The stream endpoint runs its statement through QueryContext, which on
+		// some drivers still executes a write. Enforce the same granular
+		// per-connection permission the /query path uses so it can't be a bypass.
+		if !isReadSQLKeyword(firstSQLKeyword(req.SQL)) {
+			required := RequiredPermForSQL(req.SQL)
+			if !CheckOperationPermission(r, connID, required) {
+				msg := "write permission denied"
+				if required != "" {
+					msg = "permission denied for operation: " + string(required)
+				}
+				sendSSE(w, StreamError{msg})
+				return
+			}
+		}
+
+		execUserID, _, _ := currentUserFromHeaders(r)
+		db, driver, err := GetDBForUser(execUserID, connID)
 		if err != nil {
 			sendSSE(w, StreamError{err.Error()})
 			return

@@ -16,8 +16,11 @@ export default defineConfig(({ mode }) => {
     build: {
       rollupOptions: {
         output: {
-          manualChunks: {
-            monaco: ['monaco-editor/editor/editor.api.js'],
+          manualChunks(id) {
+            // The 'monaco-editor/editor/editor.api.js' specifier resolves
+            // through the package's export map to node_modules/monaco-editor/esm/...,
+            // so match on the package directory rather than the import path.
+            if (id.includes('node_modules/monaco-editor')) return 'monaco'
           },
         },
       },
