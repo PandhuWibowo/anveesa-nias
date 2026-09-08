@@ -582,9 +582,13 @@ func (c *searchClient) doJSON(ctx context.Context, method, path string, body []b
 		return err
 	}
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 12<<20))
+	const maxBody = 64 << 20
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
 		return err
+	}
+	if len(respBody) > maxBody {
+		return fmt.Errorf("response too large (exceeds %d MB)", maxBody>>20)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg := strings.TrimSpace(string(respBody))

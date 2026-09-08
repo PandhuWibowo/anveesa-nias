@@ -17,6 +17,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
+	"github.com/lib/pq"
 )
 
 // errRestoreStreamRead marks an error as coming from reading the source
@@ -297,6 +300,18 @@ type RestoreRowFailure struct {
 // total regardless of this cap.
 const maxTrackedRowFailures = 50
 
+// ColumnAddition records one auto-repaired column ("added a column the
+// dump's data referenced but the target table didn't have") for reporting.
+type ColumnAddition struct {
+	Table  string `json:"table"`
+	Column string `json:"column"`
+	Type   string `json:"type"`
+}
+
+// maxTrackedColumnAdditions mirrors maxTrackedRowFailures's rationale —
+// ColumnsAdded (the atomic counter) always reflects the true total.
+const maxTrackedColumnAdditions = 50
+
 const (
 	RestoreJobRunning  RestoreJobStatus = "running"
 	RestoreJobDone     RestoreJobStatus = "done"
@@ -328,6 +343,15 @@ type RestoreJob struct {
 	// of identical failures, and there's no value in storing each one;
 	// FailedRows still tracks the true total count separately via atomic ops.
 	FailedRowDetails []RestoreRowFailure `json:"failed_row_details,omitempty"`
+
+	// ColumnsAdded counts columns auto-added via ALTER TABLE ... ADD COLUMN
+	// because a row's INSERT referenced a column the target table was
+	// missing — only nonzero when the caller opted into autoAddColumns.
+	ColumnsAdded int64 `json:"columns_added"`
+	// ColumnsAddedDetails captures up to maxTrackedColumnAdditions individual
+	// additions (table, column, inferred type) for diagnostics — mu-protected,
+	// same capped-list rationale as FailedRowDetails.
+	ColumnsAddedDetails []ColumnAddition `json:"columns_added_details,omitempty"`
 
 	// Current/CurrentCount/Recent give a human-readable window into what the
 	// executor is actually doing right now (e.g. "Inserting into orders"), not
@@ -386,6 +410,7 @@ func RestoreBackup() http.HandlerFunc {
 			ObjectKey       string `json:"object_key"`
 			SkipConflicts   bool   `json:"skip_conflicts"`
 			ContinueOnError bool   `json:"continue_on_error"`
+			AutoAddColumns  bool   `json:"auto_add_columns"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
@@ -476,6 +501,22 @@ func RestoreBackup() http.HandlerFunc {
 				}
 				job.mu.Unlock()
 			}
+			onColumnAdd := func(table, column, sqlType string) {
+				job.mu.Lock()
+				if len(job.ColumnsAddedDetails) < maxTrackedColumnAdditions {
+					job.ColumnsAddedDetails = append(job.ColumnsAddedDetails, ColumnAddition{
+						Table: table, Column: column, Type: sqlType,
+					})
+				}
+				label := fmt.Sprintf("Added column %s.%s (%s)", table, column, sqlType)
+				job.Current = label
+				job.CurrentCount = 1
+				job.Recent = append([]string{label}, job.Recent...)
+				if len(job.Recent) > 8 {
+					job.Recent = job.Recent[:8]
+				}
+				job.mu.Unlock()
+			}
 
 			// Two-tier strategy: the first attempt streams directly from the
 			// bucket, overlapping network transfer with DB execution — the
@@ -561,7 +602,7 @@ func RestoreBackup() http.HandlerFunc {
 					break
 				}
 
-				executed, _, execErr := execRestoreStream(jobCtx, tx, reader, driver, req.SkipConflicts, req.ContinueOnError, &job.Executed, &job.Skipped, &job.FailedRows, onExec, onFail)
+				executed, _, execErr := execRestoreStream(jobCtx, tx, reader, driver, req.SkipConflicts, req.ContinueOnError, req.AutoAddColumns, &job.Executed, &job.Skipped, &job.FailedRows, &job.ColumnsAdded, onExec, onFail, onColumnAdd)
 				if closer != nil {
 					closer.Close()
 				}
@@ -576,6 +617,7 @@ func RestoreBackup() http.HandlerFunc {
 						atomic.StoreInt64(&job.Executed, 0)
 						atomic.StoreInt64(&job.Skipped, 0)
 						atomic.StoreInt64(&job.FailedRows, 0)
+						atomic.StoreInt64(&job.ColumnsAdded, 0)
 						retryMsg := fmt.Sprintf("Connection dropped after %d statements — switching to a resumable download (attempt %d/%d)", executed, attempt+1, maxAttempts)
 						job.mu.Lock()
 						job.Current = retryMsg
@@ -583,6 +625,7 @@ func RestoreBackup() http.HandlerFunc {
 						job.Recent = []string{retryMsg}
 						job.FirstRowError = ""
 						job.FailedRowDetails = nil
+						job.ColumnsAddedDetails = nil
 						job.mu.Unlock()
 						select {
 						case <-time.After(3 * time.Second):
@@ -648,21 +691,24 @@ func GetRestoreJobStatus() http.HandlerFunc {
 		current, currentCount, recent := job.Current, job.CurrentCount, job.Recent
 		firstRowError := job.FirstRowError
 		failedRowDetails := job.FailedRowDetails
+		columnsAddedDetails := job.ColumnsAddedDetails
 		job.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":                 job.ID,
-			"status":             status,
-			"started_at":         job.StartedAt,
-			"done_at":            doneAt,
-			"executed":           atomic.LoadInt64(&job.Executed),
-			"skipped":            atomic.LoadInt64(&job.Skipped),
-			"failed_rows":        atomic.LoadInt64(&job.FailedRows),
-			"first_row_error":    firstRowError,
-			"failed_row_details": failedRowDetails,
-			"current":            current,
-			"current_count":      currentCount,
-			"recent":             recent,
-			"error":              errMsg,
+			"id":                    job.ID,
+			"status":                status,
+			"started_at":            job.StartedAt,
+			"done_at":               doneAt,
+			"executed":              atomic.LoadInt64(&job.Executed),
+			"skipped":               atomic.LoadInt64(&job.Skipped),
+			"failed_rows":           atomic.LoadInt64(&job.FailedRows),
+			"first_row_error":       firstRowError,
+			"failed_row_details":    failedRowDetails,
+			"columns_added":         atomic.LoadInt64(&job.ColumnsAdded),
+			"columns_added_details": columnsAddedDetails,
+			"current":               current,
+			"current_count":         currentCount,
+			"recent":                recent,
+			"error":                 errMsg,
 		})
 	}
 }
@@ -1833,6 +1879,389 @@ func insertBatchParts(stmt string) (prefix, tuple string, ok bool) {
 	return stmt[:idx+len(marker)-1], stmt[idx+len(marker)-1:], true
 }
 
+// ── Auto-add missing columns ─────────────────────────────────────────────────
+//
+// When a dump's INSERT references a column the target table doesn't have —
+// schema drift between where the dump was taken and the restore target — the
+// statement fails with a driver-specific "undefined column" error. Rather
+// than parsing the dump's CREATE TABLE DDL to learn the column's real type
+// (infeasible in general: MySQL/SQLite dumps just echo the source DB's own
+// native DDL verbatim, arbitrary formatting, no fixed shape to parse), the
+// type is inferred from the literal value already sitting in the failing
+// INSERT at that column's position — a best-effort guess, always added
+// nullable with no default so it can never conflict with rows already
+// committed earlier in this same restore.
+
+var (
+	rePGUndefinedColumn  = regexp.MustCompile(`column "([^"]+)" of relation "[^"]+" does not exist`)
+	reMySQLUnknownColumn = regexp.MustCompile(`Unknown column '([^']+)' in`)
+	reSQLiteNoColumn     = regexp.MustCompile(`has no column named (\S+)`)
+)
+
+// missingColumnFromErr inspects a failed statement's error and, only if the
+// error is unambiguously "this column doesn't exist on the target table" for
+// the given driver, returns the column name. Any other error shape
+// (permission denied, constraint violation, syntax error, wrong code, etc.)
+// returns ok=false — those must never be treated as auto-repairable.
+// sqlserver (MSSQL) is deliberately absent: no MSSQL driver is vendored in
+// this app, so that target is never practically reachable.
+func missingColumnFromErr(driver string, err error) (column string, ok bool) {
+	switch driver {
+	case "postgres":
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "42703" {
+			if m := rePGUndefinedColumn.FindStringSubmatch(pqErr.Message); m != nil {
+				return m[1], true
+			}
+		}
+	case "mysql":
+		var myErr *mysql.MySQLError
+		if errors.As(err, &myErr) && myErr.Number == 1054 {
+			if m := reMySQLUnknownColumn.FindStringSubmatch(myErr.Message); m != nil {
+				return m[1], true
+			}
+		}
+	case "sqlite3":
+		// mattn/go-sqlite3 has no distinct result code for this — it's a
+		// generic SQLITE_ERROR, message text is the only signal available.
+		if m := reSQLiteNoColumn.FindStringSubmatch(err.Error()); m != nil {
+			return m[1], true
+		}
+	}
+	return "", false
+}
+
+// splitTopLevelSQL splits s on commas that are not inside a quoted span
+// ('...', "...", `...`, [...] — doubled-quote escaping honored for all four)
+// or nested parens. Used both for an INSERT's column list and a VALUES
+// tuple's literals — same quoting/nesting ambiguity in both.
+func splitTopLevelSQL(s string) []string {
+	var parts []string
+	var cur strings.Builder
+	depth := 0
+	var quoteChar byte
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if quoteChar != 0 {
+			cur.WriteByte(b)
+			if b == quoteChar {
+				if i+1 < len(s) && s[i+1] == quoteChar {
+					cur.WriteByte(s[i+1])
+					i++
+					continue
+				}
+				quoteChar = 0
+			}
+			continue
+		}
+		switch {
+		case b == '\'' || b == '"' || b == '`':
+			quoteChar = b
+			cur.WriteByte(b)
+		case b == '[':
+			quoteChar = ']'
+			cur.WriteByte(b)
+		case b == '(':
+			depth++
+			cur.WriteByte(b)
+		case b == ')':
+			depth--
+			cur.WriteByte(b)
+		case b == ',' && depth == 0:
+			parts = append(parts, strings.TrimSpace(cur.String()))
+			cur.Reset()
+		default:
+			cur.WriteByte(b)
+		}
+	}
+	if cur.Len() > 0 || len(parts) > 0 {
+		parts = append(parts, strings.TrimSpace(cur.String()))
+	}
+	return parts
+}
+
+// extractFirstParenGroup finds the first "(...)" group in s at or after
+// fromIdx, honoring single-quoted strings (with ” escaping) so a literal
+// containing "(" or ")" doesn't break the match. Returns the group's
+// contents (without the parens) and the index just past the matching ')'.
+func extractFirstParenGroup(s string, fromIdx int) (end int, body string, ok bool) {
+	start := strings.IndexByte(s[fromIdx:], '(')
+	if start < 0 {
+		return 0, "", false
+	}
+	start += fromIdx
+	depth := 0
+	inStr := false
+	for i := start; i < len(s); i++ {
+		b := s[i]
+		if inStr {
+			if b == '\'' {
+				if i+1 < len(s) && s[i+1] == '\'' {
+					i++
+					continue
+				}
+				inStr = false
+			}
+			continue
+		}
+		switch b {
+		case '\'':
+			inStr = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i + 1, s[start+1 : i], true
+			}
+		}
+	}
+	return 0, "", false
+}
+
+func stripIdentQuotes(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 {
+		return s
+	}
+	switch {
+	case s[0] == '"' && s[len(s)-1] == '"':
+		return strings.ReplaceAll(s[1:len(s)-1], `""`, `"`)
+	case s[0] == '`' && s[len(s)-1] == '`':
+		return strings.ReplaceAll(s[1:len(s)-1], "``", "`")
+	case s[0] == '[' && s[len(s)-1] == ']':
+		return strings.ReplaceAll(s[1:len(s)-1], "]]", "]")
+	default:
+		return s
+	}
+}
+
+// insertRewritePrefixes are the prefixes a statement can start with by the
+// time it reaches parseInsertColumnsAndFirstTuple — the original
+// "INSERT INTO " plus the two forms addConflictSkip produces for
+// mysql/sqlite when skipConflicts is also on (postgres's
+// "ON CONFLICT DO NOTHING" is a suffix, so it never changes the prefix).
+var insertRewritePrefixes = []string{"INSERT INTO ", "INSERT IGNORE INTO ", "INSERT OR IGNORE INTO "}
+
+// parseInsertColumnsAndFirstTuple extracts the explicit column list and the
+// FIRST value tuple's literals from stmt, which may be a plain single-row
+// INSERT, the multi-row batch form flushBatch builds (only the first tuple
+// is read — batched rows are same-shape, so it's representative), or a
+// skipConflicts-rewritten form. ok=false (never panics) whenever the shape
+// can't be read confidently — notably a bare "INSERT INTO t VALUES (...)"
+// with no explicit column list, which a foreign/uploaded dump can produce
+// but this app's own dumps never do.
+func parseInsertColumnsAndFirstTuple(stmt string) (tableRef string, cols, vals []string, ok bool) {
+	var rest string
+	for _, p := range insertRewritePrefixes {
+		if strings.HasPrefix(stmt, p) {
+			rest = stmt[len(p):]
+			break
+		}
+	}
+	if rest == "" {
+		return "", nil, nil, false
+	}
+
+	colEnd, colBody, colOK := extractFirstParenGroup(rest, 0)
+	if !colOK {
+		return "", nil, nil, false
+	}
+	tableRef = strings.TrimSpace(rest[:strings.IndexByte(rest, '(')])
+	remainder := rest[colEnd:]
+	if !strings.HasPrefix(remainder, " VALUES (") {
+		return "", nil, nil, false // e.g. no explicit column list at all
+	}
+	cols = splitTopLevelSQL(colBody)
+	for i := range cols {
+		cols[i] = stripIdentQuotes(cols[i])
+	}
+
+	_, tupleBody, tupOK := extractFirstParenGroup(rest, colEnd)
+	if !tupOK {
+		return "", nil, nil, false
+	}
+	vals = splitTopLevelSQL(tupleBody)
+
+	if tableRef == "" || len(cols) == 0 || len(cols) != len(vals) {
+		return "", nil, nil, false
+	}
+	return tableRef, cols, vals, true
+}
+
+func indexOfColumn(cols []string, name string) int {
+	for i, c := range cols {
+		if c == name {
+			return i
+		}
+	}
+	return -1
+}
+
+type literalBucket int
+
+const (
+	bucketText literalBucket = iota
+	bucketBigInt
+	bucketDouble
+	bucketBoolean
+)
+
+var (
+	reIntLiteral   = regexp.MustCompile(`^-?[0-9]+$`)
+	reFloatLiteral = regexp.MustCompile(`^-?[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?$`)
+)
+
+// inferLiteralBucket buckets a raw literal (as it appears in a VALUES tuple,
+// e.g. this app's own sqlLiteral output) into a broad SQL type category.
+func inferLiteralBucket(literal string) literalBucket {
+	v := strings.TrimSpace(literal)
+	switch {
+	case strings.EqualFold(v, "NULL"):
+		return bucketText // can't infer from NULL — TEXT is a safe, always-valid fallback
+	case strings.EqualFold(v, "TRUE") || strings.EqualFold(v, "FALSE"):
+		return bucketBoolean
+	case len(v) >= 2 && v[0] == '\'' && v[len(v)-1] == '\'':
+		return bucketText
+	case reIntLiteral.MatchString(v):
+		return bucketBigInt
+	case reFloatLiteral.MatchString(v):
+		return bucketDouble
+	default:
+		return bucketText
+	}
+}
+
+// sqlColumnType maps a bucket to a driver-valid ADD COLUMN type name.
+func sqlColumnType(driver string, b literalBucket) string {
+	switch driver {
+	case "mysql":
+		switch b {
+		case bucketBigInt:
+			return "BIGINT"
+		case bucketDouble:
+			return "DOUBLE"
+		case bucketBoolean:
+			return "BOOLEAN"
+		default:
+			return "TEXT"
+		}
+	case "sqlite3":
+		switch b {
+		case bucketBigInt:
+			return "INTEGER"
+		case bucketDouble:
+			return "REAL"
+		case bucketBoolean:
+			return "BOOLEAN"
+		default:
+			return "TEXT"
+		}
+	default: // postgres
+		switch b {
+		case bucketBigInt:
+			return "BIGINT"
+		case bucketDouble:
+			return "DOUBLE PRECISION"
+		case bucketBoolean:
+			return "BOOLEAN"
+		default:
+			return "TEXT"
+		}
+	}
+}
+
+const (
+	columnRepairAdded  = "added"
+	columnRepairFailed = "failed"
+)
+
+// maxAutoRepairAttempts bounds how many distinct missing columns one
+// statement can trigger a repair for — a generous cap (a real row would
+// rarely be missing more than one or two columns), not something normal
+// operation should ever hit; it exists purely so a pathological dump can't
+// spin forever.
+const maxAutoRepairAttempts = 8
+
+// execWithSavepointAutoRepair wraps execWithSavepoint with one extra
+// capability: if stmt fails because the target table is missing a column
+// the dump's INSERT explicitly lists, and autoAddColumns is on, it ALTERs
+// the table to add that column (nullable, type inferred from stmt's own
+// literal at that position) and retries stmt — possibly repeating if the
+// retry hits a second missing column, up to maxAutoRepairAttempts.
+//
+// added is a map[tableRef]map[columnName]"added"|"failed" scoped to one
+// execRestoreStream call: a column is only ever ALTERed once per restore —
+// first success fixes it for every later row for free (they simply won't
+// fail anymore), first failure short-circuits every later row that would
+// have hit the same doomed ALTER.
+func execWithSavepointAutoRepair(
+	ctx context.Context,
+	tx *sql.Tx,
+	driver, stmt string,
+	autoAddColumns bool,
+	added map[string]map[string]string,
+	onColumnAdd func(table, column, sqlType string),
+) (rowErr, fatalErr error) {
+	cur := stmt
+	for attempt := 0; ; attempt++ {
+		rowErr, fatalErr = execWithSavepoint(ctx, tx, driver, cur)
+		if fatalErr != nil || rowErr == nil {
+			return rowErr, fatalErr
+		}
+		if !autoAddColumns || attempt >= maxAutoRepairAttempts {
+			return rowErr, nil
+		}
+
+		col, detected := missingColumnFromErr(driver, rowErr)
+		if !detected {
+			return rowErr, nil
+		}
+		tableRef, cols, vals, parsed := parseInsertColumnsAndFirstTuple(cur)
+		if !parsed {
+			return rowErr, nil // e.g. no explicit column list — can't map name to a value
+		}
+		pos := indexOfColumn(cols, col)
+		if pos < 0 {
+			return rowErr, nil // reported column isn't even in this INSERT's list
+		}
+
+		tableKey := cleanIdent(tableRef)
+		byCol := added[tableKey]
+		if byCol == nil {
+			byCol = map[string]string{}
+			added[tableKey] = byCol
+		}
+
+		switch byCol[col] {
+		case columnRepairFailed:
+			return rowErr, nil // already know this ALTER doesn't work — don't retry it
+		case columnRepairAdded:
+			// already added by an earlier row — just retry cur below
+		default:
+			sqlType := sqlColumnType(driver, inferLiteralBucket(vals[pos]))
+			alterStmt := "ALTER TABLE " + tableRef + " ADD COLUMN " + quoteIdent(driver, col) + " " + sqlType
+			alterRowErr, alterFatalErr := execWithSavepoint(ctx, tx, driver, alterStmt)
+			if alterFatalErr != nil {
+				return nil, alterFatalErr
+			}
+			if alterRowErr != nil {
+				// The ALTER itself failed (permissions, race, etc.) — surface
+				// the ORIGINAL insert error, not the ALTER's, and don't retry
+				// this column again for the rest of the restore.
+				byCol[col] = columnRepairFailed
+				return rowErr, nil
+			}
+			byCol[col] = columnRepairAdded
+			if onColumnAdd != nil {
+				onColumnAdd(tableKey, col, sqlType)
+			}
+		}
+		// loop: retry cur (a fresh savepoint) — may itself hit another
+		// missing column, handled by the next iteration.
+	}
+}
+
 // execRestoreStream reads SQL statements from r as they are parsed — buffering
 // only the current statement, never the whole dump — and executes each
 // allowed one against tx. This lets restores from bucket-hosted dumps scale to
@@ -1859,8 +2288,14 @@ func insertBatchParts(stmt string) (prefix, tuple string, ok bool) {
 // SAVEPOINT — a row that fails (bad data, e.g. an out-of-range date) is
 // rolled back to that savepoint and counted as failed instead of aborting the
 // whole (potentially hours-long, multi-million-statement) transaction; onFail,
-// if non-nil, is called with the failed statement's text and its error.
-func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver string, skipConflicts, continueOnError bool, executedCounter, skippedCounter, failedCounter *int64, onExec func(stmt string, n int), onFail func(stmt string, err error)) (executed, skipped int, err error) {
+// if non-nil, is called with the failed statement's text and its error. When
+// autoAddColumns is true, an INSERT/DO failure caused by the target table
+// missing a column the statement references gets an ALTER TABLE ADD COLUMN
+// (type inferred from the failing statement's own literal value) and a
+// retry before falling back to the continueOnError/abort behavior above —
+// see execWithSavepointAutoRepair; onColumnAdd, if non-nil, is called once
+// per column actually added.
+func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver string, skipConflicts, continueOnError, autoAddColumns bool, executedCounter, skippedCounter, failedCounter, columnsAddedCounter *int64, onExec func(stmt string, n int), onFail func(stmt string, err error), onColumnAdd func(table, column, sqlType string)) (executed, skipped int, err error) {
 	br := bufio.NewReaderSize(r, 256*1024)
 	var cur strings.Builder
 	inStr := false
@@ -1895,6 +2330,19 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 	var batchTuples []string
 	var batchBytes int
 
+	// addedColumns memoizes auto-repaired columns (table → column →
+	// "added"/"failed") for the lifetime of this one restore — see
+	// execWithSavepointAutoRepair.
+	addedColumns := map[string]map[string]string{}
+	columnAdd := func(table, column, sqlType string) {
+		if columnsAddedCounter != nil {
+			atomic.AddInt64(columnsAddedCounter, 1)
+		}
+		if onColumnAdd != nil {
+			onColumnAdd(table, column, sqlType)
+		}
+	}
+
 	// execStatement runs one statement outside the batching path — DDL, DO
 	// blocks, SET, or a lone (unbatched) INSERT.
 	execStatement := func(stmt string) error {
@@ -1918,12 +2366,20 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 		//     handler doesn't catch (it only catches duplicate_object/42830).
 		// A plain DDL statement failing (bad CREATE TABLE, etc.) is still a
 		// real problem worth aborting for, so nothing else gets this treatment.
-		if continueOnError && (strings.HasPrefix(stmt, "INSERT") || strings.HasPrefix(stmt, "DO ")) {
-			rowErr, fatalErr := execWithSavepoint(ctx, tx, driver, stmt)
+		// autoAddColumns also routes INSERT/DO through the savepoint path even
+		// with continueOnError off, since repair needs per-statement failure
+		// visibility to trigger — see execWithSavepointAutoRepair.
+		if (continueOnError || autoAddColumns) && (strings.HasPrefix(stmt, "INSERT") || strings.HasPrefix(stmt, "DO ")) {
+			rowErr, fatalErr := execWithSavepointAutoRepair(ctx, tx, driver, stmt, autoAddColumns, addedColumns, columnAdd)
 			if fatalErr != nil {
 				return fatalErr
 			}
 			if rowErr != nil {
+				if !continueOnError {
+					// Repair (if attempted) didn't resolve it, and
+					// continueOnError is off — abort exactly as today.
+					return rowErr
+				}
 				if failedCounter != nil {
 					atomic.AddInt64(failedCounter, 1)
 				}
@@ -1969,8 +2425,8 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 		}
 
 		runBatch := func() (rowErr, fatalErr error) {
-			if continueOnError {
-				return execWithSavepoint(ctx, tx, driver, rewritten)
+			if continueOnError || autoAddColumns {
+				return execWithSavepointAutoRepair(ctx, tx, driver, rewritten, autoAddColumns, addedColumns, columnAdd)
 			}
 			_, err := tx.ExecContext(ctx, rewritten)
 			return err, nil
