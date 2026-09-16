@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useSchema, type SchemaTable } from '@/composables/useSchema'
 
 const props = defineProps<{
@@ -17,6 +17,28 @@ const { databases, loadingSchema, error: schemaError, fetchSchema } = useSchema(
 
 const expandedDbs = ref<Set<string>>(new Set())
 const activeTable = ref<string>('')
+const searchQuery = ref('')
+
+// While searching, matching databases are force-expanded regardless of manual
+// toggle state so results are visible without an extra click; clearing the
+// search reverts to whatever the user had manually expanded.
+function isDbExpanded(dbName: string) {
+  return searchQuery.value.trim() ? filteredTablesFor(dbName).length > 0 : expandedDbs.value.has(dbName)
+}
+
+function filteredTablesFor(dbName: string) {
+  const db = databases.value.find(d => d.name === dbName)
+  const tables = db ? tablesFor(db) : []
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return tables
+  return tables.filter(t => t.name.toLowerCase().includes(q))
+}
+
+const visibleDatabases = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return databases.value
+  return databases.value.filter(db => filteredTablesFor(db.name).length > 0 || db.name.toLowerCase().includes(q))
+})
 
 watch(
   [() => props.connId, () => props.active, () => props.refreshKey],
@@ -53,6 +75,14 @@ function tablesFor(db: { tables?: SchemaTable[] | null }) {
 
 <template>
   <div class="schema-tree">
+    <div v-if="!loadingSchema && connId && !schemaError && databases.length > 0" class="schema-tree__search">
+      <div class="schema-tree__search-box">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input v-model="searchQuery" type="text" placeholder="Search tables…" class="schema-tree__search-input" />
+        <button v-if="searchQuery" class="schema-tree__search-clear" title="Clear search" @click="searchQuery = ''">✕</button>
+      </div>
+    </div>
+
     <div v-if="loadingSchema" style="padding:12px 8px;display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:12px">
       <svg class="spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
       Loading schema…
@@ -70,27 +100,31 @@ function tablesFor(db: { tables?: SchemaTable[] | null }) {
       No databases found.
     </div>
 
+    <div v-else-if="visibleDatabases.length === 0" class="empty-state" style="padding:20px 8px;font-size:12px">
+      No tables match "{{ searchQuery }}".
+    </div>
+
     <template v-else>
-      <div v-for="db in databases" :key="db.name">
+      <div v-for="db in visibleDatabases" :key="db.name">
         <!-- Database node -->
         <div
           class="schema-node"
           style="padding-left:4px;font-weight:600"
-          :class="{ 'is-active': expandedDbs.has(db.name) }"
+          :class="{ 'is-active': isDbExpanded(db.name) }"
           @click="toggleDb(db.name)"
         >
-          <span class="schema-node__chevron" :class="{ 'is-open': expandedDbs.has(db.name) }">
+          <span class="schema-node__chevron" :class="{ 'is-open': isDbExpanded(db.name) }">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           </span>
           <svg class="schema-node__icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg>
           <span class="schema-node__label">{{ db.name }}</span>
-          <span class="schema-node__count">{{ tablesFor(db).length }}</span>
+          <span class="schema-node__count">{{ searchQuery.trim() ? filteredTablesFor(db.name).length : tablesFor(db).length }}</span>
         </div>
 
         <!-- Tables -->
-        <template v-if="expandedDbs.has(db.name)">
+        <template v-if="isDbExpanded(db.name)">
           <div
-            v-for="table in tablesFor(db)"
+            v-for="table in filteredTablesFor(db.name)"
             :key="table.name"
             class="schema-node"
             style="padding-left:20px"
