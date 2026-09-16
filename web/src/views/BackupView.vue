@@ -657,6 +657,7 @@ const restoreLoading = ref(false)
 const restoreError = ref('')
 const restoreSkipConflicts = ref(false)
 const restoreContinueOnError = ref(false)
+const restoreAutoAddColumns = ref(false)
 
 async function uploadFile(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
@@ -747,10 +748,12 @@ watch(restoreSource, () => {
 })
 
 // ── Restore progress (async job, polled) ────────────────────────────────
-const restoreProgress = reactive({ executed: 0, skipped: 0, failedRows: 0 })
+const restoreProgress = reactive({ executed: 0, skipped: 0, failedRows: 0, columnsAdded: 0 })
 const restoreFirstRowError = ref('')
 const restoreFailedRowDetails = ref<{ statement: string; error: string }[]>([])
 const restoreFailedRowsOpen = ref(false)
+const restoreColumnsAddedDetails = ref<{ table: string; column: string; type: string }[]>([])
+const restoreColumnsAddedOpen = ref(false)
 const restoreCurrentCount = ref(0)
 const restoreRecent = ref<string[]>([])
 const restoreCancelled = ref(false)
@@ -850,14 +853,17 @@ async function pollRestoreJob(jobId: string) {
       restoreProgress.executed = status.executed ?? 0
       restoreProgress.skipped = status.skipped ?? 0
       restoreProgress.failedRows = status.failed_rows ?? 0
+      restoreProgress.columnsAdded = status.columns_added ?? 0
       restoreFirstRowError.value = status.first_row_error ?? ''
       restoreFailedRowDetails.value = status.failed_row_details ?? []
+      restoreColumnsAddedDetails.value = status.columns_added_details ?? []
       restoreCurrentCount.value = status.current_count ?? 0
       restoreRecent.value = status.recent ?? []
 
       if (status.status === 'done') {
         restoreResult.value = `Executed ${status.executed} statement(s) successfully` +
           (status.skipped ? ` (${status.skipped} skipped)` : '') +
+          (status.columns_added ? ` — ${status.columns_added} column(s) auto-added` : '') +
           (status.failed_rows ? ` — ${status.failed_rows} row(s) failed and were skipped (e.g. ${status.first_row_error})` : '') +
           '.'
         toast.success('Restore complete')
@@ -899,16 +905,19 @@ async function runRestore() {
   restoreProgress.executed = 0
   restoreProgress.skipped = 0
   restoreProgress.failedRows = 0
+  restoreProgress.columnsAdded = 0
   restoreFirstRowError.value = ''
   restoreFailedRowDetails.value = []
   restoreFailedRowsOpen.value = false
+  restoreColumnsAddedDetails.value = []
+  restoreColumnsAddedOpen.value = false
   restoreCurrentCount.value = 0
   restoreRecent.value = []
 
   try {
     const payload = restoreSource.value === 'bucket'
-      ? { dest_conn_id: restoreBucketConnId.value, object_key: restoreSelectedKey.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value }
-      : { sql: restoreSQL.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value }
+      ? { dest_conn_id: restoreBucketConnId.value, object_key: restoreSelectedKey.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value, auto_add_columns: restoreAutoAddColumns.value }
+      : { sql: restoreSQL.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value, auto_add_columns: restoreAutoAddColumns.value }
     // POST returns immediately with a job_id (HTTP 202) — the restore itself
     // runs in a background goroutine so it isn't bound by the request/response
     // lifetime (a big dump can take many minutes; a blocking request would be
@@ -1753,6 +1762,14 @@ onMounted(async () => {
               </span>
             </label>
 
+            <label class="bv-skip-conflicts">
+              <input type="checkbox" v-model="restoreAutoAddColumns" :disabled="restoreLoading" />
+              <span>
+                Auto-add missing columns
+                <span class="bv-skip-conflicts__hint">When a row's INSERT references a column the target table doesn't have (schema drift since the dump was taken), adds it as a nullable column with a best-effort inferred type and retries — instead of failing or skipping that row. Only works when the dump lists explicit column names (true for backups made by this app). The inferred type is a guess; review it afterward. Not supported for MSSQL targets.</span>
+              </span>
+            </label>
+
             <div v-if="restoreLoading" class="bv-restore-progress">
               <div v-if="restoreReconnecting" class="bv-restore-reconnect">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
@@ -1764,6 +1781,7 @@ onMounted(async () => {
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="bv-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
                   <span>{{ restoreProgress.executed.toLocaleString() }} statement{{ restoreProgress.executed === 1 ? '' : 's' }} executed</span>
                   <span v-if="restoreProgress.skipped" class="bv-restore-progress__muted">({{ restoreProgress.skipped.toLocaleString() }} skipped)</span>
+                  <span v-if="restoreProgress.columnsAdded" class="bv-columns-added__badge">{{ restoreProgress.columnsAdded.toLocaleString() }} column{{ restoreProgress.columnsAdded === 1 ? '' : 's' }} auto-added</span>
                   <span v-if="restoreProgress.failedRows" class="bv-restore-progress__failed">{{ restoreProgress.failedRows.toLocaleString() }} row{{ restoreProgress.failedRows === 1 ? '' : 's' }} failed</span>
                   <span class="bv-restore-progress__elapsed">{{ restoreElapsedLabel(restoreElapsedSec) }}</span>
                 </div>
@@ -1788,6 +1806,22 @@ onMounted(async () => {
             </div>
 
             <div v-if="restoreResult" class="notice notice--ok">{{ restoreResult }}</div>
+
+            <div v-if="restoreColumnsAddedDetails.length" class="bv-columns-added">
+              <button type="button" class="bv-columns-added__toggle" @click="restoreColumnsAddedOpen = !restoreColumnsAddedOpen">
+                <svg :style="{ transform: restoreColumnsAddedOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                {{ restoreColumnsAddedOpen ? 'Hide' : 'Show' }} auto-added columns ({{ restoreColumnsAddedDetails.length }}{{ restoreProgress.columnsAdded > restoreColumnsAddedDetails.length ? ` of ${restoreProgress.columnsAdded}` : '' }})
+              </button>
+              <div v-if="restoreColumnsAddedOpen" class="bv-columns-added__list">
+                <div v-for="(c, i) in restoreColumnsAddedDetails" :key="i" class="bv-columns-added__row">
+                  <span class="bv-columns-added__col">{{ c.table }}.{{ c.column }}</span>
+                  <span class="bv-columns-added__type">{{ c.type }}</span>
+                </div>
+                <div v-if="restoreProgress.columnsAdded > restoreColumnsAddedDetails.length" class="bv-columns-added__more">
+                  + {{ (restoreProgress.columnsAdded - restoreColumnsAddedDetails.length).toLocaleString() }} more not shown
+                </div>
+              </div>
+            </div>
 
             <div v-if="restoreFailedRowDetails.length" class="bv-failed-rows">
               <button type="button" class="bv-failed-rows__toggle" @click="restoreFailedRowsOpen = !restoreFailedRowsOpen">
@@ -3079,6 +3113,61 @@ onMounted(async () => {
   color: #d97706;
   font-size: 12px;
   font-weight: 600;
+}
+
+.bv-columns-added__badge {
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.bv-columns-added {
+  border: 1px solid color-mix(in srgb, #2563eb 35%, var(--border));
+  border-radius: 8px;
+  overflow: hidden;
+}
+.bv-columns-added__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  background: color-mix(in srgb, #2563eb 8%, transparent);
+  border: none;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #2563eb;
+  text-align: left;
+}
+.bv-columns-added__list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+.bv-columns-added__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.bv-columns-added__col {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.bv-columns-added__type {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.bv-columns-added__more {
+  padding: 8px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 .bv-failed-rows {

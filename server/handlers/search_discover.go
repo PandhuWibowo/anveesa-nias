@@ -322,14 +322,18 @@ func SearchIndexFields() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusBadGateway)
 			return
 		}
-		var mapping map[string]any
-		path := fmt.Sprintf("/%s/_mapping", searchIndexExpressionPath(index))
-		if err := client.doJSON(r.Context(), http.MethodGet, path, nil, &mapping); err != nil {
+		// _field_caps returns one deduplicated entry per field across all matched
+		// indices/backing indices, unlike _mapping which repeats the full mapping
+		// per index and can exceed the response size cap on data streams with many
+		// backing indices (e.g. .ds-sgpay-infra-*).
+		var caps map[string]any
+		path := fmt.Sprintf("/%s/_field_caps?fields=*", searchIndexExpressionPath(index))
+		if err := client.doJSON(r.Context(), http.MethodGet, path, nil, &caps); err != nil {
 			http.Error(w, jsonError("get fields failed: "+err.Error()), http.StatusBadGateway)
 			return
 		}
 
-		fields := extractMappingFields(mapping)
+		fields := extractFieldCapsFields(caps)
 		out, _ := json.Marshal(fields)
 		searchCacheSet(r.Context(), cacheKey, out, searchCacheTTLIndices)
 		w.Write(out)
@@ -341,50 +345,23 @@ type FieldInfo struct {
 	Type string `json:"type"`
 }
 
-func extractMappingFields(mapping map[string]any) []FieldInfo {
-	var fields []FieldInfo
-	for _, indexData := range mapping {
-		idx, ok := indexData.(map[string]any)
-		if !ok {
-			continue
-		}
-		mappings, ok := idx["mappings"].(map[string]any)
-		if !ok {
-			continue
-		}
-		props, ok := mappings["properties"].(map[string]any)
-		if !ok {
-			continue
-		}
-		fields = append(fields, flattenProps(props, "")...)
+func extractFieldCapsFields(caps map[string]any) []FieldInfo {
+	fieldsAny, ok := caps["fields"].(map[string]any)
+	if !ok {
+		return nil
 	}
-	return fields
-}
-
-func flattenProps(props map[string]any, prefix string) []FieldInfo {
-	var out []FieldInfo
-	for key, val := range props {
-		name := key
-		if prefix != "" {
-			name = prefix + "." + key
-		}
-		prop, ok := val.(map[string]any)
-		if !ok {
+	fields := make([]FieldInfo, 0, len(fieldsAny))
+	for name, typesAny := range fieldsAny {
+		types, ok := typesAny.(map[string]any)
+		if !ok || len(types) == 0 {
 			continue
 		}
 		fieldType := ""
-		if t, ok := prop["type"].(string); ok {
+		for t := range types {
 			fieldType = t
-		} else if prop["properties"] != nil {
-			fieldType = "object"
+			break
 		}
-		out = append(out, FieldInfo{Name: name, Type: fieldType})
-		if nested, ok := prop["properties"].(map[string]any); ok {
-			out = append(out, flattenProps(nested, name)...)
-		}
-		if nested, ok := prop["fields"].(map[string]any); ok {
-			out = append(out, flattenProps(nested, name)...)
-		}
+		fields = append(fields, FieldInfo{Name: name, Type: fieldType})
 	}
-	return out
+	return fields
 }
