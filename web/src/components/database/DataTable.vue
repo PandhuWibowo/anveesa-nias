@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { downloadExcel } from '@/utils/export'
-import CellInspector from '@/components/ui/CellInspector.vue'
+import RowInspector from '@/components/ui/RowInspector.vue'
 
 interface Props {
   columns: string[]
@@ -199,8 +199,17 @@ function hideAllColumns() {
   visibleColumns.value = new Set()
 }
 
-// Cell inspector state
-const inspector = ref({ show: false, column: '', value: undefined as unknown, rowIndex: 0 })
+// Row inspector state — clicking a row opens the whole row vertically
+// (column on the left, value on the right) instead of a single cell.
+const inspector = ref({ show: false, rowIndex: 0 })
+
+// The inspector always lists every column (hidden ones included) in the
+// user's current column order, so `values` must be re-indexed to match.
+const inspectorColumns = computed(() => colOrder.value)
+const inspectorValues = computed(() => {
+  const row = props.rows[inspector.value.rowIndex] ?? []
+  return colOrder.value.map(col => row[props.columns.indexOf(col)])
+})
 
 // Edit state: Map of rowIndex -> edited cells
 const editedRows = ref<Map<number, Record<string, unknown>>>(new Map())
@@ -247,12 +256,19 @@ function handleCellClick(rIdx: number, col: string, row: unknown[]) {
   const val = row[props.columns.indexOf(col)]
   emit('cell-click', { row: rIdx, col, value: val })
   if (!props.editable) {
-    openInspector(rIdx, col, val)
+    openInspector(rIdx)
   }
 }
 
-function openInspector(rIdx: number, col: string, val: unknown) {
-  inspector.value = { show: true, column: col, value: val, rowIndex: rIdx }
+function openInspector(rIdx: number) {
+  inspector.value = { show: true, rowIndex: rIdx }
+}
+
+// Saving from the inspector reuses the same single-row update path as the
+// inline grid editor.
+function handleInspectorSave(payload: { pkValue: unknown; updates: Record<string, unknown> }) {
+  emit('save-row', payload)
+  inspector.value.show = false
 }
 
 function getCellValue(rIdx: number, col: string, row: unknown[]): unknown {
@@ -479,7 +495,7 @@ defineExpose({ startAddRow })
         </thead>
         <tbody>
           <tr v-for="(row, rIdx) in rows" :key="rIdx" :class="{ 'tr-edited': editedRows.has(rIdx) }">
-            <td class="col-rownum" v-if="showRowNumbers">{{ (page - 1) * pageSize + rIdx + 1 }}</td>
+            <td class="col-rownum col-rownum--clickable" v-if="showRowNumbers" title="View full row" @click="openInspector(rIdx)">{{ (page - 1) * pageSize + rIdx + 1 }}</td>
             <td v-if="editable || showNewRow" class="col-actions">
               <div v-if="editable" class="row-btns">
                 <template v-if="editedRows.has(rIdx)">
@@ -600,12 +616,15 @@ defineExpose({ startAddRow })
       </button>
     </div>
 
-    <!-- Cell inspector -->
-    <CellInspector
+    <!-- Row inspector -->
+    <RowInspector
       :show="inspector.show"
-      :column="inspector.column"
-      :value="inspector.value"
-      :row-index="inspector.rowIndex"
+      :columns="inspectorColumns"
+      :values="inspectorValues"
+      :row-index="(page - 1) * pageSize + inspector.rowIndex"
+      :pk-column="pkColumn"
+      :can-edit="!!pkColumn"
+      @save="handleInspectorSave"
       @close="inspector.show = false"
     />
   </div>
@@ -889,4 +908,9 @@ th:hover .th-grip { opacity: 0.7; }
 .col-vis-item input[type="checkbox"] {
   cursor: pointer;
 }
+
+/* Row-number cell doubles as the "open full row" affordance — it keeps working
+   while the grid is in inline-edit mode, where cell clicks go to the inputs. */
+.col-rownum--clickable { cursor: pointer; }
+.col-rownum--clickable:hover { color: var(--brand); text-decoration: underline; }
 </style>
