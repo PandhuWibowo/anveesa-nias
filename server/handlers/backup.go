@@ -1914,7 +1914,7 @@ func missingColumnFromErr(driver string, err error) (column string, ok bool) {
 				return m[1], true
 			}
 		}
-	case "mysql":
+	case "mysql", "mariadb":
 		var myErr *mysql.MySQLError
 		if errors.As(err, &myErr) && myErr.Number == 1054 {
 			if m := reMySQLUnknownColumn.FindStringSubmatch(myErr.Message); m != nil {
@@ -2241,7 +2241,20 @@ func execWithSavepointAutoRepair(
 		default:
 			sqlType := sqlColumnType(driver, inferLiteralBucket(vals[pos]))
 			alterStmt := "ALTER TABLE " + tableRef + " ADD COLUMN " + quoteIdent(driver, col) + " " + sqlType
-			alterRowErr, alterFatalErr := execWithSavepoint(ctx, tx, driver, alterStmt)
+			var alterRowErr, alterFatalErr error
+			if driver == "mysql" || driver == "mariadb" {
+				// MySQL/MariaDB DDL causes an implicit COMMIT, which silently
+				// discards any SAVEPOINT taken inside the transaction. Wrapping
+				// the ALTER in one is worse than useless here: it can't be rolled
+				// back either way, and the subsequent RELEASE SAVEPOINT fails
+				// with "SAVEPOINT ... does not exist" (1305) once the implicit
+				// commit has already erased it — which execWithSavepoint reports
+				// as fatal, aborting the entire restore over a single missing
+				// column. Run it unwrapped instead.
+				_, alterRowErr = tx.ExecContext(ctx, alterStmt)
+			} else {
+				alterRowErr, alterFatalErr = execWithSavepoint(ctx, tx, driver, alterStmt)
+			}
 			if alterFatalErr != nil {
 				return nil, alterFatalErr
 			}
