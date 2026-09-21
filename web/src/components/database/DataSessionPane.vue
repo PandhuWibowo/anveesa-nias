@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount, defineAsyncComponent } from 'vue'
 import axios from 'axios'
 import SchemaTree from '@/components/database/SchemaTree.vue'
 import DataTable from '@/components/database/DataTable.vue'
@@ -20,7 +20,10 @@ import type { SQLPanelPayload } from '@/components/database/SQLPanel.vue'
 
 type ImportRow = (string | number | null)[]
 
-type DataSessionTab = 'data' | 'explorer' | 'schema' | 'sql'
+type DataSessionTab = 'data' | 'explorer' | 'schema' | 'sql' | 'er'
+
+// Loaded on demand — the ER canvas is only needed once a Diagram tab is opened.
+const ERDiagramView = defineAsyncComponent(() => import('@/views/ERDiagramView.vue'))
 
 const props = defineProps<{ connId: number | null; darkMode: boolean; active?: boolean; initialSQL?: string | null; initialDb?: string; initialTable?: string; initialTab?: DataSessionTab }>()
 const emit = defineEmits<{
@@ -90,6 +93,7 @@ watch(() => props.connId, () => {
   activeTableTabId.value = ''
   dataTableRefs.value = {}
   schemaSelected.value = null
+  erViewTabs.value = []
 })
 
 async function loadData(tab?: TableTab) {
@@ -721,7 +725,7 @@ watch(activeSubTab, (tab) => {
   if (tab === 'schema' && selected.value) handleSchemaSelectTable({ db: selected.value.db, table: selected.value.table })
   else if (tab === 'data' && schemaSelected.value && !suppressSubTabTableSelect) handleSelectTable({ db: schemaSelected.value.db, table: schemaSelected.value.table })
   else if (tab === 'explorer') void ensureExplorerReady()
-  emit('tab-selected', tab.startsWith('sql-') ? 'sql' : tab as DataSessionTab)
+  emit('tab-selected', tab.startsWith('sql-') ? 'sql' : tab.startsWith('er-') ? 'er' : tab as DataSessionTab)
   persistSQLState()
 })
 
@@ -736,6 +740,54 @@ watch(activeSubTab, (tab, previous) => {
   suppressSubTabGuard = true
   activeSubTab.value = previous
   setTimeout(() => { suppressSubTabGuard = false }, 0)
+})
+
+// ── Diagram (ER) tabs ─────────────────────────────────────────────
+interface ERViewTab { id: string; label: string; db: string }
+const erViewTabs = ref<ERViewTab[]>([])
+let erTabCounter = 0
+
+function openErTab() {
+  const id = `er-${++erTabCounter}`
+  erViewTabs.value.push({
+    id,
+    label: erTabCounter === 1 ? 'Diagram' : `Diagram ${erTabCounter}`,
+    db: selected.value?.db ?? props.initialDb ?? '',
+  })
+  activeSubTab.value = id
+}
+
+function closeErTab(id: string) {
+  const idx = erViewTabs.value.findIndex(t => t.id === id)
+  if (idx === -1) return
+  erViewTabs.value.splice(idx, 1)
+  if (activeSubTab.value === id) activeSubTab.value = erViewTabs.value[Math.max(0, idx - 1)]?.id ?? 'data'
+}
+
+// ── "+" menu (new SQL tab / new Diagram tab) ──────────────────────
+const newTabMenuOpen = ref(false)
+const newTabBtnRef = ref<HTMLElement | null>(null)
+const newTabMenuRef = ref<HTMLElement | null>(null)
+
+function toggleNewTabMenu() { newTabMenuOpen.value = !newTabMenuOpen.value }
+function pickNewTab(kind: 'sql' | 'er') {
+  newTabMenuOpen.value = false
+  if (kind === 'sql') openSqlTab()
+  else openErTab()
+}
+function onNewTabDocClick(e: MouseEvent) {
+  if (!newTabMenuOpen.value) return
+  const target = e.target as Node
+  if (!newTabMenuRef.value?.contains(target) && !newTabBtnRef.value?.contains(target)) newTabMenuOpen.value = false
+}
+function onNewTabKeydown(e: KeyboardEvent) { if (e.key === 'Escape') newTabMenuOpen.value = false }
+onMounted(() => {
+  document.addEventListener('mousedown', onNewTabDocClick, true)
+  document.addEventListener('keydown', onNewTabKeydown)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onNewTabDocClick, true)
+  document.removeEventListener('keydown', onNewTabKeydown)
 })
 
 function openSqlTab(preloadSQL?: string) {
@@ -959,6 +1011,9 @@ onMounted(() => {
     openSqlTab(props.initialSQL)
   } else if (props.initialTab === 'sql') {
     if (!restoreSQLState()) openSqlTab()
+  } else if (props.initialTab === 'er') {
+    restoreSQLState(false)
+    openErTab()
   } else if (props.initialTab) {
     restoreSQLState(false)
     activeSubTab.value = props.initialTab
@@ -1007,10 +1062,39 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           {{ tab.label }}
           <span class="sp-tab__close" @click.stop="closeSqlTab(tab.id)">×</span>
         </button>
-        <button class="sp-tab-new" @click="openSqlTab()">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          SQL
+        <button
+          v-for="tab in erViewTabs" :key="tab.id"
+          class="sp-tab"
+          :class="{ 'sp-tab--active': activeSubTab === tab.id }"
+          @click="activeSubTab = tab.id"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><path d="M10 6.5h2.5a1.5 1.5 0 0 1 1.5 1.5v6.5"/></svg>
+          {{ tab.label }}
+          <span class="sp-tab__close" @click.stop="closeErTab(tab.id)">×</span>
         </button>
+      </div>
+
+      <!-- New-tab menu: + → SQL query / ER Diagram -->
+      <div class="sp-new-wrap">
+        <button ref="newTabBtnRef" class="sp-tab-new" title="New tab" @click="toggleNewTabMenu">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <div v-if="newTabMenuOpen" ref="newTabMenuRef" class="sp-new-menu">
+          <button class="sp-new-menu__item" @click="pickNewTab('sql')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+            <span>
+              <span class="sp-new-menu__label">SQL</span>
+              <span class="sp-new-menu__hint">Query editor</span>
+            </span>
+          </button>
+          <button class="sp-new-menu__item" @click="pickNewTab('er')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><path d="M10 6.5h2.5a1.5 1.5 0 0 1 1.5 1.5v6.5"/></svg>
+            <span>
+              <span class="sp-new-menu__label">Diagram</span>
+              <span class="sp-new-menu__hint">ER diagram of this database</span>
+            </span>
+          </button>
+        </div>
       </div>
       <button
         v-if="activeSubTab === 'data' || activeSubTab === 'schema'"
@@ -1560,6 +1644,13 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
         </div>
       </div>
     </template>
+
+    <!-- DIAGRAM TABS -->
+    <template v-if="activeConn">
+      <div v-for="tab in erViewTabs" :key="tab.id" v-show="activeSubTab === tab.id" style="display:flex;flex:1;min-height:0;flex-direction:column;overflow:hidden">
+        <ERDiagramView :active-conn-id="connId" :initial-db="tab.db || selected?.db || null" />
+      </div>
+    </template>
   </div>
 
   <ColumnProfiler :show="profilerShow" :conn-id="connId" :table="activeTab?.table ?? ''" :column="activeTab?.columns[0] ?? ''" :database="activeTab?.db" @close="profilerShow=false" />
@@ -1736,6 +1827,41 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
   background: var(--brand-dim);
   transform: translateY(-1px);
 }
+
+/* The + button sits outside .sp-tabs (which scrolls) so its menu is never clipped. */
+.sp-new-wrap { position: relative; flex-shrink: 0; margin-left: 6px; }
+
+.sp-new-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  min-width: 220px;
+  padding: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0,0,0,.35), 0 4px 16px rgba(0,0,0,.25);
+}
+
+.sp-new-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  transition: background .12s ease;
+}
+.sp-new-menu__item:hover { background: var(--bg-surface); }
+.sp-new-menu__item svg { color: var(--brand); flex-shrink: 0; }
+.sp-new-menu__label { display: block; font-size: 13px; font-weight: 600; }
+.sp-new-menu__hint  { display: block; font-size: 11px; color: var(--text-muted); margin-top: 1px; }
 
 .sp-no-conn { 
   flex: 1;

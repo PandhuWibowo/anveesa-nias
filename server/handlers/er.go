@@ -29,6 +29,9 @@ type ERTable struct {
 type ERDiagram struct {
 	Tables      []ERTable    `json:"tables"`
 	ForeignKeys []ForeignKey `json:"foreign_keys"`
+	// Warning carries a non-fatal problem (e.g. the FK lookup failed) so the
+	// UI can explain an empty relationship list instead of drawing nothing.
+	Warning string `json:"warning,omitempty"`
 }
 
 // GetERDiagram returns tables + columns + FK relationships for SVG rendering.
@@ -132,18 +135,29 @@ func GetERDiagram() http.HandlerFunc {
 				}
 			}
 
+			// Read FKs from pg_catalog, not information_schema: the
+			// information_schema.constraint_column_usage view only exposes
+			// constraints whose *referenced* table is owned by a currently
+			// enabled role, so a read-only/app user sees zero relationships on
+			// a schema it does not own. pg_constraint has no such restriction.
 			fkRows, err := db.Query(`
-				SELECT tc.constraint_name, kcu.table_name, kcu.column_name,
-					ccu.table_name, ccu.column_name
-				FROM information_schema.table_constraints tc
-				JOIN information_schema.key_column_usage kcu
-					ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-				JOIN information_schema.constraint_column_usage ccu
-					ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
-				WHERE tc.constraint_type = 'FOREIGN KEY'
-					AND tc.table_catalog = $1 AND tc.table_schema = 'public'
-			`, dbName)
-			if err == nil {
+				SELECT con.conname,
+					src.relname, sa.attname,
+					tgt.relname, ta.attname
+				FROM pg_constraint con
+				JOIN pg_class     src ON src.oid = con.conrelid
+				JOIN pg_namespace ns  ON ns.oid  = src.relnamespace
+				JOIN pg_class     tgt ON tgt.oid = con.confrelid
+				JOIN LATERAL unnest(con.conkey, con.confkey)
+					WITH ORDINALITY AS cols(src_att, tgt_att, ord) ON true
+				JOIN pg_attribute sa ON sa.attrelid = src.oid AND sa.attnum = cols.src_att
+				JOIN pg_attribute ta ON ta.attrelid = tgt.oid AND ta.attnum = cols.tgt_att
+				WHERE con.contype = 'f' AND ns.nspname = 'public'
+				ORDER BY con.conname, cols.ord
+			`)
+			if err != nil {
+				diagram.Warning = "foreign keys could not be read: " + err.Error()
+			} else {
 				defer fkRows.Close()
 				for fkRows.Next() {
 					var fk ForeignKey
@@ -200,7 +214,9 @@ func GetERDiagram() http.HandlerFunc {
 				FROM information_schema.KEY_COLUMN_USAGE
 				WHERE TABLE_SCHEMA = ? AND REFERENCED_TABLE_NAME IS NOT NULL
 			`, dbName)
-			if err == nil {
+			if err != nil {
+				diagram.Warning = "foreign keys could not be read: " + err.Error()
+			} else {
 				defer fkRows.Close()
 				for fkRows.Next() {
 					var fk ForeignKey
