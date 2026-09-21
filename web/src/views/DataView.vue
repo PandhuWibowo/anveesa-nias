@@ -21,7 +21,7 @@ interface Session {
   initialTab?: DataSessionTab
 }
 
-type DataSessionTab = 'data' | 'explorer' | 'schema' | 'sql'
+type DataSessionTab = 'data' | 'explorer' | 'schema' | 'sql' | 'er'
 
 interface PersistedSession { connId: number; db?: string; table?: string; tab?: DataSessionTab }
 interface PersistedState { sessions: PersistedSession[]; activeConnId: number | null }

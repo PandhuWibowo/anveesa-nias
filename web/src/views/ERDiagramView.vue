@@ -3,12 +3,12 @@ import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
 
-const props = defineProps<{ activeConnId?: number | null }>()
+const props = defineProps<{ activeConnId?: number | null; initialDb?: string | null }>()
 
 interface ERColumn { name: string; data_type: string; is_primary_key: boolean; is_nullable: boolean }
 interface ERTable  { name: string; type: string; columns: ERColumn[] }
-interface FK       { constraint_name: string; table_name: string; column_name: string; ref_table_name: string; ref_column_name: string }
-interface ERData   { tables: ERTable[]; foreign_keys: FK[] }
+interface FK       { constraint_name: string; table_name: string; column_name: string; ref_table_name: string; ref_column_name: string; inferred?: boolean }
+interface ERData   { tables: ERTable[]; foreign_keys: FK[]; warning?: string }
 interface LayoutTable extends ERTable { x: number; y: number; width: number; height: number }
 
 const { connections } = useConnections()
@@ -28,6 +28,8 @@ const pathFrom      = ref('')
 const pathTo        = ref('')
 const compactMode   = ref(true)
 const sidepanelOpen = ref(true)
+// Draw naming-convention relationships when the schema declares no real FKs.
+const inferRelations = ref(false)
 
 // ── Focus / neighborhood navigation ───────────────────────────────
 const focusTableName = ref('')   // '' = overview (all tables)
@@ -36,8 +38,10 @@ const hoverTableName = ref('')   // transient highlight on hover
 const FOCUS_THRESHOLD = 50       // above this many tables, auto-focus on load
 
 watch(activeConn, (c) => { if (c?.database) selectedDb.value = c.database }, { immediate: true })
+watch(() => props.initialDb, (db) => { if (db) selectedDb.value = db }, { immediate: true })
 watch([() => activeConn.value, selectedDb], ([conn, db]) => { if (conn && db) fetchER(conn.id!, db) }, { immediate: true })
 watch(compactMode, () => { computeLayout(); refit() })
+watch(inferRelations, () => { computeLayout(); refit() })
 watch([focusTableName, focusDepth], () => { refit() })
 
 async function fetchER(connId: number, db: string, refresh = false) {
@@ -47,12 +51,19 @@ async function fetchER(connId: number, db: string, refresh = false) {
     const path = enc ? `/api/connections/${connId}/er/${enc}` : `/api/connections/${connId}/er`
     const { data } = await axios.get<ERData>(path, { params: refresh ? { refresh: 1 } : undefined })
     erData.value = data
+    // Schemas with no declared FK constraints (very common on Laravel/legacy
+    // MySQL) would render as a grid of disconnected cards — fall back to
+    // naming-convention links so the diagram still shows relationships.
+    inferRelations.value = data.foreign_keys.length === 0
     computeLayout()
     // Default view: focus the busiest table on large schemas, else show all.
-    if (data.tables.length > FOCUS_THRESHOLD) {
-      focusTableName.value = pickBusiestTable()
+    // Focusing only makes sense when the table actually has neighbours —
+    // otherwise the whole canvas would collapse to a single card.
+    const busiest = data.tables.length > FOCUS_THRESHOLD ? pickBusiestTable() : ''
+    if (busiest) {
+      focusTableName.value = busiest
       focusDepth.value = 1
-      selectedTableName.value = focusTableName.value
+      selectedTableName.value = busiest
     } else {
       focusTableName.value = ''
       selectedTableName.value = data.tables[0]?.name ?? ''
@@ -63,12 +74,91 @@ async function fetchER(connId: number, db: string, refresh = false) {
   } finally { loading.value = false }
 }
 
+// ── Inferred relationships ────────────────────────────────────────
+// Derived from column naming (`user_id` → the table that owns `user`) for
+// schemas that declare no FK constraints. Drawn in a distinct dotted style so
+// they are never mistaken for a real constraint.
+function singularize(w: string) {
+  if (w.endsWith('ies')) return w.slice(0, -3) + 'y'
+  if (/(s|x|z|ch|sh)es$/.test(w)) return w.slice(0, -2)
+  if (w.endsWith('s') && !w.endsWith('ss')) return w.slice(0, -1)
+  return w
+}
+
+// Longest `xxx_` prefix shared by every table (e.g. `spbc_`) so a `user_id`
+// column can still resolve to `spbc_user`.
+const tablePrefix = computed(() => {
+  const names = erData.value?.tables.map((t) => t.name.toLowerCase()) ?? []
+  if (names.length < 2) return ''
+  let p = names[0]
+  for (const n of names) { while (p && !n.startsWith(p)) p = p.slice(0, -1) }
+  const cut = p.lastIndexOf('_')
+  return cut === -1 ? '' : p.slice(0, cut + 1)
+})
+
+const inferredForeignKeys = computed<FK[]>(() => {
+  if (!erData.value) return []
+  const prefix = tablePrefix.value
+  const byEntity = new Map<string, ERTable>()
+  const register = (key: string, t: ERTable) => { if (key && !byEntity.has(key)) byEntity.set(key, t) }
+  for (const t of erData.value.tables) {
+    const lower = t.name.toLowerCase()
+    const bare  = prefix && lower.startsWith(prefix) ? lower.slice(prefix.length) : lower
+    for (const k of [lower, bare]) { register(k, t); register(singularize(k), t) }
+  }
+  // Never shadow a real constraint on the same column.
+  const declared = new Set(erData.value.foreign_keys.map((fk) => `${fk.table_name}.${fk.column_name}`))
+  const out: FK[] = []
+  for (const t of erData.value.tables) {
+    for (const col of t.columns) {
+      const name = col.name.toLowerCase()
+      if (name.length <= 3 || !name.endsWith('_id')) continue
+      if (declared.has(`${t.name}.${col.name}`)) continue
+      const base   = name.slice(0, -3)
+      const target = byEntity.get(base) ?? byEntity.get(singularize(base)) ?? byEntity.get(base + 's')
+      if (!target || target.name === t.name) continue
+      const pk = target.columns.find((c) => c.is_primary_key)?.name ?? 'id'
+      out.push({
+        constraint_name: `inferred: ${t.name}.${col.name}`,
+        table_name: t.name, column_name: col.name,
+        ref_table_name: target.name, ref_column_name: pk,
+        inferred: true,
+      })
+    }
+  }
+  return out
+})
+
+// Every relationship the diagram draws: declared FKs, plus inferred ones when
+// the toggle is on.
+const relations = computed<FK[]>(() => {
+  const declared = erData.value?.foreign_keys ?? []
+  return inferRelations.value ? [...declared, ...inferredForeignKeys.value] : declared
+})
+
+// One-line explanation for a canvas without (declared) relationships.
+const relationNotice = computed(() => {
+  if (!erData.value) return ''
+  if (erData.value.warning) return erData.value.warning
+  if (erData.value.foreign_keys.length) return ''
+  if (inferRelations.value && inferredForeignKeys.value.length) {
+    return `This schema declares no foreign key constraints. Showing ${inferredForeignKeys.value.length} link(s) inferred from column names — uncheck “Infer links” to hide them.`
+  }
+  return 'This schema declares no foreign key constraints, so there is nothing to connect. Enable “Infer links” to guess relationships from column names.'
+})
+
+// Stable per-relationship key — a composite FK yields one row per column pair
+// under the same constraint name, so the name alone is not unique.
+function fkKey(fk: FK) {
+  return `${fk.constraint_name}\u0000${fk.table_name}.${fk.column_name}\u0000${fk.ref_table_name}.${fk.ref_column_name}`
+}
+
 // ── Graph helpers ─────────────────────────────────────────────────
 const adjacency = computed(() => {
   const m = new Map<string, Set<string>>()
   if (!erData.value) return m
   for (const t of erData.value.tables) m.set(t.name, new Set())
-  for (const fk of erData.value.foreign_keys) {
+  for (const fk of relations.value) {
     if (fk.table_name === fk.ref_table_name) continue
     m.get(fk.table_name)?.add(fk.ref_table_name)
     m.get(fk.ref_table_name)?.add(fk.table_name)
@@ -76,8 +166,10 @@ const adjacency = computed(() => {
   return m
 })
 
+// Returns '' when nothing is connected — focusing an isolated table would hide
+// the entire rest of the schema.
 function pickBusiestTable(): string {
-  let best = erData.value?.tables[0]?.name ?? '', bestD = -1
+  let best = '', bestD = 0
   for (const [name, nb] of adjacency.value) {
     if (nb.size > bestD) { bestD = nb.size; best = name }
   }
@@ -129,14 +221,14 @@ const visibleLayout = computed(() => layout.value.filter((t) => visibleNames.val
 const selectedTable = computed(() => erData.value?.tables.find((t) => t.name === selectedTableName.value) ?? null)
 const selectedTableRelCount = computed(() => {
   if (!erData.value || !selectedTable.value) return 0
-  return erData.value.foreign_keys.filter(
+  return relations.value.filter(
     (fk) => fk.table_name === selectedTable.value!.name || fk.ref_table_name === selectedTable.value!.name,
   ).length
 })
 
 const joinPath = computed((): FK[] => {
   if (!erData.value || !pathFrom.value || !pathTo.value || pathFrom.value === pathTo.value) return []
-  const edges = erData.value.foreign_keys
+  const edges = relations.value
   const queue = [pathFrom.value]
   const prev  = new Map<string, { table: string; edge: FK }>()
   const seen  = new Set([pathFrom.value])
@@ -176,15 +268,20 @@ const emphasized = computed(() => {
   return s
 })
 
+// Only dim the rest of the canvas when the highlight actually spans a
+// relationship. A selected table with no links used to dim every other card,
+// which made the whole diagram look switched off.
+const dimOthers = computed(() => emphasized.value.size > 1)
+
 const emphasizedArrowKeys = computed(() => {
   if (hoverTableName.value && erData.value) {
     const keys = new Set<string>()
-    for (const fk of erData.value.foreign_keys) {
-      if (fk.table_name === hoverTableName.value || fk.ref_table_name === hoverTableName.value) keys.add(fk.constraint_name)
+    for (const fk of relations.value) {
+      if (fk.table_name === hoverTableName.value || fk.ref_table_name === hoverTableName.value) keys.add(fkKey(fk))
     }
     return keys
   }
-  return new Set(joinPath.value.map((e) => e.constraint_name))
+  return new Set(joinPath.value.map(fkKey))
 })
 
 function tableHeight(t: ERTable) {
@@ -212,7 +309,7 @@ function computeLayout() {
 
   // Deduped neighbor sets + degree (self-refs ignored).
   const nbrs: Set<number>[] = tables.map(() => new Set<number>())
-  for (const fk of erData.value.foreign_keys) {
+  for (const fk of relations.value) {
     const a = idx.get(fk.table_name), b = idx.get(fk.ref_table_name)
     if (a == null || b == null || a === b) continue
     nbrs[a].add(b); nbrs[b].add(a)
@@ -395,7 +492,7 @@ const worldH = computed(() =>
 )
 
 // ── FK arrows ─────────────────────────────────────────────────────
-interface Arrow { path: string; key: string }
+interface Arrow { path: string; key: string; inferred: boolean }
 
 // Which edge of each table a relationship leaves from: ['R'|'L', 'R'|'L'].
 // Connect the facing edges; for horizontally-overlapping tables, leave from
@@ -413,7 +510,7 @@ const arrows = computed<Arrow[]>(() => {
     [t.name, dp && t.name === dp.name ? { ...t, x: dp.x, y: dp.y } : t] as [string, LayoutTable],
   ))
 
-  const fks = erData.value.foreign_keys.filter((fk) => {
+  const fks = relations.value.filter((fk) => {
     const s = lmap.get(fk.table_name), d = lmap.get(fk.ref_table_name)
     return s && d && s !== d
   })
@@ -427,23 +524,23 @@ const arrows = computed<Arrow[]>(() => {
   if (compactMode.value) {
     const groups = new Map<string, { key: string; otherY: number }[]>()
     const add = (name: string, side: string, key: string, otherY: number) => {
-      const g = `${name} ${side}`
+      const g = `${name}\u0000${side}`
       const arr = groups.get(g) ?? []
       arr.push({ key, otherY }); groups.set(g, arr)
     }
     for (const fk of fks) {
       const s = lmap.get(fk.table_name)!, d = lmap.get(fk.ref_table_name)!
       const [ss, ds] = edgeSides(s, d)
-      add(fk.table_name,     ss, fk.constraint_name, cy(d))
-      add(fk.ref_table_name, ds, fk.constraint_name, cy(s))
+      add(fk.table_name,     ss, fkKey(fk), cy(d))
+      add(fk.ref_table_name, ds, fkKey(fk), cy(s))
     }
     for (const [g, arr] of groups) {
-      const t = lmap.get(g.slice(0, g.indexOf(' ')))!
+      const t = lmap.get(g.slice(0, g.indexOf('\u0000')))!
       arr.sort((a, b) => a.otherY - b.otherY)
       const top = t.y + 12, span = Math.max(0, t.height - 24)
       for (let i = 0; i < arr.length; i++) {
         const y = arr.length === 1 ? cy(t) : top + (span * i) / (arr.length - 1)
-        anchorY.set(`${g} ${arr[i].key}`, y)
+        anchorY.set(`${g}\u0000${arr[i].key}`, y)
       }
     }
   }
@@ -458,8 +555,8 @@ const arrows = computed<Arrow[]>(() => {
 
     let srcY: number, dstY: number
     if (compactMode.value) {
-      srcY = anchorY.get(`${fk.table_name} ${ss} ${fk.constraint_name}`) ?? cy(src)
-      dstY = anchorY.get(`${fk.ref_table_name} ${ds} ${fk.constraint_name}`) ?? cy(dst)
+      srcY = anchorY.get(`${fk.table_name}\u0000${ss}\u0000${fkKey(fk)}`) ?? cy(src)
+      dstY = anchorY.get(`${fk.ref_table_name}\u0000${ds}\u0000${fkKey(fk)}`) ?? cy(dst)
     } else {
       const srcIdx = src.columns.findIndex((c) => c.name === fk.column_name)
       const dstIdx = dst.columns.findIndex((c) => c.name === fk.ref_column_name)
@@ -468,13 +565,15 @@ const arrows = computed<Arrow[]>(() => {
     }
 
     const dx = Math.min(160, Math.max(40, Math.abs(x2 - x1) * 0.4))
-    return { key: fk.constraint_name, path: `M ${x1} ${srcY} C ${x1 + dir1 * dx} ${srcY}, ${x2 + dir2 * dx} ${dstY}, ${x2} ${dstY}` }
+    return {
+      key: fkKey(fk),
+      inferred: !!fk.inferred,
+      path: `M ${x1} ${srcY} C ${x1 + dir1 * dx} ${srcY}, ${x2 + dir2 * dx} ${dstY}, ${x2} ${dstY}`,
+    }
   })
 })
 
-const fkByKey = computed(() =>
-  new Map(erData.value?.foreign_keys.map((fk) => [fk.constraint_name, fk]) ?? []),
-)
+const fkByKey = computed(() => new Map(relations.value.map((fk) => [fkKey(fk), fk])))
 
 // ── Pan / zoom ────────────────────────────────────────────────────
 const panX      = ref(0)
@@ -558,8 +657,9 @@ function onMouseup() {
 
 function selectTable(name: string) {
   selectedTableName.value = name
-  // Clicking a table explores its neighborhood.
-  focusTableName.value = name
+  // Clicking a table explores its neighborhood — but only when it has one;
+  // focusing an unlinked table would leave a single card on the canvas.
+  focusTableName.value = (adjacency.value.get(name)?.size ?? 0) > 0 ? name : ''
 }
 
 function showOverview() { focusTableName.value = '' }
@@ -726,6 +826,13 @@ onBeforeUnmount(() => {
           <input v-model="compactMode" type="checkbox" />
           Compact
         </label>
+        <label
+          class="er-toggle"
+          title="Draw links guessed from column names (e.g. user_id → users) for schemas without FK constraints"
+        >
+          <input v-model="inferRelations" type="checkbox" />
+          Infer links
+        </label>
         <button v-if="focusTableName" class="base-btn base-btn--ghost base-btn--sm" @click="showOverview">Overview</button>
         <button class="base-btn base-btn--ghost base-btn--sm" @click="sidepanelOpen = !sidepanelOpen">
           {{ sidepanelOpen ? 'Hide Panel' : 'Show Panel' }}
@@ -737,6 +844,9 @@ onBeforeUnmount(() => {
           @change="activeConn && fetchER(activeConn.id!, selectedDb)"
         >
           <option :value="activeConn?.database">{{ activeConn?.database }}</option>
+          <!-- Embedded in a session pane the browsed database can differ from the
+               connection default — keep it selectable so the picker is not blank. -->
+          <option v-if="selectedDb && selectedDb !== activeConn?.database" :value="selectedDb">{{ selectedDb }}</option>
         </select>
         <button class="base-btn base-btn--ghost base-btn--sm" @click="fitView">Fit</button>
         <button
@@ -747,6 +857,12 @@ onBeforeUnmount(() => {
           Refresh
         </button>
       </div>
+    </div>
+
+    <!-- Why the canvas has no links -->
+    <div v-if="erData && relationNotice" class="er-notice">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="flex-shrink:0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      <span>{{ relationNotice }}</span>
     </div>
 
     <!-- Body -->
@@ -802,17 +918,25 @@ onBeforeUnmount(() => {
               <marker id="arr-dim" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
                 <path d="M0,0 L0,6 L8,3 z" fill="var(--brand)" opacity="0.4" />
               </marker>
+              <marker id="arr-soft" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L8,3 z" fill="var(--er-inferred)" />
+              </marker>
+              <marker id="arr-soft-dim" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L8,3 z" fill="var(--er-inferred)" opacity="0.4" />
+              </marker>
             </defs>
             <path
               v-for="a in visibleArrows"
               :key="a.key"
               :d="a.path"
               fill="none"
-              stroke="var(--brand)"
+              :stroke="a.inferred ? 'var(--er-inferred)' : 'var(--brand)'"
               :stroke-width="emphasizedArrowKeys.has(a.key) ? 2.5 : 1.25"
-              :stroke-dasharray="emphasizedArrowKeys.has(a.key) ? 'none' : '6 3'"
-              :opacity="emphasizedArrowKeys.size ? (emphasizedArrowKeys.has(a.key) ? 0.95 : 0.05) : 0.22"
-              :marker-end="emphasizedArrowKeys.has(a.key) ? 'url(#arr)' : 'url(#arr-dim)'"
+              :stroke-dasharray="emphasizedArrowKeys.has(a.key) ? 'none' : (a.inferred ? '2 4' : '6 3')"
+              :opacity="emphasizedArrowKeys.size ? (emphasizedArrowKeys.has(a.key) ? 0.95 : 0.12) : (a.inferred ? 0.3 : 0.4)"
+              :marker-end="a.inferred
+                ? (emphasizedArrowKeys.has(a.key) ? 'url(#arr-soft)' : 'url(#arr-soft-dim)')
+                : (emphasizedArrowKeys.has(a.key) ? 'url(#arr)' : 'url(#arr-dim)')"
             />
           </svg>
 
@@ -825,7 +949,7 @@ onBeforeUnmount(() => {
             :class="{
               'erd-table--selected': selectedTableName === t.name,
               'erd-table--focus':    focusTableName === t.name,
-              'erd-table--dimmed':   emphasized.size > 0 && !emphasized.has(t.name),
+              'erd-table--dimmed':   dimOthers && !emphasized.has(t.name),
               'erd-table--compact':  compactMode,
             }"
             :style="{ left: `${t.x}px`, top: `${t.y}px`, width: `${t.width}px` }"
@@ -935,17 +1059,27 @@ onBeforeUnmount(() => {
         <svg width="24" height="10"><line x1="0" y1="5" x2="24" y2="5" stroke="var(--brand)" stroke-width="1.5" stroke-dasharray="5 2" /></svg>
         Foreign key
       </span>
+      <span v-if="inferRelations && inferredForeignKeys.length" class="er-legend__item">
+        <svg width="24" height="10"><line x1="0" y1="5" x2="24" y2="5" stroke="var(--er-inferred)" stroke-width="1.5" stroke-dasharray="2 4" /></svg>
+        Inferred link
+      </span>
       <span class="er-legend__item">
         <span style="color:#f2c97d;font-size:12px">🔑</span> Primary key
       </span>
       <span class="er-legend__hint">Click a table to explore its neighbours · Drag header to move · Scroll to zoom</span>
-      <span class="er-legend__stat">{{ erData.tables.length }} tables · {{ erData.foreign_keys.length }} FK · {{ visibleLayout.length }} shown</span>
+      <span class="er-legend__stat">
+        {{ erData.tables.length }} tables · {{ erData.foreign_keys.length }} FK<template v-if="inferRelations && inferredForeignKeys.length"> · {{ inferredForeignKeys.length }} inferred</template> · {{ visibleLayout.length }} shown
+      </span>
     </div>
   </div>
 </template>
 
 <style scoped>
 /* ── Root layout ─────────────────────────────────────────────────── */
+.er-root {
+  /* Soft amber keeps inferred links visually subordinate to real FKs. */
+  --er-inferred: #d9a441;
+}
 .er-root {
   width: 100%; height: 100%;
   display: flex; flex-direction: column;
@@ -960,6 +1094,15 @@ onBeforeUnmount(() => {
 
 .er-body--collapsed {
   grid-template-columns: minmax(0, 1fr);
+}
+
+/* ── Notice bar (missing FKs / backend warning) ──────────────────── */
+.er-notice {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 16px; flex-shrink: 0;
+  background: color-mix(in srgb, var(--er-inferred) 10%, var(--bg-surface));
+  border-bottom: 1px solid color-mix(in srgb, var(--er-inferred) 35%, transparent);
+  color: var(--text-secondary); font-size: 12px; line-height: 1.4;
 }
 
 /* ── Toolbar ─────────────────────────────────────────────────────── */
@@ -1069,7 +1212,7 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 28%, transparent), 0 6px 24px rgba(0,0,0,0.18);
 }
 
-.erd-table--dimmed { opacity: 0.22; }
+.erd-table--dimmed { opacity: 0.4; }
 
 .erd-table:hover:not(.erd-table--dimmed) {
   box-shadow: 0 4px 16px rgba(0,0,0,0.14), 0 2px 6px rgba(0,0,0,0.08);
