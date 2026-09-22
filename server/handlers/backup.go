@@ -1848,7 +1848,16 @@ func execWithSavepoint(ctx context.Context, tx *sql.Tx, driver, stmt string) (ro
 	}
 	if _, err := tx.ExecContext(ctx, stmt); err != nil {
 		if _, rbErr := tx.ExecContext(ctx, rollbackTo); rbErr != nil {
-			return nil, rbErr
+			// rbErr alone ("SAVEPOINT ... does not exist") is a red herring —
+			// it means the savepoint we just created is already gone, which
+			// happens when the server unilaterally ended the transaction
+			// after we set it (e.g. InnoDB auto-rolling back the whole
+			// transaction on a deadlock, or a lock-wait timeout under
+			// innodb_rollback_on_timeout). err is the statement's own
+			// failure and the actual root cause — surface both so it's
+			// diagnosable instead of replacing it with the confusing
+			// secondary error.
+			return nil, fmt.Errorf("%w (savepoint cleanup also failed, the transaction was likely already aborted by the server — e.g. a deadlock or lock-wait timeout: %v)", err, rbErr)
 		}
 		return err, nil
 	}
