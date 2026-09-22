@@ -79,7 +79,7 @@ func TestExecRestoreStreamAutoAddColumns(t *testing.T) {
 		false, false, true, // skipConflicts, continueOnError, autoAddColumns
 		"",
 		nil, nil, nil, &columnsAdded,
-		nil, nil, onColumnAdd,
+		nil, nil, onColumnAdd, nil,
 	)
 	if execErr != nil {
 		t.Fatalf("execRestoreStream: %v", execErr)
@@ -131,7 +131,7 @@ func TestExecRestoreStreamNoAutoAddColumnsAbortsAsBefore(t *testing.T) {
 		false, false, false, // autoAddColumns off — must behave exactly as before this feature
 		"",
 		nil, nil, nil, nil,
-		nil, nil, nil,
+		nil, nil, nil, nil,
 	)
 	if execErr == nil {
 		t.Fatal("expected execRestoreStream to fail without autoAddColumns, got nil error")

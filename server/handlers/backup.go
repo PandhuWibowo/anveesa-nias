@@ -315,6 +315,20 @@ type ColumnAddition struct {
 // ColumnsAdded (the atomic counter) always reflects the true total.
 const maxTrackedColumnAdditions = 50
 
+// SkippedStatement pairs a skipped statement's human-readable label with why
+// it was skipped — a skip is a deliberate "this was a no-op, not an error"
+// outcome (e.g. an index that already exists on the target), but silent
+// no-ops are indistinguishable from "did this dump actually restore
+// everything?" without a reason attached.
+type SkippedStatement struct {
+	Statement string `json:"statement"`
+	Reason    string `json:"reason"`
+}
+
+// maxTrackedSkippedStatements mirrors maxTrackedRowFailures's rationale —
+// Skipped (the atomic counter) always reflects the true total.
+const maxTrackedSkippedStatements = 50
+
 const (
 	RestoreJobRunning  RestoreJobStatus = "running"
 	RestoreJobDone     RestoreJobStatus = "done"
@@ -355,6 +369,12 @@ type RestoreJob struct {
 	// additions (table, column, inferred type) for diagnostics — mu-protected,
 	// same capped-list rationale as FailedRowDetails.
 	ColumnsAddedDetails []ColumnAddition `json:"columns_added_details,omitempty"`
+
+	// SkippedDetails captures up to maxTrackedSkippedStatements individual
+	// skipped statements (what, and why) for diagnostics — mu-protected, same
+	// capped-list rationale as FailedRowDetails. Skipped (the atomic counter)
+	// always reflects the true total regardless of this cap.
+	SkippedDetails []SkippedStatement `json:"skipped_details,omitempty"`
 
 	// Current/CurrentCount/Recent give a human-readable window into what the
 	// executor is actually doing right now (e.g. "Inserting into orders"), not
@@ -524,6 +544,16 @@ func RestoreBackup() http.HandlerFunc {
 				}
 				job.mu.Unlock()
 			}
+			onSkip := func(stmt, reason string) {
+				job.mu.Lock()
+				if len(job.SkippedDetails) < maxTrackedSkippedStatements {
+					job.SkippedDetails = append(job.SkippedDetails, SkippedStatement{
+						Statement: describeStatement(stmt),
+						Reason:    reason,
+					})
+				}
+				job.mu.Unlock()
+			}
 
 			// Two-tier strategy: the first attempt streams directly from the
 			// bucket, overlapping network transfer with DB execution — the
@@ -609,7 +639,7 @@ func RestoreBackup() http.HandlerFunc {
 					break
 				}
 
-				executed, _, execErr := execRestoreStream(jobCtx, tx, reader, driver, req.SkipConflicts, req.ContinueOnError, req.AutoAddColumns, strings.TrimSpace(req.DestDatabase), &job.Executed, &job.Skipped, &job.FailedRows, &job.ColumnsAdded, onExec, onFail, onColumnAdd)
+				executed, _, execErr := execRestoreStream(jobCtx, tx, reader, driver, req.SkipConflicts, req.ContinueOnError, req.AutoAddColumns, strings.TrimSpace(req.DestDatabase), &job.Executed, &job.Skipped, &job.FailedRows, &job.ColumnsAdded, onExec, onFail, onColumnAdd, onSkip)
 				if closer != nil {
 					closer.Close()
 				}
@@ -633,6 +663,7 @@ func RestoreBackup() http.HandlerFunc {
 						job.FirstRowError = ""
 						job.FailedRowDetails = nil
 						job.ColumnsAddedDetails = nil
+						job.SkippedDetails = nil
 						job.mu.Unlock()
 						select {
 						case <-time.After(3 * time.Second):
@@ -699,6 +730,7 @@ func GetRestoreJobStatus() http.HandlerFunc {
 		firstRowError := job.FirstRowError
 		failedRowDetails := job.FailedRowDetails
 		columnsAddedDetails := job.ColumnsAddedDetails
+		skippedDetails := job.SkippedDetails
 		job.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"id":                    job.ID,
@@ -707,6 +739,7 @@ func GetRestoreJobStatus() http.HandlerFunc {
 			"done_at":               doneAt,
 			"executed":              atomic.LoadInt64(&job.Executed),
 			"skipped":               atomic.LoadInt64(&job.Skipped),
+			"skipped_details":       skippedDetails,
 			"failed_rows":           atomic.LoadInt64(&job.FailedRows),
 			"first_row_error":       firstRowError,
 			"failed_row_details":    failedRowDetails,
@@ -2456,8 +2489,11 @@ func execWithSavepointAutoRepair(
 // restore, redirects every db-qualified reference in the dump from whatever
 // database it was taken from onto this one instead — see
 // mysqlRestoreDBRewriter; ignored for every other driver, since none of them
-// qualify identifiers with a database name in the first place.
-func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver string, skipConflicts, continueOnError, autoAddColumns bool, destDatabase string, executedCounter, skippedCounter, failedCounter, columnsAddedCounter *int64, onExec func(stmt string, n int), onFail func(stmt string, err error), onColumnAdd func(table, column, sqlType string)) (executed, skipped int, err error) {
+// qualify identifiers with a database name in the first place. onSkip, if
+// non-nil, is called with the skipped statement's text and a short reason —
+// either it's a statement shape isAllowedRestoreStatement doesn't recognize,
+// or (skipConflicts only) it already exists on the target.
+func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver string, skipConflicts, continueOnError, autoAddColumns bool, destDatabase string, executedCounter, skippedCounter, failedCounter, columnsAddedCounter *int64, onExec func(stmt string, n int), onFail func(stmt string, err error), onColumnAdd func(table, column, sqlType string), onSkip func(stmt, reason string)) (executed, skipped int, err error) {
 	var dbRewrite *mysqlRestoreDBRewriter
 	if destDatabase != "" && (driver == "mysql" || driver == "mariadb") {
 		dbRewrite = &mysqlRestoreDBRewriter{destDatabase: destDatabase}
@@ -2569,6 +2605,9 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 				if skippedCounter != nil {
 					atomic.AddInt64(skippedCounter, 1)
 				}
+				if onSkip != nil {
+					onSkip(stmt, "already exists on target ("+execErr.Error()+")")
+				}
 				return nil
 			}
 			return execErr
@@ -2655,6 +2694,9 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 			skipped++
 			if skippedCounter != nil {
 				atomic.AddInt64(skippedCounter, 1)
+			}
+			if onSkip != nil {
+				onSkip(stmt, "unsupported statement type for restore")
 			}
 			return nil
 		}

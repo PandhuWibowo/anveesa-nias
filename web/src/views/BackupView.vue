@@ -761,6 +761,8 @@ const restoreFailedRowDetails = ref<{ statement: string; error: string }[]>([])
 const restoreFailedRowsOpen = ref(false)
 const restoreColumnsAddedDetails = ref<{ table: string; column: string; type: string }[]>([])
 const restoreColumnsAddedOpen = ref(false)
+const restoreSkippedDetails = ref<{ statement: string; reason: string }[]>([])
+const restoreSkippedOpen = ref(false)
 const restoreCurrentCount = ref(0)
 const restoreRecent = ref<string[]>([])
 const restoreCancelled = ref(false)
@@ -864,6 +866,7 @@ async function pollRestoreJob(jobId: string) {
       restoreFirstRowError.value = status.first_row_error ?? ''
       restoreFailedRowDetails.value = status.failed_row_details ?? []
       restoreColumnsAddedDetails.value = status.columns_added_details ?? []
+      restoreSkippedDetails.value = status.skipped_details ?? []
       restoreCurrentCount.value = status.current_count ?? 0
       restoreRecent.value = status.recent ?? []
 
@@ -918,6 +921,8 @@ async function runRestore() {
   restoreFailedRowsOpen.value = false
   restoreColumnsAddedDetails.value = []
   restoreColumnsAddedOpen.value = false
+  restoreSkippedDetails.value = []
+  restoreSkippedOpen.value = false
   restoreCurrentCount.value = 0
   restoreRecent.value = []
 
@@ -1840,6 +1845,22 @@ onMounted(async () => {
                 </div>
                 <div v-if="restoreProgress.columnsAdded > restoreColumnsAddedDetails.length" class="bv-columns-added__more">
                   + {{ (restoreProgress.columnsAdded - restoreColumnsAddedDetails.length).toLocaleString() }} more not shown
+                </div>
+              </div>
+            </div>
+
+            <div v-if="restoreSkippedDetails.length" class="bv-skipped">
+              <button type="button" class="bv-skipped__toggle" @click="restoreSkippedOpen = !restoreSkippedOpen">
+                <svg :style="{ transform: restoreSkippedOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                {{ restoreSkippedOpen ? 'Hide' : 'Show' }} skipped statements ({{ restoreSkippedDetails.length }}{{ restoreProgress.skipped > restoreSkippedDetails.length ? ` of ${restoreProgress.skipped}` : '' }})
+              </button>
+              <div v-if="restoreSkippedOpen" class="bv-skipped__list">
+                <div v-for="(s, i) in restoreSkippedDetails" :key="i" class="bv-skipped__row">
+                  <span class="bv-skipped__stmt">{{ s.statement }}</span>
+                  <span class="bv-skipped__reason">{{ s.reason }}</span>
+                </div>
+                <div v-if="restoreProgress.skipped > restoreSkippedDetails.length" class="bv-skipped__more">
+                  + {{ (restoreProgress.skipped - restoreSkippedDetails.length).toLocaleString() }} more not shown
                 </div>
               </div>
             </div>
@@ -3191,6 +3212,55 @@ onMounted(async () => {
   font-style: italic;
 }
 
+.bv-skipped {
+  border: 1px solid color-mix(in srgb, #64748b 35%, var(--border));
+  border-radius: 8px;
+  overflow: hidden;
+}
+.bv-skipped__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  background: color-mix(in srgb, #64748b 8%, transparent);
+  border: none;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #64748b;
+  text-align: left;
+}
+.bv-skipped__list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+.bv-skipped__row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.bv-skipped__stmt {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.bv-skipped__reason {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.bv-skipped__more {
+  padding: 8px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-style: italic;
+}
 .bv-failed-rows {
   border: 1px solid color-mix(in srgb, #d97706 35%, var(--border));
   border-radius: 8px;
