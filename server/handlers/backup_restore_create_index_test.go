@@ -62,4 +62,26 @@ func TestIsMySQLDuplicateIndexErr(t *testing.T) {
 	if isMySQLDuplicateIndexErr("postgres", dupErr) {
 		t.Fatal("postgres never produces MySQL error codes — must not match")
 	}
+
+	// The bug-report case: re-running a restore hits an index name that's
+	// now held by an already-created FK constraint, not another index.
+	fkDupErr := &mysql.MySQLError{Number: 1826, Message: "Duplicate foreign key constraint name 'acquirer_issuer_lists_bank_vendor_id_foreign'"}
+	if !isMySQLDuplicateIndexErr("mysql", fkDupErr) {
+		t.Fatal("expected 1826 (duplicate FK constraint name) to also be tolerated")
+	}
+}
+
+// TestIsAlterTableAddConstraintStatement covers the other statement shape
+// that can hit error 1826 on a re-run: the FK-adding ALTER TABLE itself
+// (generateFKsDDL), not just its supporting CREATE INDEX.
+func TestIsAlterTableAddConstraintStatement(t *testing.T) {
+	fk := "ALTER TABLE `acquirer_issuer_lists` ADD CONSTRAINT `acquirer_issuer_lists_bank_vendor_id_foreign` FOREIGN KEY (`bank_vendor_id`) REFERENCES `bank_vendors` (`id`)"
+	if !isAlterTableAddConstraintStatement(fk) {
+		t.Fatalf("expected %q to be recognized as an ADD CONSTRAINT statement", fk)
+	}
+
+	plainAlter := "ALTER TABLE `orders` ADD COLUMN `note` TEXT"
+	if isAlterTableAddConstraintStatement(plainAlter) {
+		t.Fatalf("a plain ALTER TABLE ADD COLUMN must not match: %q", plainAlter)
+	}
 }

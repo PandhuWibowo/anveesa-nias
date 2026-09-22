@@ -1887,18 +1887,38 @@ func isCreateIndexStatement(stmt string) bool {
 	return strings.HasPrefix(upper, "CREATE INDEX ") || strings.HasPrefix(upper, "CREATE UNIQUE INDEX ")
 }
 
-// isMySQLDuplicateIndexErr reports whether err is MySQL/MariaDB error 1061
-// (ER_DUP_KEYNAME, "Duplicate key name") — the error a CREATE INDEX gets when
-// an index by that name already exists on the table. This is this driver
-// pair's only way to make CREATE INDEX idempotent under skipConflicts, since
-// (unlike CREATE TABLE) they don't support an IF NOT EXISTS clause on it —
-// see addStatementIfNotExists.
+// isAlterTableAddConstraintStatement reports whether stmt is one of this
+// app's own mysql/mariadb "ALTER TABLE `t` ADD CONSTRAINT `name` FOREIGN KEY
+// ..." statements (see generateFKsDDL) — the other statement shape that can
+// hit ER_FK_DUP_NAME (1826) on a re-run, alongside CREATE INDEX. Unlike the
+// equivalent postgres DDL (wrapped in its own DO $$ ... EXCEPTION WHEN
+// duplicate_object block), mysql/mariadb has no idempotent syntax for this at
+// all, so — like CREATE INDEX — it needs execution-time tolerance instead.
+func isAlterTableAddConstraintStatement(stmt string) bool {
+	upper := strings.ToUpper(stmt)
+	return strings.HasPrefix(upper, "ALTER TABLE ") && strings.Contains(upper, " ADD CONSTRAINT ")
+}
+
+// isMySQLDuplicateIndexErr reports whether err is MySQL/MariaDB's way of
+// saying a CREATE INDEX's name is already taken on that table — the error a
+// CREATE INDEX gets under skipConflicts instead of a syntax-level IF NOT
+// EXISTS the way CREATE TABLE gets (see addStatementIfNotExists), since
+// neither driver supports that clause on CREATE INDEX at all. Two distinct
+// error codes cover this, and InnoDB genuinely can raise either for the same
+// plain CREATE INDEX statement depending on what already holds the name:
+//   - 1061 (ER_DUP_KEYNAME, "Duplicate key name") — an index already has it.
+//   - 1826 (ER_FK_DUP_NAME, "Duplicate foreign key constraint name") — a
+//     foreign key constraint already has it. This app's own dumps commonly
+//     hit this one: post-data emits both a named index and a same-named FK
+//     constraint for the same column (the FK's supporting index), so once
+//     the FK constraint from a prior restore attempt already exists,
+//     re-creating "just the index" on a re-run collides against it.
 func isMySQLDuplicateIndexErr(driver string, err error) bool {
 	if driver != "mysql" && driver != "mariadb" {
 		return false
 	}
 	var myErr *mysql.MySQLError
-	return errors.As(err, &myErr) && myErr.Number == 1061
+	return errors.As(err, &myErr) && (myErr.Number == 1061 || myErr.Number == 1826)
 }
 
 // addConflictSkip rewrites a plain INSERT into this driver's "ignore on
@@ -2536,12 +2556,15 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 				return nil
 			}
 		} else if _, execErr := tx.ExecContext(ctx, stmt); execErr != nil {
-			// MySQL/MariaDB CREATE INDEX has no IF NOT EXISTS clause to make
-			// it idempotent up front (see addStatementIfNotExists) — under
-			// skipConflicts, tolerate the "already exists" error here at
-			// execution time instead, the only place those two drivers give
-			// us to detect it.
-			if skipConflicts && isCreateIndexStatement(stmt) && isMySQLDuplicateIndexErr(driver, execErr) {
+			// MySQL/MariaDB CREATE INDEX and ALTER TABLE ADD CONSTRAINT (the
+			// FK statement generateFKsDDL emits) have no IF NOT EXISTS/
+			// idempotent syntax to lean on up front the way CREATE TABLE and
+			// postgres's DO-block-wrapped FK statement do — see
+			// addStatementIfNotExists and generateFKsDDL. Under skipConflicts,
+			// tolerate the "already exists" error here at execution time
+			// instead, the only place those two drivers give us to detect it.
+			if skipConflicts && isMySQLDuplicateIndexErr(driver, execErr) &&
+				(isCreateIndexStatement(stmt) || isAlterTableAddConstraintStatement(stmt)) {
 				skipped++
 				if skippedCounter != nil {
 					atomic.AddInt64(skippedCounter, 1)
