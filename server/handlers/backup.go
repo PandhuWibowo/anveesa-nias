@@ -1939,7 +1939,20 @@ func execWithSavepoint(ctx context.Context, tx *sql.Tx, driver, stmt string) (ro
 	}
 	if release != "" {
 		if _, err := tx.ExecContext(ctx, release); err != nil {
-			return nil, err
+			// Unlike the rollbackTo case above, stmt has already succeeded by
+			// this point — its data is committed (or safely part of the
+			// transaction) regardless of what happens next, so a failed
+			// RELEASE can never mean data was lost. The one way this fires in
+			// practice: autoAddColumns ran an ALTER TABLE for this same row
+			// (see execWithSavepointAutoRepair) between the SAVEPOINT above
+			// and here — MySQL/MariaDB DDL implicitly commits, which tears
+			// down the savepoint we're now trying to release along with it,
+			// so RELEASE fails with "SAVEPOINT ... does not exist" even
+			// though stmt ran fine. RELEASE is purely advisory cleanup (frees
+			// the savepoint slot early); a missing savepoint has nothing left
+			// to clean up, so treating this as fatal would abort an
+			// otherwise-successful restore over a no-op.
+			return nil, nil
 		}
 	}
 	return nil, nil
