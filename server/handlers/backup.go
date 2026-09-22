@@ -1859,19 +1859,46 @@ const maxRestoreStatementBytes = 512 * 1024 * 1024
 // addStatementIfNotExists makes schema-creating statements idempotent even if
 // the dump wasn't generated with the backup-time "IF NOT EXISTS" option —
 // without this, CREATE TABLE would still fail immediately, before even
-// reaching the INSERTs that addConflictSkip protects.
-func addStatementIfNotExists(stmt string) string {
+// reaching the INSERTs that addConflictSkip protects. CREATE INDEX is left
+// untouched for MySQL/MariaDB: unlike CREATE TABLE, neither one accepts an
+// IF NOT EXISTS clause on CREATE INDEX at all — rewriting it that way is a
+// syntax error (1064), not a no-op. Those two drivers instead get an
+// already-exists CREATE INDEX tolerated at execution time by
+// isMySQLDuplicateIndexErr, right where the statement actually runs.
+func addStatementIfNotExists(stmt, driver string) string {
 	upper := strings.ToUpper(stmt)
 	switch {
 	case strings.HasPrefix(upper, "CREATE TABLE ") && !strings.Contains(upper, "IF NOT EXISTS"):
 		return "CREATE TABLE IF NOT EXISTS " + stmt[len("CREATE TABLE "):]
 	case strings.HasPrefix(upper, "CREATE SEQUENCE ") && !strings.Contains(upper, "IF NOT EXISTS"):
 		return "CREATE SEQUENCE IF NOT EXISTS " + stmt[len("CREATE SEQUENCE "):]
-	case strings.HasPrefix(upper, "CREATE UNIQUE INDEX ") || strings.HasPrefix(upper, "CREATE INDEX "):
+	case (driver != "mysql" && driver != "mariadb") && (strings.HasPrefix(upper, "CREATE UNIQUE INDEX ") || strings.HasPrefix(upper, "CREATE INDEX ")):
 		return addIfNotExistsToIndex(stmt)
 	default:
 		return stmt
 	}
+}
+
+// isCreateIndexStatement reports whether stmt is a CREATE [UNIQUE] INDEX —
+// used to scope isMySQLDuplicateIndexErr's tolerance to exactly the
+// statement shape it's meant for.
+func isCreateIndexStatement(stmt string) bool {
+	upper := strings.ToUpper(stmt)
+	return strings.HasPrefix(upper, "CREATE INDEX ") || strings.HasPrefix(upper, "CREATE UNIQUE INDEX ")
+}
+
+// isMySQLDuplicateIndexErr reports whether err is MySQL/MariaDB error 1061
+// (ER_DUP_KEYNAME, "Duplicate key name") — the error a CREATE INDEX gets when
+// an index by that name already exists on the table. This is this driver
+// pair's only way to make CREATE INDEX idempotent under skipConflicts, since
+// (unlike CREATE TABLE) they don't support an IF NOT EXISTS clause on it —
+// see addStatementIfNotExists.
+func isMySQLDuplicateIndexErr(driver string, err error) bool {
+	if driver != "mysql" && driver != "mariadb" {
+		return false
+	}
+	var myErr *mysql.MySQLError
+	return errors.As(err, &myErr) && myErr.Number == 1061
 }
 
 // addConflictSkip rewrites a plain INSERT into this driver's "ignore on
@@ -2467,7 +2494,7 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 	// blocks, SET, or a lone (unbatched) INSERT.
 	execStatement := func(stmt string) error {
 		if skipConflicts {
-			stmt = addStatementIfNotExists(stmt)
+			stmt = addStatementIfNotExists(stmt, driver)
 			stmt = addConflictSkip(stmt, driver)
 		}
 
@@ -2509,6 +2536,18 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 				return nil
 			}
 		} else if _, execErr := tx.ExecContext(ctx, stmt); execErr != nil {
+			// MySQL/MariaDB CREATE INDEX has no IF NOT EXISTS clause to make
+			// it idempotent up front (see addStatementIfNotExists) — under
+			// skipConflicts, tolerate the "already exists" error here at
+			// execution time instead, the only place those two drivers give
+			// us to detect it.
+			if skipConflicts && isCreateIndexStatement(stmt) && isMySQLDuplicateIndexErr(driver, execErr) {
+				skipped++
+				if skippedCounter != nil {
+					atomic.AddInt64(skippedCounter, 1)
+				}
+				return nil
+			}
 			return execErr
 		}
 
@@ -2540,7 +2579,7 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 		combined := prefix + strings.Join(tuples, ", ")
 		rewritten := combined
 		if skipConflicts {
-			rewritten = addStatementIfNotExists(rewritten)
+			rewritten = addStatementIfNotExists(rewritten, driver)
 			rewritten = addConflictSkip(rewritten, driver)
 		}
 
