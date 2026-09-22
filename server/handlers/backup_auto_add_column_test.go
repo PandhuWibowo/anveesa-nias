@@ -77,6 +77,7 @@ func TestExecRestoreStreamAutoAddColumns(t *testing.T) {
 	executed, skipped, execErr := execRestoreStream(
 		context.Background(), tx, strings.NewReader(dump), "sqlite3",
 		false, false, true, // skipConflicts, continueOnError, autoAddColumns
+		"",
 		nil, nil, nil, &columnsAdded,
 		nil, nil, onColumnAdd,
 	)
@@ -128,6 +129,7 @@ func TestExecRestoreStreamNoAutoAddColumnsAbortsAsBefore(t *testing.T) {
 	_, _, execErr := execRestoreStream(
 		context.Background(), tx, strings.NewReader(dump), "sqlite3",
 		false, false, false, // autoAddColumns off — must behave exactly as before this feature
+		"",
 		nil, nil, nil, nil,
 		nil, nil, nil,
 	)

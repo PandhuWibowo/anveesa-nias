@@ -134,7 +134,7 @@ func backupOptionsFromQuery(r *http.Request) BackupOptions {
 // depends on (e.g. a CREATE TABLE ... DEFAULT nextval(seq) failing because the
 // CREATE SEQUENCE before it was skipped).
 var allowedRestoreStatements = []string{
-	"INSERT ", "CREATE TABLE", "CREATE INDEX", "CREATE UNIQUE INDEX",
+	"INSERT ", "CREATE DATABASE", "CREATE TABLE", "CREATE INDEX", "CREATE UNIQUE INDEX",
 	"CREATE SEQUENCE", "CREATE TYPE", "CREATE OR REPLACE VIEW", "CREATE VIEW",
 	"SELECT SETVAL(",
 	"DROP TABLE", "DROP INDEX", "ALTER TABLE", "SET ", "BEGIN", "COMMIT", "ROLLBACK", "DO ",
@@ -160,17 +160,18 @@ func isAllowedRestoreStatement(stmt string) bool {
 // a truncated statement preview rather than failing.
 
 var (
-	reInsertInto  = regexp.MustCompile(`(?is)^INSERT\s+INTO\s+([^\s(]+)`)
-	reCreateTable = regexp.MustCompile(`(?is)^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s(]+)`)
-	reCreateIndex = regexp.MustCompile(`(?is)^CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\S+\s+ON\s+([^\s(]+)`)
-	reCreateSeq   = regexp.MustCompile(`(?is)^CREATE\s+SEQUENCE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)`)
-	reCreateType  = regexp.MustCompile(`(?is)^CREATE\s+TYPE\s+(\S+)`)
-	reCreateView  = regexp.MustCompile(`(?is)^CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(\S+)`)
-	reAlterTable  = regexp.MustCompile(`(?is)^ALTER\s+TABLE\s+([^\s(]+)`)
-	reDropTable   = regexp.MustCompile(`(?is)^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([^\s(]+)`)
-	reDropIndex   = regexp.MustCompile(`(?is)^DROP\s+INDEX\s+(?:IF\s+EXISTS\s+)?([^\s(]+)`)
-	reSetval      = regexp.MustCompile(`(?is)^SELECT\s+SETVAL\(\s*'([^']+)'`)
-	reDoTable     = regexp.MustCompile(`(?is)ALTER\s+TABLE\s+([^\s(]+)`)
+	reInsertInto     = regexp.MustCompile(`(?is)^INSERT\s+INTO\s+([^\s(]+)`)
+	reCreateDatabase = regexp.MustCompile(`(?is)^CREATE\s+DATABASE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+?);?$`)
+	reCreateTable    = regexp.MustCompile(`(?is)^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s(]+)`)
+	reCreateIndex    = regexp.MustCompile(`(?is)^CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\S+\s+ON\s+([^\s(]+)`)
+	reCreateSeq      = regexp.MustCompile(`(?is)^CREATE\s+SEQUENCE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)`)
+	reCreateType     = regexp.MustCompile(`(?is)^CREATE\s+TYPE\s+(\S+)`)
+	reCreateView     = regexp.MustCompile(`(?is)^CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(\S+)`)
+	reAlterTable     = regexp.MustCompile(`(?is)^ALTER\s+TABLE\s+([^\s(]+)`)
+	reDropTable      = regexp.MustCompile(`(?is)^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([^\s(]+)`)
+	reDropIndex      = regexp.MustCompile(`(?is)^DROP\s+INDEX\s+(?:IF\s+EXISTS\s+)?([^\s(]+)`)
+	reSetval         = regexp.MustCompile(`(?is)^SELECT\s+SETVAL\(\s*'([^']+)'`)
+	reDoTable        = regexp.MustCompile(`(?is)ALTER\s+TABLE\s+([^\s(]+)`)
 )
 
 // cleanIdent strips quoting/brackets and collapses `"schema"."table"` down to
@@ -187,6 +188,8 @@ func describeStatement(stmt string) string {
 	switch {
 	case reInsertInto.MatchString(s):
 		return "Inserting into " + cleanIdent(reInsertInto.FindStringSubmatch(s)[1])
+	case reCreateDatabase.MatchString(s):
+		return "Creating database " + cleanIdent(reCreateDatabase.FindStringSubmatch(s)[1])
 	case reCreateTable.MatchString(s):
 		return "Creating table " + cleanIdent(reCreateTable.FindStringSubmatch(s)[1])
 	case reCreateIndex.MatchString(s):
@@ -411,6 +414,10 @@ func RestoreBackup() http.HandlerFunc {
 			SkipConflicts   bool   `json:"skip_conflicts"`
 			ContinueOnError bool   `json:"continue_on_error"`
 			AutoAddColumns  bool   `json:"auto_add_columns"`
+			// DestDatabase, for mysql/mariadb targets only, restores the dump
+			// under a different database name than the one it was taken from —
+			// see mysqlRestoreDBRewriter for why that's otherwise baked in.
+			DestDatabase string `json:"dest_database"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
@@ -602,7 +609,7 @@ func RestoreBackup() http.HandlerFunc {
 					break
 				}
 
-				executed, _, execErr := execRestoreStream(jobCtx, tx, reader, driver, req.SkipConflicts, req.ContinueOnError, req.AutoAddColumns, &job.Executed, &job.Skipped, &job.FailedRows, &job.ColumnsAdded, onExec, onFail, onColumnAdd)
+				executed, _, execErr := execRestoreStream(jobCtx, tx, reader, driver, req.SkipConflicts, req.ContinueOnError, req.AutoAddColumns, strings.TrimSpace(req.DestDatabase), &job.Executed, &job.Skipped, &job.FailedRows, &job.ColumnsAdded, onExec, onFail, onColumnAdd)
 				if closer != nil {
 					closer.Close()
 				}
@@ -750,6 +757,16 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 	// rather than whatever DATABASE() returns for the connection.
 	if (driver == "mysql" || driver == "mariadb") && schema == "" && dbName != "" {
 		schema = dbName
+	}
+
+	// Every table/view/index reference in a MySQL/MariaDB dump is qualified with
+	// this exact database name (see quoteIdentForDriver) — a connection here can
+	// target any database on its server, so statements can't rely on an ambient
+	// "current" database. Restoring into a destination server that has never
+	// seen this database name would otherwise fail on statement 1 with "Unknown
+	// database" (MySQL error 1049), so make sure it exists before anything else runs.
+	if (driver == "mysql" || driver == "mariadb") && schema != "" {
+		fmt.Fprintf(w, "CREATE DATABASE IF NOT EXISTS `%s`;\n\n", strings.ReplaceAll(schema, "`", "``"))
 	}
 
 	// Emit SET search_path for PostgreSQL so that unqualified names in FK
@@ -1683,6 +1700,65 @@ func resolveSchema(driver, schema string) string {
 	}
 }
 
+// reDBQualifier matches this app's own MySQL/MariaDB db-qualified reference
+// shape, “ `db`.`something` “ — two adjacent backtick-quoted identifiers
+// joined by a dot, exactly what quoteIdentForDriver emits for every
+// table/view a mysql/mariadb dump touches (see mysqlRestoreDBRewriter). This
+// specific two-token shape only ever appears in identifier position in this
+// app's own dumps — row data is single-quoted, never backtick-quoted — so
+// matching it is safe even against a raw, not-yet-split statement.
+var reDBQualifier = regexp.MustCompile("`([^`]+)`\\.`[^`]+`")
+
+// mysqlRestoreDBRewriter lets a MySQL/MariaDB restore land in a database with
+// a different name than the one the dump was taken from — every table/view
+// reference in such a dump is qualified with the exact source database name
+// (see quoteIdentForDriver's mysql/mariadb case), so restoring into a
+// same-server connection under a new name would otherwise still write into
+// (and require the pre-existence of) the old one. destDatabase empty means
+// "no rewrite" — the zero value is a no-op passthrough.
+type mysqlRestoreDBRewriter struct {
+	destDatabase string
+	srcDatabase  string // learned from the dump's own first qualified statement
+	detected     bool
+}
+
+// detect learns the source database name from stmt if it hasn't already —
+// tried against the CREATE DATABASE statement first (the very first
+// statement in dumps generated after this rewriter existed), falling back to
+// any db-qualified reference (present in every dump, including ones taken
+// before the CREATE DATABASE statement was added).
+func (rw *mysqlRestoreDBRewriter) detect(stmt string) {
+	if rw.detected {
+		return
+	}
+	if m := reCreateDatabase.FindStringSubmatch(stmt); m != nil {
+		rw.srcDatabase = cleanIdent(m[1])
+		rw.detected = true
+		return
+	}
+	if m := reDBQualifier.FindStringSubmatch(stmt); m != nil {
+		rw.srcDatabase = m[1]
+		rw.detected = true
+	}
+}
+
+// rewrite substitutes every occurrence of the source database's qualifier
+// with the destination one. Safe to call on a full raw statement (including
+// an INSERT's VALUES data) as well as on an identifier-only fragment (e.g.
+// insertBatchParts' prefix) — the qualifier shape it targets can't occur
+// inside this app's own (single-quoted) string literals.
+func (rw *mysqlRestoreDBRewriter) rewrite(stmt string) string {
+	rw.detect(stmt)
+	if rw.destDatabase == "" || !rw.detected || rw.srcDatabase == rw.destDatabase {
+		return stmt
+	}
+	out := strings.ReplaceAll(stmt, "`"+rw.srcDatabase+"`.", "`"+rw.destDatabase+"`.")
+	if reCreateDatabase.MatchString(out) {
+		out = strings.ReplaceAll(out, "`"+rw.srcDatabase+"`", "`"+rw.destDatabase+"`")
+	}
+	return out
+}
+
 // quoteIdentForDriver quotes an identifier using the correct dialect.
 // If schema is empty, just quote the table name.
 func quoteIdentForDriver(driver, schema, name string) string {
@@ -2316,8 +2392,17 @@ func execWithSavepointAutoRepair(
 // (type inferred from the failing statement's own literal value) and a
 // retry before falling back to the continueOnError/abort behavior above —
 // see execWithSavepointAutoRepair; onColumnAdd, if non-nil, is called once
-// per column actually added.
-func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver string, skipConflicts, continueOnError, autoAddColumns bool, executedCounter, skippedCounter, failedCounter, columnsAddedCounter *int64, onExec func(stmt string, n int), onFail func(stmt string, err error), onColumnAdd func(table, column, sqlType string)) (executed, skipped int, err error) {
+// per column actually added. destDatabase, when non-empty on a mysql/mariadb
+// restore, redirects every db-qualified reference in the dump from whatever
+// database it was taken from onto this one instead — see
+// mysqlRestoreDBRewriter; ignored for every other driver, since none of them
+// qualify identifiers with a database name in the first place.
+func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver string, skipConflicts, continueOnError, autoAddColumns bool, destDatabase string, executedCounter, skippedCounter, failedCounter, columnsAddedCounter *int64, onExec func(stmt string, n int), onFail func(stmt string, err error), onColumnAdd func(table, column, sqlType string)) (executed, skipped int, err error) {
+	var dbRewrite *mysqlRestoreDBRewriter
+	if destDatabase != "" && (driver == "mysql" || driver == "mariadb") {
+		dbRewrite = &mysqlRestoreDBRewriter{destDatabase: destDatabase}
+	}
+
 	br := bufio.NewReaderSize(r, 256*1024)
 	var cur strings.Builder
 	inStr := false
@@ -2497,6 +2582,10 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 				atomic.AddInt64(skippedCounter, 1)
 			}
 			return nil
+		}
+
+		if dbRewrite != nil {
+			stmt = dbRewrite.rewrite(stmt)
 		}
 
 		if prefix, tuple, ok := insertBatchParts(stmt); ok {

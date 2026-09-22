@@ -658,6 +658,13 @@ const restoreError = ref('')
 const restoreSkipConflicts = ref(false)
 const restoreContinueOnError = ref(false)
 const restoreAutoAddColumns = ref(false)
+const restoreDestDatabase = ref('')
+
+// MySQL/MariaDB dumps qualify every table reference with the exact source
+// database name (see mysqlRestoreDBRewriter server-side) — restoring under a
+// different name is only meaningful, and only supported, for those drivers.
+const restoreConnDriver = computed(() => connections.value.find(c => c.id === restoreConnId.value)?.driver)
+const restoreSupportsDestDatabase = computed(() => restoreConnDriver.value === 'mysql' || restoreConnDriver.value === 'mariadb')
 
 async function uploadFile(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
@@ -915,9 +922,10 @@ async function runRestore() {
   restoreRecent.value = []
 
   try {
+    const destDatabase = restoreSupportsDestDatabase.value ? restoreDestDatabase.value.trim() : ''
     const payload = restoreSource.value === 'bucket'
-      ? { dest_conn_id: restoreBucketConnId.value, object_key: restoreSelectedKey.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value, auto_add_columns: restoreAutoAddColumns.value }
-      : { sql: restoreSQL.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value, auto_add_columns: restoreAutoAddColumns.value }
+      ? { dest_conn_id: restoreBucketConnId.value, object_key: restoreSelectedKey.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value, auto_add_columns: restoreAutoAddColumns.value, dest_database: destDatabase }
+      : { sql: restoreSQL.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value, auto_add_columns: restoreAutoAddColumns.value, dest_database: destDatabase }
     // POST returns immediately with a job_id (HTTP 202) — the restore itself
     // runs in a background goroutine so it isn't bound by the request/response
     // lifetime (a big dump can take many minutes; a blocking request would be
@@ -1626,6 +1634,19 @@ onMounted(async () => {
           </div>
           <div class="page-card__body bv-card-body">
             <ConnectionPicker v-model="restoreConnId" :drivers="DB_DRIVERS" placeholder="Select connection…" full-width />
+
+            <div v-if="restoreSupportsDestDatabase" class="form-group">
+              <label class="form-label">Restore into database (optional)</label>
+              <input
+                class="base-input"
+                v-model="restoreDestDatabase"
+                placeholder="Default: the database name baked into the dump"
+                :disabled="restoreLoading"
+              />
+              <span class="bv-skip-conflicts__hint">
+                MySQL/MariaDB dumps have the source database's exact name baked into every statement. Leave blank to restore under that same name (creating it if missing) — or type a different name here to land the dump in a different database on this connection's server.
+              </span>
+            </div>
 
             <div class="page-tabs bv-tabs">
               <button class="page-tab" :class="{ 'is-active': restoreSource === 'upload' }" @click="restoreSource = 'upload'">
