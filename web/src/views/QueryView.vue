@@ -90,12 +90,44 @@ const connId = computed(() => activeConn.value?.id ?? null)
 // Transaction state
 const txActive = ref(false)
 
+// The transaction pool this begin/commit/rollback talks to lives entirely on
+// the server, keyed by connection id — not per browser tab or session. A
+// stale local `txActive = false` (page reload, tab closed mid-transaction,
+// or someone else began one on the same connection) used to strand the user:
+// Begin would fail with 409 "transaction already active" from a transaction
+// the UI had no idea existed, with no Commit/Rollback button ever appearing
+// to let them clear it. Syncing from the server's actual state — on mount,
+// on connection switch, and whenever Begin discovers one mid-flight — keeps
+// the buttons honest and always gives a way out.
+async function syncTxStatus() {
+  if (!connId.value) {
+    txActive.value = false
+    return
+  }
+  try {
+    const { data } = await axios.get(`/api/connections/${connId.value}/transaction/status`)
+    txActive.value = !!data.active
+  } catch {
+    // Leave txActive as-is — a failed status check shouldn't itself flip the
+    // UI into a possibly-wrong state.
+  }
+}
+
 async function txBegin() {
   if (!connId.value) return
   try {
     await axios.post(`/api/connections/${connId.value}/transaction/begin`)
     txActive.value = true
-  } catch (e) {
+  } catch (e: any) {
+    if (e?.response?.status === 409) {
+      // Someone (this connection, an earlier session, another tab) already
+      // has a transaction open on it — surface Commit/Rollback for it now
+      // instead of leaving the user stuck re-clicking a Begin that can never
+      // succeed.
+      txActive.value = true
+      if (activeTab.value) activeTab.value.error = 'A transaction is already active on this connection (started earlier or in another tab) — commit or roll it back below before starting a new one.'
+      return
+    }
     if (activeTab.value) activeTab.value.error = readableError(e, { action: 'Begin transaction', fallback: 'Failed to begin transaction' })
   }
 }
@@ -119,7 +151,7 @@ async function txRollback() {
   }
 }
 
-watch(connId, () => { txActive.value = false })
+watch(connId, syncTxStatus, { immediate: true })
 
 // ── Tabs ─────────────────────────────────────────────────────────
 let tabCounter = 1
