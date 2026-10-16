@@ -157,6 +157,7 @@ const eventTypeSuggestions = [
   'approval_request.updated',
   'approval_request.approved',
   'approval_request.rejected',
+  'approval_request.changes_requested',
   'approval_request.executed',
   'approval_request.failed',
   'approval_request.overdue',
