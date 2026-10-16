@@ -88,7 +88,7 @@ const selectedId = ref<number | null>(null)
 const selected = ref<ApprovalRequest | null>(null)
 const progress = ref<ApprovalProgressResponse | null>(null)
 const note = ref('')
-const filter = ref<'all' | 'pending_review' | 'approved' | 'rejected' | 'done' | 'failed'>('all')
+const filter = ref<'all' | 'pending_review' | 'draft' | 'approved' | 'rejected' | 'done' | 'failed'>('all')
 const createOpen = ref(false)
 const createSubmitting = ref(false)
 const editingRequestId = ref<number | null>(null)
@@ -264,15 +264,19 @@ async function loadDetail(id: number) {
   }
 }
 
-async function actOnStep(action: 'approved' | 'rejected') {
+async function actOnStep(action: 'approved' | 'rejected' | 'changes_requested') {
   if (!selected.value) return
+  if (action !== 'approved' && !note.value.trim()) {
+    toast.error(action === 'rejected' ? 'Add a note explaining the rejection' : 'Add a note describing the changes needed')
+    return
+  }
   try {
     await axios.post(`/api/approval-requests/${selected.value.id}/approve-step`, {
       action,
       note: note.value.trim(),
     })
     note.value = ''
-    toast.success(action === 'approved' ? 'Approval recorded' : 'Changes requested')
+    toast.success(action === 'approved' ? 'Approval recorded' : action === 'rejected' ? 'Request rejected' : 'Changes requested')
     await fetchRequests()
   } catch (error: any) {
     toast.error(error.response?.data?.error || 'Failed to record action')
@@ -399,9 +403,18 @@ async function runSelectedDryRun() {
   }
 }
 
+function statusLabel(status: string) {
+  return status === 'draft' ? 'changes requested' : status.replace('_', ' ')
+}
+
+function approvalActionLabel(action: string) {
+  // Both outcomes are stored as "rejected"; a draft request means changes were requested.
+  return action === 'rejected' && selected.value?.status === 'draft' ? 'requested changes' : action
+}
+
 function statusClass(status: string) {
   return {
-    'req-status--pending': status === 'pending_review',
+    'req-status--pending': status === 'pending_review' || status === 'draft',
     'req-status--approved': status === 'approved' || status === 'done',
     'req-status--rejected': status === 'rejected' || status === 'failed',
   }
@@ -442,6 +455,7 @@ onMounted(async () => {
           <select v-model="filter" class="base-input">
             <option value="all">All statuses</option>
             <option value="pending_review">Pending review</option>
+            <option value="draft">Changes requested</option>
             <option value="approved">Approved</option>
             <option value="rejected">Rejected</option>
             <option value="done">Executed</option>
@@ -472,7 +486,7 @@ onMounted(async () => {
             >
               <div class="req-list__top">
                 <div class="req-list__title">{{ request.title }}</div>
-                <span class="req-status" :class="statusClass(request.status)">{{ request.status.replace('_', ' ') }}</span>
+                <span class="req-status" :class="statusClass(request.status)">{{ statusLabel(request.status) }}</span>
               </div>
               <div class="req-list__meta">
                 <span class="req-list__chip">{{ request.connection }}</span>
@@ -500,7 +514,7 @@ onMounted(async () => {
               <div>
                 <div class="req-detail-title">{{ selected.title }}</div>
                 <div class="req-detail-meta">
-                  <span class="req-status" :class="statusClass(selected.status)">{{ selected.status.replace('_', ' ') }}</span>
+                  <span class="req-status" :class="statusClass(selected.status)">{{ statusLabel(selected.status) }}</span>
                   <span>{{ selected.connection }} • {{ selected.environment }}</span>
                   <span v-if="selected.database">{{ selected.database }}</span>
                   <span>Revision {{ selected.revision }}</span>
@@ -549,7 +563,7 @@ onMounted(async () => {
                   </div>
                   <div v-if="step.approvals.length > 0" class="req-step__actions">
                     <div v-for="approval in step.approvals" :key="approval.id" class="req-step__action">
-                      <strong>{{ approval.username }}</strong> {{ approval.action }}
+                      <strong>{{ approval.username }}</strong> {{ approvalActionLabel(approval.action) }}
                       <span v-if="approval.note"> · {{ approval.note }}</span>
                     </div>
                   </div>
@@ -559,10 +573,11 @@ onMounted(async () => {
 
             <div v-if="progress.can_approve" class="req-panel">
               <div class="req-panel__title">Current Step Action</div>
-              <input v-model="note" class="base-input" placeholder="Approval note or requested changes…" />
+              <input v-model="note" class="base-input" placeholder="Approval note, requested changes, or rejection reason…" />
               <div class="req-approve__actions">
                 <button class="base-btn base-btn--primary base-btn--sm" @click="actOnStep('approved')">Approve</button>
-                <button class="base-btn base-btn--ghost base-btn--sm" style="color:var(--danger)" @click="actOnStep('rejected')">Request Changes</button>
+                <button class="base-btn base-btn--ghost base-btn--sm" @click="actOnStep('changes_requested')">Request Changes</button>
+                <button class="base-btn base-btn--ghost base-btn--sm" style="color:var(--danger)" @click="actOnStep('rejected')">Reject</button>
               </div>
             </div>
 
