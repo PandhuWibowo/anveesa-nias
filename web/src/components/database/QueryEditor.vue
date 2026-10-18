@@ -126,7 +126,7 @@ const baseTheme = EditorView.theme({
   '&': {
     height: '100%',
     fontSize: '13.5px',
-    fontFamily: '"JetBrains Mono", "Fira Mono", "Cascadia Code", monospace',
+    fontFamily: '"IBM Plex Mono", "Fira Mono", "Cascadia Code", monospace',
   },
   '.cm-scroller': { overflow: 'auto', lineHeight: '1.65' },
   '.cm-content': { padding: '10px 0', minHeight: '60px' },
@@ -295,7 +295,7 @@ defineExpose({ getActiveSQL })
   background: rgba(15, 23, 42, 0.9);
   color: #e2e8f0;
   font-size: 11px;
-  font-family: var(--mono, "JetBrains Mono", monospace);
+  font-family: var(--mono);
   border: 1px solid rgba(148, 163, 184, 0.25);
   pointer-events: none;
   box-shadow: 0 6px 16px rgba(15, 23, 42, 0.18);

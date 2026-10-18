@@ -344,10 +344,8 @@ onMounted(async () => {
 
 .pp-table__header {
   background: var(--bg-body);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
   color: var(--text-muted);
   border-bottom: 1px solid var(--border);
 }
@@ -358,7 +356,7 @@ onMounted(async () => {
 }
 .pp-row:last-child { border-bottom: none; }
 .pp-row:hover { background: var(--bg-body); }
-.pp-row--pending { background: rgba(245, 158, 11, 0.06); }
+.pp-row--pending { background: var(--warning-bg); }
 
 .pp-row__name { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .pp-row__name-text {
@@ -378,13 +376,12 @@ onMounted(async () => {
   align-self: flex-start;
   padding: 1px 6px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
 }
 .pp-badge--pending {
-  background: rgba(245, 158, 11, 0.16);
-  color: #d97706;
+  background: var(--warning-bg);
+  color: var(--warning);
 }
 
 .pp-row__value {
@@ -413,9 +410,9 @@ onMounted(async () => {
   color: var(--text-secondary);
   text-transform: capitalize;
 }
-.pp-context-badge[data-context="postmaster"] { background: rgba(239, 68, 68, 0.12); color: #dc2626; }
+.pp-context-badge[data-context="postmaster"] { background: var(--danger-bg); color: var(--danger); }
 .pp-context-badge[data-context="internal"] { background: var(--bg-body); color: var(--text-muted); }
-.pp-context-badge[data-context="sighup"] { background: rgba(59, 130, 246, 0.12); color: #2563eb; }
+.pp-context-badge[data-context="sighup"] { background: var(--info-bg); color: var(--info); }
 
 .pp-row__actions {
   display: flex;

@@ -257,7 +257,7 @@ async function copy() {
   background: transparent; color: var(--text-muted); font-size: 11.5px;
   cursor: pointer; transition: all 0.12s;
 }
-.ec-lang-btn--active { background: var(--brand); color: #fff; border-color: var(--brand); }
+.ec-lang-btn--active { background: var(--brand); color: var(--accent-fg); border-color: var(--brand); }
 .ec-lang-btn:not(.ec-lang-btn--active):hover { background: var(--bg-hover); color: var(--text-primary); }
 .ec-btn {
   padding: 4px 12px; border-radius: 5px; border: 1px solid var(--border);
@@ -272,7 +272,7 @@ async function copy() {
 .ec-body { flex: 1; min-height: 0; overflow: auto; padding: 0; }
 .ec-pre {
   margin: 0; padding: 20px 24px;
-  font-family: "JetBrains Mono", "Fira Mono", monospace;
+  font-family: var(--mono);
   font-size: 12.5px; line-height: 1.65;
   color: var(--text-primary);
   white-space: pre; overflow: visible;

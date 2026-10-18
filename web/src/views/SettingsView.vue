@@ -164,10 +164,8 @@ onMounted(loadSettings)
   border: 1px solid var(--brand-ring);
   background: var(--brand-dim);
   color: var(--brand);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
 }
 
 .set-panel__title {

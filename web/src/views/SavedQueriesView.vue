@@ -236,7 +236,7 @@ function rowActions(q: SavedQuery): RowAction[] {
     <div v-else-if="!filtered.length" class="sq-empty">
       <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="color:var(--text-muted)"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
       <p style="color:var(--text-muted);font-size:13px;margin-top:8px">
-        {{ search || filterConnId !== 'all' ? 'No queries match your filters.' : 'No saved queries yet. Save a query from the SQL editor in Data Browser.' }}
+        {{ search || filterConnId !== 'all' ? 'No queries match your filters.' : 'No saved queries yet. Write a query in SQL Studio and save it to reuse it here.' }}
       </p>
     </div>
 
@@ -314,7 +314,7 @@ function rowActions(q: SavedQuery): RowAction[] {
 .sq-new-form__row { display: flex; gap: 12px; }
 .sq-new-form__footer { display: flex; justify-content: flex-end; gap: 8px; }
 .sq-field { display: flex; flex-direction: column; gap: 4px; flex: 1; }
-.sq-label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.sq-label { font-size: 12px; font-weight: 600; color: var(--text-muted); }
 .sq-sql-input {
   background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px;
   color: var(--text-primary); font-family: var(--mono, monospace); font-size: 12.5px;
@@ -358,7 +358,7 @@ function rowActions(q: SavedQuery): RowAction[] {
   overflow: hidden;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-.sq-card:hover { border-color: var(--brand); box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
+.sq-card:hover { border-color: var(--brand); }
 
 .sq-card__header {
   display: flex; align-items: center; justify-content: space-between;

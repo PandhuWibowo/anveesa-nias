@@ -617,7 +617,7 @@ onMounted(loadSettings)
 .ast-channel-icon--telegram { background: rgba(41, 182, 246, 0.12); color: #29b6f6; }
 .ast-channel-icon--discord  { background: rgba(88, 101, 242, 0.12); color: #5865f2; }
 .ast-channel-icon--slack    { background: rgba(224, 30, 90, 0.12);  color: #e01e5a; }
-.ast-channel-icon--webhook  { background: rgba(99, 102, 241, 0.12); color: var(--brand); }
+.ast-channel-icon--webhook  { background: var(--brand-dim); color: var(--brand); }
 
 /* Toggle */
 .ast-toggle {
@@ -734,11 +734,9 @@ onMounted(loadSettings)
 }
 
 .ast-target-num {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
 }
 
 .ast-remove-btn {
@@ -756,8 +754,8 @@ onMounted(loadSettings)
 }
 
 .ast-remove-btn:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.12);
-  color: #ef4444;
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 
 .ast-remove-btn:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -828,10 +826,8 @@ onMounted(loadSettings)
   border: 1px solid var(--brand-ring);
   background: var(--brand-dim);
   color: var(--brand);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
 }
 
 .ast-optional {
@@ -865,11 +861,9 @@ onMounted(loadSettings)
 }
 
 .ast-create-topic__label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
 }
 
 .ast-create-topic__row {

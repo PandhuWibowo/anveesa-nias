@@ -1,299 +1,290 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { useConnections } from '@/composables/useConnections'
+import { useAuth } from '@/composables/useAuth'
+import { useConnections, type Connection } from '@/composables/useConnections'
+import { useCommandPalette } from '@/composables/useCommandPalette'
+import { NAV_GROUPS, navKey, type NavItem } from '@/navigation'
+import { DRIVER_COLOR, DRIVER_NAME, connectionRoute } from '@/utils/drivers'
+import NavIcon from '@/components/ui/NavIcon.vue'
+import DriverIcon from '@/components/ui/DriverIcon.vue'
+
+defineProps<{ activeConnId?: number | null }>()
+const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
 
 const router = useRouter()
-const { connections } = useConnections()
+const { user, hasAnyPermission } = useAuth()
+const { connections, loading } = useConnections()
+const palette = useCommandPalette()
 
-const providers = [
-  { key: 'postgres', label: 'PostgreSQL', sub: 'Open-source relational DB', badge: 'PG' },
-  { key: 'mysql',    label: 'MySQL',      sub: 'Popular web database',      badge: 'MY' },
-  { key: 'mssql',    label: 'SQL Server', sub: 'Microsoft enterprise DB',   badge: 'MS' },
-]
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
+const modKey = isMac ? '⌘' : 'Ctrl'
 
-const driverCounts = computed(() => {
-  const counts: Record<string, number> = {}
-  for (const c of connections.value) {
-    counts[c.driver] = (counts[c.driver] ?? 0) + 1
-  }
-  return counts
+const greeting = computed(() => {
+  const h = new Date().getHours()
+  const part = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'
+  return user.value?.username ? `${part}, ${user.value.username}` : part
 })
+
+const groups = computed(() =>
+  NAV_GROUPS.map((g) => ({
+    ...g,
+    items: g.items.filter((i) => !i.permissionsAny?.length || hasAnyPermission(i.permissionsAny)),
+  })).filter((g) => g.items.length),
+)
+
+const recentPages = computed(() => {
+  const byKey = new Map(groups.value.flatMap((g) => g.items.map((i) => [navKey(i), { ...i, group: g.label }] as const)))
+  return palette.recent.value.map((k) => byKey.get(k)).filter((i): i is NavItem & { group: string } => !!i).slice(0, 4)
+})
+
+const canManageConnections = computed(() => hasAnyPermission(['connections.view']))
+const shownConnections = computed(() => connections.value.slice(0, 8))
+
+function open(item: NavItem) {
+  router.push({ name: item.name, query: item.query })
+}
+
+function openConnection(c: Connection) {
+  emit('set-conn', c.id)
+  router.push({ name: connectionRoute(c.driver) })
+}
 </script>
 
 <template>
-  <div class="wv-root">
-    <div class="wv-scroll">
-      <div class="wv-inner">
-        <!-- Hero -->
-        <div class="wv-hero">
-          <div class="wv-icon">
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <ellipse cx="12" cy="5" rx="9" ry="3"/>
-              <path d="M3 5V19A9 3 0 0 0 21 19V5"/>
-              <path d="M3 12A9 3 0 0 0 21 12"/>
-            </svg>
-          </div>
-          <h1 class="wv-title">
-            {{ connections.length ? 'Select a connection to start' : 'Welcome to Anveesa Nias' }}
-          </h1>
-          <p class="wv-sub">
-            {{ connections.length
-              ? 'Choose a connection from the sidebar, or add a new one below.'
-              : 'A powerful internal developer platform. Connect to PostgreSQL, MySQL or SQL Server.' }}
-          </p>
-          <div class="wv-actions">
-            <button class="base-btn base-btn--primary" @click="router.push({ name: 'connections' })">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              New Connection
-            </button>
-            <button v-if="connections.length" class="base-btn base-btn--ghost" @click="router.push({ name: 'query' })">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-              Open Query Editor
-            </button>
-          </div>
-        </div>
+  <div class="page-shell">
+    <div class="page-scroll">
+      <div class="home">
+        <header class="home__head">
+          <h1 class="home__title">{{ greeting }}</h1>
+          <button class="home__search" type="button" @click="palette.show()">
+            <NavIcon name="search" :size="18" />
+            <span class="home__search-text">Jump to a page, connection, or action</span>
+            <kbd>{{ modKey }}</kbd><kbd>K</kbd>
+          </button>
+        </header>
 
-        <!-- Provider cards -->
-        <div class="wv-section">
-          <div class="wv-section__label">Supported databases</div>
-          <div class="wv-providers">
-            <div v-for="p in providers" :key="p.key" class="wv-pcard">
-              <div class="wv-pcard__icon" :class="`wv-pcard__icon--${p.key}`">{{ p.badge }}</div>
-              <div class="wv-pcard__text">
-                <span class="wv-pcard__name">{{ p.label }}</span>
-                <span class="wv-pcard__sub">{{ p.sub }}</span>
-              </div>
-              <span v-if="driverCounts[p.key]" class="badge badge--success wv-pcard__count">
-                {{ driverCounts[p.key] }}
+        <section v-if="recentPages.length" class="home__section">
+          <h2 class="home__h2">Pick up where you left off</h2>
+          <div class="home__recent">
+            <button v-for="item in recentPages" :key="navKey(item)" class="home__recent-item" type="button" @click="open(item)">
+              <span class="home__recent-icon"><NavIcon :name="item.icon" :size="18" /></span>
+              <span class="home__recent-text">
+                <span class="home__recent-label">{{ item.label }}</span>
+                <span class="home__recent-group">{{ item.group }}</span>
               </span>
-            </div>
+            </button>
           </div>
-        </div>
+        </section>
 
-        <!-- Quick nav (only when connections exist) -->
-        <div v-if="connections.length" class="wv-section">
-          <div class="wv-section__label">Quick access</div>
-          <div class="wv-nav-grid">
-            <button class="wv-nav-card" @click="router.push({ name: 'analytics' })">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="wv-nav-card__ico wv-nav-card__ico--brand"><rect x="2" y="2" width="9" height="11" rx="1"/><rect x="13" y="2" width="9" height="7" rx="1"/><rect x="2" y="15" width="9" height="7" rx="1"/><rect x="13" y="11" width="9" height="11" rx="1"/></svg>
-              <span class="wv-nav-card__label">Analytics</span>
-              <span class="wv-nav-card__sub">Saved queries, AI reports, and BI flows</span>
-            </button>
-            <button class="wv-nav-card" @click="router.push({ name: 'query' })">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="wv-nav-card__ico wv-nav-card__ico--brand"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-              <span class="wv-nav-card__label">Query Editor</span>
-              <span class="wv-nav-card__sub">Write &amp; run SQL</span>
-            </button>
-            <button class="wv-nav-card" @click="router.push({ name: 'data' })">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="wv-nav-card__ico wv-nav-card__ico--gold"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
-              <span class="wv-nav-card__label">Data Browser</span>
-              <span class="wv-nav-card__sub">Browse data, schema &amp; DDL</span>
-            </button>
-            <button class="wv-nav-card" @click="router.push({ name: 'connections' })">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="wv-nav-card__ico wv-nav-card__ico--red"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
-              <span class="wv-nav-card__label">Connections</span>
-              <span class="wv-nav-card__sub">Manage {{ connections.length }} connection{{ connections.length !== 1 ? 's' : '' }}</span>
+        <section class="home__section">
+          <div class="home__section-head">
+            <h2 class="home__h2">Connections</h2>
+            <router-link v-if="canManageConnections && connections.length" :to="{ name: 'connections' }" class="home__link">
+              Manage all {{ connections.length }}
+            </router-link>
+          </div>
+
+          <div v-if="loading && !connections.length" class="home__conns">
+            <div v-for="n in 3" :key="n" class="skeleton home__conn-skel" />
+          </div>
+
+          <div v-else-if="!connections.length" class="home__empty">
+            <p class="home__empty-title">No connections yet</p>
+            <p class="home__empty-text">
+              {{ canManageConnections
+                ? 'Add a database, cache, queue, or bucket to start browsing and querying it here.'
+                : 'Ask an administrator to share a connection with you.' }}
+            </p>
+            <button v-if="canManageConnections" class="base-btn base-btn--primary" type="button" @click="router.push({ name: 'connections', query: { new: '1' } })">
+              <NavIcon name="plus" :size="15" /> Add connection
             </button>
           </div>
-        </div>
+
+          <div v-else class="home__conns">
+            <button
+              v-for="c in shownConnections"
+              :key="c.id"
+              class="home__conn"
+              :class="{ 'is-active': c.id === activeConnId }"
+              type="button"
+              @click="openConnection(c)"
+            >
+              <span class="home__driver" :style="{ background: DRIVER_COLOR[c.driver] ?? '#4b5563' }">
+                <DriverIcon :driver="c.driver" :size="16" />
+              </span>
+              <span class="home__conn-text">
+                <span class="home__conn-name">{{ c.name }}</span>
+                <span class="home__conn-sub">{{ DRIVER_NAME[c.driver] ?? c.driver }}<template v-if="c.host"> · {{ c.host }}</template></span>
+              </span>
+              <span v-if="c.id === activeConnId" class="badge badge--success">Active</span>
+            </button>
+            <button
+              v-if="canManageConnections"
+              class="home__conn home__conn--add"
+              type="button"
+              @click="router.push({ name: 'connections', query: { new: '1' } })"
+            >
+              <span class="home__driver home__driver--add"><NavIcon name="plus" :size="16" /></span>
+              <span class="home__conn-name">Add connection</span>
+            </button>
+          </div>
+        </section>
+
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-/* ── Root fills the entire main-area slot ── */
-.wv-root {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-/* ── Scrollable layer — flex column so margin:auto centering works ── */
-.wv-scroll {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 48px 32px;
-}
-
-/* ── Inner card — margin:auto centers vertically without clipping on scroll ── */
-.wv-inner {
-  width: 100%;
-  max-width: 600px;
-  margin: auto 0;
+.home {
+  max-width: 1040px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 40px;
+  padding-top: 12px;
 }
 
-/* ── Hero ── */
-.wv-hero {
+.home__head {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  text-align: center;
-  gap: 12px;
+  gap: 18px;
 }
-
-.wv-icon {
-  width: 68px;
-  height: 68px;
-  border-radius: var(--r-lg);
-  background: var(--bg-surface);
-  border: 1px solid var(--border-2);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--brand);
-  box-shadow: var(--shadow-sm);
-  margin-bottom: 4px;
-}
-
-.wv-title {
-  font-size: 24px;
-  font-weight: 700;
+.home__title {
+  font-family: var(--display);
+  font-variation-settings: 'SOFT' 50;
+  font-size: 32px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
   color: var(--text-primary);
-  letter-spacing: -0.6px;
-  line-height: 1.2;
-  margin: 0;
 }
-
-.wv-sub {
-  font-size: 14px;
-  color: var(--text-secondary);
-  max-width: 380px;
-  line-height: 1.75;
-  margin: 0;
-}
-
-.wv-actions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: center;
-  margin-top: 8px;
-}
-
-/* ── Section ── */
-.wv-section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.wv-section__label {
-  font-size: 10.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  color: var(--text-muted);
-}
-
-/* ── Provider cards ── */
-.wv-providers {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-}
-
-.wv-pcard {
+.home__search {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 13px 15px;
+  height: 48px;
+  padding: 0 14px 0 16px;
+  max-width: 620px;
+  border: 1px solid var(--border-2);
   border-radius: var(--r);
-  border: 1.5px solid var(--border);
   background: var(--bg-surface);
-  transition: border-color var(--dur), box-shadow var(--dur);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 15px;
+  text-align: left;
+  cursor: text;
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
-.wv-pcard:hover {
-  border-color: var(--border-2);
-  box-shadow: var(--shadow-sm);
-}
+.home__search:hover { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-dim); }
+.home__search-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home__search kbd + kbd { margin-left: -6px; }
 
-.wv-pcard__icon {
-  width: 34px;
-  height: 34px;
-  border-radius: var(--r-sm);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 700;
-  flex-shrink: 0;
-  font-family: var(--mono);
-}
-.wv-pcard__icon--postgres { background: var(--pg-bg);     color: var(--pg); }
-.wv-pcard__icon--mysql    { background: var(--mysql-bg);  color: var(--mysql); }
-.wv-pcard__icon--mssql    { background: var(--mssql-bg);  color: var(--mssql); }
-
-.wv-pcard__text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-  min-width: 0;
-}
-.wv-pcard__name {
-  font-size: 13px;
+.home__section { display: flex; flex-direction: column; gap: 12px; }
+.home__section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.home__h2 {
+  font-size: 15px;
   font-weight: 600;
   color: var(--text-primary);
 }
-.wv-pcard__sub {
-  font-size: 11px;
-  color: var(--text-muted);
+.home__link {
+  font-size: 13px;
+  color: var(--brand);
+  text-decoration: none;
 }
-.wv-pcard__count {
-  margin-left: auto;
-  flex-shrink: 0;
-}
+.home__link:hover { text-decoration: underline; }
 
-/* ── Quick-access nav grid ── */
-.wv-nav-grid {
+/* Recent */
+.home__recent {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
   gap: 8px;
 }
+.home__recent-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.home__recent-item:hover { border-color: var(--border-2); background: var(--bg-hover-strong); }
+.home__recent-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-sm);
+  background: var(--brand-dim);
+  color: var(--brand);
+  flex-shrink: 0;
+}
+.home__recent-text { min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
+.home__recent-label { font-size: 14px; font-weight: 500; }
+.home__recent-group { font-size: 12.5px; color: var(--text-muted); }
 
-.wv-nav-card {
+/* Connections */
+.home__conns {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
+}
+.home__conn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.home__conn:hover { border-color: var(--border-2); background: var(--bg-hover-strong); }
+.home__conn.is-active { border-color: color-mix(in srgb, var(--brand) 45%, var(--border)); }
+.home__conn--add { border-style: dashed; color: var(--text-secondary); }
+.home__driver {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-sm);
+  flex-shrink: 0;
+}
+.home__driver--add { background: var(--bg-hover-strong); color: var(--text-muted); }
+.home__conn-text { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
+.home__conn-name,
+.home__conn-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home__conn-name { font-size: 14px; font-weight: 500; }
+.home__conn-sub { font-size: 12.5px; color: var(--text-muted); }
+.home__conn-skel { height: 60px; border-radius: var(--r); }
+
+.home__empty {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 8px;
-  padding: 18px;
-  background: var(--bg-surface);
-  border: 1.5px solid var(--border);
-  border-radius: var(--r);
-  cursor: pointer;
-  text-align: left;
-  font-family: inherit;
-  transition: border-color var(--dur), box-shadow var(--dur);
+  gap: 6px;
+  padding: 24px;
+  border: 1px dashed var(--border-2);
+  border-radius: var(--r-lg);
 }
-.wv-nav-card:hover {
-  border-color: var(--brand);
-  box-shadow: 0 0 0 3px var(--brand-ring);
-}
+.home__empty-title { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.home__empty-text { font-size: 14px; color: var(--text-secondary); margin-bottom: 10px; max-width: 520px; }
 
-.wv-nav-card__ico { flex-shrink: 0; }
-.wv-nav-card__ico--brand  { color: var(--brand); }
-.wv-nav-card__ico--purple { color: #a78bfa; }
-.wv-nav-card__ico--gold   { color: #f2c97d; }
-.wv-nav-card__ico--red    { color: #e88080; }
-
-.wv-nav-card__label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-.wv-nav-card__sub {
-  font-size: 11.5px;
-  color: var(--text-muted);
-  line-height: 1.4;
+@media (max-width: 720px) {
+  .home { gap: 32px; padding-top: 0; }
+  .home__title { font-size: 22px; }
+  .home__search kbd { display: none; }
 }
 </style>

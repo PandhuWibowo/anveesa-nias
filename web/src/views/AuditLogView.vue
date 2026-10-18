@@ -111,10 +111,10 @@ onMounted(load)
           </div>
           <div v-if="stats" class="page-metrics al-stats">
             <div class="page-metric al-stat"><span class="page-metric__value">{{ stats.total.toLocaleString() }}</span><span class="page-metric__label">Total</span></div>
-            <div class="page-metric al-stat"><span class="page-metric__value">{{ stats.feature_count.toLocaleString() }}</span><span class="page-metric__label">Feature Access</span></div>
-            <div class="page-metric al-stat"><span class="page-metric__value">{{ stats.query_count.toLocaleString() }}</span><span class="page-metric__label">Query Execution</span></div>
+            <div class="page-metric al-stat"><span class="page-metric__value">{{ stats.feature_count.toLocaleString() }}</span><span class="page-metric__label">Page views</span></div>
+            <div class="page-metric al-stat"><span class="page-metric__value">{{ stats.query_count.toLocaleString() }}</span><span class="page-metric__label">Queries run</span></div>
             <div class="page-metric al-stat"><span class="page-metric__value al-stat-err">{{ stats.errors.toLocaleString() }}</span><span class="page-metric__label">Errors</span></div>
-            <div class="page-metric al-stat"><span class="page-metric__value">{{ Math.round(stats.avg_ms) }}ms</span><span class="page-metric__label">Avg Latency</span></div>
+            <div class="page-metric al-stat"><span class="page-metric__value">{{ Math.round(stats.avg_ms) }}ms</span><span class="page-metric__label">Avg query time</span></div>
           </div>
         </section>
 
@@ -257,7 +257,7 @@ onMounted(load)
 
 <style scoped>
 .al-root { background: var(--bg-body); }
-.al-stats { display: flex; gap: 16px; }
+.al-stats { display: flex; }
 .al-stat-err { color: var(--danger); }
 .al-loading { display: flex; align-items: center; justify-content: center; padding: 40px; color: var(--text-muted); }
 .al-toolbar-wrap { padding: 14px; }
@@ -286,8 +286,7 @@ onMounted(load)
   z-index: 2;
   padding: 10px 14px; background: rgba(255, 255, 255, 0.02);
   border-bottom: 1px solid var(--border);
-  font-size: 10.5px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0.12em; color: var(--text-muted); text-align: left;
+  font-size: 12px; font-weight: 600; color: var(--text-muted); text-align: left;
 }
 .al-th-sort {
   cursor: pointer;
@@ -313,11 +312,11 @@ onMounted(load)
 .al-td-right { text-align: right; }
 .al-td-num { font-variant-numeric: tabular-nums; font-family: var(--mono, monospace); }
 .al-th-right { text-align: right; }
-.al-badge { padding: 4px 10px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
-.al-badge--ok { background: rgba(74,222,128,0.15); color: #4ade80; }
-.al-badge--err { background: rgba(248,113,113,0.15); color: #f87171; }
-.al-badge--feature { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
-.al-badge--query { background: rgba(92, 184, 165, 0.15); color: var(--brand); }
+.al-badge { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+.al-badge--ok { background: var(--success-bg); color: var(--success); }
+.al-badge--err { background: var(--danger-bg); color: var(--danger); }
+.al-badge--feature { background: var(--warning-bg); color: var(--warning); }
+.al-badge--query { background: var(--brand-dim); color: var(--brand); }
 .al-detail-row td { padding: 0 !important; }
 .al-detail { padding: 12px 16px; background: var(--bg-body); border-bottom: 1px solid var(--border); }
 .al-detail-error { color: var(--danger); font-size: 12px; margin-bottom: 8px; }

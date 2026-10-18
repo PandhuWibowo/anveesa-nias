@@ -180,12 +180,12 @@ const nullFill = computed(() => result.value ? (result.value.null_pct / 100) * 1
 }
 .cp-stat-val { font-size: 20px; font-weight: 700; color: var(--text-primary); }
 .cp-stat-lbl { font-size: 10.5px; color: var(--text-muted); margin-top: 2px; }
-.cp-section-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted); }
+.cp-section-label { font-size: 12px; font-weight: 700; color: var(--text-muted); }
 .cp-fill-bar {
   height: 10px; background: var(--bg-body); border-radius: 5px;
   border: 1px solid var(--border); overflow: hidden; position: relative;
 }
-.cp-fill-inner { height: 100%; background: #f87171; border-radius: 5px; transition: width 0.4s; }
+.cp-fill-inner { height: 100%; background: var(--danger); border-radius: 5px; transition: width 0.4s; }
 .cp-fill-pct { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); font-size: 9px; color: var(--text-muted); }
 .cp-minmax { display: flex; gap: 10px; }
 .cp-minmax-item {
@@ -193,7 +193,7 @@ const nullFill = computed(() => result.value ? (result.value.null_pct / 100) * 1
   border: 1px solid var(--border); border-radius: 8px;
   display: flex; align-items: center; gap: 8px;
 }
-.cp-mm-lbl { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--text-muted); }
+.cp-mm-lbl { font-size: 12px; font-weight: 700; color: var(--text-muted); }
 .cp-mm-val { font-family: var(--mono, monospace); font-size: 13px; color: var(--text-primary); }
 .cp-histogram {
   display: flex; align-items: flex-end; gap: 3px; height: 80px;

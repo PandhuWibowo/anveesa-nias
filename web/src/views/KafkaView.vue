@@ -7,6 +7,7 @@ import { useAuth } from '@/composables/useAuth'
 import { useListFilter } from '@/composables/useListFilter'
 import { useSort } from '@/composables/useSort'
 import SortIcon from '@/components/ui/SortIcon.vue'
+import ConnectionGate from '@/components/ui/ConnectionGate.vue'
 
 const props = defineProps<{ activeConnId?: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -1176,10 +1177,7 @@ watch(selectedTopic, (topic) => {
 <template>
   <div class="kafka-console">
     <main class="kafka-main">
-      <section v-if="!kafkaConnections.length" class="kafka-empty">
-        <div class="kafka-empty__title">No Kafka connection available</div>
-        <div class="kafka-empty__sub">Create a Kafka connection in Admin / Connections first.</div>
-      </section>
+      <ConnectionGate v-if="!kafkaConnections.length" :drivers="['kafka']" label="Kafka" purpose="to browse topics, partitions, and consumer groups" icon="kafka" @select="(id: number) => emit('set-conn', id)" />
 
       <template v-else>
         <header class="kafka-topbar">
@@ -1205,7 +1203,7 @@ watch(selectedTopic, (topic) => {
                 <span>Jobs</span>
                 <b
                   v-if="jobsStats.failed > 0"
-                  style="background:var(--danger,#ef4444);color:#fff"
+                  style="background:var(--danger,var(--danger));color:#fff"
                 >{{ jobsStats.failed }}</b>
                 <b v-else-if="jobsList.length">{{ jobsList.length }}</b>
               </button>
@@ -1220,11 +1218,11 @@ watch(selectedTopic, (topic) => {
                 <span>Queue Health</span>
                 <b
                   v-if="groupsHealth.some(g => g.health === 'critical')"
-                  style="background:var(--danger,#ef4444);color:#fff"
+                  style="background:var(--danger,var(--danger));color:#fff"
                 >{{ groupsHealth.filter(g => g.health === 'critical').length }}</b>
                 <b
                   v-else-if="groupsHealth.some(g => g.health === 'warn')"
-                  style="background:#f59e0b;color:#fff"
+                  style="background:var(--warning);color:#fff"
                 >{{ groupsHealth.filter(g => g.health === 'warn').length }}</b>
               </button>
               <button v-if="canManage" class="kafka-tab" :class="{ active: activeTab === 'manage' }" @click="activeTab = 'manage'">
@@ -2381,9 +2379,7 @@ watch(selectedTopic, (topic) => {
   flex-direction: column;
   height: calc(100vh - var(--topbar-h) - var(--statusbar-h));
   min-height: 0;
-  background:
-    radial-gradient(circle at 12% 0%, rgba(92, 184, 165, 0.10), transparent 28%),
-    var(--bg-body);
+  background: var(--bg-body);
   color: var(--text-primary);
 }
 
@@ -2412,7 +2408,7 @@ watch(selectedTopic, (topic) => {
   background: #151719;
   color: #f2f4f7;
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
   flex: 0 0 auto;
 }
 
@@ -2433,10 +2429,8 @@ watch(selectedTopic, (topic) => {
 .kafka-rail__section {
   padding: 8px 8px 6px;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
 }
 
 .kafka-rail__item {
@@ -2484,7 +2478,7 @@ watch(selectedTopic, (topic) => {
   background: rgba(255, 255, 255, 0.06);
   color: #f2f4f7;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .kafka-rail__footer {
@@ -2538,7 +2532,7 @@ watch(selectedTopic, (topic) => {
 .kafka-cluster__name {
   color: var(--text-primary);
   font-size: 16px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .kafka-cluster__meta,
@@ -2642,10 +2636,8 @@ watch(selectedTopic, (topic) => {
 .kafka-stat-grid span {
   display: block;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
 }
 
 .kafka-metric strong {
@@ -2872,10 +2864,8 @@ watch(selectedTopic, (topic) => {
 .kafka-diagnostic__grid span {
   display: block;
   color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .kafka-diagnostic__grid strong {
@@ -3027,7 +3017,7 @@ watch(selectedTopic, (topic) => {
   background: var(--success-bg);
   color: var(--success);
   font-size: 10px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .kafka-activity__item.failed .kafka-activity__status {
@@ -3122,9 +3112,7 @@ watch(selectedTopic, (topic) => {
   cursor: pointer;
   padding: 2px 6px;
   border-radius: var(--r-xs);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-size: 12px;
   color: var(--text-muted);
   font-weight: 600;
 }
@@ -3206,10 +3194,8 @@ watch(selectedTopic, (topic) => {
 
 .kafka-kicker {
   color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .kafka-panel-head h1,
@@ -3280,8 +3266,8 @@ watch(selectedTopic, (topic) => {
   font-weight: 600;
   margin-left: 4px;
 }
-.msg-badge--error { background: rgba(239,68,68,.15); color: var(--danger,#ef4444); }
-.msg-badge--warn  { background: rgba(245,158,11,.12); color: #f59e0b; }
+.msg-badge--error { background: var(--danger-bg); color: var(--danger,var(--danger)); }
+.msg-badge--warn  { background: var(--warning-bg); color: var(--warning); }
 
 .msg-row {
   display: flex;
@@ -3303,9 +3289,9 @@ watch(selectedTopic, (topic) => {
   background: var(--border);
   border-radius: 0;
 }
-.msg-row--error .msg-row__level-bar { background: var(--danger,#ef4444); }
-.msg-row--warn  .msg-row__level-bar { background: #f59e0b; }
-.msg-row--ok    .msg-row__level-bar { background: #22c55e; }
+.msg-row--error .msg-row__level-bar { background: var(--danger,var(--danger)); }
+.msg-row--warn  .msg-row__level-bar { background: var(--warning); }
+.msg-row--ok    .msg-row__level-bar { background: var(--success); }
 
 .msg-row__main {
   flex: 1;
@@ -3325,9 +3311,9 @@ watch(selectedTopic, (topic) => {
   flex-shrink: 0;
   background: var(--text-muted);
 }
-.msg-level-dot--error  { background: var(--danger,#ef4444); }
-.msg-level-dot--warn   { background: #f59e0b; }
-.msg-level-dot--ok     { background: #22c55e; }
+.msg-level-dot--error  { background: var(--danger,var(--danger)); }
+.msg-level-dot--warn   { background: var(--warning); }
+.msg-level-dot--ok     { background: var(--success); }
 .msg-level-dot--unknown { background: var(--text-muted); }
 
 .msg-row__event {
@@ -3342,7 +3328,7 @@ watch(selectedTopic, (topic) => {
 }
 .msg-row__error-excerpt {
   font-size: 11px;
-  color: var(--danger,#ef4444);
+  color: var(--danger,var(--danger));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3371,7 +3357,7 @@ watch(selectedTopic, (topic) => {
   white-space: nowrap;
   font-family: var(--mono);
 }
-.msg-row__meta--warn { color: #f59e0b; }
+.msg-row__meta--warn { color: var(--warning); }
 .msg-row__chevron {
   color: var(--text-muted);
   flex-shrink: 0;
@@ -3433,10 +3419,10 @@ watch(selectedTopic, (topic) => {
   gap: 8px;
   margin: 10px 14px 0;
   padding: 10px 12px;
-  background: rgba(239,68,68,.08);
-  border: 1px solid rgba(239,68,68,.25);
+  background: var(--danger-bg);
+  border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent);
   border-radius: 6px;
-  color: var(--danger,#ef4444);
+  color: var(--danger,var(--danger));
   font-size: 12px;
   line-height: 1.5;
   flex-shrink: 0;
@@ -3516,7 +3502,7 @@ watch(selectedTopic, (topic) => {
 }
 .msg-fields-table tr { border-bottom: 1px solid var(--border); }
 .msg-fields-table tr:last-child { border-bottom: none; }
-.msg-field--error td { background: rgba(239,68,68,.05); }
+.msg-field--error td { background: var(--danger-bg); }
 .msg-field__key {
   padding: 7px 12px;
   font-family: var(--mono);
@@ -3526,7 +3512,7 @@ watch(selectedTopic, (topic) => {
   width: 160px;
   vertical-align: top;
 }
-.msg-field--error .msg-field__key { color: var(--danger,#ef4444); }
+.msg-field--error .msg-field__key { color: var(--danger,var(--danger)); }
 .msg-field__value {
   padding: 7px 12px;
   color: var(--text-primary);
@@ -3551,7 +3537,7 @@ watch(selectedTopic, (topic) => {
   color: var(--text-muted);
   margin-left: 4px;
 }
-.msg-tb-badge--hit { background: rgba(239,68,68,.15); color: var(--danger,#ef4444); }
+.msg-tb-badge--hit { background: var(--danger-bg); color: var(--danger,var(--danger)); }
 
 .msg-tb-key {
   display: flex;
@@ -3579,8 +3565,8 @@ watch(selectedTopic, (topic) => {
   font-weight: 600;
   color: var(--text-secondary);
 }
-.msg-tb-hit  { color: var(--danger,#ef4444); }
-.msg-tb-miss { color: #22c55e; }
+.msg-tb-hit  { color: var(--danger,var(--danger)); }
+.msg-tb-miss { color: var(--success); }
 .msg-tb-count { font-size: 11px; color: var(--text-muted); font-weight: 400; }
 
 .msg-tb-card {
@@ -3591,8 +3577,8 @@ watch(selectedTopic, (topic) => {
   background: var(--bg-surface);
   font-size: 12px;
 }
-.msg-tb-card--error { border-color: rgba(239,68,68,.3); background: rgba(239,68,68,.04); }
-.msg-tb-card--warn  { border-color: rgba(245,158,11,.3); background: rgba(245,158,11,.04); }
+.msg-tb-card--error { border-color: color-mix(in srgb, var(--danger) 30%, transparent); background: var(--danger-bg); }
+.msg-tb-card--warn  { border-color: color-mix(in srgb, var(--warning) 30%, transparent); background: var(--warning-bg); }
 .msg-tb-card__meta {
   display: flex;
   flex-wrap: wrap;
@@ -3605,9 +3591,9 @@ watch(selectedTopic, (topic) => {
 .msg-tb-card__error {
   padding: 6px 10px;
   margin-bottom: 8px;
-  background: rgba(239,68,68,.08);
+  background: var(--danger-bg);
   border-radius: 4px;
-  color: var(--danger,#ef4444);
+  color: var(--danger,var(--danger));
   font-size: 12px;
 }
 .msg-tb-stack {
@@ -3620,7 +3606,7 @@ watch(selectedTopic, (topic) => {
   font-family: var(--mono);
   white-space: pre-wrap;
   word-break: break-all;
-  color: var(--danger,#ef4444);
+  color: var(--danger,var(--danger));
   max-height: 220px;
   overflow-y: auto;
   line-height: 1.5;
@@ -3701,8 +3687,8 @@ watch(selectedTopic, (topic) => {
 }
 .jobs-filter-btn.active,
 .jobs-filter-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
-.jobs-filter-btn--failed.active { border-color: var(--danger,#ef4444); color: var(--danger,#ef4444); }
-.jobs-filter-btn--retry.active  { border-color: #f59e0b; color: #f59e0b; }
+.jobs-filter-btn--failed.active { border-color: var(--danger,var(--danger)); color: var(--danger,var(--danger)); }
+.jobs-filter-btn--retry.active  { border-color: var(--warning); color: var(--warning); }
 .jobs-filter-btn--pending.active { border-color: var(--brand); color: var(--brand); }
 
 .jobs-stats {
@@ -3724,11 +3710,11 @@ watch(selectedTopic, (topic) => {
   min-width: 70px;
 }
 .jobs-stat__num { font-size: 18px; font-weight: 700; color: var(--text-primary); }
-.jobs-stat__label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; margin-top: 2px; }
-.jobs-stat--failed .jobs-stat__num { color: var(--danger,#ef4444); }
-.jobs-stat--retry .jobs-stat__num { color: #f59e0b; }
+.jobs-stat__label { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.jobs-stat--failed .jobs-stat__num { color: var(--danger,var(--danger)); }
+.jobs-stat--retry .jobs-stat__num { color: var(--warning); }
 .jobs-stat--pending .jobs-stat__num { color: var(--brand); }
-.jobs-stat--completed .jobs-stat__num { color: #22c55e; }
+.jobs-stat--completed .jobs-stat__num { color: var(--success); }
 
 .jobs-empty {
   padding: 32px;
@@ -3761,9 +3747,8 @@ watch(selectedTopic, (topic) => {
   padding: 8px 10px;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--border);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
   color: var(--text-muted);
   text-align: left;
   white-space: nowrap;
@@ -3774,8 +3759,8 @@ watch(selectedTopic, (topic) => {
 }
 .jobs-row:hover td { background: var(--bg-hover); }
 .jobs-row--selected td { background: color-mix(in srgb, var(--brand) 10%, transparent) !important; }
-.jobs-row--failed td { background: rgba(239,68,68,.03); }
-.jobs-row--retry td { background: rgba(245,158,11,.03); }
+.jobs-row--failed td { background: var(--danger-bg); }
+.jobs-row--retry td { background: var(--warning-bg); }
 .jobs-table tbody td {
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
@@ -3793,7 +3778,7 @@ watch(selectedTopic, (topic) => {
 .jobs-cell-mono { font-family: var(--mono); font-size: 11px; text-align: center; }
 .jobs-cell-error {
   font-size: 11px;
-  color: var(--danger,#ef4444);
+  color: var(--danger,var(--danger));
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3813,11 +3798,11 @@ watch(selectedTopic, (topic) => {
   color: var(--text-muted);
 }
 .jobs-status-badge--lg { width: auto; height: auto; padding: 3px 10px; border-radius: 4px; font-size: 10px; }
-.jobs-status--failed { background: rgba(239,68,68,.15); color: var(--danger,#ef4444); }
-.jobs-status--retry { background: rgba(245,158,11,.15); color: #f59e0b; }
-.jobs-status--pending { background: rgba(99,102,241,.12); color: var(--brand); }
-.jobs-status--processing { background: rgba(99,102,241,.12); color: var(--brand); }
-.jobs-status--completed { background: rgba(34,197,94,.15); color: #22c55e; }
+.jobs-status--failed { background: var(--danger-bg); color: var(--danger,var(--danger)); }
+.jobs-status--retry { background: var(--warning-bg); color: var(--warning); }
+.jobs-status--pending { background: var(--brand-dim); color: var(--brand); }
+.jobs-status--processing { background: var(--brand-dim); color: var(--brand); }
+.jobs-status--completed { background: var(--success-bg); color: var(--success); }
 .jobs-status--unknown { background: var(--bg-hover); color: var(--text-muted); }
 
 .jobs-detail {
@@ -3854,15 +3839,15 @@ watch(selectedTopic, (topic) => {
 .jobs-detail__error {
   margin: 12px 16px;
   padding: 12px;
-  background: rgba(239,68,68,.06);
-  border: 1px solid rgba(239,68,68,.2);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bg);
   border-radius: 6px;
 }
 .jobs-detail__error-head {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: var(--danger,#ef4444);
+  color: var(--danger,var(--danger));
   margin-bottom: 6px;
 }
 .jobs-detail__error p { margin: 0; font-size: 13px; color: var(--text-primary); line-height: 1.5; }
@@ -3871,10 +3856,9 @@ watch(selectedTopic, (topic) => {
   margin: 0 16px 12px;
 }
 .jobs-detail__section-head {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-muted);
-  text-transform: uppercase;
   margin-bottom: 6px;
 }
 .jobs-detail__stack pre {
@@ -3885,7 +3869,7 @@ watch(selectedTopic, (topic) => {
   border-radius: 6px;
   font-size: 11px;
   font-family: var(--mono);
-  color: var(--danger,#ef4444);
+  color: var(--danger,var(--danger));
   white-space: pre-wrap;
   word-break: break-all;
   max-height: 200px;
@@ -3906,7 +3890,7 @@ watch(selectedTopic, (topic) => {
   flex-direction: column;
   gap: 2px;
 }
-.jobs-detail__meta span { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
+.jobs-detail__meta span { font-size: 12px; color: var(--text-muted); }
 .jobs-detail__meta code { font-size: 12px; font-family: var(--mono); color: var(--text-primary); }
 
 .jobs-detail__section {
@@ -3937,7 +3921,7 @@ watch(selectedTopic, (topic) => {
   display: flex;
   gap: 16px;
   padding: 8px 16px;
-  background: rgba(239,68,68,.04);
+  background: var(--danger-bg);
   border-bottom: 1px solid var(--border);
   font-size: 11px;
 }
@@ -3967,9 +3951,9 @@ watch(selectedTopic, (topic) => {
 }
 .qh-filter-btn.active,
 .qh-filter-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
-.qh-filter-btn--ok.active    { border-color: #22c55e; color: #22c55e; }
-.qh-filter-btn--warn.active  { border-color: #f59e0b; color: #f59e0b; }
-.qh-filter-btn--critical.active { border-color: var(--danger,#ef4444); color: var(--danger,#ef4444); }
+.qh-filter-btn--ok.active    { border-color: var(--success); color: var(--success); }
+.qh-filter-btn--warn.active  { border-color: var(--warning); color: var(--warning); }
+.qh-filter-btn--critical.active { border-color: var(--danger,var(--danger)); color: var(--danger,var(--danger)); }
 
 .qh-summary-row {
   display: flex;
@@ -3994,19 +3978,17 @@ watch(selectedTopic, (topic) => {
   color: var(--text-primary);
 }
 .qh-stat-label {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   margin-top: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
 }
-.qh-stat--ok     .qh-stat-num { color: #22c55e; }
-.qh-stat--warn   .qh-stat-num { color: #f59e0b; }
-.qh-stat--critical .qh-stat-num { color: var(--danger,#ef4444); }
+.qh-stat--ok     .qh-stat-num { color: var(--success); }
+.qh-stat--warn   .qh-stat-num { color: var(--warning); }
+.qh-stat--critical .qh-stat-num { color: var(--danger,var(--danger)); }
 
 .qh-table { margin-top: 8px; }
-.qh-row--warn td   { background: rgba(245,158,11,0.04); }
-.qh-row--critical td { background: rgba(239,68,68,0.06); }
+.qh-row--warn td   { background: var(--warning-bg); }
+.qh-row--critical td { background: var(--danger-bg); }
 
 .qh-group-id { font-family: var(--mono); font-size: 12px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qh-reason   { font-size: 12px; color: var(--text-muted); max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -4019,9 +4001,9 @@ watch(selectedTopic, (topic) => {
   font-weight: 600;
   white-space: nowrap;
 }
-.qh-health--ok       { background: rgba(34,197,94,.15);  color: #22c55e; }
-.qh-health--warn     { background: rgba(245,158,11,.15); color: #f59e0b; }
-.qh-health--critical { background: rgba(239,68,68,.15);  color: var(--danger,#ef4444); }
+.qh-health--ok       { background: var(--success-bg);  color: var(--success); }
+.qh-health--warn     { background: var(--warning-bg); color: var(--warning); }
+.qh-health--critical { background: var(--danger-bg);  color: var(--danger,var(--danger)); }
 
 .qh-state-badge {
   display: inline-block;
@@ -4032,13 +4014,13 @@ watch(selectedTopic, (topic) => {
   color: var(--text-secondary);
   white-space: nowrap;
 }
-.qh-state--stable { background: rgba(34,197,94,.1); color: #22c55e; }
-.qh-state--dead   { background: rgba(239,68,68,.1); color: var(--danger,#ef4444); }
-.qh-state--empty  { background: rgba(245,158,11,.1); color: #f59e0b; }
+.qh-state--stable { background: var(--success-bg); color: var(--success); }
+.qh-state--dead   { background: var(--danger-bg); color: var(--danger,var(--danger)); }
+.qh-state--empty  { background: var(--warning-bg); color: var(--warning); }
 
-.qh-lag-ok       { color: #22c55e; font-weight: 600; }
-.qh-lag-warn     { color: #f59e0b; font-weight: 600; }
-.qh-lag-critical { color: var(--danger,#ef4444); font-weight: 600; }
+.qh-lag-ok       { color: var(--success); font-weight: 600; }
+.qh-lag-warn     { color: var(--warning); font-weight: 600; }
+.qh-lag-critical { color: var(--danger,var(--danger)); font-weight: 600; }
 
 .kafka-manage-danger p {
   margin-top: 4px;
@@ -4131,9 +4113,7 @@ watch(selectedTopic, (topic) => {
   border-bottom: 1px solid var(--border);
   color: var(--text-secondary);
   font-size: 12px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-weight: 600;
 }
 
 .kafka-table {
@@ -4153,10 +4133,8 @@ watch(selectedTopic, (topic) => {
 
 .kafka-table th {
   color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .kafka-table tr:last-child td {
@@ -4187,7 +4165,7 @@ watch(selectedTopic, (topic) => {
   color: var(--success);
   padding: 3px 9px;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -4371,7 +4349,7 @@ watch(selectedTopic, (topic) => {
 .kafka-empty__title {
   color: var(--text-primary);
   font-size: 15px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .kafka-empty-work,

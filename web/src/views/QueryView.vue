@@ -727,8 +727,8 @@ function exportResults(format: 'csv' | 'json') {
           TX
         </div>
         <button v-if="!txActive" class="base-btn base-btn--ghost base-btn--sm" @click="txBegin" title="Begin transaction">BEGIN</button>
-        <button v-if="txActive" class="base-btn base-btn--ghost base-btn--sm" style="color:#4ade80" @click="txCommit">COMMIT</button>
-        <button v-if="txActive" class="base-btn base-btn--ghost base-btn--sm" style="color:#f87171" @click="txRollback">ROLLBACK</button>
+        <button v-if="txActive" class="base-btn base-btn--ghost base-btn--sm" style="color:var(--success)" @click="txCommit">COMMIT</button>
+        <button v-if="txActive" class="base-btn base-btn--ghost base-btn--sm" style="color:var(--danger)" @click="txRollback">ROLLBACK</button>
         <div class="vdivider" />
       </template>
 
@@ -1391,7 +1391,7 @@ function exportResults(format: 'csv' | 'json') {
 }
 .query-toolbar__conn-name { display: flex; align-items: center; gap: 6px; }
 .query-toolbar__conn-driver {
-  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  font-size: 12px; font-weight: 600;
   background: var(--brand-dim); color: var(--brand);
   padding: 1px 6px; border-radius: 4px;
 }
@@ -1410,8 +1410,7 @@ function exportResults(format: 'csv' | 'json') {
 }
 .panel-header {
   padding: 8px 12px; border-bottom: 1px solid var(--border);
-  font-size: 10.5px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0.6px; color: var(--text-muted); flex-shrink: 0;
+  font-size: 12px; font-weight: 600; color: var(--text-muted); flex-shrink: 0;
   display: flex; align-items: center; justify-content: space-between;
 }
 .schema-close-btn {
@@ -1547,7 +1546,7 @@ function exportResults(format: 'csv' | 'json') {
   user-select: none;
 }
 .stream-toggle input { accent-color: var(--brand); cursor: pointer; }
-.stream-toggle:has(input:checked) { color: var(--brand); border-color: var(--brand); background: rgba(99,102,241,0.1); }
+.stream-toggle:has(input:checked) { color: var(--brand); border-color: var(--brand); background: var(--brand-dim); }
 .stream-done-bar {
   flex-shrink: 0; padding: 5px 12px;
   font-size: 11px; color: var(--text-muted);
@@ -1558,12 +1557,12 @@ function exportResults(format: 'csv' | 'json') {
 .tx-indicator {
   display: flex; align-items: center; gap: 5px;
   padding: 3px 8px; border-radius: 5px;
-  background: rgba(251,191,36,0.15); border: 1px solid rgba(251,191,36,0.3);
-  font-size: 11px; font-weight: 700; color: #fbbf24;
+  background: var(--warning-bg); border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+  font-size: 11px; font-weight: 700; color: var(--warning);
 }
 .tx-dot {
   width: 6px; height: 6px; border-radius: 50%;
-  background: #fbbf24; animation: pulse 1.2s infinite;
+  background: var(--warning); animation: pulse 1.2s infinite;
 }
 @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.3 } }
 
@@ -1578,15 +1577,15 @@ function exportResults(format: 'csv' | 'json') {
   background: var(--bg-surface); flex-shrink: 0;
 }
 .explain-driver {
-  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  font-size: 12px; font-weight: 700;
   padding: 1px 6px; border-radius: 4px;
   background: var(--brand-dim); color: var(--brand);
 }
 .explain-format { font-size: 11px; color: var(--text-muted); }
 .explain-pre {
   flex: 1; margin: 0; padding: 16px;
-  font-family: "JetBrains Mono", monospace; font-size: 11.5px; line-height: 1.6;
-  color: #4ade80; white-space: pre-wrap; word-break: break-all; overflow: auto;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
+  color: var(--success); white-space: pre-wrap; word-break: break-all; overflow: auto;
 }
 .explain-rows { flex: 1; overflow: auto; padding: 8px 0; }
 .explain-row {
@@ -1674,11 +1673,9 @@ function exportResults(format: 'csv' | 'json') {
 }
 .sdlg-label {
   display: block;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
   margin-bottom: 5px;
 }
 .sdlg-input {
@@ -1715,11 +1712,9 @@ function exportResults(format: 'csv' | 'json') {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
   flex-shrink: 0;
 }
 .filter-logic-toggle {
@@ -1740,7 +1735,7 @@ function exportResults(format: 'csv' | 'json') {
   font-family: inherit;
   transition: background var(--dur), color var(--dur);
 }
-.filter-logic-btn.is-active { background: var(--brand); color: #fff; }
+.filter-logic-btn.is-active { background: var(--brand); color: var(--accent-fg); }
 .filter-count {
   font-size: 11px;
   color: var(--text-muted);

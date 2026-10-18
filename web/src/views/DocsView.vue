@@ -21,7 +21,7 @@ const sections: DocsSection[] = [
   {
     id: 'auth',
     title: 'Authentication And Navigation',
-    description: 'Login, welcome flow, top navigation, and connection switching.',
+    description: 'Login, home, sidebar navigation, the ⌘K command palette, and connection switching.',
     routeHints: ['/login', '/welcome', '/docs'],
     screenshots: ['login-page.png', 'welcome-page.png', 'top-navigation.png', 'connection-picker.png', 'docs-page.png'],
     features: [
@@ -60,7 +60,7 @@ const sections: DocsSection[] = [
         name: 'Product Docs',
         detail: 'Mirrors the repo documentation inside the application.',
         useCases: ['Check which screens need screenshots.', 'Confirm expected behavior while testing a feature area.', 'Find the route or menu where a feature lives.'],
-        workflow: ['Open Docs from the top navigation.', 'Choose the relevant feature area.', 'Review routes, expected results, and screenshot filenames.', 'Capture or update documentation assets as needed.'],
+        workflow: ['Open Docs from the account menu at the bottom of the sidebar, or search "docs" with ⌘K.', 'Choose the relevant feature area.', 'Review routes, expected results, and screenshot filenames.', 'Capture or update documentation assets as needed.'],
         expected: 'In-app docs stay aligned with the Markdown feature guide and current navigation menus.',
       },
     ],
@@ -569,10 +569,8 @@ const sections: DocsSection[] = [
 }
 
 .docs-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
   color: var(--text-muted);
   margin-bottom: 10px;
 }
@@ -660,10 +658,8 @@ const sections: DocsSection[] = [
 }
 
 .docs-feature__label {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
   color: var(--text-muted);
 }
 

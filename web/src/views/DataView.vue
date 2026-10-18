@@ -481,10 +481,8 @@ function handleTabSelected(sessionId: string, tab: DataSessionTab) {
 
 .sess-picker__header {
   padding: 12px 14px 8px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
   color: var(--text-muted);
   background: color-mix(in srgb, var(--bg-surface) 50%, transparent);
 }
@@ -620,8 +618,6 @@ function handleTabSelected(sessionId: string, tab: DataSessionTab) {
 .dv-conn-card:hover {
   border-color: var(--brand);
   background: color-mix(in srgb, var(--brand) 5%, var(--bg-surface));
-  transform: translateY(-1px);
-  box-shadow: 0 6px 18px rgba(0,0,0,.10);
 }
 .dv-conn-card:hover::before,
 .dv-conn-card--active::before {
@@ -687,7 +683,7 @@ function handleTabSelected(sessionId: string, tab: DataSessionTab) {
 }
 .dv-conn-card:hover .dv-conn-card__open {
   background: var(--brand);
-  color: #fff;
+  color: var(--accent-fg);
   opacity: 1;
   transform: translateX(0);
 }

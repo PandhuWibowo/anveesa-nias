@@ -4,6 +4,7 @@ import axios from 'axios'
 import { useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import { useAuth } from '@/composables/useAuth'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 interface DataPlanSummary {
   updates: number
@@ -218,13 +219,15 @@ onMounted(async () => {
       <div class="page-stack">
         <section class="page-hero">
           <div class="page-hero__content">
-            <div class="page-kicker">Change</div>
-            <div class="page-title">Data Script Requests</div>
-            <div class="page-subtitle">This page shows preview-created requests only. Saved scripts or saved versions do not appear here until Preview Plan creates a plan.</div>
+            <div class="page-title">Script requests</div>
+            <div class="page-subtitle">Data script runs waiting for review. A request is created when someone runs Preview plan on a saved script.</div>
           </div>
         </section>
 
-        <section class="page-card dsr-card">
+        <div v-if="!loading && !plans.length && filter === 'all'" class="page-card">
+          <EmptyState icon="inbox" title="No script requests yet" text="Open a saved data script, pick a connection, and run Preview plan to create a request for review." action-label="Go to data scripts" :action-to="{ name: 'data-scripts' }" />
+        </div>
+        <section v-else class="page-card dsr-card">
           <div class="dsr-toolbar">
             <select v-model="filter" class="base-input dsr-filter">
               <option value="all">All statuses</option>
@@ -242,7 +245,7 @@ onMounted(async () => {
             <div class="dsr-list">
               <div v-if="loading" class="dsr-empty">Loading requests…</div>
               <div v-else-if="!filteredPlans.length" class="dsr-empty">
-                No data script requests match this filter. If you only saved a script, open `Data Scripts`, select a connection, and click `Preview Plan` to create a request.
+                No requests match this status.
               </div>
               <button
                 v-for="plan in filteredPlans"
@@ -360,35 +363,35 @@ onMounted(async () => {
 .dsr-count { font-size:12px; color:var(--text-muted); }
 .dsr-layout { display:grid; grid-template-columns: 320px minmax(0, 1fr); gap:16px; min-width:0; }
 .dsr-list { display:flex; flex-direction:column; gap:10px; min-width:0; }
-.dsr-item { width:100%; text-align:left; border:1px solid var(--border); border-radius:14px; background:var(--bg-elevated); padding:12px 14px; cursor:pointer; }
+.dsr-item { width:100%; text-align:left; border:1px solid var(--border); border-radius: var(--r-lg); background:var(--bg-elevated); padding:12px 14px; cursor:pointer; }
 .dsr-item--active { border-color: var(--brand); box-shadow: inset 0 0 0 1px var(--brand); }
 .dsr-item__top, .dsr-detail__head, .dsr-workflow__head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
 .dsr-item__script, .dsr-detail__title, .dsr-items__head { font-size:13px; font-weight:700; color:var(--text-primary); }
 .dsr-item__meta, .dsr-meta, .dsr-detail__sub { font-size:11px; color:var(--text-muted); display:flex; gap:8px; flex-wrap:wrap; }
 .dsr-status { display:inline-flex; align-items:center; padding:3px 8px; border-radius:999px; font-size:11px; font-weight:700; text-transform:capitalize; background:var(--bg-surface); color:var(--text-secondary); }
-.dsr-status[data-status="approved"], .dsr-status[data-status="done"] { background: rgba(34,197,94,.15); color:#16a34a; }
-.dsr-status[data-status="pending_review"], .dsr-status[data-status="executing"] { background: rgba(245,158,11,.16); color:#d97706; }
-.dsr-status[data-status="rejected"], .dsr-status[data-status="failed"] { background: rgba(239,68,68,.14); color:#dc2626; }
-.dsr-detail-card { border:1px solid var(--border); border-radius:18px; background:var(--bg-elevated); padding:18px; display:flex; flex-direction:column; gap:14px; min-width:0; }
+.dsr-status[data-status="approved"], .dsr-status[data-status="done"] { background: var(--success-bg); color:var(--success); }
+.dsr-status[data-status="pending_review"], .dsr-status[data-status="executing"] { background: var(--warning-bg); color:var(--warning); }
+.dsr-status[data-status="rejected"], .dsr-status[data-status="failed"] { background: var(--danger-bg); color:var(--danger); }
+.dsr-detail-card { border:1px solid var(--border); border-radius: var(--r-lg); background:var(--bg-elevated); padding:18px; display:flex; flex-direction:column; gap:14px; min-width:0; }
 .dsr-detail__actions, .dsr-actions, .dsr-flags, .dsr-summary { display:flex; gap:10px; flex-wrap:wrap; }
-.dsr-stat { min-width:92px; padding:12px 14px; border:1px solid var(--border); border-radius:14px; background:var(--bg-surface); display:flex; flex-direction:column; gap:4px; }
+.dsr-stat { min-width:92px; padding:12px 14px; border:1px solid var(--border); border-radius: var(--r-lg); background:var(--bg-surface); display:flex; flex-direction:column; gap:4px; }
 .dsr-stat strong { font-size:18px; color:var(--text-primary); text-transform:capitalize; }
-.dsr-stat span { font-size:11px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em; }
-.dsr-flag { display:inline-flex; padding:4px 8px; border-radius:999px; background:rgba(59,130,246,.12); color:#2563eb; font-size:11px; font-weight:700; }
+.dsr-stat span { font-size: 12px; color:var(--text-muted); }
+.dsr-flag { display:inline-flex; padding:4px 8px; border-radius:999px; background:var(--info-bg); color:var(--info); font-size:11px; font-weight:700; }
 .dsr-meta { padding-bottom:4px; border-bottom:1px solid var(--border); }
 .dsr-review-box, .dsr-workflow { display:flex; flex-direction:column; gap:10px; }
-.dsr-review-box { padding:14px; border:1px solid var(--border); border-radius:16px; background:rgba(255,255,255,0.02); }
-.dsr-workflow__empty, .dsr-message, .dsr-error { padding:12px 14px; border-radius:14px; font-size:12px; }
-.dsr-workflow__empty { color:#b45309; background:rgba(245,158,11,.12); }
-.dsr-message { color:var(--text-secondary); background:rgba(59,130,246,.08); }
-.dsr-error { color:#b91c1c; background:rgba(239,68,68,.10); }
+.dsr-review-box { padding:14px; border:1px solid var(--border); border-radius: var(--r-lg); background:rgba(255,255,255,0.02); }
+.dsr-workflow__empty, .dsr-message, .dsr-error { padding:12px 14px; border-radius: var(--r-lg); font-size:12px; }
+.dsr-workflow__empty { color:var(--warning); background:var(--warning-bg); }
+.dsr-message { color:var(--text-secondary); background:var(--info-bg); }
+.dsr-error { color:var(--danger); background:var(--danger-bg); }
 .dsr-note { width:100%; min-height:84px; }
 .dsr-items { display:flex; flex-direction:column; gap:12px; }
-.dsr-item-row { border:1px solid var(--border); border-radius:14px; background:var(--bg-surface); padding:12px 14px; display:flex; flex-direction:column; gap:8px; }
+.dsr-item-row { border:1px solid var(--border); border-radius: var(--r-lg); background:var(--bg-surface); padding:12px 14px; display:flex; flex-direction:column; gap:8px; }
 .dsr-item-row__top { font-size:12px; font-weight:700; color:var(--text-primary); }
 .dsr-item-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; }
 .dsr-item-row code { background:var(--bg-elevated); border:1px solid var(--border); border-radius:10px; padding:8px 10px; font-size:11px; color:var(--text-secondary); white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
-.dsr-empty { padding:18px; border:1px dashed var(--border); border-radius:14px; color:var(--text-muted); font-size:12px; text-align:center; }
+.dsr-empty { padding:18px; border:1px dashed var(--border); border-radius: var(--r-lg); color:var(--text-muted); font-size:12px; text-align:center; }
 @media (max-width: 980px) {
   .dsr-layout { grid-template-columns: 1fr; }
 }

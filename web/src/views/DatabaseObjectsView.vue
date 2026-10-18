@@ -8,6 +8,7 @@ import { pendingSQL } from '@/composables/usePendingSQL'
 import { useListFilter } from '@/composables/useListFilter'
 import { useSort } from '@/composables/useSort'
 import SortIcon from '@/components/ui/SortIcon.vue'
+import ConnectionGate from '@/components/ui/ConnectionGate.vue'
 
 const props = defineProps<{ activeConnId?: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -82,15 +83,6 @@ function dboSortValue(item: SchemaObjectItem, key: string): string {
 const { sortKey, sortDir, toggleSort, sort } = useSort<SchemaObjectItem>(dboSortValue)
 const filteredItems = computed(() => sort(searchedItems.value))
 
-// Sync with parent's activeConnId
-watch(() => props.activeConnId, async (id) => {
-  if (id == null) return
-  const conn = connections.value.find(c => c.id === id)
-  if (!conn || isNonSqlDriver(conn.driver)) return
-  if (connId.value === id) return
-  connId.value = id
-}, { immediate: true })
-
 watch(connId, async (id) => {
   activeDb.value = ''
   metadata.value = null
@@ -98,7 +90,9 @@ watch(connId, async (id) => {
   detail.value = null
   if (!id) return
   await fetchDatabases(id)
-  activeDb.value = databases.value[0] ?? ''
+  // Open the connection's own database rather than whichever sorts first.
+  const own = connections.value.find(c => c.id === id)?.database
+  activeDb.value = own && databases.value.includes(own) ? own : databases.value[0] ?? ''
 })
 
 watch(activeDb, async (db) => {
@@ -118,6 +112,16 @@ watch(activeTab, () => {
   detail.value = null
   search.value = ''
 })
+
+// Follow the sidebar's active connection. Registered after the connId watcher so the
+// initial sync also loads databases, and re-run once connections finish loading.
+watch([() => props.activeConnId, () => connections.value.length], ([id]) => {
+  if (id == null) return
+  const conn = connections.value.find(c => c.id === id)
+  if (!conn || isNonSqlDriver(conn.driver)) return
+  if (connId.value === id) return
+  connId.value = id
+}, { immediate: true })
 
 async function selectItem(item: SchemaObjectItem) {
   selectedItem.value = item
@@ -168,18 +172,17 @@ function countForTab(key: string): number {
     <div class="dbo-toolbar">
       <div class="dbo-toolbar__left">
         <div class="dbo-brand">
-          <span class="dbo-brand__icon">&#9632;</span>
-          <span class="dbo-brand__label">Database Objects</span>
+          <span class="dbo-brand__label">Objects</span>
         </div>
         <div class="dbo-selectors">
           <div class="dbo-selector">
-            <label class="dbo-selector__label">Connection</label>
             <select
-              class="dbo-select"
+              class="base-select dbo-select"
+              aria-label="Connection"
               :value="connId"
               @change="connId = Number(($event.target as HTMLSelectElement).value) || null"
             >
-              <option :value="null">— select —</option>
+              <option :value="null" disabled>Choose connection</option>
               <option
                 v-for="c in connections.filter(c => !isNonSqlDriver(c.driver))"
                 :key="c.id"
@@ -188,8 +191,7 @@ function countForTab(key: string): number {
             </select>
           </div>
           <div v-if="databases.length > 0" class="dbo-selector">
-            <label class="dbo-selector__label">Database</label>
-            <select class="dbo-select" v-model="activeDb">
+            <select class="base-select dbo-select" v-model="activeDb" aria-label="Database">
               <option v-for="db in databases" :key="db" :value="db">{{ db }}</option>
             </select>
           </div>
@@ -208,11 +210,7 @@ function countForTab(key: string): number {
     </div>
 
     <!-- Empty / loading states -->
-    <div v-if="!connId" class="dbo-empty">
-      <div class="dbo-empty__icon">&#9632;</div>
-      <div class="dbo-empty__title">No connection selected</div>
-      <div class="dbo-empty__sub">Choose a database connection above to browse its objects.</div>
-    </div>
+    <ConnectionGate v-if="!connId" :drivers="['postgres', 'mysql', 'mariadb', 'mssql', 'sqlite']" label="database" purpose="to browse its indexes, views, functions, and triggers" icon="objects" @select="(id: number) => { connId = id; emit('set-conn', id) }" />
     <div v-else-if="metadataLoading" class="dbo-empty">
       <svg class="spin" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
       <div class="dbo-empty__sub">Loading schema objects…</div>
@@ -447,17 +445,15 @@ function countForTab(key: string): number {
 
 .dbo-brand { display: flex; align-items: center; gap: 8px; }
 .dbo-brand__icon  { color: var(--brand, #5b8dee); font-size: 14px; }
-.dbo-brand__label { font-weight: 700; font-size: 14px; color: var(--text-primary); white-space: nowrap; }
+.dbo-brand__label { font-weight: 600; font-size: 14.5px; color: var(--text-primary); white-space: nowrap; }
 
-.dbo-selectors { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.dbo-selectors { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .dbo-selector  { display: flex; flex-direction: column; gap: 3px; }
 .dbo-selector__label {
-  font-size: 10px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0.4px; color: var(--text-muted);
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
 }
 .dbo-select {
-  padding: 5px 10px; background: var(--bg-elevated); border: 1px solid var(--border);
-  border-radius: 6px; color: var(--text-primary); font-size: 13px; min-width: 160px;
+  width: auto; min-height: 32px; min-width: 180px;
   outline: none; cursor: pointer;
 }
 .dbo-select:focus { border-color: var(--brand, #5b8dee); }
@@ -477,7 +473,7 @@ function countForTab(key: string): number {
   padding: 40px 20px; text-align: center;
 }
 .dbo-empty__icon  { font-size: 32px; opacity: 0.3; }
-.dbo-empty__icon--error { color: #f87171; opacity: 0.8; }
+.dbo-empty__icon--error { color: var(--danger); opacity: 0.8; }
 .dbo-empty__title { font-weight: 600; font-size: 15px; color: var(--text-secondary); }
 .dbo-empty__sub   { font-size: 13px; }
 .dbo-empty__hint  { font-size: 12px; color: var(--text-muted); font-style: italic; }
@@ -532,8 +528,7 @@ function countForTab(key: string): number {
 }
 .dbo-sort-btn {
   display: flex; align-items: center; gap: 2px; background: none; border: none;
-  cursor: pointer; font-size: 10px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.4px; color: var(--text-muted); padding: 3px 6px; border-radius: 4px;
+  cursor: pointer; font-size: 12px; font-weight: 700; color: var(--text-muted); padding: 3px 6px; border-radius: 4px;
 }
 .dbo-sort-btn:hover { color: var(--text-primary); background: var(--bg-elevated); }
 .dbo-sort-btn.sorted { color: var(--brand, #5b8dee); }
@@ -584,8 +579,7 @@ function countForTab(key: string): number {
   font-family: var(--mono, monospace);
 }
 .dbo-detail__type {
-  font-size: 10.5px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0.5px; color: var(--text-muted);
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
   background: var(--bg-elevated); border: 1px solid var(--border);
   border-radius: 4px; padding: 2px 7px;
 }
@@ -594,8 +588,7 @@ function countForTab(key: string): number {
   padding: 14px 16px; border-bottom: 1px solid var(--border);
 }
 .dbo-detail__section-title {
-  font-size: 10.5px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 10px;
+  font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 10px;
 }
 
 /* Properties */
@@ -612,8 +605,7 @@ function countForTab(key: string): number {
   width: 100%; border-collapse: collapse; font-size: 12px;
 }
 .dbo-table th {
-  text-align: left; padding: 5px 10px; font-size: 10.5px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted);
+  text-align: left; padding: 5px 10px; font-size: 12px; font-weight: 600; color: var(--text-muted);
   border-bottom: 1px solid var(--border); background: var(--bg-elevated);
 }
 .dbo-table td {
@@ -633,7 +625,7 @@ function countForTab(key: string): number {
   font-size: 9.5px; font-weight: 700; padding: 1px 5px; border-radius: 3px; margin-right: 3px;
 }
 .dbo-flag--pk { background: rgba(91,141,238,0.15); color: var(--brand, #5b8dee); }
-.dbo-flag--uq { background: rgba(74,222,128,0.15); color: #4ade80; }
+.dbo-flag--uq { background: var(--success-bg); color: var(--success); }
 
 /* Enum values */
 .dbo-enum-list { display: flex; flex-wrap: wrap; gap: 6px; }

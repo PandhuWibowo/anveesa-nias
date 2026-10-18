@@ -448,7 +448,7 @@ onUnmounted(() => {
 .rc-ctrl-group label { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 .rc-tabs { display: flex; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; max-width: min(100%, 520px); }
 .rc-tab { padding: 3px 9px; font-size: 12px; background: transparent; border: none; color: var(--text-muted); cursor: pointer; }
-.rc-tab.active { background: var(--accent); color: #fff; }
+.rc-tab.active { background: var(--accent); color: var(--accent-fg); }
 .rc-select { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary); font-size: 12px; padding: 3px 6px; }
 .rc-canvas { flex: 1; min-height: 0; width: 100%; height: 100%; display: flex; align-items: stretch; position: relative; overflow: hidden; }
 .rc-svg { display: block; width: 100%; height: 100%; overflow: visible; }

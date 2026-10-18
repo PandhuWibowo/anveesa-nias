@@ -7,8 +7,10 @@ import { readableError } from '@/utils/httpError'
 import { useListFilter } from '@/composables/useListFilter'
 import { useSort } from '@/composables/useSort'
 import SortIcon from '@/components/ui/SortIcon.vue'
+import ConnectionGate from '@/components/ui/ConnectionGate.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
+const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
 const toast = useToast()
 const { connections } = useConnections()
 
@@ -511,24 +513,9 @@ function grantLabel(g: GrantEntry) {
         </section>
 
         <!-- No connection selected -->
-        <div v-if="!activeConnId" class="dbu-empty-state">
-          <div class="dbu-empty-icon">
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-          </div>
-          <div class="dbu-empty-title">No connection selected</div>
-          <div class="dbu-empty-sub">Select an active database connection from the top navigation to manage its users.</div>
-        </div>
+        <ConnectionGate v-if="!isSupported" :drivers="['postgres', 'mysql', 'mariadb']" label="PostgreSQL or MySQL" short="database" purpose="to manage its database users and grants" icon="users" @select="(id: number) => emit('set-conn', id)" />
 
-        <!-- Driver not supported -->
-        <div v-else-if="!isSupported" class="dbu-empty-state">
-          <div class="dbu-empty-icon">
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-          </div>
-          <div class="dbu-empty-title">Not supported for {{ activeConn?.driver }}</div>
-          <div class="dbu-empty-sub">Database user management is available for PostgreSQL, MySQL, and MariaDB connections.</div>
-        </div>
-
-        <!-- Main two-panel layout -->
+                <!-- Main two-panel layout -->
         <div v-else class="dbu-layout">
 
           <!-- Left: user list -->
@@ -1079,8 +1066,7 @@ function grantLabel(g: GrantEntry) {
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis; flex: 1;
 }
 .dbu-conn-info__driver {
-  font-size: 10px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.08em; padding: 1px 6px; border-radius: 3px;
+  font-size: 12px; font-weight: 700; padding: 1px 6px; border-radius: 3px;
   background: rgba(var(--brand-rgb,99,102,241),0.12); color: var(--brand);
   flex-shrink: 0;
 }
@@ -1141,12 +1127,11 @@ function grantLabel(g: GrantEntry) {
 
 /* Badges */
 .dbu-badge {
-  font-size: 10px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0.08em; padding: 2px 6px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; padding: 2px 6px; border-radius: 999px;
   border: 1px solid;
 }
-.dbu-badge--super { color: #f59e0b; border-color: #f59e0b; }
-.dbu-badge--createdb { color: #60a5fa; border-color: #60a5fa; }
+.dbu-badge--super { color: var(--warning); border-color: var(--warning); }
+.dbu-badge--createdb { color: var(--info); border-color: var(--info); }
 
 /* Icons */
 .dbu-icon-btn {
@@ -1155,7 +1140,7 @@ function grantLabel(g: GrantEntry) {
   color: var(--text-muted); cursor: pointer; transition: all 0.12s;
 }
 .dbu-icon-btn:hover { background: rgba(255,255,255,0.08); color: var(--text-primary); }
-.dbu-icon-btn--danger:hover { background: rgba(239,68,68,0.1); border-color: var(--danger); color: var(--danger); }
+.dbu-icon-btn--danger:hover { background: var(--danger-bg); border-color: var(--danger); color: var(--danger); }
 
 /* Right panel content */
 .dbu-tabs {
@@ -1179,8 +1164,8 @@ function grantLabel(g: GrantEntry) {
   padding: 12px 16px; border-bottom: 1px solid var(--border);
 }
 .dbu-dirty-badge {
-  font-size: 11px; color: var(--warning, #f59e0b);
-  background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3);
+  font-size: 11px; color: var(--warning, var(--warning));
+  background: var(--warning-bg); border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
   border-radius: 999px; padding: 2px 8px;
 }
 .dbu-grants-empty {
@@ -1190,19 +1175,17 @@ function grantLabel(g: GrantEntry) {
 /* Grant sections */
 .dbu-grant-sections { padding: 16px; display: flex; flex-direction: column; gap: 20px; }
 .dbu-grant-section-title {
-  font-size: 11px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.1em; color: var(--text-muted); margin-bottom: 8px;
+  font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 8px;
 }
 .dbu-grant-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 6px; }
 .dbu-grant-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .dbu-grant-table th {
   padding: 8px 10px; background: rgba(255,255,255,0.02);
   border-bottom: 1px solid var(--border);
-  font-size: 10px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0.08em; color: var(--text-muted); text-align: left;
+  font-size: 12px; font-weight: 600; color: var(--text-muted); text-align: left;
 }
 .dbu-th-priv { text-align: center; min-width: 58px; }
-.dbu-th-priv-label { display: block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
+.dbu-th-priv-label { display: block; font-size: 12px; font-weight: 700; }
 .dbu-th-priv-cat { display: block; font-size: 9px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--text-muted); opacity: 0.7; }
 .dbu-th-target { min-width: 120px; }
 .dbu-th-del { width: 32px; }
@@ -1263,8 +1246,7 @@ function grantLabel(g: GrantEntry) {
 }
 .dbu-field { display: flex; flex-direction: column; gap: 5px; }
 .dbu-label {
-  font-size: 11px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0.4px; color: var(--text-muted);
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
 }
 .dbu-hint { font-size: 10px; text-transform: none; letter-spacing: 0; font-weight: 400; }
 .dbu-input {
@@ -1289,9 +1271,9 @@ function grantLabel(g: GrantEntry) {
 .dbu-pw-strength { display: flex; align-items: center; gap: 8px; }
 .dbu-pw-bar { flex: 1; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; overflow: hidden; }
 .dbu-pw-fill { height: 100%; border-radius: 2px; transition: width 0.3s, background 0.3s; }
-.dbu-pw-fill--weak { background: var(--danger, #ef4444); }
-.dbu-pw-fill--ok { background: #f59e0b; }
-.dbu-pw-fill--strong { background: #22c55e; }
+.dbu-pw-fill--weak { background: var(--danger, var(--danger)); }
+.dbu-pw-fill--ok { background: var(--warning); }
+.dbu-pw-fill--strong { background: var(--success); }
 .dbu-pw-label { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 
 /* Privilege picker inside Add Grant Scope modal */

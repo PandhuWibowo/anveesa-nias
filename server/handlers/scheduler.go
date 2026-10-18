@@ -118,9 +118,9 @@ func CreateSchedule() http.HandlerFunc {
 		}
 		userID, _, _ := currentUserFromHeaders(r)
 		nextRun := time.Now().Add(time.Duration(s.IntervalMin) * time.Minute).Format("2006-01-02 15:04:05")
-		res, err := appdb.DB.Exec(
+		id, err := insertRowReturningID(appdb.ConvertQuery(
 			`INSERT INTO schedules (name, conn_id, dashboard_id, sql, kind, ai_prompt, created_by, interval_min, alert_condition, alert_threshold, enabled, next_run_at, created_at)
-			 VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+			 VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`),
 			s.Name, s.ConnID, s.DashboardID, s.SQL, s.Kind, s.AIPrompt, userID, s.IntervalMin, s.AlertCondition, s.AlertThreshold, nextRun,
 			time.Now().Format("2006-01-02 15:04:05"),
 		)
@@ -128,7 +128,7 @@ func CreateSchedule() http.HandlerFunc {
 			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
 			return
 		}
-		s.ID, _ = res.LastInsertId()
+		s.ID = id
 		s.NextRunAt = nextRun
 		s.Enabled = true
 		json.NewEncoder(w).Encode(s)
@@ -154,10 +154,13 @@ func UpdateSchedule() http.HandlerFunc {
 			s.ConnID = 0
 			s.SQL = ""
 		}
-		appdb.DB.Exec(
-			`UPDATE schedules SET name=?, conn_id=?, dashboard_id=?, sql=?, kind=?, ai_prompt=?, interval_min=?, alert_condition=?, alert_threshold=?, enabled=? WHERE id=?`,
+		if _, err := appdb.DB.Exec(appdb.ConvertQuery(
+			`UPDATE schedules SET name=?, conn_id=?, dashboard_id=?, sql=?, kind=?, ai_prompt=?, interval_min=?, alert_condition=?, alert_threshold=?, enabled=? WHERE id=?`),
 			s.Name, s.ConnID, s.DashboardID, s.SQL, s.Kind, s.AIPrompt, s.IntervalMin, s.AlertCondition, s.AlertThreshold, enabled, s.ID,
-		)
+		); err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	}
 }
@@ -547,8 +550,8 @@ func recordScheduleRun(scheduleID, rowCount int64, summary, errMsg string, alert
 	if alerted {
 		al = 1
 	}
-	appdb.DB.Exec(
-		`INSERT INTO schedule_runs (schedule_id, row_count, summary, error, alerted, ran_at) VALUES (?,?,?,?,?,?)`,
+	appdb.DB.Exec(appdb.ConvertQuery(
+		`INSERT INTO schedule_runs (schedule_id, row_count, summary, error, alerted, ran_at) VALUES (?,?,?,?,?,?)`),
 		scheduleID, rowCount, summary, errMsg, al, time.Now().Format("2006-01-02 15:04:05"),
 	)
 }

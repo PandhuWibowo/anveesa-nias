@@ -979,6 +979,15 @@ onMounted(async () => {
 watch(() => route.query.tab, () => {
   syncActiveTabFromRoute()
 })
+
+// Long permission lists collapse to a few chips so each role stays one scannable row.
+const ROLE_CHIP_LIMIT = 6
+const expandedRoleIds = ref(new Set<number>())
+function toggleRoleExpanded(id: number) {
+  const next = new Set(expandedRoleIds.value)
+  next.has(id) ? next.delete(id) : next.add(id)
+  expandedRoleIds.value = next
+}
 </script>
 
 <template>
@@ -1111,13 +1120,21 @@ watch(() => route.query.tab, () => {
                 <td v-if="visibleRoleColumns.permissions" class="perm-td-perms">
                   <div class="perm-perms-display">
                     <span
-                      v-for="perm in (role.permissions || [])"
+                      v-for="perm in (expandedRoleIds.has(role.id) ? (role.permissions || []) : (role.permissions || []).slice(0, ROLE_CHIP_LIMIT))"
                       :key="perm"
                       class="perm-perm-badge"
                       :title="getPermissionLabel(perm)"
                     >
                       {{ getPermissionLabel(perm) }}
                     </span>
+                    <button
+                      v-if="(role.permissions || []).length > ROLE_CHIP_LIMIT"
+                      type="button"
+                      class="perm-more-btn"
+                      @click="toggleRoleExpanded(role.id)"
+                    >
+                      {{ expandedRoleIds.has(role.id) ? 'Show less' : `+${role.permissions.length - ROLE_CHIP_LIMIT} more` }}
+                    </button>
                     <span v-if="!role.permissions || role.permissions.length === 0" class="perm-td-dim">No permissions</span>
                   </div>
                 </td>
@@ -1739,6 +1756,18 @@ watch(() => route.query.tab, () => {
 </template>
 
 <style scoped>
+.perm-more-btn {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px dashed var(--border-2);
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.perm-more-btn:hover { color: var(--text-primary); border-color: var(--text-muted); }
 .perm-root {
   position: relative;
   height: 100%;
@@ -1824,8 +1853,6 @@ watch(() => route.query.tab, () => {
   font-weight: 600;
   font-size: 12px;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
 }
 
 .perm-table td {
@@ -1898,10 +1925,8 @@ watch(() => route.query.tab, () => {
   display: inline-block;
   padding: 4px 10px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
   background: var(--bg-dim);
   color: var(--text-muted);
 }
@@ -1949,7 +1974,7 @@ watch(() => route.query.tab, () => {
 }
 
 .perm-btn-del {
-  color: #dc2626 !important;
+  color: var(--danger) !important;
 }
 
 .perm-btn-del:hover {
@@ -2048,7 +2073,7 @@ watch(() => route.query.tab, () => {
 }
 
 .perm-required {
-  color: #dc2626;
+  color: var(--danger);
 }
 
 .perm-hint {
@@ -2138,15 +2163,13 @@ watch(() => route.query.tab, () => {
 }
 
 .perm-chip {
-  font-size: 11px;
+  font-size: 12px;
   padding: 2px 8px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
 }
 
 .perm-chip--on {
@@ -2183,10 +2206,8 @@ watch(() => route.query.tab, () => {
 }
 
 .perm-perm-group-header {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
   color: var(--brand);
   margin-bottom: 12px;
   padding-bottom: 8px;
@@ -2260,10 +2281,8 @@ watch(() => route.query.tab, () => {
   display: inline-block;
   padding: 1px 5px;
   border-radius: 3px;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
   background: color-mix(in srgb, var(--brand) 15%, transparent);
   color: var(--brand);
   border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent);
@@ -2298,8 +2317,6 @@ watch(() => route.query.tab, () => {
   gap: 8px;
   font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
   color: var(--brand);
   margin-bottom: 12px;
   padding-bottom: 8px;
@@ -2356,10 +2373,8 @@ watch(() => route.query.tab, () => {
   gap: 4px;
   padding: 2px 8px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
   background: var(--brand);
   color: var(--brand-fg, #0d1117);
 }
@@ -2592,8 +2607,7 @@ watch(() => route.query.tab, () => {
 }
 .perm-col-menu-title {
   display: flex; align-items: center; justify-content: space-between;
-  font-size: 10px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.1em; color: var(--text-muted); margin-bottom: 8px;
+  font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 8px;
 }
 .perm-col-item {
   display: flex; align-items: center; gap: 8px;

@@ -590,8 +590,8 @@ defineExpose({ loadSQL, currentSQL, exportCurrentResult })
           <span class="tx-dot" /> TX
         </div>
         <button v-if="!txActive" class="base-btn base-btn--ghost base-btn--sm" @click="txBegin">BEGIN</button>
-        <button v-if="txActive" class="base-btn base-btn--ghost base-btn--sm" style="color:#4ade80" @click="txCommit">COMMIT</button>
-        <button v-if="txActive" class="base-btn base-btn--ghost base-btn--sm" style="color:#f87171" @click="txRollback">ROLLBACK</button>
+        <button v-if="txActive" class="base-btn base-btn--ghost base-btn--sm" style="color:var(--success)" @click="txCommit">COMMIT</button>
+        <button v-if="txActive" class="base-btn base-btn--ghost base-btn--sm" style="color:var(--danger)" @click="txRollback">ROLLBACK</button>
         <div class="sp-divider" />
       </template>
 
@@ -815,7 +815,7 @@ defineExpose({ loadSQL, currentSQL, exportCurrentResult })
 }
 .sp-tab:hover { background: var(--bg-surface); color: var(--text-primary); }
 .sp-tab--active { background: var(--bg-surface); color: var(--text-primary); border-bottom: 2px solid var(--brand); }
-.sp-tab--err .sp-tab__dot { background: #f87171; }
+.sp-tab--err .sp-tab__dot { background: var(--danger); }
 .sp-tab--run .sp-tab__dot { background: var(--brand); animation: pulse 1s infinite; }
 
 .sp-tab__dot {
@@ -874,15 +874,15 @@ defineExpose({ loadSQL, currentSQL, exportCurrentResult })
 /* ── Error bar ───────────────────────────────────────────────────── */
 .sp-error {
   display: flex; align-items: flex-start; gap: 8px;
-  padding: 6px 12px; font-size: 12px; color: #f87171;
-  background: rgba(248, 113, 113, 0.08);
-  border-bottom: 1px solid rgba(248, 113, 113, 0.2);
+  padding: 6px 12px; font-size: 12px; color: var(--danger);
+  background: var(--danger-bg);
+  border-bottom: 1px solid var(--danger-bg);
   flex-shrink: 0; line-height: 1.5;
 }
 .sp-error--success {
-  color: #4ade80;
-  background: rgba(74, 222, 128, 0.08);
-  border-bottom-color: rgba(74, 222, 128, 0.2);
+  color: var(--success);
+  background: var(--success-bg);
+  border-bottom-color: var(--success-bg);
 }
 
 /* ── Editor area ─────────────────────────────────────────────────── */
@@ -907,10 +907,10 @@ defineExpose({ loadSQL, currentSQL, exportCurrentResult })
   display: flex; align-items: center; gap: 5px;
   padding: 3px 8px; border-radius: 4px;
   font-size: 11px; font-weight: 600;
-  color: #4ade80; background: rgba(74, 222, 128, 0.1);
+  color: var(--success); background: var(--success-bg);
   flex-shrink: 0;
 }
-.tx-dot { width: 6px; height: 6px; border-radius: 50%; background: #4ade80; }
+.tx-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
 
 /* ── is-active (AI button) ───────────────────────────────────────── */
 .is-active { color: var(--brand) !important; }

@@ -313,7 +313,7 @@ onMounted(fetchStatus)
             </svg>
             {{ setupLoading ? 'Setting up...' : 'Enable 2FA' }}
           </button>
-          <button v-else-if="!mfaEnforced" class="base-btn base-btn--ghost" style="color:#f87171" @click="showDisable = true">
+          <button v-else-if="!mfaEnforced" class="base-btn base-btn--ghost" style="color:var(--danger)" @click="showDisable = true">
             Disable 2FA
           </button>
           <span v-else class="sec-list-sub">Cannot disable while enforcement is active.</span>
@@ -515,7 +515,7 @@ onMounted(fetchStatus)
 
           <div class="sec-modal-footer">
             <button class="base-btn base-btn--ghost" @click="showDisable = false">Cancel</button>
-            <button class="base-btn base-btn--primary" style="background:#f87171;border-color:#f87171" @click="disableTwoFA" :disabled="disableLoading || (!disablePassword && !disableBackupCode)">
+            <button class="base-btn base-btn--primary" style="background:var(--danger);border-color:var(--danger)" @click="disableTwoFA" :disabled="disableLoading || (!disablePassword && !disableBackupCode)">
               {{ disableLoading ? 'Disabling...' : 'Disable 2FA' }}
             </button>
           </div>
@@ -588,8 +588,8 @@ onMounted(fetchStatus)
 }
 
 .sec-card-icon--enabled {
-  background: rgba(74, 222, 128, 0.15);
-  color: #4ade80;
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 .sec-card-icon--disabled {
@@ -626,8 +626,8 @@ onMounted(fetchStatus)
 }
 
 .sec-badge--enabled {
-  background: rgba(74, 222, 128, 0.15);
-  color: #4ade80;
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 .sec-badge--disabled {
@@ -804,7 +804,7 @@ onMounted(fetchStatus)
   height: 28px;
   border-radius: 50%;
   background: var(--brand);
-  color: white;
+  color: var(--accent-fg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -852,11 +852,9 @@ onMounted(fetchStatus)
 }
 
 .sec-secret-label {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
 }
 
 .sec-secret-code {

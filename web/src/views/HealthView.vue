@@ -257,16 +257,16 @@ onBeforeUnmount(() => clearInterval(timer))
   font-size: 12px;
   font-weight: 600;
   padding: 3px 10px;
-  border-radius: 20px;
+  border-radius: var(--r-lg);
 }
 
-.hv-summary-chip--ok    { background: rgba(74,222,128,0.1); color: #4ade80; }
-.hv-summary-chip--error { background: rgba(248,113,113,0.1); color: #f87171; }
+.hv-summary-chip--ok    { background: var(--success-bg); color: var(--success); }
+.hv-summary-chip--error { background: var(--danger-bg); color: var(--danger); }
 .hv-summary-chip--na    { background: var(--bg-elevated); color: var(--text-muted); }
 
 .hv-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-.hv-dot--ok    { background: #4ade80; }
-.hv-dot--error { background: #f87171; }
+.hv-dot--ok    { background: var(--success); }
+.hv-dot--error { background: var(--danger); }
 
 .hv-filters {
   display: flex;
@@ -295,7 +295,7 @@ onBeforeUnmount(() => clearInterval(timer))
 .hv-filter-btn.active { background: var(--bg-surface); color: var(--text-primary); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
 
 .hv-filter-badge {
-  background: #f87171;
+  background: var(--danger);
   color: #fff;
   font-size: 10px;
   font-weight: 700;
@@ -318,10 +318,10 @@ onBeforeUnmount(() => clearInterval(timer))
   transition: box-shadow 0.15s;
 }
 
-.hv-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.12); }
-.hv-card--ok    { border-left: 3px solid #4ade80; }
-.hv-card--error { border-left: 3px solid #f87171; }
-.hv-card--na    { border-left: 3px solid var(--border); opacity: 0.75; }
+.hv-card:hover { }
+.hv-card--ok    { }
+.hv-card--error { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.hv-card--na    { opacity: 0.75; }
 
 /* ── Card head ──────────────────────────────────────────────────────────────── */
 .hv-card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -329,8 +329,8 @@ onBeforeUnmount(() => clearInterval(timer))
 .hv-status-dot {
   width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
 }
-.hv-status-dot--ok    { background: #4ade80; box-shadow: 0 0 0 3px rgba(74,222,128,0.2); }
-.hv-status-dot--error { background: #f87171; box-shadow: 0 0 0 3px rgba(248,113,113,0.2); }
+.hv-status-dot--ok    { background: var(--success); box-shadow: 0 0 0 3px var(--success-bg); }
+.hv-status-dot--error { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-bg); }
 .hv-status-dot--na    { background: var(--text-muted); }
 
 .hv-conn-name {
@@ -360,7 +360,7 @@ onBeforeUnmount(() => clearInterval(timer))
 .hv-metric { flex: 1; text-align: center; padding: 6px 0; background: var(--bg-body); border-radius: 6px; }
 .hv-metric-val { font-size: 15px; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
 .hv-metric-val--muted { color: var(--text-muted); }
-.hv-metric-lbl { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; margin-top: 1px; }
+.hv-metric-lbl { font-size: 12px; color: var(--text-muted); margin-top: 1px; }
 
 /* ── Sparkline ──────────────────────────────────────────────────────────────── */
 .hv-spark-row { height: 28px; }
@@ -379,9 +379,9 @@ onBeforeUnmount(() => clearInterval(timer))
   gap: 5px;
   font-size: 11.5px;
   font-weight: 500;
-  color: #f87171;
-  background: rgba(248,113,113,0.08);
-  border: 1px solid rgba(248,113,113,0.2);
+  color: var(--danger);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bg);
   border-radius: 6px;
   padding: 5px 8px;
 }

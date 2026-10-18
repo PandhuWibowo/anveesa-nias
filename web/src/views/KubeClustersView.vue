@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import axios from 'axios'
 import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
 import { useToast } from '@/composables/useToast'
@@ -8,6 +8,7 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
 import { useKubeClusters, type KubeCluster, type KubeClusterInput, type KubeSummary } from '@/composables/useKubeClusters'
 import { useListFilter } from '@/composables/useListFilter'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 const router = useRouter()
 const toast = useToast()
@@ -181,6 +182,14 @@ onMounted(async () => {
   await fetchClusters()
   loadOverview()
 })
+
+// `?new=1` (from empty states elsewhere) opens the add form directly.
+const route = useRoute()
+watch(() => route.query.new, (v) => {
+  if (v !== '1') return
+  openAdd()
+  router.replace({ query: { ...route.query, new: undefined } })
+}, { immediate: true })
 </script>
 
 <template>
@@ -200,7 +209,7 @@ onMounted(async () => {
             <button class="base-btn base-btn--sm" :disabled="overviewLoading" @click="loadOverview">
               {{ overviewLoading ? 'Refreshing…' : 'Refresh status' }}
             </button>
-            <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="openAdd">+ Add cluster</button>
+            <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="openAdd">Add cluster</button>
           </div>
         </section>
 
@@ -244,17 +253,14 @@ onMounted(async () => {
             </div>
           </div>
           </div>
-          <div v-else class="page-card k8s-empty">
-            <p>No clusters match "{{ search }}".</p>
+          <div v-else class="page-card">
+            <EmptyState compact icon="search" :title="`No clusters match “${search}”`" text="Try a different name or clear the filter." />
           </div>
         </template>
 
         <!-- Empty -->
-        <div v-else class="page-card k8s-empty">
-          <div class="k8s-empty-icon">☸️</div>
-          <h2>No clusters yet</h2>
-          <p>Add an Alibaba ACK, Huawei CCE, or any Kubernetes cluster by pasting its kubeconfig.</p>
-          <button v-if="canManage" class="base-btn base-btn--primary" @click="openAdd">Add your first cluster</button>
+        <div v-else class="page-card">
+          <EmptyState icon="kube" title="No clusters yet" text="Add an Alibaba ACK, Huawei CCE, or any Kubernetes cluster by pasting its kubeconfig." :action-label="canManage ? 'Add cluster' : undefined" @action="openAdd" />
         </div>
       </div>
     </div>
@@ -318,16 +324,16 @@ onMounted(async () => {
 .k8s-dot--err { background: var(--danger); }
 .k8s-dot--unknown { background: var(--text-muted); opacity: 0.5; }
 .k8s-name { font-size: 15px; font-weight: 600; color: var(--text-primary); }
-.k8s-provider { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 7px; border-radius: 99px; background: var(--bg-hover); color: var(--text-muted); }
+.k8s-provider { font-size: 12px; font-weight: 600; padding: 1px 7px; border-radius: 99px; background: var(--bg-hover); color: var(--text-muted); }
 .k8s-provider--alibaba { background: rgba(255,103,0,0.12); color: #ff6700; }
-.k8s-provider--huawei { background: rgba(220,38,38,0.12); color: #dc2626; }
+.k8s-provider--huawei { background: var(--danger-bg); color: var(--danger); }
 
 .k8s-stats { display: flex; gap: 16px; align-items: flex-end; min-height: 40px; flex-wrap: wrap; }
 .k8s-stats--pending { align-items: center; }
 .k8s-stat { display: flex; flex-direction: column; gap: 2px; }
 .k8s-stat-val { font-size: 20px; font-weight: 700; color: var(--text-primary); line-height: 1; }
 .k8s-ver { font-size: 13px; font-family: var(--mono); font-weight: 400; color: var(--text-secondary); }
-.k8s-stat-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.k8s-stat-label { font-size: 12px; color: var(--text-muted); }
 .k8s-err { font-size: 12px; color: var(--danger); word-break: break-word; }
 .k8s-muted { font-size: 12px; color: var(--text-muted); }
 

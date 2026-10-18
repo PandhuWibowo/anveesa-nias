@@ -128,9 +128,9 @@ const visibleDiffs = computed(() => {
 
       <!-- Summary -->
       <div v-if="result" class="page-card sd-summary">
-        <div class="sd-sum-item" style="color:#4ade80"><strong>{{ summaryAdded }}</strong> added</div>
-        <div class="sd-sum-item" style="color:#f87171"><strong>{{ summaryRemoved }}</strong> removed</div>
-        <div class="sd-sum-item" style="color:#fbbf24"><strong>{{ summaryChanged }}</strong> changed</div>
+        <div class="sd-sum-item" style="color:var(--success)"><strong>{{ summaryAdded }}</strong> added</div>
+        <div class="sd-sum-item" style="color:var(--danger)"><strong>{{ summaryRemoved }}</strong> removed</div>
+        <div class="sd-sum-item" style="color:var(--warning)"><strong>{{ summaryChanged }}</strong> changed</div>
         <div class="sd-sum-item" style="color:var(--text-muted)"><strong>{{ summarySame }}</strong> identical</div>
         <div style="flex:1"/>
         <label class="sd-toggle">
@@ -191,7 +191,7 @@ const visibleDiffs = computed(() => {
 .sd-scroll { display: flex; flex-direction: column; gap: 16px; }
 .sd-pickers { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
 .sd-picker { display: flex; flex-direction: column; gap: 6px; }
-.sd-picker-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted); }
+.sd-picker-label { font-size: 12px; font-weight: 600; color: var(--text-muted); }
 .sd-select {
   padding: 6px 10px; background: var(--bg-elevated); border: 1px solid var(--border);
   border-radius: 6px; color: var(--text-primary); font-size: 13px; min-width: 180px;
@@ -209,22 +209,22 @@ const visibleDiffs = computed(() => {
 .sd-item {
   overflow: hidden;
 }
-.sd-item--added { border-left: 3px solid #4ade80; }
-.sd-item--removed { border-left: 3px solid #f87171; }
-.sd-item--changed { border-left: 3px solid #fbbf24; }
+.sd-item--added { border-left: 3px solid var(--success); }
+.sd-item--removed { border-left: 3px solid var(--danger); }
+.sd-item--changed { border-left: 3px solid var(--warning); }
 .sd-item--same { border-left: 3px solid var(--border); opacity: 0.6; }
 .sd-item-head {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 14px;
 }
-.sd-icon { font-weight: 900; font-size: 14px; width: 18px; text-align: center; }
+.sd-icon { font-weight: 600; font-size: 14px; width: 18px; text-align: center; }
 .sd-item-name { font-weight: 600; font-size: 13px; color: var(--text-primary); font-family: var(--mono, monospace); flex: 1; }
-.sd-item-status { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+.sd-item-status { font-size: 12px; font-weight: 600; }
 .sd-changes { padding: 0 14px 8px 42px; display: flex; flex-direction: column; gap: 3px; }
 .sd-change { font-size: 12px; color: var(--text-secondary); font-family: var(--mono, monospace); }
 .sd-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); border-top: 1px solid var(--border); }
 .sd-cols-side { background: var(--bg-body); padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; }
-.sd-cols-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 4px; }
+.sd-cols-label { font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 4px; }
 .sd-col { display: flex; gap: 8px; font-size: 12px; }
 .sd-col-name { color: var(--text-primary); font-family: var(--mono, monospace); }
 .sd-col-type { color: var(--text-muted); font-size: 11px; }

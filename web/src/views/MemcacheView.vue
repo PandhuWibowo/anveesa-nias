@@ -5,6 +5,7 @@ import { useMemcache, type MemcacheValueResponse } from '@/composables/useMemcac
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useListFilter } from '@/composables/useListFilter'
+import ConnectionGate from '@/components/ui/ConnectionGate.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -192,13 +193,12 @@ function formatBytes(value: number) {
   <div class="page-shell mem-root">
     <header class="mem-toolbar">
       <div class="mem-title">
-        <span class="mem-badge">MC</span>
         <div>
           <h1>Memcache</h1>
-          <p>{{ activeConn ? activeConn.name : 'No Memcache connection selected' }}</p>
+          <p v-if="isMemcache">{{ activeConn?.name }}</p>
         </div>
       </div>
-      <div class="mem-actions">
+      <div v-if="isMemcache" class="mem-actions">
         <select
           class="base-input mem-select"
           :value="activeConnId ?? ''"
@@ -208,14 +208,11 @@ function formatBytes(value: number) {
           <option v-for="conn in memcacheConnections" :key="conn.id" :value="conn.id">{{ conn.name }}</option>
         </select>
         <button class="base-btn base-btn--ghost" :disabled="!isMemcache || loading" @click="reconnect">Refresh</button>
-        <button class="base-btn base-btn--danger" :disabled="!connected || flushing" @click="flushAll">Flush All</button>
+        <button class="base-btn base-btn--danger" :disabled="!connected || flushing" @click="flushAll">Flush all</button>
       </div>
     </header>
 
-    <div v-if="!isMemcache" class="mem-empty">
-      <h2>Select a Memcache connection</h2>
-      <p>Create or choose a Memcache connection to read, write, delete, and inspect cache keys.</p>
-    </div>
+    <ConnectionGate v-if="!isMemcache" :drivers="['memcache']" label="Memcache" purpose="to read, write, and flush cache keys" icon="key" @select="(id: number) => emit('set-conn', id)" />
 
     <template v-else>
       <section class="mem-status">
@@ -305,29 +302,29 @@ function formatBytes(value: number) {
 
 <style scoped>
 .mem-root { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--bg-body); }
-.mem-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
+.mem-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--bg-body); min-height: 68px; }
 .mem-title { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.mem-title h1 { margin: 0; font-size: 18px; color: var(--text-primary); }
-.mem-title p { margin: 2px 0 0; font-size: 12px; color: var(--text-muted); }
-.mem-badge { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 6px; background: #16a34a; color: white; font-weight: 800; font-size: 12px; }
+.mem-title h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; color: var(--text-primary); }
+.mem-title p { margin: 2px 0 0; font-size: 13px; color: var(--text-muted); }
+.mem-badge { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 6px; background: var(--success); color: white; font-weight: 600; font-size: 12px; }
 .mem-actions { display: flex; align-items: center; gap: 8px; }
 .mem-select { width: 220px; }
 .mem-empty { flex: 1; display: grid; place-content: center; text-align: center; color: var(--text-muted); }
 .mem-empty h2 { color: var(--text-primary); margin: 0 0 6px; }
 .mem-status { padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
 .mem-conn { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
-.mem-dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; }
-.mem-conn--ok .mem-dot { background: #22c55e; }
+.mem-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
+.mem-conn--ok .mem-dot { background: var(--success); }
 .mem-conn strong { color: var(--text-primary); }
 .mem-stats { display: grid; grid-template-columns: repeat(8, minmax(90px, 1fr)); gap: 8px; }
 .mem-stat { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elevated); }
-.mem-stat span { display: block; font-size: 10px; text-transform: uppercase; color: var(--text-muted); font-weight: 700; }
+.mem-stat span { display: block; font-size: 12px; color: var(--text-muted); font-weight: 700; }
 .mem-stat strong { display: block; margin-top: 4px; font-size: 13px; color: var(--text-primary); word-break: break-word; }
 .mem-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 .mem-side { width: 300px; flex-shrink: 0; padding: 12px; border-right: 1px solid var(--border); background: var(--bg-surface); overflow-y: auto; }
 .mem-search { display: flex; gap: 8px; }
 .mem-new { width: 100%; margin: 10px 0 14px; }
-.mem-side-title { font-size: 11px; font-weight: 800; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; }
+.mem-side-title { font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 8px; }
 .mem-key-search { width: 100%; margin-bottom: 8px; }
 .mem-key { width: 100%; border: 0; background: transparent; color: var(--text-secondary); text-align: left; padding: 8px 10px; border-radius: 6px; font-family: var(--mono, monospace); cursor: pointer; word-break: break-all; }
 .mem-key:hover, .mem-key--active { background: var(--bg-elevated); color: var(--text-primary); }
@@ -338,7 +335,7 @@ function formatBytes(value: number) {
 .mem-editor-head p { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
 .mem-form { display: grid; grid-template-columns: 1fr 140px 120px; gap: 12px; margin-bottom: 12px; }
 .mem-form label, .mem-value { display: flex; flex-direction: column; gap: 6px; }
-.mem-form span, .mem-value span { color: var(--text-muted); font-size: 11px; font-weight: 800; text-transform: uppercase; }
+.mem-form span, .mem-value span { color: var(--text-muted); font-size: 12px; font-weight: 600; }
 .mem-value textarea { min-height: 320px; resize: vertical; font-family: var(--mono, monospace); line-height: 1.45; }
 .mem-editor-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
 @media (max-width: 900px) {

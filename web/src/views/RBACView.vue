@@ -297,8 +297,6 @@ $: {
 .permission-group-title {
   font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
   color: var(--text-muted);
   margin-bottom: 12px;
 }

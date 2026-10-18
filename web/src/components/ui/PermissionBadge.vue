@@ -19,7 +19,6 @@ const permissionLevel = computed(() => {
     return {
       label: 'Full Access',
       type: 'success' as const,
-      icon: '🔓',
       description: 'Can execute all database operations including DDL (CREATE, ALTER, DROP)'
     }
   }
@@ -29,7 +28,6 @@ const permissionLevel = computed(() => {
     return {
       label: 'Read-Write',
       type: 'info' as const,
-      icon: '✏️',
       description: 'Can read and modify data (SELECT, INSERT, UPDATE, DELETE)'
     }
   }
@@ -39,7 +37,6 @@ const permissionLevel = computed(() => {
     return {
       label: 'Read-Only',
       type: 'warning' as const,
-      icon: '👁️',
       description: 'Can only read data (SELECT queries only)'
     }
   }
@@ -48,7 +45,6 @@ const permissionLevel = computed(() => {
   return {
     label: 'No Access',
     type: 'default' as const,
-    icon: '🔒',
     description: 'No permissions granted'
   }
 })
@@ -73,7 +69,6 @@ const permissionDetails = computed(() => {
   <NTooltip>
     <template #trigger>
       <NTag :type="permissionLevel.type" :size="size" :bordered="false">
-        <span v-if="size !== 'small'" style="margin-right: 4px">{{ permissionLevel.icon }}</span>
         {{ permissionLevel.label }}
       </NTag>
     </template>

@@ -604,7 +604,7 @@ export { MappingNode }
 .obs-title { display: flex; align-items: center; gap: 12px; }
 .obs-title h1 { margin: 0; font-size: 20px; color: var(--text-primary); }
 .obs-title p { margin: 2px 0 0; font-size: 12px; color: var(--text-muted); }
-.obs-logo { width: 38px; height: 38px; border-radius: 8px; background: #00bfb3; color: #fff; display: grid; place-items: center; font-weight: 800; font-size: 12px; flex-shrink: 0; }
+.obs-logo { width: 38px; height: 38px; border-radius: 8px; background: #00bfb3; color: #fff; display: grid; place-items: center; font-weight: 600; font-size: 12px; flex-shrink: 0; }
 .obs-actions { display: flex; align-items: center; gap: 8px; }
 .obs-select { width: 240px; }
 .obs-empty { border: 1px solid var(--border); background: var(--bg-elevated); border-radius: 8px; padding: 36px; text-align: center; color: var(--text-muted); }
@@ -622,7 +622,7 @@ export { MappingNode }
 /* Stat grid */
 .obs-stat-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
 .obs-stat { border: 1px solid var(--border); background: var(--bg-elevated); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 5px; }
-.obs-stat span { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+.obs-stat span { color: var(--text-muted); font-size: 12px; font-weight: 600; }
 .obs-stat strong { color: var(--text-primary); font-size: 18px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-green strong, .status-green { border-color: color-mix(in srgb, var(--success) 40%, var(--border)); }
 .status-green strong { color: var(--success); }
@@ -638,7 +638,7 @@ export { MappingNode }
 /* Table */
 .obs-table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
 .obs-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.obs-table th { background: var(--bg-elevated); color: var(--text-muted); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; padding: 8px 12px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--border); }
+.obs-table th { background: var(--bg-elevated); color: var(--text-muted); font-weight: 700; font-size: 12px; padding: 8px 12px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--border); }
 .obs-table td { padding: 7px 12px; border-bottom: 1px solid var(--border); color: var(--text-primary); vertical-align: middle; }
 .obs-table tr:last-child td { border-bottom: none; }
 .obs-table tbody tr:hover td { background: var(--bg-elevated); }
@@ -648,7 +648,7 @@ export { MappingNode }
 .obs-danger { color: var(--danger); font-weight: 700; }
 
 /* Badge */
-.obs-badge { border-radius: 4px; padding: 2px 7px; font-size: 10.5px; font-weight: 700; text-transform: uppercase; display: inline-block; }
+.obs-badge { border-radius: 4px; padding: 2px 7px; font-size: 12px; font-weight: 700; display: inline-block; }
 .status-green.obs-badge { background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 30%, transparent); }
 .status-yellow.obs-badge { background: color-mix(in srgb, var(--warning) 16%, transparent); color: var(--warning); border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent); }
 .status-red.obs-badge { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); }
@@ -681,7 +681,7 @@ export { MappingNode }
 .obs-mapping-input { flex: 1; min-width: 200px; max-width: 340px; height: 34px; }
 .obs-empty-hint { text-align: center; padding: 48px; color: var(--text-muted); font-size: 13px; }
 .obs-mapping-tree { border: 1px solid var(--border); border-radius: 8px; overflow: auto; background: var(--bg-elevated); }
-.obs-mapping-header { display: grid; grid-template-columns: 1fr 120px; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.obs-mapping-header { display: grid; grid-template-columns: 1fr 120px; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 700; color: var(--text-muted); }
 
 @media (max-width: 900px) {
   .obs-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -699,11 +699,11 @@ export { MappingNode }
 .obs-field-expander { width: 14px; display: inline-block; color: var(--text-muted); font-size: 10px; }
 .obs-field-leaf { width: 14px; display: inline-block; color: var(--text-muted); font-size: 8px; }
 .obs-field-name { color: var(--text-primary); font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.obs-field-type { font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 2px 7px; border-radius: 4px; text-align: center; }
-.ftype-text { background: color-mix(in srgb, #6366f1 14%, transparent); color: #6366f1; }
-.ftype-keyword { background: color-mix(in srgb, #f59e0b 14%, transparent); color: #d97706; }
+.obs-field-type { font-size: 12px; font-weight: 700; padding: 2px 7px; border-radius: 4px; text-align: center; }
+.ftype-text { background: color-mix(in srgb, var(--brand) 14%, transparent); color: var(--brand); }
+.ftype-keyword { background: color-mix(in srgb, var(--warning) 14%, transparent); color: var(--warning); }
 .ftype-date { background: color-mix(in srgb, #06b6d4 14%, transparent); color: #0891b2; }
-.ftype-long, .ftype-integer, .ftype-short, .ftype-byte { background: color-mix(in srgb, #10b981 14%, transparent); color: #059669; }
+.ftype-long, .ftype-integer, .ftype-short, .ftype-byte { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); }
 .ftype-float, .ftype-double, .ftype-half_float, .ftype-scaled_float { background: color-mix(in srgb, #8b5cf6 14%, transparent); color: #7c3aed; }
 .ftype-boolean { background: color-mix(in srgb, #f43f5e 14%, transparent); color: #e11d48; }
 .ftype-object, .ftype-nested { background: color-mix(in srgb, #00bfb3 14%, transparent); color: #00a69c; }

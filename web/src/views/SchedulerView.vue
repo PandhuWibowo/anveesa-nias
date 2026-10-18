@@ -7,6 +7,8 @@ import { useToast } from '@/composables/useToast'
 import { readableError } from '@/utils/httpError'
 import { useListFilter } from '@/composables/useListFilter'
 import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import NavIcon from '@/components/ui/NavIcon.vue'
 
 interface Schedule {
   id: number; name: string; conn_id: number; sql: string
@@ -192,7 +194,7 @@ onMounted(() => { load(); fetchSchedulerStatus() })
           <div class="page-subtitle">Run recurring SQL checks, AI summaries, and dashboard report deliveries without leaving the app.</div>
         </div>
         <div class="page-hero__actions">
-          <button class="base-btn base-btn--primary base-btn--sm" @click="resetForm(); showForm=true">+ New Schedule</button>
+          <button class="base-btn base-btn--primary base-btn--sm" @click="resetForm(); showForm=true">New schedule</button>
         </div>
       </section>
 
@@ -258,7 +260,7 @@ onMounted(() => { load(); fetchSchedulerStatus() })
         <div v-if="loading" class="sc-empty">
           <svg class="spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
         </div>
-        <div v-else-if="schedules.length === 0" class="sc-empty">No schedules yet.</div>
+        <EmptyState v-else-if="schedules.length === 0" icon="clock" title="No schedules yet" text="Run a saved query, AI summary, or dashboard report on a timer and get alerted on the result." />
         <div v-else-if="filteredSchedules.length === 0" class="sc-empty">No schedules match "{{ search }}".</div>
         <div v-for="s in filteredSchedules" :key="s.id" class="page-card sc-item" :class="{ 'sc-item--off': !s.enabled }">
           <div class="sc-item-head">
@@ -269,7 +271,7 @@ onMounted(() => { load(); fetchSchedulerStatus() })
               <span class="sc-item-kind">{{ s.kind === 'ai_summary' ? 'AI Summary' : (s.kind === 'dashboard_report' ? 'Dashboard Report' : 'Query Check') }}</span>
               <span class="sc-item-interval">every {{ s.interval_min }}m</span>
               <span v-if="s.alert_condition" class="sc-alert-pill">
-                🔔 {{ alertOpts.find(a => a.value === s.alert_condition)?.label }} {{ s.alert_threshold }}
+                <NavIcon name="bell" :size="12" /> {{ alertOpts.find(a => a.value === s.alert_condition)?.label }} {{ s.alert_threshold }}
               </span>
             </div>
             <div class="sc-item-times">
@@ -295,7 +297,7 @@ onMounted(() => { load(); fetchSchedulerStatus() })
         <div v-for="run in selectedRuns" :key="run.id" class="sc-run-row" :class="{ 'sc-run--err': run.error, 'sc-run--alerted': run.alerted }">
           <span class="sc-time">{{ new Date(run.ran_at).toLocaleString() }}</span>
           <span class="sc-run-rows">{{ run.row_count }} rows</span>
-          <span v-if="run.alerted" class="sc-alert-pill">🔔 Alert triggered</span>
+          <span v-if="run.alerted" class="sc-alert-pill"><NavIcon name="bell" :size="12" /> Alert triggered</span>
           <span v-if="run.summary" class="sc-run-summary">{{ run.summary }}</span>
           <span v-if="run.error" class="sc-run-err">{{ run.error }}</span>
         </div>
@@ -390,7 +392,7 @@ onMounted(() => { load(); fetchSchedulerStatus() })
 .sc-item--off { opacity:0.55; }
 .sc-item-head { display:flex; align-items:center; gap:10px; padding:12px 14px; flex-wrap:wrap; }
 .sc-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
-.sc-dot--on { background:#4ade80; box-shadow:0 0 6px #4ade8088; animation:pulse 2s infinite; }
+.sc-dot--on { background:var(--success); box-shadow:0 0 6px #4ade8088; animation:pulse 2s infinite; }
 .sc-dot--off { background:var(--text-muted); }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
 .sc-item-info { display:flex; align-items:center; gap:8px; flex:1; flex-wrap:wrap; }
@@ -398,7 +400,7 @@ onMounted(() => { load(); fetchSchedulerStatus() })
 .sc-item-conn { font-size:11.5px; color:var(--brand); }
 .sc-item-kind { font-size:11px; color:var(--text-secondary); padding:1px 7px; border-radius:999px; border:1px solid var(--border); }
 .sc-item-interval { font-size:11px; color:var(--text-muted); }
-.sc-alert-pill { padding:1px 7px; border-radius:4px; font-size:10.5px; background:rgba(251,191,36,0.15); color:#fbbf24; }
+.sc-alert-pill { padding:1px 7px; border-radius:4px; font-size:10.5px; background:var(--warning-bg); color:var(--warning); }
 .sc-item-times { display:flex; flex-direction:column; gap:2px; }
 .sc-time { font-size:10.5px; color:var(--text-muted); }
 .sc-item-actions { display:flex; gap:4px; flex-wrap:wrap; }
@@ -415,15 +417,16 @@ onMounted(() => { load(); fetchSchedulerStatus() })
 .sc-run-err { color:var(--danger); font-family:var(--mono,monospace); font-size:11px; flex:1; }
 .cp-close { background:transparent; border:none; font-size:20px; color:var(--text-muted); cursor:pointer; padding:0 4px; line-height:1; }
 .sc-status-card { background:var(--bg-elevated); border:1px solid var(--border); border-radius:8px; padding:14px 18px; }
-.sc-status-row { display:flex; align-items:flex-start; gap:32px; }
+.sc-status-row { display:flex; align-items:flex-start; gap:16px 32px; flex-wrap:wrap; }
+.sc-status-row > * { flex: 1 1 260px; }
 .sc-status-meta { min-width:0; max-width:400px; }
-.sc-status-title { font-size:13px; font-weight:700; color:var(--text-primary); margin-bottom:4px; }
+.sc-status-title { font-size:14px; font-weight:600; color:var(--text-primary); margin-bottom:4px; }
 .sc-status-desc { font-size:12px; color:var(--text-muted); line-height:1.55; }
 .sc-status-right { display:flex; flex-direction:column; align-items:flex-start; gap:6px; flex-shrink:0; }
 .sc-status-indicator { display:flex; align-items:center; gap:7px; }
 .sc-status-badge { font-size:12px; font-weight:600; }
-.sc-badge--ok { color:#4ade80; }
-.sc-badge--err { color:var(--danger,#f87171); }
+.sc-badge--ok { color:var(--success); }
+.sc-badge--err { color:var(--danger,var(--danger)); }
 .sc-status-row-sub { display:flex; align-items:center; gap:6px; }
 .sc-status-details { display:flex; flex-direction:column; gap:4px; margin-top:4px; }
 .sc-status-detail-row { display:flex; align-items:center; gap:8px; }
@@ -432,7 +435,7 @@ onMounted(() => { load(); fetchSchedulerStatus() })
 .sc-status-instance { font-size:10.5px; color:var(--text-muted); font-family:var(--mono,monospace); background:var(--bg-body); padding:2px 8px; border-radius:4px; border:1px solid var(--border); max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sc-status-refresh { align-self:flex-start; margin-top:2px; }
 .sc-status-spin { color:var(--text-muted); }
-.sc-dot--err { background:var(--danger,#f87171); box-shadow:0 0 6px rgba(248,113,113,0.5); }
+.sc-dot--err { background:var(--danger,var(--danger)); box-shadow:0 0 6px color-mix(in srgb, var(--danger) 50%, transparent); }
 .spin { animation:rotate 1s linear infinite; }
 @keyframes rotate { to { transform:rotate(360deg) } }
 .sc-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.55); display:flex; align-items:center; justify-content:center; z-index:1100; }

@@ -5,6 +5,7 @@ import { useCassandra, type CassandraColumnSummary, type CassandraDashboardData,
 import { useToast } from '@/composables/useToast'
 import { readableError } from '@/utils/httpError'
 import { useListFilter } from '@/composables/useListFilter'
+import ConnectionGate from '@/components/ui/ConnectionGate.vue'
 
 const props = defineProps<{ activeConnId?: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -162,10 +163,9 @@ onMounted(async () => {
   <div class="cass-page">
     <div class="cass-toolbar">
       <div>
-        <div class="page-kicker">Wide-column database</div>
-        <div class="cass-title">Cassandra Workbench</div>
+        <div class="cass-title">Cassandra</div>
       </div>
-      <div class="cass-actions">
+      <div v-if="isCassandra" class="cass-actions">
         <select class="base-input cass-select" :value="activeConnId ?? ''" @change="selectConnection(($event.target as HTMLSelectElement).value)">
           <option value="">Select Cassandra connection</option>
           <option v-for="conn in cassandraConnections" :key="conn.id" :value="conn.id">{{ conn.name }}</option>
@@ -174,13 +174,7 @@ onMounted(async () => {
       </div>
     </div>
 
-    <div v-if="!isCassandra" class="cass-empty">
-      <div class="cass-empty__mark">CA</div>
-      <div>
-        <h2>Choose a Cassandra connection</h2>
-        <p>Create or select a Cassandra connection to browse keyspaces, inspect tables, and run CQL.</p>
-      </div>
-    </div>
+    <ConnectionGate v-if="!isCassandra" :drivers="['cassandra']" label="Cassandra" purpose="to browse keyspaces and run CQL" icon="layers" @select="(id: number) => emit('set-conn', id)" />
 
     <div v-else class="cass-grid">
       <aside class="cass-sidebar">
@@ -323,8 +317,8 @@ onMounted(async () => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
+  gap: 16px;
+  padding: 20px 24px;
   overflow: hidden;
 }
 .cass-toolbar,
@@ -339,8 +333,8 @@ onMounted(async () => {
   gap: 12px;
 }
 .cass-title {
-  font-size: 22px;
-  font-weight: 800;
+  font-size: 20px;
+  font-weight: 600;
   color: var(--text);
 }
 .cass-actions {
@@ -375,9 +369,8 @@ onMounted(async () => {
   display: flex;
   justify-content: space-between;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 600;
   color: var(--text);
-  text-transform: uppercase;
 }
 .cass-panel-head--spaced {
   margin-top: 14px;
@@ -587,7 +580,7 @@ onMounted(async () => {
   place-items: center;
   background: #1f6feb;
   color: white;
-  font-weight: 800;
+  font-weight: 600;
 }
 .cass-empty h2 {
   margin: 0 0 4px;

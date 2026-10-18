@@ -1,521 +1,685 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
-import { useConnections, type Connection } from '@/composables/useConnections'
-import { useFolders, type ConnectionFolder } from '@/composables/useFolders'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import axios from 'axios'
 import { useAuth } from '@/composables/useAuth'
-import { useConfirm } from '@/composables/useConfirm'
-import { useToast } from '@/composables/useToast'
+import { useTheme } from '@/composables/useTheme'
+import { useConnections } from '@/composables/useConnections'
+import { useCommandPalette } from '@/composables/useCommandPalette'
+import { MAIN_SECTIONS, SETTINGS_SECTION, sectionOf, workspaceMeta, type NavItem, type NavSection } from '@/navigation'
+import { useNavigation } from '@/composables/useNavigation'
+import { DRIVER_COLOR, DRIVER_NAME } from '@/utils/drivers'
+import NavIcon from '@/components/ui/NavIcon.vue'
 import DriverIcon from '@/components/ui/DriverIcon.vue'
+import ConnectionsDropdown from '@/components/layout/ConnectionsDropdown.vue'
 
-const props = defineProps<{ activeConnId: number | null }>()
-const emit = defineEmits<{ (e: 'select-conn', id: number): void }>()
+const props = defineProps<{ activeConnId: number | null; collapsed: boolean; mobileOpen: boolean }>()
+const emit = defineEmits<{
+  (e: 'select-conn', id: number): void
+  (e: 'toggle-collapse'): void
+  (e: 'close-mobile'): void
+}>()
 
+const route = useRoute()
 const router = useRouter()
-const { connections, removeConnection, fetchConnections } = useConnections()
-const { folders, error: folderError, fetchFolders, createFolder, updateFolder, deleteFolder, moveConnection, setConnectionVisibility } = useFolders()
-const { user } = useAuth()
-const { confirm } = useConfirm()
-const toast = useToast()
+const { user, authEnabled, logout, hasAnyPermission } = useAuth()
+const { mode, toggleTheme } = useTheme()
+const { connections } = useConnections()
+const palette = useCommandPalette()
 
-const collapsed = ref(false)
-const connSearch = ref('')
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
+const modKey = isMac ? '⌘' : 'Ctrl'
 
-// Folder state
-const collapsedFolders = ref(new Set<number>())
-const showNewFolder = ref(false)
-const newFolderName = ref('')
-const newFolderColor = ref('#4f9cf9')
-const newFolderVisibility = ref<'private' | 'shared'>('private')
-const newFolderParent = ref<number | null>(null)
-
-// Edit folder state
-const editingFolder = ref<ConnectionFolder | null>(null)
-const editFolderName = ref('')
-const editFolderColor = ref('')
-const editFolderVisibility = ref<'private' | 'shared'>('private')
-
-// Context menu
-const contextMenu = ref<{ x: number; y: number; type: 'folder' | 'conn'; item: ConnectionFolder | Connection } | null>(null)
-
-onMounted(() => fetchFolders())
-
-const filteredConns = computed(() =>
-  connSearch.value
-    ? connections.value.filter(c => c.name.toLowerCase().includes(connSearch.value.toLowerCase()))
-    : connections.value,
+// ── Active connection ────────────────────────────────────────────
+const activeConn = computed(() =>
+  props.activeConnId != null ? connections.value.find((c) => c.id === props.activeConnId) ?? null : null,
 )
 
-const connsByFolder = computed(() => {
-  const map = new Map<number | null, Connection[]>()
-  map.set(null, [])
-  for (const f of folders.value) map.set(f.id, [])
-  for (const c of filteredConns.value) {
-    const key = c.folder_id ?? null
-    if (!map.has(key)) map.set(key, [])
-    map.get(key)!.push(c)
+// ── Sections ─────────────────────────────────────────────────────
+// The sidebar lists sections, not pages. A section opens on the page you last used
+// there; its other pages are tabs at the top of the content panel (SectionTabs).
+const nav = useNavigation()
+
+const activeDriver = computed(() => activeConn.value?.driver ?? null)
+const currentTab = computed(() => (typeof route.query.tab === 'string' ? route.query.tab : null))
+const currentSection = computed(() => sectionOf(route.name as string, currentTab.value))
+
+type SidebarEntry = { section: NavSection; label: string; icon: string; target: NavItem | undefined }
+
+const entries = computed<SidebarEntry[]>(() =>
+  MAIN_SECTIONS.map((section) => {
+    const meta = section.connectionScoped ? workspaceMeta(activeDriver.value) : { label: section.label, icon: section.icon }
+    return { section, ...meta, target: nav.entryFor(section, activeDriver.value) }
+  }).filter((e) => e.target || e.section.connectionScoped),
+)
+
+const settingsTarget = computed(() => nav.entryFor(SETTINGS_SECTION, activeDriver.value))
+
+function openEntry(e: SidebarEntry) {
+  emit('close-mobile')
+  // With no usable connection, the connection section's job is to get you one.
+  if (!e.target) return router.push({ name: 'connections', query: { new: '1' } })
+  router.push({ name: e.target.name, query: e.target.query })
+}
+
+function openSettings() {
+  emit('close-mobile')
+  const t = settingsTarget.value
+  if (t) router.push({ name: t.name, query: t.query })
+}
+
+function hrefFor(item: NavItem | undefined) {
+  return item ? router.resolve({ name: item.name, query: item.query }).href : router.resolve({ name: 'connections' }).href
+}
+
+// ── Connection switcher ──────────────────────────────────────────
+const connOpen = ref(false)
+const connBtn = ref<HTMLElement | null>(null)
+const connPanel = ref<HTMLElement | null>(null)
+const connPanelStyle = computed(() => {
+  if (!connOpen.value || !connBtn.value) return {}
+  const r = connBtn.value.getBoundingClientRect()
+  const width = 300
+  // Collapsed rail: open beside the button. Otherwise: drop below it.
+  if (props.collapsed && window.innerWidth > 900) {
+    return { position: 'fixed' as const, top: `${r.top}px`, left: `${r.right + 8}px`, zIndex: 900 }
   }
-  return map
+  const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8))
+  return { position: 'fixed' as const, top: `${r.bottom + 6}px`, left: `${left}px`, zIndex: 900 }
 })
 
-const rootFolders = computed(() => folders.value.filter(f => f.parent_id === null))
-function childFolders(parentId: number) { return folders.value.filter(f => f.parent_id === parentId) }
-function toggleFolder(id: number) {
-  if (collapsedFolders.value.has(id)) collapsedFolders.value.delete(id)
-  else collapsedFolders.value.add(id)
+// ── User menu ────────────────────────────────────────────────────
+const userOpen = ref(false)
+const userWrap = ref<HTMLElement | null>(null)
+const initial = computed(() => user.value?.username?.[0]?.toUpperCase() ?? 'U')
+
+async function handleLogout() {
+  userOpen.value = false
+  await logout()
+  router.push({ name: 'login' })
 }
 
-const driverLabel: Record<string, string> = { sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF', mongodb: 'MG', cassandra: 'CA', elasticsearch: 'ES', opensearch: 'OS', s3_aws: 'S3', s3_gcp: 'GCS', s3_oss: 'OSS', s3_obs: 'OBS' }
-function isObjectStorageDriver(driver: string) { return driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs' }
-function isSearchDriver(driver: string) { return driver === 'elasticsearch' || driver === 'opensearch' }
-
-function selectConn(conn: Connection) {
-  emit('select-conn', conn.id)
-  const stayViews = ['schema', 'data', 'er', 'dashboard', 'query', 'redis', 'memcache', 'mongodb', 'cassandra', 'search', 'search-policies', 'laravel-queue', 'kafka']
-  const current = router.currentRoute.value.name as string
-  if (conn.driver === 'redis' && current !== 'redis') router.push({ name: 'redis' })
-  else if (conn.driver === 'memcache' && current !== 'memcache') router.push({ name: 'memcache' })
-  else if (conn.driver === 'kafka' && current !== 'kafka') router.push({ name: 'kafka' })
-  else if (conn.driver === 'mongodb' && current !== 'mongodb') router.push({ name: 'mongodb' })
-  else if (conn.driver === 'cassandra' && current !== 'cassandra') router.push({ name: 'cassandra' })
-  else if (isSearchDriver(conn.driver) && current !== 'search' && current !== 'search-policies') router.push({ name: 'search' })
-  else if (isObjectStorageDriver(conn.driver)) router.push({ name: 'connections' })
-  else if (conn.driver !== 'redis' && conn.driver !== 'memcache' && conn.driver !== 'kafka' && conn.driver !== 'mongodb' && conn.driver !== 'cassandra' && !isSearchDriver(conn.driver) && ((current === 'redis' || current === 'memcache' || current === 'kafka' || current === 'mongodb' || current === 'cassandra' || current === 'search') || !stayViews.includes(current))) router.push({ name: 'query' })
+function goAccount(name: string) {
+  userOpen.value = false
+  router.push({ name })
+  emit('close-mobile')
 }
 
-async function deleteConn(conn: Connection) {
-  const ok = await confirm(`Delete connection "${conn.name}"? This cannot be undone.`, 'Delete Connection')
-  if (!ok) return
-  const success = await removeConnection(conn.id)
-  if (success) { toast.success('Connection deleted'); closeContextMenu() }
-  else toast.error('Failed to delete connection')
-}
+// ── Notifications ────────────────────────────────────────────────
+const canViewNotifications = computed(() => hasAnyPermission(['notifications.view']))
+const unread = ref(0)
+let poll: number | null = null
 
-async function submitNewFolder() {
-  if (!newFolderName.value.trim()) return
-  const result = await createFolder({ name: newFolderName.value.trim(), parent_id: newFolderParent.value, visibility: newFolderVisibility.value, color: newFolderColor.value })
-  if (result) {
-    newFolderName.value = ''
-    newFolderColor.value = '#4f9cf9'
-    newFolderVisibility.value = 'private'
-    newFolderParent.value = null
-    showNewFolder.value = false
-    toast.success(`Folder "${result.name}" created`)
-  } else {
-    toast.error(folderError.value || 'Failed to create folder')
+async function loadUnread() {
+  if (!authEnabled.value || !canViewNotifications.value) { unread.value = 0; return }
+  try {
+    const { data } = await axios.get<{ count: number }>('/api/notifications/unread')
+    unread.value = Number(data?.count || 0)
+  } catch {
+    unread.value = 0
   }
 }
-
-function startEditFolder(f: ConnectionFolder) {
-  editingFolder.value = f
-  editFolderName.value = f.name
-  editFolderColor.value = f.color
-  editFolderVisibility.value = f.visibility
-  closeContextMenu()
+function startPolling() {
+  if (poll !== null) window.clearInterval(poll)
+  poll = null
+  if (!authEnabled.value || !canViewNotifications.value) return
+  void loadUnread()
+  poll = window.setInterval(loadUnread, 30000)
 }
+watch([() => authEnabled.value, canViewNotifications, () => user.value?.id], startPolling, { immediate: true })
+watch(() => route.name, (n) => { if (n === 'notifications') void loadUnread() })
 
-async function submitEditFolder() {
-  if (!editingFolder.value || !editFolderName.value.trim()) return
-  const ok = await updateFolder(editingFolder.value.id, { name: editFolderName.value.trim(), color: editFolderColor.value, visibility: editFolderVisibility.value, parent_id: editingFolder.value.parent_id })
-  if (ok) {
-    editingFolder.value = null
-    toast.success('Folder updated')
-  } else {
-    toast.error(folderError.value || 'Failed to update folder')
-  }
+// ── Outside click ────────────────────────────────────────────────
+function onDocDown(e: MouseEvent) {
+  const t = e.target as Node
+  if (connOpen.value && !connBtn.value?.contains(t) && !connPanel.value?.contains(t)) connOpen.value = false
+  if (userOpen.value && !userWrap.value?.contains(t)) userOpen.value = false
 }
-
-async function doDeleteFolder(f: ConnectionFolder) {
-  const ok = await confirm(`Delete folder "${f.name}"? Connections inside will become unfiled.`, 'Delete Folder')
-  if (!ok) return
-  await deleteFolder(f.id)
-  toast.success('Folder deleted')
-  closeContextMenu()
-}
-
-async function toggleFolderVisibility(f: ConnectionFolder) {
-  await updateFolder(f.id, { ...f, visibility: f.visibility === 'shared' ? 'private' : 'shared' })
-  closeContextMenu()
-}
-
-async function toggleConnVisibility(c: Connection) {
-  await setConnectionVisibility(c.id, c.visibility === 'shared' ? 'private' : 'shared')
-  await fetchConnections()
-  closeContextMenu()
-}
-
-async function moveConnToFolder(connId: number, folderId: number | null) {
-  await moveConnection(connId, folderId)
-  await fetchConnections()
-  closeContextMenu()
-}
-
-function openContextMenu(e: MouseEvent, type: 'folder' | 'conn', item: ConnectionFolder | Connection) {
-  e.preventDefault()
-  e.stopPropagation()
-  contextMenu.value = { x: e.clientX, y: e.clientY, type, item }
-}
-
-function closeContextMenu() { contextMenu.value = null }
-
-const FOLDER_COLORS = ['#4f9cf9','#56c490','#f97f4f','#c45ef9','#f9d44f','#f9584f','#4fc8f9','#9cf94f','#f94f9c']
-
-// ── Drag and Drop ────────────────────────────────────────────────
-const draggedConn = ref<Connection | null>(null)
-const draggedFolder = ref<ConnectionFolder | null>(null)
-const dropTarget = ref<{ type: 'folder' | 'unfiled' | 'folder-reorder'; id: number | null; position?: 'before' | 'after' } | null>(null)
-
-function onConnDragStart(e: DragEvent, conn: Connection) {
-  draggedConn.value = conn; draggedFolder.value = null
-  if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', `conn:${conn.id}`) }
-}
-function onConnDragEnd() { draggedConn.value = null; dropTarget.value = null }
-
-function onFolderDragStart(e: DragEvent, folder: ConnectionFolder) {
-  draggedFolder.value = folder; draggedConn.value = null
-  if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', `folder:${folder.id}`) }
-}
-function onFolderDragEnd() { draggedFolder.value = null; dropTarget.value = null }
-
-function onFolderDragOver(e: DragEvent, folderId: number | null) {
-  if (!draggedConn.value && !draggedFolder.value) return
-  e.preventDefault()
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-  if (draggedConn.value) {
-    dropTarget.value = { type: folderId === null ? 'unfiled' : 'folder', id: folderId }
-  } else if (draggedFolder.value && folderId !== null && draggedFolder.value.id !== folderId) {
-    const el = (e.currentTarget as HTMLElement)
-    const rect = el.getBoundingClientRect()
-    const position = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
-    dropTarget.value = { type: 'folder-reorder', id: folderId, position }
-  }
-}
-
-function onDragLeave(e: DragEvent) {
-  const related = e.relatedTarget as HTMLElement | null
-  if (!related || !(e.currentTarget as HTMLElement).contains(related)) dropTarget.value = null
-}
-
-async function onFolderDrop(e: DragEvent, folderId: number | null) {
-  e.preventDefault()
-  const target = dropTarget.value
-  dropTarget.value = null
-
-  if (draggedConn.value) {
-    const conn = draggedConn.value; draggedConn.value = null
-    if (conn.folder_id === folderId) return
-    await moveConnection(conn.id, folderId)
-    await fetchConnections()
-    toast.success(`Moved "${conn.name}"`)
-  } else if (draggedFolder.value && target?.type === 'folder-reorder' && target.id !== null) {
-    const dragged = draggedFolder.value; draggedFolder.value = null
-    if (dragged.id === target.id) return
-    const list = [...folders.value.filter(f => f.parent_id === dragged.parent_id)]
-    const fromIdx = list.findIndex(f => f.id === dragged.id)
-    const toIdx = list.findIndex(f => f.id === target.id)
-    if (fromIdx < 0 || toIdx < 0) return
-    list.splice(fromIdx, 1)
-    const insertAt = target.position === 'before' ? toIdx : toIdx + (fromIdx < toIdx ? 0 : 1)
-    list.splice(Math.max(0, Math.min(insertAt, list.length)), 0, dragged)
-    for (let i = 0; i < list.length; i++) updateFolder(list[i].id, { ...list[i], sort_order: i } as never)
-    const otherFolders = folders.value.filter(f => f.parent_id !== dragged.parent_id)
-    folders.value.splice(0, folders.value.length, ...otherFolders, ...list)
-  }
-}
-
-function isDropTarget(folderId: number | null) {
-  if (!dropTarget.value) return false
-  if (dropTarget.value.type === 'unfiled' && folderId === null) return true
-  if (dropTarget.value.type === 'folder' && dropTarget.value.id === folderId) return true
-  return false
-}
-function isReorderTarget(folderId: number) { return dropTarget.value?.type === 'folder-reorder' && dropTarget.value.id === folderId }
-function reorderPosition(folderId: number): 'before' | 'after' | null {
-  if (!isReorderTarget(folderId)) return null
-  return dropTarget.value?.position ?? null
-}
+onMounted(() => document.addEventListener('mousedown', onDocDown))
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onDocDown)
+  if (poll !== null) window.clearInterval(poll)
+})
+watch(() => route.fullPath, () => { connOpen.value = false; userOpen.value = false })
 </script>
 
 <template>
-  <aside class="connpanel" :class="{ 'connpanel--collapsed': collapsed }">
-
-    <!-- Panel header -->
-    <div class="connpanel__header">
-      <span v-if="!collapsed" class="connpanel__title">Connections</span>
-      <div style="display:flex;gap:4px;margin-left:auto">
-        <button v-if="!collapsed" class="icon-btn" @click="router.push({ name: 'connections' })" title="New connection">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/><line x1="9" y1="9" x2="15" y2="9"/></svg>
-        </button>
-        <button v-if="!collapsed" class="icon-btn" @click="showNewFolder = !showNewFolder" title="New folder">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
-        </button>
-        <button class="icon-btn" @click="collapsed = !collapsed" :title="collapsed ? 'Expand panel' : 'Collapse panel'">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path v-if="!collapsed" d="M11 19l-7-7 7-7"/>
-            <path v-else d="M13 5l7 7-7 7"/>
-          </svg>
-        </button>
-      </div>
-    </div>
-
-    <!-- Collapsed: just show icon per connection -->
-    <div v-if="collapsed" class="connpanel__collapsed-list">
-      <button
-        v-for="conn in connections"
-        :key="conn.id"
-        class="connpanel__mini-btn"
-        :class="{ 'connpanel__mini-btn--active': activeConnId === conn.id }"
-        :title="conn.name"
-        @click="selectConn(conn)"
-      >
-        <div class="conn-badge conn-badge--sm" :class="`conn-badge--${conn.driver}`"><DriverIcon :driver="conn.driver" :size="12" /></div>
+  <aside class="sb" :class="{ 'sb--collapsed': collapsed, 'sb--mobile-open': mobileOpen }" aria-label="Primary">
+    <!-- Brand -->
+    <div class="sb__brand">
+      <router-link :to="{ name: 'welcome' }" class="sb__logo" title="Home" @click="emit('close-mobile')">
+        <span class="sb__mark">
+          <NavIcon name="nias" :size="15" />
+        </span>
+        <span class="sb__name">Nias</span>
+      </router-link>
+      <button class="sb__icon-btn sb__collapse" type="button" :title="collapsed ? 'Expand sidebar' : 'Collapse sidebar'" :aria-label="collapsed ? 'Expand sidebar' : 'Collapse sidebar'" @click="emit('toggle-collapse')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" />
+        </svg>
+      </button>
+      <button class="sb__icon-btn sb__close" type="button" aria-label="Close menu" @click="emit('close-mobile')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
       </button>
     </div>
 
-    <!-- Expanded -->
-    <template v-else>
-      <!-- New folder form -->
-      <div v-if="showNewFolder" class="new-folder-form">
-        <input v-model="newFolderName" class="nf-input" placeholder="Folder name…" @keydown.enter="submitNewFolder" @keydown.esc="showNewFolder=false" autofocus />
-        <div class="nf-row">
-          <select v-model="newFolderVisibility" class="nf-select">
-            <option value="private">🔒 Private</option>
-            <option value="shared">🌐 Shared</option>
-          </select>
-          <select v-model="newFolderParent" class="nf-select">
-            <option :value="null">No parent</option>
-            <option v-for="f in folders" :key="f.id" :value="f.id">{{ f.name }}</option>
-          </select>
+    <!-- Search + connection -->
+    <div class="sb__top">
+      <button class="sb__search" type="button" :title="`Search (${modKey}K)`" @click="palette.show(); emit('close-mobile')">
+        <NavIcon name="search" :size="15" />
+        <span class="sb__search-label">Search</span>
+        <kbd class="sb__kbd">{{ modKey }}K</kbd>
+      </button>
+
+      <button
+        ref="connBtn"
+        class="sb__conn"
+        :class="{ 'is-open': connOpen }"
+        type="button"
+        :title="activeConn ? `${activeConn.name} · ${DRIVER_NAME[activeConn.driver] ?? activeConn.driver}` : 'Choose a connection'"
+        @click="connOpen = !connOpen; userOpen = false"
+      >
+        <span v-if="activeConn" class="sb__driver" :style="{ background: DRIVER_COLOR[activeConn.driver] ?? '#4b5563' }">
+          <DriverIcon :driver="activeConn.driver" :size="13" />
+        </span>
+        <span v-else class="sb__driver sb__driver--empty"><NavIcon name="plug" :size="13" /></span>
+        <span class="sb__conn-text">
+          <span class="sb__conn-name">{{ activeConn ? activeConn.name : 'No connection' }}</span>
+          <span class="sb__conn-sub">{{ activeConn ? (activeConn.host || DRIVER_NAME[activeConn.driver]) : 'Choose one to start' }}</span>
+        </span>
+        <svg class="sb__chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 9 4-4 4 4M8 15l4 4 4-4" /></svg>
+      </button>
+      <Teleport to="body">
+        <div v-if="connOpen" ref="connPanel" :style="connPanelStyle">
+          <ConnectionsDropdown
+            :activeConnId="activeConnId"
+            @select-conn="(id: number) => emit('select-conn', id)"
+            @close="connOpen = false"
+          />
         </div>
-        <div class="nf-colors">
-          <button v-for="c in FOLDER_COLORS" :key="c" class="nf-color-dot"
-            :style="{ background: c, outline: newFolderColor === c ? '2px solid #fff' : 'none' }"
-            @click="newFolderColor = c" />
-        </div>
-        <div class="nf-actions">
-          <button class="nf-btn" @click="showNewFolder=false">Cancel</button>
-          <button class="nf-btn nf-btn--primary" @click="submitNewFolder" :disabled="!newFolderName.trim()">Create</button>
-        </div>
-      </div>
+      </Teleport>
+    </div>
 
-      <!-- Search -->
-      <div style="position:relative;padding:6px 8px">
-        <svg style="position:absolute;left:16px;top:50%;transform:translateY(-50%);color:var(--text-muted);pointer-events:none" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input v-model="connSearch" class="base-input" style="padding-left:28px;height:28px;font-size:12px;width:100%" placeholder="Search connections..." />
-      </div>
+    <!-- Navigation -->
+    <nav class="sb__nav">
+      <router-link
+        :to="{ name: 'welcome' }"
+        class="sb__item"
+        :class="{ 'is-active': route.name === 'welcome' }"
+        :aria-current="route.name === 'welcome' ? 'page' : undefined"
+        :title="collapsed ? 'Home' : undefined"
+        @click="emit('close-mobile')"
+      >
+        <NavIcon name="home" :size="16" />
+        <span class="sb__item-label">Home</span>
+      </router-link>
 
-      <!-- Scrollable tree -->
-      <div class="connpanel__tree">
-        <!-- Root folders -->
-        <template v-for="folder in rootFolders" :key="folder.id">
-          <div v-if="reorderPosition(folder.id) === 'before'" class="drop-reorder-line" />
-          <div class="folder-row" :class="{ 'is-drop-target': isDropTarget(folder.id), 'is-dragging': draggedFolder?.id === folder.id }"
-            draggable="true" @dragstart="onFolderDragStart($event, folder)" @dragend="onFolderDragEnd"
-            @dragover="onFolderDragOver($event, folder.id)" @dragleave="onDragLeave" @drop="onFolderDrop($event, folder.id)"
-            @contextmenu="openContextMenu($event, 'folder', folder)">
-            <span class="drag-handle" title="Drag to reorder">⠿</span>
-            <button class="folder-toggle" @click.stop="toggleFolder(folder.id)">
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" style="transition:transform .15s" :style="{ transform: collapsedFolders.has(folder.id) ? 'rotate(-90deg)' : 'rotate(0deg)' }"><path d="M5 3l14 9-14 9z"/></svg>
-            </button>
-            <span class="folder-icon" :style="{ color: folder.color }"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>
-            <span class="folder-name">{{ folder.name }}</span>
-            <span v-if="folder.visibility === 'shared'" class="folder-badge" title="Shared">🌐</span>
-            <span v-else class="folder-badge" title="Private">🔒</span>
-            <span class="folder-count">{{ (connsByFolder.get(folder.id) ?? []).length }}</span>
-          </div>
-          <div v-if="reorderPosition(folder.id) === 'after'" class="drop-reorder-line" />
+      <div class="sb__sep" />
 
-          <template v-if="!collapsedFolders.has(folder.id)">
-            <template v-for="child in childFolders(folder.id)" :key="child.id">
-              <div class="folder-row folder-row--child" :class="{ 'is-drop-target': isDropTarget(child.id), 'is-dragging': draggedFolder?.id === child.id }"
-                draggable="true" @dragstart="onFolderDragStart($event, child)" @dragend="onFolderDragEnd"
-                @dragover="onFolderDragOver($event, child.id)" @dragleave="onDragLeave" @drop="onFolderDrop($event, child.id)"
-                @contextmenu="openContextMenu($event, 'folder', child)">
-                <span class="drag-handle">⠿</span>
-                <button class="folder-toggle" @click.stop="toggleFolder(child.id)">
-                  <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" style="transition:transform .15s" :style="{ transform: collapsedFolders.has(child.id) ? 'rotate(-90deg)' : 'rotate(0deg)' }"><path d="M5 3l14 9-14 9z"/></svg>
-                </button>
-                <span class="folder-icon" :style="{ color: child.color }"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>
-                <span class="folder-name">{{ child.name }}</span>
-                <span v-if="child.visibility === 'shared'" class="folder-badge" title="Shared">🌐</span>
-                <span v-else class="folder-badge" title="Private">🔒</span>
-              </div>
-              <template v-if="!collapsedFolders.has(child.id)">
-                <div v-for="conn in (connsByFolder.get(child.id) ?? [])" :key="conn.id"
-                  class="conn-item conn-item--nested conn-item--deep"
-                  :class="{ 'is-active': activeConnId === conn.id, 'is-dragging': draggedConn?.id === conn.id }"
-                  draggable="true" @dragstart="onConnDragStart($event, conn)" @dragend="onConnDragEnd"
-                  @click="selectConn(conn)" @contextmenu="openContextMenu($event, 'conn', conn)">
-                  <span class="drag-handle">⠿</span>
-                  <div class="conn-badge conn-badge--sm" :class="`conn-badge--${conn.driver}`"><DriverIcon :driver="conn.driver" :size="12" /></div>
-                  <div class="conn-item__body"><div class="conn-item__name">{{ conn.name }}</div></div>
-                  <span v-if="conn.visibility === 'private'" class="conn-vis-icon" title="Private">🔒</span>
-                </div>
-              </template>
-            </template>
+      <a
+        v-for="e in entries"
+        :key="e.section.id"
+        :href="hrefFor(e.target)"
+        class="sb__item"
+        :class="{ 'is-active': currentSection?.id === e.section.id, 'sb__item--muted': !e.target }"
+        :aria-current="currentSection?.id === e.section.id ? 'page' : undefined"
+        :title="collapsed ? e.label : undefined"
+        @click.prevent="openEntry(e)"
+      >
+        <NavIcon :name="e.icon" :size="16" />
+        <span class="sb__item-label">{{ e.label }}</span>
+      </a>
+    </nav>
 
-            <div v-for="conn in (connsByFolder.get(folder.id) ?? [])" :key="conn.id"
-              class="conn-item conn-item--nested"
-              :class="{ 'is-active': activeConnId === conn.id, 'is-dragging': draggedConn?.id === conn.id }"
-              draggable="true" @dragstart="onConnDragStart($event, conn)" @dragend="onConnDragEnd"
-              @click="selectConn(conn)" @contextmenu="openContextMenu($event, 'conn', conn)">
-              <span class="drag-handle">⠿</span>
-              <div class="conn-badge conn-badge--sm" :class="`conn-badge--${conn.driver}`"><DriverIcon :driver="conn.driver" :size="12" /></div>
-              <div class="conn-item__body">
-                <div class="conn-item__name">{{ conn.name }}</div>
-                <div class="conn-item__host">{{ conn.host }}{{ conn.port ? ':' + conn.port : '' }}</div>
-              </div>
-              <span v-if="conn.visibility === 'private'" class="conn-vis-icon" title="Private">🔒</span>
+    <!-- Footer -->
+    <div class="sb__foot">
+      <router-link
+        v-if="canViewNotifications"
+        :to="{ name: 'notifications' }"
+        class="sb__item"
+        :class="{ 'is-active': route.name === 'notifications' }"
+        :title="collapsed ? 'Notifications' : undefined"
+        @click="emit('close-mobile')"
+      >
+        <span class="sb__bell">
+          <NavIcon name="bell" :size="16" />
+          <span v-if="unread > 0 && collapsed" class="sb__bell-dot" />
+        </span>
+        <span class="sb__item-label">Notifications</span>
+        <span v-if="unread > 0" class="sb__count">{{ unread > 99 ? '99+' : unread }}</span>
+      </router-link>
+
+      <a
+        v-if="settingsTarget"
+        :href="hrefFor(settingsTarget)"
+        class="sb__item"
+        :class="{ 'is-active': currentSection?.id === 'settings' }"
+        :aria-current="currentSection?.id === 'settings' ? 'page' : undefined"
+        :title="collapsed ? 'Settings' : undefined"
+        @click.prevent="openSettings"
+      >
+        <NavIcon name="settings" :size="16" />
+        <span class="sb__item-label">Settings</span>
+      </a>
+
+      <div class="sb__foot-row">
+        <div v-if="authEnabled" ref="userWrap" class="sb__user-wrap">
+          <button class="sb__user" type="button" :aria-expanded="userOpen" @click="userOpen = !userOpen; connOpen = false">
+            <span class="sb__avatar">{{ initial }}</span>
+            <span class="sb__user-text">
+              <span class="sb__user-name">{{ user?.username ?? 'User' }}</span>
+              <span class="sb__user-role">{{ user?.role }}</span>
+            </span>
+          </button>
+          <Transition name="pop">
+            <div v-if="userOpen" class="sb__menu" role="menu">
+              <button class="sb__menu-item" role="menuitem" type="button" @click="goAccount('security')">
+                <NavIcon name="lock" :size="15" /> Password and 2FA
+              </button>
+              <button class="sb__menu-item" role="menuitem" type="button" @click="goAccount('docs')">
+                <NavIcon name="book" :size="15" /> Documentation
+              </button>
+              <div class="sb__menu-sep" />
+              <button class="sb__menu-item sb__menu-item--danger" role="menuitem" type="button" @click="handleLogout">
+                <NavIcon name="logout" :size="15" /> Sign out
+              </button>
             </div>
-
-            <div v-if="draggedConn && (connsByFolder.get(folder.id) ?? []).length === 0"
-              class="folder-drop-empty" @dragover="onFolderDragOver($event, folder.id)"
-              @dragleave="onDragLeave" @drop="onFolderDrop($event, folder.id)">Drop here</div>
-          </template>
-        </template>
-
-        <!-- Unfiled -->
-        <div class="folder-row folder-row--unfiled" :class="{ 'is-drop-target': isDropTarget(null) }"
-          @dragover="onFolderDragOver($event, null)" @dragleave="onDragLeave" @drop="onFolderDrop($event, null)">
-          <span class="folder-icon" style="color:var(--text-muted)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>
-          <span class="folder-name" style="color:var(--text-muted);font-style:italic">Unfiled</span>
-          <span class="folder-count">{{ (connsByFolder.get(null) ?? []).length }}</span>
+          </Transition>
         </div>
-        <div v-for="conn in (connsByFolder.get(null) ?? [])" :key="conn.id"
-          class="conn-item conn-item--nested"
-          :class="{ 'is-active': activeConnId === conn.id, 'is-dragging': draggedConn?.id === conn.id }"
-          draggable="true" @dragstart="onConnDragStart($event, conn)" @dragend="onConnDragEnd"
-          @click="selectConn(conn)" @contextmenu="openContextMenu($event, 'conn', conn)">
-          <span class="drag-handle">⠿</span>
-          <div class="conn-badge conn-badge--sm" :class="`conn-badge--${conn.driver}`"><DriverIcon :driver="conn.driver" :size="12" /></div>
-          <div class="conn-item__body">
-            <div class="conn-item__name">{{ conn.name }}</div>
-            <div class="conn-item__host">{{ conn.host }}{{ conn.port ? ':' + conn.port : '' }}</div>
-          </div>
-          <span v-if="conn.visibility === 'private'" class="conn-vis-icon" title="Private">🔒</span>
-        </div>
+        <router-link v-else :to="{ name: 'docs' }" class="sb__item sb__docs" :title="collapsed ? 'Documentation' : undefined">
+          <NavIcon name="book" :size="16" />
+          <span class="sb__item-label">Documentation</span>
+        </router-link>
 
-        <div v-if="connections.length === 0" class="empty-state" style="padding:20px 12px;font-size:12px">
-          No connections yet.<br>
-          <router-link :to="{ name: 'connections' }" style="color:var(--brand);font-size:11px;margin-top:6px;display:inline-block">Add your first connection →</router-link>
-        </div>
+        <button
+          class="sb__icon-btn sb__theme"
+          type="button"
+          :title="mode === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
+          :aria-label="mode === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
+          @click="toggleTheme"
+        >
+          <NavIcon :name="mode === 'dark' ? 'sun' : 'moon'" :size="16" />
+        </button>
       </div>
-    </template>
-
-    <!-- Edit folder modal -->
-    <Teleport to="body">
-      <div v-if="editingFolder" class="folder-edit-overlay" @click.self="editingFolder=null">
-        <div class="folder-edit-modal">
-          <div class="fem-header">Edit Folder <button class="icon-btn" @click="editingFolder=null">✕</button></div>
-          <div class="fem-body">
-            <label>Name</label>
-            <input v-model="editFolderName" class="fem-input" />
-            <label>Visibility</label>
-            <select v-model="editFolderVisibility" class="fem-input">
-              <option value="private">🔒 Private</option>
-              <option value="shared">🌐 Shared</option>
-            </select>
-            <label>Color</label>
-            <div class="nf-colors">
-              <button v-for="c in FOLDER_COLORS" :key="c" class="nf-color-dot"
-                :style="{ background: c, outline: editFolderColor === c ? '2px solid #fff' : 'none' }"
-                @click="editFolderColor = c" />
-            </div>
-            <div class="fem-actions">
-              <button class="nf-btn" @click="editingFolder=null">Cancel</button>
-              <button class="nf-btn nf-btn--primary" @click="submitEditFolder">Save</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </Teleport>
-
-    <!-- Context menu -->
-    <Teleport to="body">
-      <div v-if="contextMenu" class="ctx-backdrop" @click="closeContextMenu">
-        <div class="ctx-menu" :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }" @click.stop>
-          <template v-if="contextMenu.type === 'folder'">
-            <button class="ctx-item" @click="startEditFolder(contextMenu.item as ConnectionFolder)">✎ Edit folder</button>
-            <button class="ctx-item" @click="toggleFolderVisibility(contextMenu.item as ConnectionFolder)">
-              {{ (contextMenu.item as ConnectionFolder).visibility === 'shared' ? '🔒 Make private' : '🌐 Make shared' }}
-            </button>
-            <div class="ctx-divider" />
-            <button class="ctx-item ctx-item--danger" @click="doDeleteFolder(contextMenu.item as ConnectionFolder)">🗑 Delete folder</button>
-          </template>
-          <template v-else>
-            <button class="ctx-item" @click="selectConn(contextMenu.item as Connection); closeContextMenu()">▶ Open</button>
-            <button class="ctx-item" @click="toggleConnVisibility(contextMenu.item as Connection)">
-              {{ (contextMenu.item as Connection).visibility === 'shared' ? '🔒 Make private' : '🌐 Make shared' }}
-            </button>
-            <div class="ctx-divider" />
-            <div class="ctx-submenu-label">Move to folder</div>
-            <button class="ctx-item" @click="moveConnToFolder((contextMenu.item as Connection).id, null)">📂 Unfiled</button>
-            <button v-for="f in folders" :key="f.id" class="ctx-item" @click="moveConnToFolder((contextMenu.item as Connection).id, f.id)">
-              <span :style="{ color: f.color }">📁</span> {{ f.name }}
-            </button>
-            <div class="ctx-divider" />
-            <button class="ctx-item ctx-item--danger" @click="deleteConn(contextMenu.item as Connection)">🗑 Delete</button>
-          </template>
-        </div>
-      </div>
-    </Teleport>
+    </div>
   </aside>
 </template>
 
 <style scoped>
-.connpanel {
-  width: 220px;
+.sb {
+  width: var(--sidebar-w);
   flex-shrink: 0;
   height: 100%;
-  background: var(--bg-surface);
-  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  /* The sidebar sits on the canvas; the content panel floats beside it. */
+  background: var(--canvas);
+  transition: width 180ms var(--ease);
   overflow: hidden;
-  transition: width 0.2s ease;
-}
-.connpanel--collapsed {
-  width: 44px;
+  z-index: 40;
 }
 
-.connpanel__header {
+/* Brand */
+.sb__brand {
   display: flex;
   align-items: center;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
+  gap: 4px;
+  height: 52px;
+  padding: 0 10px 0 14px;
   flex-shrink: 0;
-  min-height: 38px;
 }
-.connpanel__title {
+.sb__logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  text-decoration: none;
+  color: var(--text-primary);
+}
+.sb__mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 30%;
+  display: grid;
+  place-items: center;
+  /* Nias signature: the only place pink appears in the app (DESIGN.md › Palette). */
+  background: var(--signature-bg);
+  color: var(--signature);
+  flex-shrink: 0;
+}
+.sb__name {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.sb__icon-btn {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.sb__icon-btn:hover { background: var(--bg-hover-strong); color: var(--text-primary); }
+.sb__close { display: none; }
+
+/* Search + connection */
+.sb__top {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 10px 10px;
+  flex-shrink: 0;
+}
+.sb__search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 8px 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-panel);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.sb__search:hover { border-color: var(--border-2); color: var(--text-2); }
+.sb__search-label { flex: 1; text-align: left; }
+.sb__kbd {
+  font-family: var(--mono);
   font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border-2);
+  background: var(--bg-body);
   color: var(--text-muted);
 }
 
-.connpanel__collapsed-list {
+.sb__conn {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur) var(--ease);
+}
+.sb__conn:hover,
+.sb__conn.is-open { background: var(--bg-hover-strong); }
+.sb__driver {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: #fff;
+}
+.sb__driver--empty {
+  background: var(--bg-surface);
+  border: 1px dashed var(--border-2);
+  color: var(--text-muted);
+}
+.sb__conn-text {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
+  line-height: 1.25;
+}
+.sb__conn-name,
+.sb__conn-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sb__conn-name { font-size: 13px; font-weight: 500; }
+.sb__conn-sub { font-size: 11.5px; color: var(--text-muted); }
+.sb__chev { color: var(--text-muted); flex-shrink: 0; }
+
+/* Navigation */
+.sb__nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 10px 12px;
+  scrollbar-width: thin;
+}
+.sb__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sb__sep {
+  height: 1px;
+  margin: 6px 8px;
+  background: var(--border);
+}
+.sb__item--muted { color: var(--muted); }
+.sb__item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 9px;
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 13.5px;
+  white-space: nowrap;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.sb__item svg { flex-shrink: 0; color: var(--text-muted); transition: color var(--dur) var(--ease); }
+.sb__item:hover { background: var(--bg-hover-strong); color: var(--text-primary); }
+.sb__item:hover svg { color: var(--text-secondary); }
+.sb__item.is-active {
+  background: var(--surface);
+  color: var(--accent);
+  font-weight: 500;
+  box-shadow: var(--shadow-panel);
+}
+.sb__item.is-active svg { color: var(--accent); }
+.sb__item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Footer */
+.sb__foot {
+  flex-shrink: 0;
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sb__bell { position: relative; display: flex; }
+.sb__bell-dot {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 2px var(--canvas);
+}
+.sb__count {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.sb__foot-row {
+  display: flex;
   align-items: center;
   gap: 4px;
-  padding: 8px 4px;
-  overflow-y: auto;
 }
-.connpanel__mini-btn {
+.sb__user-wrap { position: relative; flex: 1; min-width: 0; }
+.sb__docs { flex: 1; min-width: 0; }
+.sb__user {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 6px;
+  border: none;
+  border-radius: var(--r-sm);
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  padding: 4px;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
   cursor: pointer;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background var(--dur) var(--ease);
 }
-.connpanel__mini-btn:hover { background: var(--bg-hover); }
-.connpanel__mini-btn--active { border-color: var(--brand); background: var(--brand-dim); }
+.sb__user:hover { background: var(--bg-hover-strong); }
+.sb__avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-2);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.sb__user-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+.sb__user-name,
+.sb__user-role {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sb__user-name { font-size: 13px; font-weight: 500; }
+.sb__user-role { font-size: 11.5px; color: var(--text-muted); text-transform: capitalize; }
 
-.connpanel__tree {
-  flex: 1;
-  overflow-y: auto;
-  padding: 4px 0;
+.sb__menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  min-width: 210px;
+  padding: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-lg);
+  z-index: 60;
+}
+.sb__menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.sb__menu-item:hover { background: var(--bg-hover-strong); color: var(--text-primary); }
+.sb__menu-item--danger:hover { background: var(--danger-bg); color: var(--danger); }
+.sb__menu-sep { height: 1px; margin: 4px 2px; background: var(--border); }
+
+.pop-enter-active, .pop-leave-active { transition: opacity 110ms var(--ease), transform 110ms var(--ease); }
+.pop-enter-from, .pop-leave-to { opacity: 0; transform: translateY(4px); }
+
+/* Collapsed rail */
+.sb--collapsed { width: var(--sidebar-w-collapsed); }
+.sb--collapsed .sb__name,
+.sb--collapsed .sb__search-label,
+.sb--collapsed .sb__kbd,
+.sb--collapsed .sb__conn-text,
+.sb--collapsed .sb__chev,
+.sb--collapsed .sb__item-label,
+.sb--collapsed .sb__count,
+.sb--collapsed .sb__user-text { display: none; }
+.sb--collapsed .sb__brand { flex-direction: column; height: auto; padding: 12px 0 6px; gap: 8px; }
+.sb--collapsed .sb__logo { flex: none; }
+.sb--collapsed .sb__top { padding: 4px 12px 10px; align-items: center; }
+.sb--collapsed .sb__search { width: 32px; padding: 0; justify-content: center; }
+.sb--collapsed .sb__conn { padding: 4px; }
+.sb--collapsed .sb__nav { padding: 4px 12px 12px; }
+.sb--collapsed .sb__item { width: 32px; padding: 0; justify-content: center; }
+.sb--collapsed .sb__foot { align-items: center; padding: 8px 12px 10px; }
+.sb--collapsed .sb__foot-row { flex-direction: column-reverse; }
+.sb--collapsed .sb__user { padding: 3px; }
+.sb--collapsed .sb__menu { left: calc(100% + 10px); bottom: 0; }
+
+/* Mobile drawer */
+@media (max-width: 900px) {
+  .sb,
+  .sb--collapsed {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(300px, 86vw);
+    transform: translateX(-100%);
+    transition: transform 200ms var(--ease);
+    box-shadow: var(--shadow-lg);
+    z-index: 120;
+  }
+  .sb--mobile-open { transform: translateX(0); }
+  /* Off-screen drawer: no shadow bleeding in from the edge, and out of the tab order. */
+  .sb:not(.sb--mobile-open) { box-shadow: none; visibility: hidden; transition: transform 200ms var(--ease), visibility 0s 200ms; }
+  .sb__collapse { display: none; }
+  .sb__close { display: grid; }
+  /* The drawer is always the full layout, even if desktop was collapsed. */
+  .sb--collapsed .sb__name,
+  .sb--collapsed .sb__search-label,
+  .sb--collapsed .sb__conn-text,
+  .sb--collapsed .sb__chev,
+  .sb--collapsed .sb__item-label,
+  .sb--collapsed .sb__user-text { display: revert; }
+  .sb--collapsed .sb__count { display: block; }
+  .sb__kbd { display: none; }
+  .sb--collapsed .sb__brand { flex-direction: row; height: 52px; padding: 0 10px 0 14px; }
+  .sb--collapsed .sb__logo { flex: 1; }
+  .sb--collapsed .sb__top { padding: 4px 10px 10px; align-items: stretch; }
+  .sb--collapsed .sb__search { width: auto; padding: 0 8px 0 10px; justify-content: flex-start; }
+  .sb--collapsed .sb__conn { padding: 6px 8px; }
+  .sb--collapsed .sb__nav { padding: 4px 10px 12px; }
+  .sb--collapsed .sb__item { width: auto; padding: 0 8px; justify-content: flex-start; }
+  .sb--collapsed .sb__foot { align-items: stretch; padding: 8px 10px 10px; }
+  .sb--collapsed .sb__foot-row { flex-direction: row; }
+  .sb--collapsed .sb__menu { left: 0; bottom: calc(100% + 6px); }
+  .sb__item { height: 38px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sb, .sb--collapsed { transition: none; }
 }
 </style>

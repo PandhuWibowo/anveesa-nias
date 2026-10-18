@@ -5,6 +5,7 @@ import { useMongoDB, type MongoCollectionStat, type MongoDashboardData, type Mon
 import { useToast } from '@/composables/useToast'
 import { readableError } from '@/utils/httpError'
 import { useListFilter } from '@/composables/useListFilter'
+import ConnectionGate from '@/components/ui/ConnectionGate.vue'
 
 const props = defineProps<{ activeConnId?: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -647,17 +648,7 @@ onMounted(async () => {
 
 <template>
   <div class="mongo-page">
-    <section v-if="!isMongo" class="page-panel mongo-empty">
-      <div class="mongo-empty__title">Select a MongoDB connection</div>
-      <div v-if="mongoConnections.length" class="mongo-picker">
-        <label class="form-label">MongoDB Connection</label>
-        <select class="base-input" @change="selectMongoConnection(($event.target as HTMLSelectElement).value)">
-          <option value="">Select MongoDB connection</option>
-          <option v-for="conn in mongoConnections" :key="conn.id" :value="conn.id">{{ conn.name }}</option>
-        </select>
-      </div>
-      <div v-else class="mongo-muted">Create a MongoDB connection in Admin / Connections first.</div>
-    </section>
+    <ConnectionGate v-if="!isMongo" :drivers="['mongodb']" label="MongoDB" purpose="to browse collections and documents" icon="document" @select="selectMongoConnection" />
 
     <template v-else>
       <header class="mongo-head">
@@ -1113,9 +1104,8 @@ onMounted(async () => {
   margin-bottom: 16px;
 }
 .mongo-kicker {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
   color: #00a35c;
 }
 .mongo-head h1 {
@@ -1146,10 +1136,9 @@ onMounted(async () => {
   gap: 5px;
 }
 .mongo-card span {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--text-muted);
-  text-transform: uppercase;
 }
 .mongo-card strong {
   font-size: 20px;
@@ -1246,8 +1235,8 @@ onMounted(async () => {
   font-size: 12px;
 }
 .base-input.is-invalid {
-  border-color: #dc2626;
-  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.12);
+  border-color: var(--danger);
+  box-shadow: 0 0 0 2px var(--danger-bg);
 }
 .mongo-filter-row {
   display: grid;
@@ -1292,9 +1281,9 @@ onMounted(async () => {
   min-height: 30px;
 }
 .mongo-validation {
-  border: 1px solid rgba(220, 38, 38, 0.35);
-  background: rgba(220, 38, 38, 0.08);
-  color: #ef4444;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  background: var(--danger-bg);
+  color: var(--danger);
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 12px;
@@ -1329,8 +1318,7 @@ onMounted(async () => {
 .mongo-table th {
   color: var(--text-muted);
   background: var(--bg-surface);
-  font-size: 11px;
-  text-transform: uppercase;
+  font-size: 12px;
 }
 .mongo-table td code {
   display: block;
@@ -1441,8 +1429,8 @@ onMounted(async () => {
   padding: 10px 12px;
 }
 .mongo-action-strip.danger {
-  border-color: rgba(220, 38, 38, 0.35);
-  background: rgba(220, 38, 38, 0.08);
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+  background: var(--danger-bg);
 }
 .mongo-action-strip span {
   color: var(--text-muted);
@@ -1514,12 +1502,11 @@ onMounted(async () => {
 .mongo-schema-row--head {
   background: var(--bg-surface);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
 }
 .mongo-schema-row.is-mixed {
-  background: rgba(245, 158, 11, 0.08);
+  background: var(--warning-bg);
 }
 .mongo-schema-row code {
   font-family: var(--mono, monospace);
@@ -1614,7 +1601,7 @@ onMounted(async () => {
 .mongo-error {
   margin-bottom: 12px;
   padding: 10px 12px;
-  border: 1px solid #b91c1c;
+  border: 1px solid var(--danger);
   background: #fee2e2;
   color: #7f1d1d;
   border-radius: 8px;

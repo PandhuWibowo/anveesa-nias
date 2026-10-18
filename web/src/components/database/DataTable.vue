@@ -740,7 +740,7 @@ th:hover .th-grip { opacity: 0.7; }
   padding: 0 8px;
   border-radius: 999px;
   background: var(--brand);
-  color: white;
+  color: var(--accent-fg);
   font-size: 10px;
   font-weight: 700;
 }
@@ -771,12 +771,12 @@ th:hover .th-grip { opacity: 0.7; }
 }
 .rbtn--save { color: var(--success); border-color: color-mix(in srgb, var(--success) 35%, var(--border)); }
 .rbtn--save:hover { background: var(--success-bg); border-color: var(--success); }
-.rbtn--primary { background: var(--success); border-color: var(--success); color: white; box-shadow: 0 1px 4px rgba(34, 197, 94, .25); }
+.rbtn--primary { background: var(--success); border-color: var(--success); color: white; box-shadow: 0 1px 4px color-mix(in srgb, var(--success) 25%, transparent); }
 .rbtn--primary:hover { background: color-mix(in srgb, var(--success) 88%, black); color: white; }
 .rbtn--cancel { color: var(--text-muted); }
 .rbtn--cancel:hover { background: var(--bg-hover); color: var(--text-primary); }
-.rbtn--delete { color: #f87171; }
-.rbtn--delete:hover { background: rgba(248, 113, 113, 0.15); }
+.rbtn--delete { color: var(--danger); }
+.rbtn--delete:hover { background: var(--danger-bg); }
 .rbtn:focus-visible {
   outline: 2px solid var(--brand-ring);
   outline-offset: 2px;
@@ -801,7 +801,7 @@ th:hover .th-grip { opacity: 0.7; }
   box-shadow: inset 0 0 0 1px rgba(var(--brand-rgb, 99 102 241), 0.45);
   background: rgba(var(--brand-rgb, 99 102 241), 0.14) !important;
 }
-.tr-new td { background: rgba(74, 222, 128, 0.05) !important; }
+.tr-new td { background: var(--success-bg) !important; }
 .add-row-bar {
   padding: 6px 12px;
   border-top: 1px solid var(--border);

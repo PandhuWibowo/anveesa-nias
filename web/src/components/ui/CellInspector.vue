@@ -123,10 +123,10 @@ async function copy() {
   font-family: monospace;
   flex-shrink: 0;
 }
-.ci-badge--number { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
+.ci-badge--number { background: var(--info-bg); color: var(--info); }
 .ci-badge--boolean { background: rgba(168, 85, 247, 0.2); color: #c084fc; }
-.ci-badge--json { background: rgba(34, 197, 94, 0.2); color: #4ade80; }
-.ci-badge--null { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+.ci-badge--json { background: var(--success-bg); color: var(--success); }
+.ci-badge--null { background: var(--danger-bg); color: var(--danger); }
 .ci-badge--text { background: rgba(255, 255, 255, 0.08); color: var(--text-muted); }
 .ci-actions {
   display: flex;
@@ -160,15 +160,15 @@ async function copy() {
 }
 .ci-pre {
   margin: 0;
-  font-family: "JetBrains Mono", "Fira Mono", monospace;
+  font-family: var(--mono);
   font-size: 12.5px;
   line-height: 1.6;
   color: var(--text-primary);
   white-space: pre-wrap;
   word-break: break-all;
 }
-.ci-pre--json { color: #4ade80; }
-.ci-pre--null { color: #f87171; font-style: italic; }
+.ci-pre--json { color: var(--success); }
+.ci-pre--null { color: var(--danger); font-style: italic; }
 .ci-footer {
   padding: 8px 16px;
   border-top: 1px solid var(--border);

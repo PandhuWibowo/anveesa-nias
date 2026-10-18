@@ -403,7 +403,7 @@ onUnmounted(() => {
           </div>
           <div class="page-hero__actions">
             <button class="base-btn base-btn--sm" :disabled="loading" @click="loadLinks">Refresh</button>
-            <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="openCreate">+ New Replication</button>
+            <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="openCreate">New replication</button>
           </div>
         </section>
 
@@ -586,7 +586,7 @@ onUnmounted(() => {
 
 .pr-list { padding: 4px 6px; overflow: hidden; }
 .pr-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.pr-table th { text-align: left; padding: 9px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+.pr-table th { text-align: left; padding: 9px 12px; font-size: 12px; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; }
 .pr-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .pr-table tbody tr:last-child td { border-bottom: none; }
 .pr-mono { font-family: var(--mono); font-size: 12px; }
@@ -596,7 +596,7 @@ onUnmounted(() => {
 .pr-act { text-align: right; white-space: nowrap; }
 
 .pr-badge { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 99px; font-size: 11px; font-weight: 600; }
-.pr-badge--on { color: var(--success); background: var(--success-bg, rgba(34,197,94,0.12)); }
+.pr-badge--on { color: var(--success); background: var(--success-bg, var(--success-bg)); }
 .pr-badge--off { color: var(--text-muted); background: var(--bg-hover); }
 
 .pr-link-btn { background: none; border: none; padding: 0; margin-left: 12px; font-size: 12px; color: var(--brand); cursor: pointer; }
@@ -612,5 +612,5 @@ onUnmounted(() => {
 
 .pr-checkline { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 3px 0; cursor: pointer; }
 .pr-tables { max-height: 160px; overflow-y: auto; margin-top: 6px; padding: 6px 10px; background: var(--bg-hover); border: 1px solid var(--border); border-radius: var(--r-sm); }
-.pr-warning { font-size: 12px; color: var(--danger); background: var(--danger-bg, rgba(239,68,68,0.08)); border-radius: var(--r-sm); padding: 8px 10px; margin: -6px 0 14px; display: flex; flex-direction: column; gap: 4px; }
+.pr-warning { font-size: 12px; color: var(--danger); background: var(--danger-bg, var(--danger-bg)); border-radius: var(--r-sm); padding: 8px 10px; margin: -6px 0 14px; display: flex; flex-direction: column; gap: 4px; }
 </style>
