@@ -71,9 +71,9 @@ const textRows = computed(() => {
     <!-- PostgreSQL / MySQL JSON tree (flattened with indentation) -->
     <template v-else-if="pgNodes.length">
       <div class="et-legend">
-        <span class="et-dot" style="background:#4ade80"/> Low
-        <span class="et-dot" style="background:#fbbf24"/> Medium
-        <span class="et-dot" style="background:#f87171"/> High
+        <span class="et-dot" style="background:var(--success)"/> Low
+        <span class="et-dot" style="background:var(--warning)"/> Medium
+        <span class="et-dot" style="background:var(--danger)"/> High
       </div>
       <div class="et-list">
         <div

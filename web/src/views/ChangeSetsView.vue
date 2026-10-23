@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useDatabases } from '@/composables/useDatabases'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 interface ChangeSet {
   id: number
@@ -361,12 +362,10 @@ onMounted(async () => {
     <div class="cs-scroll">
       <div class="cs-header">
         <div>
-          <div class="cs-kicker">Operations</div>
           <div class="cs-title">Change Sets</div>
           <div class="cs-sub">Package a database change, validate it, route it through approvals, then execute it with a full record.</div>
         </div>
         <div class="cs-header-actions">
-          <button class="base-btn base-btn--primary base-btn--sm" @click="openCreate">New Change Set</button>
           <select v-model="filter" class="base-input">
             <option value="all">All statuses</option>
             <option value="draft">Draft</option>
@@ -376,18 +375,18 @@ onMounted(async () => {
             <option value="done">Executed</option>
             <option value="failed">Failed</option>
           </select>
+          <button class="base-btn base-btn--primary base-btn--sm" @click="openCreate">New change set</button>
         </div>
       </div>
 
-      <div class="cs-layout">
+      <div v-if="!loading && !changeSets.length && filter === 'all'" class="cs-empty-page">
+        <EmptyState icon="changeset" title="No change sets yet" text="Package a schema or data change, validate it against the target, send it through approval, and run it with a full record." action-label="New change set" @action="openCreate" />
+      </div>
+      <div v-else class="cs-layout">
         <aside class="cs-list-panel">
           <div class="cs-list-head">Change Sets</div>
           <div v-if="loading" class="cs-empty">Loading change sets…</div>
-          <div v-else-if="filteredChangeSets.length === 0" class="cs-empty">
-            <div class="cs-empty__title">No change sets yet</div>
-            <div class="cs-empty__text">Start with a draft, validate the target, then submit it into the existing approval workflow.</div>
-            <button class="base-btn base-btn--primary base-btn--sm" @click="openCreate">Create Draft</button>
-          </div>
+          <div v-else-if="filteredChangeSets.length === 0" class="cs-empty-inline">No change sets match this status.</div>
           <div v-else class="cs-list">
             <button
               v-for="item in filteredChangeSets"
@@ -411,10 +410,7 @@ onMounted(async () => {
 
         <section class="cs-detail-panel">
           <div v-if="detailLoading" class="cs-empty">Loading change set…</div>
-          <div v-else-if="!selected || !progress" class="cs-empty">
-            <div class="cs-empty__title">Select a change set</div>
-            <div class="cs-empty__text">Drafts, validations, approvals, and execution history show here.</div>
-          </div>
+          <EmptyState v-else-if="!selected || !progress" compact icon="changeset" title="Select a change set" text="Its SQL, validation, approvals, and run history show here." />
           <template v-else>
             <div class="cs-hero">
               <div>
@@ -573,35 +569,35 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.cs-empty-page { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--bg-surface); }
+.cs-empty-inline { padding: 24px 8px; font-size: 13.5px; color: var(--text-muted); text-align: center; }
 .cs-root { width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden; }
-.cs-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 28px 32px 40px; }
+.cs-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 28px 32px 48px; }
+@media (max-width: 900px) { .cs-scroll { padding: 20px 16px 32px; } }
 .cs-header {
   display: flex;
   justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 24px;
-  padding: 22px;
-  border: 1px solid color-mix(in srgb, var(--border) 76%, #0f766e 24%);
-  border-radius: 16px;
-  background:
-    radial-gradient(circle at top left, rgba(15, 118, 110, 0.14), transparent 34%),
-    linear-gradient(145deg, color-mix(in srgb, var(--bg-elevated) 90%, #ecfeff 10%), var(--bg-elevated));
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 16px 24px;
+  margin-bottom: 20px;
 }
-.cs-kicker { font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: #0f766e; }
-.cs-title { font-size: 24px; font-weight: 800; color: var(--text-primary); }
-.cs-sub { margin-top: 6px; max-width: 720px; color: var(--text-secondary); line-height: 1.6; }
-.cs-header-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.cs-kicker { font-size: 12.5px; font-weight: 500; color: var(--text-muted); }
+.cs-title { font-size: 22px; font-weight: 600; color: var(--text-primary); }
+.cs-sub { margin-top: 4px; max-width: 680px; font-size: 14px; color: var(--text-secondary); line-height: 1.55; }
+.cs-header-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.cs-header-actions .base-input { width: auto; min-width: 160px; }
 .cs-layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 18px; min-height: 640px; }
-.cs-list-panel, .cs-detail-panel { border: 1px solid var(--border); background: var(--bg-surface); border-radius: 16px; min-height: 0; }
+.cs-list-panel, .cs-detail-panel { border: 1px solid var(--border); background: var(--bg-surface); border-radius: var(--r-lg); min-height: 0; }
 .cs-list-panel { padding: 14px; }
 .cs-detail-panel { padding: 18px; }
-.cs-list-head { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 12px; }
+.cs-list-head { font-size: 12.5px; font-weight: 500; color: var(--text-muted); margin-bottom: 12px; }
 .cs-list { display: flex; flex-direction: column; gap: 10px; }
 .cs-list__item {
   width: 100%;
   text-align: left;
   padding: 14px;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-elevated) 78%, transparent);
 }
@@ -613,7 +609,7 @@ onMounted(async () => {
 .cs-list__meta, .cs-detail-meta { font-size: 12px; flex-wrap: wrap; }
 .cs-list__sub { margin-top: 8px; font-size: 12px; line-height: 1.5; }
 .cs-empty { min-height: 300px; display: grid; place-items: center; text-align: center; color: var(--text-secondary); gap: 10px; }
-.cs-empty__title { font-size: 18px; font-weight: 700; color: var(--text-primary); }
+.cs-empty__title { font-size: 15px; font-weight: 600; color: var(--text-primary); }
 .cs-empty__text { max-width: 340px; line-height: 1.6; }
 .cs-status, .cs-validation {
   display: inline-flex;
@@ -625,11 +621,11 @@ onMounted(async () => {
   font-weight: 700;
 }
 .cs-status--draft { background: rgba(148, 163, 184, 0.14); color: #64748b; }
-.cs-status--pending { background: rgba(245, 158, 11, 0.16); color: #d97706; }
-.cs-status--approved { background: rgba(16, 185, 129, 0.16); color: #059669; }
-.cs-status--rejected { background: rgba(239, 68, 68, 0.14); color: #dc2626; }
-.cs-panel { border: 1px solid var(--border); border-radius: 14px; padding: 14px; background: color-mix(in srgb, var(--bg-elevated) 84%, transparent); }
-.cs-panel__title { margin-bottom: 10px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); }
+.cs-status--pending { background: var(--warning-bg); color: var(--warning); }
+.cs-status--approved { background: var(--success-bg); color: var(--success); }
+.cs-status--rejected { background: var(--danger-bg); color: var(--danger); }
+.cs-panel { border: 1px solid var(--border); border-radius: var(--r-lg); padding: 14px; background: color-mix(in srgb, var(--bg-elevated) 84%, transparent); }
+.cs-panel__title { margin-bottom: 10px; font-size: 12px; font-weight: 700; color: var(--text-muted); }
 .cs-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0; }
 .cs-code {
   margin: 0;
@@ -641,27 +637,27 @@ onMounted(async () => {
   overflow-x: auto;
 }
 .cs-impact { line-height: 1.6; color: var(--text-primary); }
-.cs-validation { flex-direction: column; align-items: flex-start; border-radius: 14px; }
+.cs-validation { flex-direction: column; align-items: flex-start; border-radius: var(--r-lg); }
 .cs-validation--pending { background: rgba(148, 163, 184, 0.14); color: #64748b; }
-.cs-validation--passed { background: rgba(16, 185, 129, 0.14); color: #059669; }
-.cs-validation--failed { background: rgba(239, 68, 68, 0.14); color: #dc2626; }
+.cs-validation--passed { background: var(--success-bg); color: var(--success); }
+.cs-validation--failed { background: var(--danger-bg); color: var(--danger); }
 .cs-hero-actions, .cs-approve-actions { flex-wrap: wrap; }
 .cs-workflow-name { color: var(--text-primary); font-weight: 600; margin-bottom: 12px; }
 .cs-steps { display: flex; flex-direction: column; gap: 10px; }
 .cs-step { border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
-.cs-step--approved { border-color: rgba(16, 185, 129, 0.28); }
-.cs-step--rejected { border-color: rgba(239, 68, 68, 0.28); }
+.cs-step--approved { border-color: color-mix(in srgb, var(--success) 28%, transparent); }
+.cs-step--rejected { border-color: color-mix(in srgb, var(--danger) 28%, transparent); }
 .cs-step__header { display: flex; justify-content: space-between; gap: 12px; font-weight: 600; color: var(--text-primary); }
 .cs-step__meta, .cs-step__actions { margin-top: 6px; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .cs-note, .cs-error { margin-top: 12px; padding: 12px 14px; border-radius: 12px; }
-.cs-note { background: rgba(245, 158, 11, 0.14); color: #b45309; }
-.cs-error { background: rgba(239, 68, 68, 0.14); color: #dc2626; }
+.cs-note { background: var(--warning-bg); color: var(--warning); }
+.cs-error { background: var(--danger-bg); color: var(--danger); }
 .cs-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.48); display: grid; place-items: center; padding: 24px; z-index: 80; }
 .cs-dialog {
   width: min(880px, 100%);
   max-height: calc(100vh - 48px);
   overflow: auto;
-  border-radius: 18px;
+  border-radius: var(--r-lg);
   border: 1px solid var(--border);
   background: var(--bg-surface);
   box-shadow: var(--shadow-lg);
@@ -669,7 +665,7 @@ onMounted(async () => {
 .cs-dialog__head, .cs-dialog__foot { padding: 18px 20px; border-bottom: 1px solid var(--border); }
 .cs-dialog__foot { border-top: 1px solid var(--border); border-bottom: 0; align-items: center; }
 .cs-dialog__body { padding: 20px; display: flex; flex-direction: column; gap: 12px; }
-.cs-dialog__title { font-size: 20px; font-weight: 800; color: var(--text-primary); }
+.cs-dialog__title { font-size: 20px; font-weight: 600; color: var(--text-primary); }
 .cs-label { font-size: 12px; font-weight: 700; color: var(--text-secondary); }
 .cs-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .cs-textarea { min-height: 160px; resize: vertical; border-radius: 12px; border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-primary); padding: 12px 14px; }

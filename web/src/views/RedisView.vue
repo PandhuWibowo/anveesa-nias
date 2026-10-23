@@ -6,6 +6,8 @@ import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import SortIcon from '@/components/ui/SortIcon.vue'
 import { useSort } from '@/composables/useSort'
+import ConnectionGate from '@/components/ui/ConnectionGate.vue'
+import NavIcon from '@/components/ui/NavIcon.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -741,19 +743,7 @@ function quoteCommandArg(value: string) {
 
 <template>
   <div class="redis-workbench">
-    <section v-if="!isRedis" class="page-panel redis-empty">
-      <div class="redis-empty__title">No Redis connection selected</div>
-      <div v-if="redisConnections.length" class="redis-picker">
-        <label class="form-label">Redis Connection</label>
-        <select class="base-input" @change="selectRedisConnection(($event.target as HTMLSelectElement).value)">
-          <option value="">Select Redis connection</option>
-          <option v-for="conn in redisConnections" :key="conn.id" :value="conn.id">
-            {{ conn.name }} - {{ conn.host }}:{{ conn.port }}
-          </option>
-        </select>
-      </div>
-      <div v-else class="redis-empty__sub">Create a Redis connection in Admin / Connections first.</div>
-    </section>
+    <ConnectionGate v-if="!isRedis" :drivers="['redis']" label="Redis" purpose="to scan keys, inspect values, and watch pub/sub" icon="key" @select="selectRedisConnection" />
 
     <template v-else>
       <aside class="redis-left">
@@ -876,11 +866,11 @@ function quoteCommandArg(value: string) {
 
         <div class="redis-tabbar">
           <button class="redis-tab" :class="{ active: activeWorkTab === 'value' }" @click="activeWorkTab = 'value'"><span>▦</span> Data</button>
-          <button class="redis-tab" :class="{ active: activeWorkTab === 'edit' }" @click="activeWorkTab = 'edit'"><span>✎</span> Edit</button>
+          <button class="redis-tab" :class="{ active: activeWorkTab === 'edit' }" @click="activeWorkTab = 'edit'"><span><NavIcon name="code" :size="13" /></span> Edit</button>
           <button class="redis-tab" :class="{ active: activeWorkTab === 'script' }" @click="activeWorkTab = 'script'"><span>⌘</span> Script</button>
           <button class="redis-tab" :class="{ active: activeWorkTab === 'console' }" @click="activeWorkTab = 'console'"><span>&gt;_</span> Console</button>
           <button class="redis-tab" :class="{ active: activeWorkTab === 'info' }" @click="openInfoTab"><span>◷</span> Server</button>
-          <button class="redis-tab" :class="{ active: activeWorkTab === 'monitor' }" @click="activeWorkTab = 'monitor'"><span>📡</span> Monitor</button>
+          <button class="redis-tab" :class="{ active: activeWorkTab === 'monitor' }" @click="activeWorkTab = 'monitor'"><span><NavIcon name="broadcast" :size="13" /></span> Monitor</button>
         </div>
 
         <div v-if="!redisConnected" class="redis-offline-banner">
@@ -1211,7 +1201,7 @@ function quoteCommandArg(value: string) {
             <li><strong>⌘ Script</strong> — generate a replayable command script for one key or a whole pattern, edit it, then run it (max 100 commands; stops at the first error).</li>
             <li><strong>&gt;_ Console</strong> — run one ad-hoc command. Destructive commands (FLUSHALL, CONFIG, EVAL, SHUTDOWN, …) are blocked server-side.</li>
             <li><strong>◷ Server</strong> — parsed <code>INFO</code> stats (version, memory, clients, ops/sec, hits/misses), keyspace summary, and the slow log.</li>
-            <li><strong>📡 Monitor</strong> — subscribe to a channel or glob pattern and tail pub/sub messages live (SUBSCRIBE / PSUBSCRIBE), streamed over SSE for up to 10 minutes.</li>
+            <li><strong>Monitor</strong> — subscribe to a channel or glob pattern and tail pub/sub messages live (SUBSCRIBE / PSUBSCRIBE), streamed over SSE for up to 10 minutes.</li>
           </ul>
 
           <h4 class="redis-guide__h">Value formats (Edit tab)</h4>
@@ -1295,7 +1285,7 @@ function quoteCommandArg(value: string) {
   background: rgba(198, 48, 43, 0.14);
   color: #c6302b;
   font-size: 10px;
-  font-weight: 800;
+  font-weight: 600;
   flex-shrink: 0;
 }
 
@@ -1609,12 +1599,10 @@ function quoteCommandArg(value: string) {
   border-bottom: 1px solid var(--border);
   background: var(--bg-elevated);
   color: var(--text-muted);
-  font-family: 'Inter', sans-serif;
-  font-size: 11px;
+  font-family: var(--sans);
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.4px;
   text-align: left;
-  text-transform: uppercase;
   white-space: nowrap;
 }
 
@@ -1736,9 +1724,8 @@ html[data-theme='light'] .redis-data-table tbody tr:nth-child(even) td {
   padding: 7px 10px;
   background: color-mix(in srgb, var(--bg-body) 72%, var(--bg-surface));
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
 }
 
 .redis-key__name,
@@ -1945,9 +1932,7 @@ html[data-theme='light'] .redis-data-table tbody tr:nth-child(even) td {
 
 .redis-stat__label {
   color: var(--text-muted);
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+  font-size: 12px;
 }
 
 .redis-stat__value {
@@ -2073,8 +2058,6 @@ html[data-theme='light'] .redis-data-table tbody tr:nth-child(even) td {
   margin: 16px 0 6px;
   font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
   color: var(--brand);
 }
 
@@ -2106,10 +2089,8 @@ html[data-theme='light'] .redis-data-table tbody tr:nth-child(even) td {
 .redis-job-card__title {
   margin-bottom: 8px;
   color: var(--brand);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
 }
 
 .redis-job-grid {
@@ -2127,9 +2108,7 @@ html[data-theme='light'] .redis-data-table tbody tr:nth-child(even) td {
 
 .redis-job-grid span {
   color: var(--text-muted);
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
+  font-size: 12px;
 }
 
 .redis-job-grid strong {

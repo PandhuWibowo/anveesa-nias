@@ -322,7 +322,7 @@ const baseTheme = EditorView.theme({
   '&': {
     height: '100%',
     fontSize: '13px',
-    fontFamily: '"JetBrains Mono", "Fira Mono", "Cascadia Code", monospace',
+    fontFamily: '"IBM Plex Mono", "Fira Mono", "Cascadia Code", monospace',
     background: 'transparent',
     color: '#e6edf7',
   },
@@ -385,7 +385,7 @@ const baseTheme = EditorView.theme({
     boxShadow: '0 20px 40px rgba(0,0,0,0.35)',
   },
   '.cm-tooltip-autocomplete > ul > li[aria-selected]': {
-    background: 'rgba(92, 184, 165, 0.18)',
+    background: 'rgba(56, 189, 248, 0.16)',
   },
 })
 
@@ -611,8 +611,8 @@ watch(() => props.schemaTables, (tables) => {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border: 1px solid color-mix(in srgb, var(--border) 84%, #5cb8a5 16%);
-  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--border) 84%, var(--brand) 16%);
+  border-radius: var(--r-lg);
   overflow: hidden;
   background:
     linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)),
@@ -671,10 +671,10 @@ watch(() => props.schemaTables, (tables) => {
   height: 22px;
   padding: 0 8px;
   border-radius: 7px;
-  background: rgba(92, 184, 165, 0.16);
+  background: var(--brand-dim);
   color: #9de0d2;
   font-size: 10px;
-  font-weight: 800;
+  font-weight: 600;
   letter-spacing: 0.08em;
 }
 
@@ -722,9 +722,9 @@ watch(() => props.schemaTables, (tables) => {
 }
 
 .script-editor-action--primary {
-  background: linear-gradient(135deg, rgba(92, 184, 165, 0.26), rgba(92, 184, 165, 0.14));
-  color: #f3fffc;
-  border-color: rgba(92, 184, 165, 0.28);
+  background: var(--brand);
+  color: var(--brand-fg);
+  border-color: transparent;
 }
 
 .script-editor-body {
@@ -827,8 +827,8 @@ watch(() => props.schemaTables, (tables) => {
 }
 
 .script-editor-schema--active {
-  border-color: rgba(92, 184, 165, 0.24);
-  background: rgba(92, 184, 165, 0.08);
+  border-color: var(--brand-ring);
+  background: var(--brand-dim);
 }
 
 .script-editor-schema__row {
@@ -976,8 +976,8 @@ watch(() => props.schemaTables, (tables) => {
 }
 
 :global(html[data-theme='light']) .script-editor-pill {
-  background: rgba(58, 157, 143, 0.08);
-  border-color: rgba(58, 157, 143, 0.12);
+  background: var(--brand-dim);
+  border-color: var(--brand-dim);
   color: #2f6f66;
 }
 
@@ -988,8 +988,8 @@ watch(() => props.schemaTables, (tables) => {
 }
 
 :global(html[data-theme='light']) .script-editor-action--primary {
-  background: rgba(58, 157, 143, 0.12);
-  border-color: rgba(58, 157, 143, 0.18);
+  background: var(--brand-dim);
+  border-color: var(--brand-dim);
   color: #255d55;
 }
 
@@ -1025,8 +1025,8 @@ watch(() => props.schemaTables, (tables) => {
 }
 
 :global(html[data-theme='light']) .script-editor-schema--active {
-  border-color: rgba(58, 157, 143, 0.24);
-  background: rgba(58, 157, 143, 0.08);
+  border-color: var(--brand-ring);
+  background: var(--brand-dim);
 }
 
 :global(html[data-theme='light']) .script-editor-schema__title {

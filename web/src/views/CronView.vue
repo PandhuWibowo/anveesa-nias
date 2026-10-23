@@ -7,6 +7,7 @@ import { useAuth } from '@/composables/useAuth'
 import { useListFilter } from '@/composables/useListFilter'
 import { useSort } from '@/composables/useSort'
 import SortIcon from '@/components/ui/SortIcon.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 interface CronHost {
   id: number
@@ -344,13 +345,11 @@ loadHosts()
           </div>
         </section>
 
-        <div v-if="!hostsLoading && !hosts.length" class="crn-warn">
-          No SSH hosts configured yet — add a server under
-          <RouterLink :to="{ name: 'ssh-hosts' }" class="crn-link">SSH Hosts</RouterLink>
-          to manage its crontab.
+        <div v-if="!hostsLoading && !hosts.length" class="page-card">
+          <EmptyState icon="clock" title="No servers yet" text="Cron reads and edits each server's own crontab over SSH. Add a server to see its scheduled jobs." action-label="Add server" :action-to="{ name: 'ssh-hosts', query: { new: '1' } }" />
         </div>
 
-        <div class="crn-layout">
+        <div v-else class="crn-layout">
           <!-- Host list -->
           <div class="crn-hosts page-card">
             <div class="crn-hosts-head">Hosts</div>
@@ -505,7 +504,7 @@ loadHosts()
                 </datalist>
 
                 <div class="crn-editor-foot">
-                  <button v-if="canManage" class="base-btn base-btn--sm" @click="addEntry">+ Add entry</button>
+                  <button v-if="canManage" class="base-btn base-btn--sm" @click="addEntry">Add entry</button>
                   <span v-if="preservedCount" class="crn-note">
                     {{ preservedCount }} comment/env line(s) preserved — use Raw view to see them
                   </span>
@@ -551,13 +550,13 @@ loadHosts()
 <style scoped>
 .crn-warn {
   padding: 0.75rem 1rem;
-  background: rgba(234, 179, 8, 0.12);
-  border: 1px solid rgba(234, 179, 8, 0.4);
+  background: var(--warning-bg);
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
   border-radius: 8px;
   font-size: 0.85rem;
 }
 .crn-link {
-  color: #2563eb;
+  color: var(--info);
   font-weight: 600;
   text-decoration: underline;
 }
@@ -594,8 +593,6 @@ loadHosts()
 }
 .crn-hosts-head {
   font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
   color: var(--text-muted, #94a3b8);
   padding: 0.4rem 0.5rem;
   position: sticky;
@@ -618,7 +615,7 @@ loadHosts()
   background: var(--surface-2, #f1f5f9);
 }
 .crn-hostbtn--sel {
-  background: rgba(59, 130, 246, 0.12);
+  background: var(--info-bg);
 }
 .crn-hostname {
   font-weight: 600;
@@ -654,7 +651,7 @@ loadHosts()
   font-family: ui-monospace, monospace;
 }
 .crn-dirty {
-  color: #d97706;
+  color: var(--warning);
   font-weight: 600;
   margin-left: 0.35rem;
 }
@@ -683,14 +680,14 @@ loadHosts()
   color: var(--text, #1e293b);
 }
 .crn-tab--active {
-  color: var(--accent, #2563eb);
-  border-bottom-color: var(--accent, #2563eb);
+  color: var(--accent, var(--info));
+  border-bottom-color: var(--accent, var(--info));
   font-weight: 600;
 }
 .crn-tab-badge {
   font-size: 0.65rem;
-  background: rgba(234, 179, 8, 0.15);
-  color: #b45309;
+  background: var(--warning-bg);
+  color: var(--warning);
   padding: 0.1rem 0.3rem;
   border-radius: 3px;
   font-weight: 500;
@@ -706,8 +703,6 @@ loadHosts()
   text-align: left;
   padding: 0.4rem 0.5rem;
   font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
   color: var(--text-muted, #94a3b8);
   border-bottom: 1px solid var(--border, #e2e8f0);
 }
@@ -771,7 +766,7 @@ loadHosts()
   cursor: not-allowed;
 }
 .crn-del {
-  color: #ef4444;
+  color: var(--danger);
 }
 .crn-switch {
   position: relative;
@@ -803,7 +798,7 @@ loadHosts()
   transition: 0.2s;
 }
 .crn-switch input:checked + span {
-  background: #22c55e;
+  background: var(--success);
 }
 .crn-switch input:checked + span::before {
   transform: translateX(14px);
@@ -901,17 +896,15 @@ loadHosts()
   font-weight: 600;
 }
 .crn-badge--ok {
-  background: rgba(34, 197, 94, 0.15);
-  color: #16a34a;
+  background: var(--success-bg);
+  color: var(--success);
 }
 .crn-badge--err {
-  background: rgba(239, 68, 68, 0.15);
-  color: #dc2626;
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 .crn-out-label {
   font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
   color: var(--text-muted, #94a3b8);
   margin: 0.5rem 0 0.25rem;
 }
@@ -929,7 +922,7 @@ loadHosts()
   margin: 0;
 }
 .crn-output--err {
-  color: #fca5a5;
+  color: var(--danger);
 }
 .crn-modal-actions {
   display: flex;

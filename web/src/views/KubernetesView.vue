@@ -12,6 +12,8 @@ import SortIcon from '@/components/ui/SortIcon.vue'
 import { useKubeClusters } from '@/composables/useKubeClusters'
 import { useListFilter } from '@/composables/useListFilter'
 import { useSort } from '@/composables/useSort'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import NavIcon from '@/components/ui/NavIcon.vue'
 
 type KubeTab =
   | 'overview' | 'nodes' | 'namespaces' | 'pods' | 'deployments'
@@ -645,11 +647,8 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal(); stopAuto() })
         </section>
 
         <!-- No clusters -->
-        <div v-if="!clusters.length" class="page-card k8s-empty">
-          <div class="k8s-empty-icon">☸️</div>
-          <h2>No clusters yet</h2>
-          <p>Add an Alibaba ACK, Huawei CCE, or any Kubernetes cluster under <b>Kubernetes Clusters</b>.</p>
-          <button v-if="canManage" class="base-btn base-btn--primary" @click="router.push({ name: 'kube-clusters' })">Add your first cluster</button>
+        <div v-if="!clusters.length" class="page-card">
+          <EmptyState icon="kube" title="No clusters yet" text="Add an Alibaba ACK, Huawei CCE, or any Kubernetes cluster by pasting its kubeconfig." :action-label="canManage ? 'Add cluster' : undefined" :action-to="{ name: 'kube-clusters', query: { new: '1' } }" />
         </div>
 
         <!-- Connected -->
@@ -978,7 +977,7 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal(); stopAuto() })
 
         <!-- Idle -->
         <div v-else class="page-card k8s-idle">
-          <div class="k8s-idle-icon">☸️</div>
+          <div class="k8s-idle-icon"><NavIcon name="kube" :size="24" /></div>
           <p>Select a cluster from the dropdown above to connect.</p>
         </div>
       </div>
@@ -1099,8 +1098,8 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal(); stopAuto() })
 
 .k8s-conn { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; }
 .k8s-conn-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-.k8s-conn--connected { color: var(--success); background: var(--success-bg, rgba(34,197,94,0.12)); }
-.k8s-conn--error { color: var(--danger); background: var(--danger-bg, rgba(239,68,68,0.12)); }
+.k8s-conn--connected { color: var(--success); background: var(--success-bg, var(--success-bg)); }
+.k8s-conn--error { color: var(--danger); background: var(--danger-bg, var(--danger-bg)); }
 .k8s-conn--connecting, .k8s-conn--unknown { color: var(--text-muted); background: var(--bg-hover); }
 .k8s-conn--connecting .k8s-conn-dot { animation: k8s-blink 1s ease-in-out infinite; }
 @keyframes k8s-blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
@@ -1126,7 +1125,7 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal(); stopAuto() })
 .k8s-side-ver { display: flex; align-items: center; gap: 6px; padding: 4px 8px 8px; font-size: 11px; font-family: var(--mono); color: var(--text-muted); border-bottom: 1px solid var(--border); }
 .k8s-side-vertxt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .k8s-side-group { display: flex; flex-direction: column; gap: 1px; }
-.k8s-side-grouptitle { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); padding: 2px 8px 4px; }
+.k8s-side-grouptitle { font-size: 12px; font-weight: 700; color: var(--text-muted); padding: 2px 8px 4px; }
 .k8s-side-item {
   text-align: left; background: none; border: none; cursor: pointer;
   padding: 6px 10px; border-radius: var(--r-sm); font-size: 12.5px;
@@ -1155,11 +1154,11 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal(); stopAuto() })
 .k8s-kpi { border: 1px solid var(--border); border-radius: var(--r); padding: 16px 18px; background: var(--bg-surface); }
 .k8s-kpi-val { font-size: 28px; font-weight: 700; color: var(--text-primary); line-height: 1; }
 .k8s-kpi-sub { font-size: 16px; font-weight: 400; color: var(--text-muted); }
-.k8s-kpi-label { font-size: 12px; color: var(--text-muted); margin-top: 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+.k8s-kpi-label { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
 
 .k8s-table-wrap { padding: 4px 6px; overflow-x: auto; }
 .k8s-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.k8s-table th { text-align: left; padding: 9px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; white-space: nowrap; }
+.k8s-table th { text-align: left; padding: 9px 12px; font-size: 12px; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; white-space: nowrap; }
 .k8s-th-sort { cursor: pointer; user-select: none; }
 .k8s-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .k8s-table tbody tr:last-child td { border-bottom: none; }
@@ -1174,9 +1173,9 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal(); stopAuto() })
 .k8s-conn-err { padding: 16px; color: var(--danger); font-size: 13px; }
 
 .k8s-pill { font-size: 11px; padding: 1px 8px; border-radius: 99px; font-weight: 600; }
-.k8s-pill--ok { background: var(--success-bg, rgba(34,197,94,0.12)); color: var(--success); }
-.k8s-pill--warn { background: var(--warning-bg, rgba(245,158,11,0.14)); color: var(--warning); }
-.k8s-pill--err { background: var(--danger-bg, rgba(239,68,68,0.12)); color: var(--danger); }
+.k8s-pill--ok { background: var(--success-bg, var(--success-bg)); color: var(--success); }
+.k8s-pill--warn { background: var(--warning-bg, var(--warning-bg)); color: var(--warning); }
+.k8s-pill--err { background: var(--danger-bg, var(--danger-bg)); color: var(--danger); }
 
 .k8s-empty { padding: 60px 40px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .k8s-empty-icon { font-size: 48px; }
@@ -1205,9 +1204,9 @@ onBeforeUnmount(() => { stopFollow(); disposeTerminal(); stopAuto() })
 .k8s-detail { flex: 1; overflow: auto; padding: 16px 18px; }
 .k8s-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px 16px; margin-bottom: 18px; }
 .k8s-kv { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
-.k8s-kv > span:first-child { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.k8s-kv > span:first-child { font-size: 12px; color: var(--text-muted); }
 .k8s-kv > span:last-child { color: var(--text-secondary); }
-.k8s-detail-h { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 18px 0 8px; font-weight: 700; }
+.k8s-detail-h { font-size: 12px; color: var(--text-muted); margin: 18px 0 8px; font-weight: 700; }
 .k8s-ctr { border: 1px solid var(--border); border-radius: var(--r); padding: 10px 12px; margin-bottom: 8px; }
 .k8s-ctr-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .k8s-ctr-name { font-weight: 600; color: var(--text-primary); font-size: 13px; }

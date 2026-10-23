@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import axios from 'axios'
 import { useConnections, type DbDriver, type ConnectionForm, type Connection } from '@/composables/useConnections'
 import { useFolders } from '@/composables/useFolders'
@@ -13,6 +13,7 @@ import { usePagination } from '@/composables/usePagination'
 import DriverIcon from '@/components/ui/DriverIcon.vue'
 import Pagination from '@/components/ui/Pagination.vue'
 import { readableError } from '@/utils/httpError'
+import NavIcon from '@/components/ui/NavIcon.vue'
 
 const { connections, loading, error: connectionError, testConnection, saveConnection, removeConnection, fetchConnections, disconnectConnection, reconnectConnection } = useConnections()
 const { folders, fetchFolders, moveConnection, setConnectionVisibility } = useFolders()
@@ -590,6 +591,18 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
   { key: 'driver', label: 'Driver' },
   { key: 'status', label: 'Status' },
 ]
+
+// `?new=1` (from the command palette, home, or an empty state) opens the new-connection
+// form directly; `&driver=redis` etc. preselects the driver.
+const route = useRoute()
+watch(() => route.query.new, (v) => {
+  if (v !== '1') return
+  resetForm()
+  const driver = route.query.driver as DbDriver | undefined
+  if (driver && driver in defaultPorts) selectDriver(driver)
+  showForm.value = true
+  router.replace({ query: { ...route.query, new: undefined, driver: undefined } })
+}, { immediate: true })
 </script>
 
 <template>
@@ -726,7 +739,7 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
                   <span class="conn-card__driver-tag">{{ driverFullName(conn.driver) }}</span>
                   <span v-if="connShowFields.category" class="conn-card__category-tag">{{ categoryLabel(conn.driver) }}</span>
                   <span class="conn-card__vis" :title="conn.visibility === 'shared' ? 'Shared' : 'Private'">
-                    {{ conn.visibility === 'shared' ? '🌐' : '🔒' }}
+                    <NavIcon :name="conn.visibility === 'shared' ? 'globe' : 'lock'" :size="13" />
                   </span>
                 </div>
                 <div class="conn-card__detail">{{ connDetailLine(conn) }}</div>
@@ -775,7 +788,7 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
                     title="Move to folder"
                     @change="moveConnection(conn.id, ($event.target as HTMLSelectElement).value ? Number(($event.target as HTMLSelectElement).value) : null)"
                   >
-                    <option value="">📂 Unfiled</option>
+                    <option value="">Unfiled</option>
                     <option v-for="f in folders" :key="f.id" :value="f.id">{{ f.name }}</option>
                   </select>
 
@@ -948,11 +961,11 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
                     <div style="display:flex;gap:6px;height:32px">
                       <label class="vis-radio" :class="{ active: form.visibility === 'shared' }" style="flex:1;justify-content:center">
                         <input type="radio" v-model="form.visibility" value="shared" style="display:none" />
-                        🌐 Shared
+                        Shared
                       </label>
                       <label class="vis-radio" :class="{ active: form.visibility === 'private' }" style="flex:1;justify-content:center">
                         <input type="radio" v-model="form.visibility" value="private" style="display:none" />
-                        🔒 Private
+                        Private
                       </label>
                     </div>
                   </div>
@@ -1328,7 +1341,7 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
                     <select v-model="form.folder_id" class="base-input">
                       <option :value="null">No folder (Unfiled)</option>
                       <option v-for="f in folders" :key="f.id" :value="f.id">
-                        {{ f.visibility === 'shared' ? '🌐' : '🔒' }} {{ f.name }}
+                        {{ f.name }}{{ f.visibility === 'shared' ? '' : ' (private)' }}
                       </option>
                     </select>
                   </div>
@@ -1447,7 +1460,7 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
 .conn-empty__icon {
   width: 56px;
   height: 56px;
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: var(--bg-body);
   border: 1px solid var(--border);
   display: flex;
@@ -1482,34 +1495,20 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
   align-items: center;
   gap: 14px;
   padding: 14px 16px;
-  background: var(--bg-body);
+  background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  border-left: 3px solid var(--border);
-  transition: border-color 0.15s, box-shadow 0.15s;
+  border-radius: var(--r);
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 
 .conn-card:hover {
-  border-color: var(--brand);
-  border-left-color: var(--brand);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 15%, transparent);
+  border-color: var(--border-2);
+  background: var(--bg-hover-strong);
 }
 
 .conn-card--disconnected {
   opacity: 0.65;
 }
-
-/* Category-specific left border colors */
-.conn-card--rdbms        { border-left-color: #336791; }
-.conn-card--rdbms:hover  { border-left-color: #336791; }
-.conn-card--cache        { border-left-color: #c6302b; }
-.conn-card--cache:hover  { border-left-color: #c6302b; }
-.conn-card--streaming    { border-left-color: #231f20; }
-.conn-card--streaming:hover { border-left-color: #231f20; }
-.conn-card--search       { border-left-color: #00bfb3; }
-.conn-card--search:hover { border-left-color: #00bfb3; }
-.conn-card--s3           { border-left-color: #f59e0b; }
-.conn-card--s3:hover     { border-left-color: #f59e0b; }
 
 .conn-card__badge {
   width: 40px;
@@ -1697,14 +1696,14 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
 .conn-badge--mariadb   { background: #c0765a; }
 .conn-badge--mssql     { background: #cc2927; }
 .conn-badge--redis     { background: #c6302b; }
-.conn-badge--memcache  { background: #16a34a; }
+.conn-badge--memcache  { background: var(--success); }
 .conn-badge--kafka     { background: #231f20; }
 .conn-badge--mongodb   { background: #00a35c; }
 .conn-badge--cassandra { background: #1f6feb; }
 .conn-badge--elasticsearch { background: #00bfb3; }
 .conn-badge--opensearch    { background: #005eb8; }
 .conn-badge--sqlite    { background: #4b5563; }
-.conn-badge--s3_aws    { background: #f59e0b; }
+.conn-badge--s3_aws    { background: var(--warning); }
 .conn-badge--s3_gcp    { background: #4285f4; }
 .conn-badge--s3_oss    { background: #ff6a00; }
 .conn-badge--s3_obs    { background: #c00000; }
@@ -1726,7 +1725,7 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
 .conn-modal-shell {
   background: var(--bg-elevated);
   border: 1px solid var(--border-2);
-  border-radius: 18px;
+  border-radius: var(--r-lg);
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
   width: 100%;
   max-width: 560px;
@@ -1833,8 +1832,6 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
   font-size: 12px;
   font-weight: 700;
   color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
 }
 
 .form-section__num {
@@ -1922,10 +1919,8 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
 }
 
 .provider-group__head {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--text-muted);
 }
 
@@ -1981,14 +1976,14 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
 .provider-card__icon--mariadb  { background: #c0765a; }
 .provider-card__icon--mssql    { background: #cc2927; }
 .provider-card__icon--redis    { background: #c6302b; }
-.provider-card__icon--memcache { background: #16a34a; }
+.provider-card__icon--memcache { background: var(--success); }
 .provider-card__icon--kafka    { background: #231f20; }
 .provider-card__icon--mongodb  { background: #00a35c; }
 .provider-card__icon--cassandra { background: #1f6feb; }
 .provider-card__icon--elasticsearch { background: #00bfb3; }
 .provider-card__icon--opensearch    { background: #005eb8; }
 .provider-card__icon--sqlite   { background: #4b5563; }
-.provider-card__icon--s3_aws   { background: #f59e0b; }
+.provider-card__icon--s3_aws   { background: var(--warning); }
 .provider-card__icon--s3_gcp   { background: #4285f4; }
 .provider-card__icon--s3_oss   { background: #ff6a00; }
 .provider-card__icon--s3_obs   { background: #c00000; }
@@ -2073,10 +2068,8 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
 }
 
 .adv-section__label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
   color: var(--text-muted);
 }
 
@@ -2116,14 +2109,12 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
 
 /* ── Conn tag ── */
 .conn-tag {
-  font-size: 9px;
+  font-size: 12px;
   padding: 1px 6px;
   border-radius: 3px;
   background: var(--brand-dim);
   color: var(--brand);
   font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
 }
 
 /* ── Responsive ── */
@@ -2227,8 +2218,7 @@ const connSortOptions: Array<{ key: ConnSortKey; label: string }> = [
   box-shadow: 0 8px 24px rgba(0,0,0,0.3); z-index: 200;
 }
 .conn-col-menu-title {
-  font-size: 10px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.1em; color: var(--text-muted); margin-bottom: 8px;
+  font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 8px;
 }
 .conn-col-item {
   display: flex; align-items: center; gap: 8px;

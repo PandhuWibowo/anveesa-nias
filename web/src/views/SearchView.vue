@@ -6,6 +6,7 @@ import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useSearchCache } from '@/composables/useSearchCache'
 import { useListFilter } from '@/composables/useListFilter'
+import ConnectionGate from '@/components/ui/ConnectionGate.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -482,13 +483,12 @@ function indexKindLabel(index: SearchIndex) {
   <div class="page-shell search-root">
     <header class="search-topbar">
       <div class="search-title">
-        <span class="search-logo">{{ activeConn?.driver === 'opensearch' ? 'OS' : 'ES' }}</span>
         <div>
-          <h1>Search Browser</h1>
-          <p>{{ activeConn ? activeConn.name : 'No Elasticsearch or OpenSearch connection selected' }}</p>
+          <h1>Search indices</h1>
+          <p v-if="isSearch">{{ activeConn?.name }}</p>
         </div>
       </div>
-      <div class="search-actions">
+      <div v-if="isSearch" class="search-actions">
         <select class="base-input search-select" :value="activeConnId ?? ''" @change="emit('set-conn', Number(($event.target as HTMLSelectElement).value))">
           <option value="" disabled>Select search cluster</option>
           <option v-for="conn in searchConnections" :key="conn.id" :value="conn.id">{{ conn.name }}</option>
@@ -497,10 +497,7 @@ function indexKindLabel(index: SearchIndex) {
       </div>
     </header>
 
-    <section v-if="!isSearch" class="search-empty">
-      <h2>Select a search connection</h2>
-      <p>Create or choose an Elasticsearch/OpenSearch connection to inspect indices, run queries, and manage documents.</p>
-    </section>
+    <ConnectionGate v-if="!isSearch" :drivers="['elasticsearch', 'opensearch']" label="Elasticsearch or OpenSearch" short="search" purpose="to inspect indices, run queries, and manage documents" icon="search" @select="(id: number) => emit('set-conn', id)" />
 
     <template v-else>
       <section class="search-metrics">
@@ -718,13 +715,13 @@ function indexKindLabel(index: SearchIndex) {
 </template>
 
 <style scoped>
-.search-root { background: var(--bg-body); padding: 18px; gap: 14px; }
+.search-root { background: var(--bg-body); padding: 20px 24px; gap: 16px; }
 .search-topbar, .search-workspace, .search-metrics { display: flex; gap: 12px; }
 .search-topbar { align-items: center; justify-content: space-between; }
 .search-title { display: flex; align-items: center; gap: 12px; }
-.search-title h1 { margin: 0; font-size: 20px; color: var(--text-primary); }
-.search-title p { margin: 2px 0 0; font-size: 12px; color: var(--text-muted); }
-.search-logo { width: 38px; height: 38px; border-radius: 8px; background: #00bfb3; color: #fff; display: grid; place-items: center; font-weight: 800; font-size: 12px; }
+.search-title h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; color: var(--text-primary); }
+.search-title p { margin: 2px 0 0; font-size: 13px; color: var(--text-muted); }
+.search-logo { width: 38px; height: 38px; border-radius: 8px; background: #00bfb3; color: #fff; display: grid; place-items: center; font-weight: 600; font-size: 12px; }
 .search-actions { display: flex; align-items: center; gap: 8px; }
 .search-select { width: 240px; }
 .search-empty { border: 1px solid var(--border); background: var(--bg-elevated); border-radius: 8px; padding: 36px; text-align: center; color: var(--text-muted); }
@@ -742,12 +739,12 @@ function indexKindLabel(index: SearchIndex) {
 .search-panel-title { color: var(--text-primary); font-weight: 700; font-size: 13px; }
 .search-query-controls { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .search-query-controls label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.search-query-controls label span { color: var(--text-muted); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+.search-query-controls label span { color: var(--text-muted); font-size: 12px; font-weight: 700; }
 .search-query-controls .base-input { height: 32px; min-width: 0; }
 .search-input { height: 32px; }
 .search-index-controls { display: grid; grid-template-columns: 1fr 92px; gap: 8px; }
 .search-index-controls label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.search-index-controls label span { color: var(--text-muted); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+.search-index-controls label span { color: var(--text-muted); font-size: 12px; font-weight: 700; }
 .search-index-controls .base-input { height: 32px; min-width: 0; }
 .search-toggle { display: flex; align-items: center; gap: 7px; color: var(--text-muted); font-size: 11px; }
 .search-toggle input { accent-color: #00bfb3; }
@@ -757,7 +754,7 @@ function indexKindLabel(index: SearchIndex) {
 .search-index-row span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .search-index-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .search-index-row small { color: var(--text-muted); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.search-index-row em { font-style: normal; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+.search-index-row em { font-style: normal; font-size: 12px; font-weight: 700; }
 .search-index-row__actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .search-index-delete { border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 11px; padding: 2px 4px; border-radius: 4px; line-height: 1; opacity: 0; transition: opacity 0.15s, color 0.15s, background 0.15s; }
 .search-index-row:hover .search-index-delete { opacity: 1; }
@@ -780,7 +777,7 @@ function indexKindLabel(index: SearchIndex) {
 .search-hit { text-align: left; border: 1px solid var(--border); background: var(--bg-body); color: var(--text-primary); border-radius: 7px; padding: 10px; cursor: pointer; display: flex; flex-direction: column; gap: 8px; }
 .search-hit:hover { border-color: #00bfb3; }
 .search-hit__head, .search-hit__meta, .search-hit__tags, .search-hit__metrics { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.search-hit__level { font-size: 10px; font-weight: 800; text-transform: uppercase; border-radius: 4px; padding: 2px 6px; background: var(--bg-elevated); color: var(--text-muted); border: 1px solid var(--border); }
+.search-hit__level { font-size: 12px; font-weight: 600; border-radius: 4px; padding: 2px 6px; background: var(--bg-elevated); color: var(--text-muted); border: 1px solid var(--border); }
 .level-error, .level-fatal, .level-critical { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); border-color: color-mix(in srgb, var(--danger) 28%, transparent); }
 .level-warn, .level-warning { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); border-color: color-mix(in srgb, var(--warning) 28%, transparent); }
 .level-info { color: #00a69c; background: rgba(0, 191, 179, 0.12); border-color: rgba(0, 191, 179, 0.28); }

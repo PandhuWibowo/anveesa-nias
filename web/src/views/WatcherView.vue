@@ -2,6 +2,7 @@
 import { ref, onBeforeUnmount } from 'vue'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 interface Watcher {
   id: string
@@ -114,15 +115,13 @@ function connName(id: number) {
           <div class="page-subtitle">Poll lightweight queries on an interval and keep the latest value, trendline, and failure state visible at a glance.</div>
         </div>
         <div class="page-hero__actions">
-          <button class="base-btn base-btn--primary base-btn--sm" @click="showForm=true">+ Add Watcher</button>
+          <button class="base-btn base-btn--primary base-btn--sm" @click="showForm=true">Add watcher</button>
         </div>
       </section>
 
       <!-- Watchers grid -->
       <div class="page-grid page-grid--cards wv-grid">
-        <div v-if="watchers.length === 0" class="wv-empty">
-          No watchers yet. Add one to monitor a query live.
-        </div>
+        <EmptyState v-if="watchers.length === 0" class="wv-empty-state" icon="eye" title="No watchers yet" text="A watcher re-runs a small query on an interval and keeps the latest value and trend in view." />
         <div v-for="w in watchers" :key="w.id" class="page-card wv-card">
           <div class="wv-card-head">
             <div class="wv-card-name">{{ w.name }}</div>
@@ -206,6 +205,7 @@ function connName(id: number) {
 </template>
 
 <style scoped>
+.wv-empty-state { grid-column: 1 / -1; }
 .wv-root { width:100%; height:100%; display:flex; flex-direction:column; overflow:hidden; }
 .wv-scroll { flex:1; min-height:0; overflow-y:auto; padding:24px 28px 40px; display:flex; flex-direction:column; gap:16px; }
 .wv-header { display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap; }
@@ -219,16 +219,16 @@ function connName(id: number) {
 .wv-conn-pill { font-size:10px; padding:1px 6px; border-radius:4px; background:var(--brand-dim); color:var(--brand); font-weight:600; }
 .wv-interval-pill { font-size:10px; color:var(--text-muted); padding:1px 5px; background:var(--bg-body); border-radius:4px; }
 .wv-dot { width:7px; height:7px; border-radius:50%; }
-.wv-dot--active { background:#4ade80; animation:pulse 1.2s infinite; }
+.wv-dot--active { background:var(--success); animation:pulse 1.2s infinite; }
 .wv-dot--idle { background:var(--text-muted); }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 .wv-value-row { display:flex; align-items:baseline; gap:10px; }
-.wv-value { font-size:32px; font-weight:900; color:var(--text-primary); font-variant-numeric:tabular-nums; line-height:1; }
+.wv-value { font-size:32px; font-weight: 600; color:var(--text-primary); font-variant-numeric:tabular-nums; line-height:1; }
 .wv-at { font-size:11px; color:var(--text-muted); }
 .wv-spark-wrap { position:relative; }
 .wv-spark { display:block; width:100%; height:44px; }
 .wv-spark-labels { display:flex; justify-content:space-between; font-size:9px; color:var(--text-muted); padding:0 2px; }
-.wv-error { font-size:11.5px; color:#f87171; padding:5px 8px; background:rgba(248,113,113,0.08); border-radius:5px; }
+.wv-error { font-size:11.5px; color:var(--danger); padding:5px 8px; background:var(--danger-bg); border-radius:5px; }
 .wv-sql { margin:0; font-family:var(--mono,monospace); font-size:11px; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .sl-close { background:transparent; border:none; font-size:20px; color:var(--text-muted); cursor:pointer; padding:0 4px; line-height:1; }
 .wv-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.55); display:flex; align-items:center; justify-content:center; z-index:1100; }

@@ -5,6 +5,8 @@ import { useConnections } from '@/composables/useConnections'
 import { useObsSettings, fetchIndices, UPTIME_DEFAULTS } from '@/composables/useObsSettings'
 import { useListFilter } from '@/composables/useListFilter'
 import IndexPicker from '@/components/ui/IndexPicker.vue'
+import ConnectionGate from '@/components/ui/ConnectionGate.vue'
+import NavIcon from '@/components/ui/NavIcon.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit  = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -303,15 +305,15 @@ const tlMax = computed(() => Math.max(...detailTimeline.value.map(b => b.avgMs),
     <!-- ── Header ──────────────────────────────────────────── -->
     <header class="up-header">
       <div class="up-header-left">
-        <div class="up-status-globe" :class="loading ? 'globe-loading' : overallUp ? 'globe-ok' : downCount > 0 ? 'globe-down' : 'globe-idle'" />
+        <div v-if="isSearch" class="up-status-globe" :class="loading ? 'globe-loading' : overallUp ? 'globe-ok' : downCount > 0 ? 'globe-down' : 'globe-idle'" />
         <div>
-          <h1 class="up-title">Uptime Monitors</h1>
-          <p class="up-subtitle">{{ activeConn?.name ?? '—' }} &nbsp;·&nbsp; <code>{{ heartbeatIndex }}</code>
+          <h1 class="up-title">Uptime</h1>
+          <p v-if="isSearch" class="up-subtitle">{{ activeConn?.name ?? '—' }} &nbsp;·&nbsp; <code>{{ heartbeatIndex }}</code>
             <span v-if="lastUpdated" class="up-updated">&nbsp;· updated {{ lastUpdated.toLocaleTimeString() }}</span>
           </p>
         </div>
       </div>
-      <div class="up-header-right">
+      <div v-if="searchConns.length" class="up-header-right">
         <select class="base-input up-sel" :value="activeConnId ?? ''" @change="emit('set-conn', Number(($event.target as HTMLSelectElement).value))">
           <option value="" disabled>Cluster…</option>
           <option v-for="c in searchConns" :key="c.id" :value="c.id">{{ c.name }}</option>
@@ -346,9 +348,7 @@ const tlMax = computed(() => Math.max(...detailTimeline.value.map(b => b.avgMs),
     </div>
 
     <!-- ── No connection ───────────────────────────────────── -->
-    <div v-if="!isSearch" class="up-placeholder">
-      <p>Select an Elasticsearch / OpenSearch connection above.</p>
-    </div>
+    <ConnectionGate v-if="!isSearch" :drivers="['elasticsearch', 'opensearch']" label="Elasticsearch or OpenSearch" short="search" purpose="that receives Heartbeat data" icon="uptime" @select="(id: number) => emit('set-conn', id)" />
 
     <template v-else>
 
@@ -474,7 +474,7 @@ const tlMax = computed(() => Math.max(...detailTimeline.value.map(b => b.avgMs),
                   <div class="up-card-right-nums">
                     <span :class="['up-latency', durationClass(m.durationMs)]">{{ m.durationMs }}ms</span>
                     <template v-if="tlsLabel(m.tlsDaysLeft)">
-                      <span :class="['up-tls-badge', tlsLabel(m.tlsDaysLeft)!.cls]">🔒 {{ tlsLabel(m.tlsDaysLeft)!.text }}</span>
+                      <span :class="['up-tls-badge', tlsLabel(m.tlsDaysLeft)!.cls]"><NavIcon name="lock" :size="11" /> {{ tlsLabel(m.tlsDaysLeft)!.text }}</span>
                     </template>
                   </div>
                 </div>
@@ -561,10 +561,11 @@ const tlMax = computed(() => Math.max(...detailTimeline.value.map(b => b.avgMs),
 </template>
 
 <style scoped>
+@media (max-width: 900px) { .up-root { padding: 20px 16px 32px; } }
 /* ── Root ──────────────────────────────────────────────────── */
 .up-root {
   display: flex; flex-direction: column; gap: 16px;
-  padding: 20px; background: var(--bg-body);
+  padding: 28px 32px 48px; background: var(--bg-body);
   height: 100%; overflow-y: auto; box-sizing: border-box;
   -webkit-overflow-scrolling: touch;
 }
@@ -572,32 +573,31 @@ const tlMax = computed(() => Math.max(...detailTimeline.value.map(b => b.avgMs),
 /* ── Header ────────────────────────────────────────────────── */
 .up-header { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
 .up-header-left { display:flex; align-items:center; gap:14px; }
-.up-title  { margin:0; font-size:18px; font-weight:800; color:var(--text-primary); letter-spacing:-.3px; }
-.up-subtitle { margin:3px 0 0; font-size:11.5px; color:var(--text-muted); }
+.up-title  { margin:0; font-size:22px; font-weight: 600; color:var(--text-primary); letter-spacing:-.015em; }
+.up-subtitle { margin:4px 0 0; font-size:13.5px; color:var(--text-secondary); }
 .up-subtitle code { font-family:var(--mono); background:var(--bg-elevated); padding:1px 5px; border-radius:3px; font-size:10.5px; }
 .up-updated { color:var(--text-muted); }
 .up-header-right { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .up-sel    { width:180px; }
 .up-sel-sm { width:72px; }
-.up-live-dot { width:7px; height:7px; border-radius:50%; background:var(--success); box-shadow:0 0 5px var(--success); animation:pulse 2s infinite; flex-shrink:0; }
+.up-live-dot { width:7px; height:7px; border-radius:50%; background:var(--success); flex-shrink:0; }
 @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.3} }
 
 /* Globe status indicator */
 .up-status-globe {
-  width:44px; height:44px; border-radius:50%; flex-shrink:0;
-  display:flex; align-items:center; justify-content:center;
-  transition:background .4s, box-shadow .4s;
+  width:10px; height:10px; border-radius:50%; flex-shrink:0;
+  transition:background .4s;
 }
-.globe-ok      { background:color-mix(in srgb,var(--success) 20%,var(--bg-elevated)); box-shadow:0 0 0 3px color-mix(in srgb,var(--success) 30%,transparent); }
-.globe-down    { background:color-mix(in srgb,var(--danger) 20%,var(--bg-elevated));  box-shadow:0 0 0 3px color-mix(in srgb,var(--danger) 30%,transparent); animation:globe-pulse 1.5s infinite; }
-.globe-loading { background:var(--bg-elevated); box-shadow:0 0 0 3px var(--border); animation:pulse 1s infinite; }
-.globe-idle    { background:var(--bg-elevated); box-shadow:0 0 0 3px var(--border); }
+.globe-ok      { background:var(--success); }
+.globe-down    { background:var(--danger); }
+.globe-loading { background:var(--text-muted); }
+.globe-idle    { background:var(--text-muted); }
 @keyframes globe-pulse { 0%,100%{box-shadow:0 0 0 3px color-mix(in srgb,var(--danger) 30%,transparent)} 50%{box-shadow:0 0 0 8px color-mix(in srgb,var(--danger) 10%,transparent)} }
 
 /* ── Settings panel ────────────────────────────────────────── */
 .up-settings-panel { display:flex; align-items:flex-end; gap:12px; flex-wrap:wrap; background:var(--bg-elevated); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
 .up-settings-field { display:flex; flex-direction:column; gap:5px; flex:1; min-width:260px; }
-.up-settings-label { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--text-muted); }
+.up-settings-label { font-size: 12px; font-weight:700; color:var(--text-muted); }
 .up-settings-actions { display:flex; gap:8px; align-items:center; }
 
 /* ── Stat strip ────────────────────────────────────────────── */
@@ -611,9 +611,9 @@ const tlMax = computed(() => Math.max(...detailTimeline.value.map(b => b.avgMs),
 .up-stat--up   { border-color:color-mix(in srgb,var(--success) 35%,transparent); background:color-mix(in srgb,var(--success) 7%,var(--bg-elevated)); }
 .up-stat--down { border-color:color-mix(in srgb,var(--danger)  35%,transparent); background:color-mix(in srgb,var(--danger)  7%,var(--bg-elevated)); }
 .up-stat--warn { border-color:color-mix(in srgb,var(--warning) 35%,transparent); background:color-mix(in srgb,var(--warning) 7%,var(--bg-elevated)); }
-.up-stat-val  { font-size:24px; font-weight:800; color:var(--text-primary); line-height:1; }
+.up-stat-val  { font-size:24px; font-weight: 600; color:var(--text-primary); line-height:1; }
 .up-stat-unit { font-size:13px; font-weight:600; color:var(--text-muted); }
-.up-stat-lbl  { font-size:10.5px; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; }
+.up-stat-lbl  { font-size: 12px; font-weight:600; color:var(--text-muted); white-space:nowrap; }
 .up-stat--down .up-stat-val { color:var(--danger); }
 .up-stat--up   .up-stat-val { color:var(--success); }
 .up-stat--warn .up-stat-val { color:var(--warning); }
@@ -637,7 +637,7 @@ const tlMax = computed(() => Math.max(...detailTimeline.value.map(b => b.avgMs),
 .up-tag-strip { display:flex; align-items:center; gap:5px; flex-wrap:wrap; }
 
 /* ── Chips ─────────────────────────────────────────────────── */
-.up-chip { border:1px solid var(--border); background:transparent; color:var(--text-muted); padding:3px 10px; border-radius:20px; cursor:pointer; font-size:11px; font-weight:600; transition:all .15s; white-space:nowrap; }
+.up-chip { border:1px solid var(--border); background:transparent; color:var(--text-muted); padding:3px 10px; border-radius: var(--r-lg); cursor:pointer; font-size:11px; font-weight:600; transition:all .15s; white-space:nowrap; }
 .up-chip:hover { border-color:var(--text-muted); color:var(--text-primary); }
 .up-chip-active { background:var(--text-primary); border-color:var(--text-primary); color:var(--bg-body); }
 .up-chip-sm { padding:1px 7px; font-size:10px; }
@@ -645,7 +645,7 @@ const tlMax = computed(() => Math.max(...detailTimeline.value.map(b => b.avgMs),
 /* ── Monitor groups ────────────────────────────────────────── */
 .up-groups { display:flex; flex-direction:column; gap:20px; }
 .up-group-header { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
-.up-group-label { font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; color:var(--text-muted); }
+.up-group-label { font-size: 12px; font-weight: 600; color:var(--text-muted); }
 .up-group-count { font-size:11px; font-weight:700; padding:1px 7px; border-radius:9px; background:var(--bg-elevated); color:var(--text-muted); border:1px solid var(--border); }
 .up-group-down-badge { font-size:10.5px; font-weight:700; padding:1px 8px; border-radius:9px; background:color-mix(in srgb,var(--danger) 15%,transparent); color:var(--danger); border:1px solid color-mix(in srgb,var(--danger) 30%,transparent); }
 
@@ -658,7 +658,7 @@ const tlMax = computed(() => Math.max(...detailTimeline.value.map(b => b.avgMs),
   transition:box-shadow .15s, border-color .15s;
   overflow:hidden;
 }
-.up-card:hover { box-shadow:0 2px 12px rgba(0,0,0,.12); border-color:var(--text-muted); }
+.up-card:hover { border-color:var(--text-muted); }
 .up-card-down { border-color:color-mix(in srgb,var(--danger) 40%,var(--border)); background:color-mix(in srgb,var(--danger) 3%,var(--bg-elevated)); }
 .up-card-down:hover { border-color:var(--danger); }
 
@@ -683,7 +683,7 @@ const tlMax = computed(() => Math.max(...detailTimeline.value.map(b => b.avgMs),
 .fill-ok   { background:var(--success); }
 .fill-warn { background:var(--warning); }
 .fill-down { background:var(--danger); }
-.up-uptime-pct { font-size:12px; font-weight:800; font-family:var(--mono); white-space:nowrap; min-width:38px; text-align:right; }
+.up-uptime-pct { font-size:12px; font-weight: 600; font-family:var(--mono); white-space:nowrap; min-width:38px; text-align:right; }
 .pct-ok   { color:var(--success); }
 .pct-warn { color:var(--warning); }
 .pct-down { color:var(--danger); }
@@ -727,14 +727,14 @@ const tlMax = computed(() => Math.max(...detailTimeline.value.map(b => b.avgMs),
 .up-panel-overlay { position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:9999; display:flex; justify-content:flex-end; }
 .up-panel { width:480px; max-width:100%; background:var(--bg-elevated); border-left:1px solid var(--border); height:100%; overflow-y:auto; display:flex; flex-direction:column; gap:16px; padding:22px; box-shadow:-8px 0 28px rgba(0,0,0,.15); }
 .up-panel-head { display:flex; align-items:center; justify-content:space-between; }
-.up-panel-title { display:flex; align-items:center; gap:10px; font-size:15px; font-weight:800; color:var(--text-primary); }
+.up-panel-title { display:flex; align-items:center; gap:10px; font-size:15px; font-weight: 600; color:var(--text-primary); }
 .up-panel-url { font-family:var(--mono); font-size:11.5px; color:var(--text-muted); text-decoration:none; word-break:break-all; }
 .up-panel-url:hover { color:var(--text-primary); text-decoration:underline; }
 .up-panel-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 .up-pg-item { background:var(--bg-body); border:1px solid var(--border); border-radius:8px; padding:10px 12px; display:flex; flex-direction:column; gap:3px; }
-.up-pg-lbl  { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--text-muted); }
+.up-pg-lbl  { font-size: 12px; font-weight:700; color:var(--text-muted); }
 .up-pg-item strong { font-size:13px; color:var(--text-primary); }
-.up-panel-section { font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; color:var(--text-muted); border-top:1px solid var(--border); padding-top:12px; }
+.up-panel-section { font-size: 12px; font-weight: 600; color:var(--text-muted); border-top:1px solid var(--border); padding-top:12px; }
 .up-panel-loading { text-align:center; color:var(--text-muted); font-size:12.5px; padding:16px; }
 .up-resp-chart { display:flex; flex-direction:column; gap:6px; background:var(--bg-body); border:1px solid var(--border); border-radius:8px; padding:12px; }
 .up-resp-bars { display:flex; align-items:flex-end; height:90px; gap:2px; }

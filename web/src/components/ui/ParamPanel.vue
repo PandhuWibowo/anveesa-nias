@@ -69,14 +69,13 @@ defineExpose({ buildSQL, params })
 }
 .pp-header {
   display: flex; align-items: center; gap: 6px;
-  font-size: 10.5px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.4px; color: var(--text-muted);
+  font-size: 12px; font-weight: 700; color: var(--text-muted);
   margin-bottom: 8px;
 }
 .pp-count {
   padding: 1px 5px; border-radius: 4px;
   background: var(--brand-dim); color: var(--brand);
-  font-size: 9px; font-weight: 900;
+  font-size: 9px; font-weight: 600;
 }
 .pp-fields { display: flex; flex-wrap: wrap; gap: 8px; }
 .pp-field { display: flex; align-items: center; gap: 6px; }

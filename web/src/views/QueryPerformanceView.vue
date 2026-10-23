@@ -488,10 +488,8 @@ watch([sourceMode, filterMode, selectedConnId, sinceHours], () => { void load() 
 }
 .qp-stat { padding: 14px 16px; }
 .qp-stat__label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
   color: var(--text-muted);
 }
 .qp-stat__value {
@@ -501,8 +499,8 @@ watch([sourceMode, filterMode, selectedConnId, sinceHours], () => { void load() 
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
 }
-.qp-stat__value--warn { color: #d97706; }
-.qp-stat__value--err { color: #dc2626; }
+.qp-stat__value--warn { color: var(--warning); }
+.qp-stat__value--err { color: var(--danger); }
 .qp-toolbar { padding: 16px; }
 .qp-toolbar__grid {
   display: grid;
@@ -517,10 +515,8 @@ watch([sourceMode, filterMode, selectedConnId, sinceHours], () => { void load() 
 .qp-field--wide { grid-column: span 2; }
 .qp-field span,
 .qp-section-title {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.35px;
   color: var(--text-muted);
 }
 .qp-field select,
@@ -560,10 +556,8 @@ watch([sourceMode, filterMode, selectedConnId, sinceHours], () => { void load() 
 }
 .qp-metric__label {
   margin-top: 3px;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
   color: var(--text-muted);
 }
 .qp-category-list,
@@ -616,9 +610,9 @@ watch([sourceMode, filterMode, selectedConnId, sinceHours], () => { void load() 
   gap: 10px;
   border-left: 3px solid transparent;
 }
-.qp-card--slow { border-left-color: #f59e0b; }
-.qp-card--error { border-left-color: #ef4444; }
-.qp-card--ok { border-left-color: #10b981; }
+.qp-card--slow { border-left-color: var(--warning); }
+.qp-card--error { border-left-color: var(--danger); }
+.qp-card--ok { border-left-color: var(--success); }
 .qp-card--fingerprint { border-left-color: var(--brand); }
 .qp-card__top {
   display: flex;
@@ -642,9 +636,9 @@ watch([sourceMode, filterMode, selectedConnId, sinceHours], () => { void load() 
 }
 .qp-pill--conn { background: var(--brand-dim); color: var(--brand); }
 .qp-pill--user { background: var(--bg-hover); color: var(--text-secondary); }
-.qp-pill--slow { background: rgba(245, 158, 11, 0.14); color: #b45309; }
-.qp-pill--err { background: rgba(239, 68, 68, 0.14); color: #b91c1c; }
-.qp-pill--ok { background: rgba(16, 185, 129, 0.14); color: #047857; }
+.qp-pill--slow { background: var(--warning-bg); color: var(--warning); }
+.qp-pill--err { background: var(--danger-bg); color: var(--danger); }
+.qp-pill--ok { background: var(--success-bg); color: #047857; }
 .qp-card__time,
 .qp-card__meta {
   font-size: 12px;
@@ -671,8 +665,8 @@ watch([sourceMode, filterMode, selectedConnId, sinceHours], () => { void load() 
 .qp-card__error {
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(239, 68, 68, 0.08);
-  color: #b91c1c;
+  background: var(--danger-bg);
+  color: var(--danger);
   font-size: 12px;
   line-height: 1.5;
 }

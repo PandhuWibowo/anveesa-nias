@@ -13,6 +13,7 @@ import { useLaravelQueue, type LaravelActiveJob, type LaravelFailedJob, type Lar
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useListFilter } from '@/composables/useListFilter'
+import ConnectionGate from '@/components/ui/ConnectionGate.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -597,16 +598,27 @@ function formatRuntime(seconds?: number): string {
   return `${m}m ${s}s`
 }
 
+// A database without Laravel's failed_jobs table is a setup state, not an error to toast on every poll.
+const failedJobsError = ref('')
+
 async function loadFailedJobs() {
   if (!failedConnId.value) return
   loadingFailed.value = true
   try {
     failedJobs.value = await fetchFailedJobs(failedConnId.value, 100)
+    failedJobsError.value = ''
     selectedFailedJobId.value = filteredFailedJobs.value[0]?.id ?? null
     selectedFailedJobIds.value = new Set([...selectedFailedJobIds.value].filter(id => failedJobs.value.some(job => job.id === id)))
     recordTimelineSample()
   } catch (err) {
-    toast.error(errorMessage(err, 'Failed to load Laravel failed jobs'))
+    const msg = errorMessage(err, 'Failed to load Laravel failed jobs')
+    if (/failed_jobs.*does not exist|doesn't exist|no such table/i.test(msg)) {
+      failedJobs.value = []
+      failedJobsError.value = 'This database has no failed_jobs table. Pick the database your Laravel app uses, or a Redis connection to watch live queues.'
+    } else {
+      failedJobsError.value = ''
+      toast.error(msg)
+    }
   } finally {
     loadingFailed.value = false
   }
@@ -1560,29 +1572,7 @@ function errorMessage(err: unknown, fallback: string) {
 
 <template>
   <div class="lq-view" :class="{ 'is-sidebar-collapsed': sidebarCollapsed }">
-    <section v-if="!isRedis && !isSql" class="page-panel lq-empty">
-      <div class="lq-empty__title">No connection selected</div>
-      <div class="lq-empty__hint">Select a Redis connection to monitor queues, or a SQL database connection to browse failed jobs.</div>
-      <div v-if="redisConnections.length" class="lq-picker">
-        <label class="form-label">Redis Connection (full queue monitor)</label>
-        <select class="base-input" @change="selectRedisConnection(($event.target as HTMLSelectElement).value)">
-          <option value="">Select Redis connection</option>
-          <option v-for="conn in redisConnections" :key="conn.id" :value="conn.id">
-            {{ conn.name }} - {{ conn.host }}:{{ conn.port }}
-          </option>
-        </select>
-      </div>
-      <div v-if="sqlConnections.length" class="lq-picker" style="margin-top:12px">
-        <label class="form-label">SQL Connection (failed jobs only)</label>
-        <select class="base-input" @change="selectRedisConnection(($event.target as HTMLSelectElement).value)">
-          <option value="">Select SQL connection</option>
-          <option v-for="conn in sqlConnections" :key="conn.id" :value="conn.id">
-            {{ conn.name }} ({{ conn.driver }})
-          </option>
-        </select>
-      </div>
-      <div v-if="!redisConnections.length && !sqlConnections.length" class="lq-muted">Create a connection first.</div>
-    </section>
+    <ConnectionGate v-if="!isRedis && !isSql" :drivers="['redis', 'postgres', 'mysql', 'mariadb', 'mssql']" label="Redis or SQL" short="Redis" purpose="— Redis to monitor live queues, or the app database to browse failed jobs" icon="queue" @select="selectRedisConnection" />
 
     <template v-else-if="isRedis || isSql">
       <aside class="lq-sidebar">
@@ -2253,7 +2243,7 @@ tail -n 100 storage/logs/laravel.log  # why the worker dies on boot
                 </tr>
               </tbody>
             </table>
-            <div v-if="!loadingFailed && filteredFailedJobs.length === 0" class="lq-empty-inline">No failed jobs loaded.</div>
+            <div v-if="!loadingFailed && filteredFailedJobs.length === 0" class="lq-empty-inline">{{ failedJobsError || 'No failed jobs. Jobs that throw land here with their payload and exception.' }}</div>
           </section>
 
           <aside class="lq-detail">
@@ -2578,7 +2568,7 @@ tail -n 100 storage/logs/laravel.log  # why the worker dies on boot
   background: var(--bg-elevated);
   color: var(--text-primary);
   font-size: 10px;
-  font-weight: 800;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -2707,9 +2697,8 @@ tail -n 100 storage/logs/laravel.log  # why the worker dies on boot
   border-radius: 5px;
   background: var(--bg-elevated);
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
 }
 
 .lq-chip--danger {
@@ -3026,8 +3015,8 @@ tail -n 100 storage/logs/laravel.log  # why the worker dies on boot
 }
 
 .lq-settings-card--alert {
-  border-color: rgba(251, 191, 36, 0.25);
-  background: rgba(251, 191, 36, 0.03);
+  border-color: color-mix(in srgb, var(--warning) 25%, transparent);
+  background: var(--warning-bg);
 }
 
 .lq-alert-toggle {
@@ -3050,13 +3039,13 @@ tail -n 100 storage/logs/laravel.log  # why the worker dies on boot
 
 .lq-alert-saved {
   font-size: 11px;
-  color: #22c55e;
+  color: var(--success);
   font-weight: 600;
 }
 
 .lq-alert-error {
   font-size: 11px;
-  color: #ef4444;
+  color: var(--danger);
   font-weight: 600;
 }
 
@@ -3135,7 +3124,7 @@ tail -n 100 storage/logs/laravel.log  # why the worker dies on boot
   color: var(--text-primary);
   font-family: var(--mono);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .lq-audit-action {
@@ -3146,7 +3135,6 @@ tail -n 100 storage/logs/laravel.log  # why the worker dies on boot
 
 .lq-audit-status {
   font-weight: 700;
-  text-transform: uppercase;
 }
 
 .lq-audit-status[data-status="failed"],
@@ -3289,7 +3277,7 @@ tail -n 100 storage/logs/laravel.log  # why the worker dies on boot
   font-size: 10px;
   font-weight: 700;
   color: #fff !important;
-  background: var(--danger, #dc2626);
+  background: var(--danger, var(--danger));
 }
 
 .lq-active-bar {
@@ -3355,12 +3343,10 @@ tail -n 100 storage/logs/laravel.log  # why the worker dies on boot
   border-bottom: 1px solid var(--border);
   background: var(--bg-elevated);
   color: var(--text-muted);
-  font-family: 'Inter', sans-serif;
-  font-size: 11px;
+  font-family: var(--sans);
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.4px;
   text-align: left;
-  text-transform: uppercase;
 }
 
 .lq-table td {
@@ -3389,9 +3375,8 @@ tail -n 100 storage/logs/laravel.log  # why the worker dies on boot
   border-radius: 5px;
   background: var(--bg-elevated);
   color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .lq-state[data-state="ready"] { color: var(--success); background: var(--success-bg); }
@@ -3466,8 +3451,6 @@ tail -n 100 storage/logs/laravel.log  # why the worker dies on boot
 .lq-stat__label {
   color: var(--text-secondary);
   font-size: 11.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 
 .lq-stat.is-success .lq-stat__value { color: var(--success); }

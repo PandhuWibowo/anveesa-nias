@@ -8,6 +8,7 @@ import { useSearchCache } from '@/composables/useSearchCache'
 import { useListFilter } from '@/composables/useListFilter'
 import { useSort } from '@/composables/useSort'
 import SortIcon from '@/components/ui/SortIcon.vue'
+import ConnectionGate from '@/components/ui/ConnectionGate.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
@@ -516,13 +517,12 @@ function formatDate(v: string) {
   <div class="page-shell sp-root">
     <header class="sp-topbar">
       <div class="sp-title">
-        <span class="sp-logo">{{ activeConn?.driver === 'opensearch' ? 'OS' : 'ES' }}</span>
         <div>
           <h1>Search Policies</h1>
-          <p>{{ activeConn ? activeConn.name : 'No Elasticsearch or OpenSearch connection selected' }}</p>
+          <p v-if="isSearch">{{ activeConn?.name }}</p>
         </div>
       </div>
-      <div class="sp-actions">
+      <div v-if="isSearch" class="sp-actions">
         <select class="base-input sp-select" :value="activeConnId ?? ''" @change="emit('set-conn', Number(($event.target as HTMLSelectElement).value))">
           <option value="" disabled>Select search cluster</option>
           <option v-for="conn in searchConnections" :key="conn.id" :value="conn.id">{{ conn.name }}</option>
@@ -531,10 +531,7 @@ function formatDate(v: string) {
       </div>
     </header>
 
-    <section v-if="!isSearch" class="sp-empty">
-      <h2>Select a search connection</h2>
-      <p>Connect to an Elasticsearch or OpenSearch cluster to manage policies, templates, and shard settings.</p>
-    </section>
+    <ConnectionGate v-if="!isSearch" :drivers="['elasticsearch', 'opensearch']" label="Elasticsearch or OpenSearch" short="search" purpose="to manage ILM policies, templates, and shard settings" icon="policy" @select="(id: number) => emit('set-conn', id)" />
 
     <template v-else>
       <div class="sp-tabs">
@@ -551,7 +548,7 @@ function formatDate(v: string) {
             <div class="sp-section-title">Index Lifecycle Management</div>
             <div class="sp-muted">{{ ilmPolicies.length }} policies</div>
           </div>
-          <button class="base-btn base-btn--primary base-btn--sm" @click="openNewILM">+ New Policy</button>
+          <button class="base-btn base-btn--primary base-btn--sm" @click="openNewILM">New policy</button>
         </div>
 
         <div v-if="ilmShowEditor" class="sp-editor-panel">
@@ -599,7 +596,7 @@ function formatDate(v: string) {
             <div class="sp-section-title">Index Templates</div>
             <div class="sp-muted">{{ templates.length }} templates</div>
           </div>
-          <button class="base-btn base-btn--primary base-btn--sm" @click="openNewTemplate">+ New Template</button>
+          <button class="base-btn base-btn--primary base-btn--sm" @click="openNewTemplate">New template</button>
         </div>
 
         <div v-if="tplShowEditor" class="sp-editor-panel">
@@ -645,7 +642,7 @@ function formatDate(v: string) {
             <div class="sp-section-title">App-level Policies</div>
             <div class="sp-muted">Custom rules evaluated by NIAS</div>
           </div>
-          <button class="base-btn base-btn--primary base-btn--sm" @click="openNewAppPolicy">+ New Policy</button>
+          <button class="base-btn base-btn--primary base-btn--sm" @click="openNewAppPolicy">New policy</button>
         </div>
 
         <div v-if="appPolicyShowForm" class="sp-editor-panel">
@@ -777,12 +774,12 @@ function formatDate(v: string) {
 </template>
 
 <style scoped>
-.sp-root { background: var(--bg-body); padding: 18px; gap: 14px; }
+.sp-root { background: var(--bg-body); padding: 20px 24px; gap: 16px; }
 .sp-topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .sp-title { display: flex; align-items: center; gap: 12px; }
-.sp-title h1 { margin: 0; font-size: 20px; color: var(--text-primary); }
-.sp-title p { margin: 2px 0 0; font-size: 12px; color: var(--text-muted); }
-.sp-logo { width: 38px; height: 38px; border-radius: 8px; background: #00bfb3; color: #fff; display: grid; place-items: center; font-weight: 800; font-size: 12px; flex-shrink: 0; }
+.sp-title h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; color: var(--text-primary); }
+.sp-title p { margin: 2px 0 0; font-size: 13px; color: var(--text-muted); }
+.sp-logo { width: 38px; height: 38px; border-radius: 8px; background: #00bfb3; color: #fff; display: grid; place-items: center; font-weight: 600; font-size: 12px; flex-shrink: 0; }
 .sp-actions { display: flex; align-items: center; gap: 8px; }
 .sp-select { width: 240px; }
 .sp-empty { border: 1px solid var(--border); background: var(--bg-elevated); border-radius: 8px; padding: 36px; text-align: center; color: var(--text-muted); }
@@ -804,14 +801,14 @@ function formatDate(v: string) {
 .sp-editor-footer { display: flex; justify-content: flex-end; gap: 8px; }
 .sp-editor-textarea { min-height: 280px; resize: vertical; font-family: var(--mono); font-size: 12px; line-height: 1.6; }
 .sp-field { display: flex; flex-direction: column; gap: 4px; }
-.sp-field span { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.sp-field span { font-size: 12px; font-weight: 700; color: var(--text-muted); }
 .sp-field--toggle { flex-direction: row; align-items: center; gap: 8px; }
 .sp-field--toggle span { text-transform: none; font-weight: 500; font-size: 13px; color: var(--text-secondary); }
 .sp-form-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap: 10px; align-items: end; }
 
 .sp-table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
 .sp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.sp-table th { background: var(--bg-elevated); color: var(--text-muted); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.sp-table th { background: var(--bg-elevated); color: var(--text-muted); font-size: 12px; font-weight: 700; padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .sp-table th.sp-th-sort { cursor: pointer; user-select: none; }
 .sp-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--text-secondary); vertical-align: middle; }
 .sp-table tr:last-child td { border-bottom: 0; }
@@ -824,7 +821,7 @@ function formatDate(v: string) {
 .sp-tag--enabled { color: var(--success); border-color: color-mix(in srgb, var(--success) 30%, transparent); background: color-mix(in srgb, var(--success) 10%, transparent); }
 .sp-tag--disabled { color: var(--text-muted); }
 .sp-tag--type { color: #00bfb3; border-color: rgba(0,191,179,0.3); background: rgba(0,191,179,0.08); }
-.sp-phase-badge { display: inline-flex; align-items: center; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px; border: 1px solid; margin-right: 4px; background: transparent; text-transform: uppercase; }
+.sp-phase-badge { display: inline-flex; align-items: center; font-size: 12px; font-weight: 700; padding: 2px 7px; border-radius: 4px; border: 1px solid; margin-right: 4px; background: transparent; }
 
 .sp-policy-list { display: flex; flex-direction: column; gap: 10px; }
 .sp-policy-card { border: 1px solid var(--border); background: var(--bg-elevated); border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }

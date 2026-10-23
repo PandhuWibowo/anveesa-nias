@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import axios from 'axios'
+import NavIcon from '@/components/ui/NavIcon.vue'
 
 interface Entry { name: string; isDir: boolean }
 
@@ -98,7 +99,7 @@ watch(() => props.show, (v) => { if (v) load(props.startPath || '/') })
           :disabled="excluded.has(joinPath(path, d.name))"
           :title="excluded.has(joinPath(path, d.name)) ? 'Can\'t move a folder into itself' : ''"
           @click="enter(d.name)"
-        >📁 {{ d.name }}</button>
+        ><NavIcon name="folder" :size="13" /> {{ d.name }}</button>
       </div>
 
       <div class="sfp-footer">

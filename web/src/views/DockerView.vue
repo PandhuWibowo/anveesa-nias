@@ -14,6 +14,8 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
 import { useListFilter } from '@/composables/useListFilter'
 import { useSort } from '@/composables/useSort'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import NavIcon from '@/components/ui/NavIcon.vue'
 
 interface DockerHost {
   id: number
@@ -1427,7 +1429,7 @@ async function openTerminal(c: DockerContainer) {
   term = new Terminal({
     cursorBlink: true,
     fontSize: termFontSize.value,
-    fontFamily: "'JetBrains Mono', Menlo, monospace",
+    fontFamily: "'IBM Plex Mono', Menlo, monospace",
     theme: { background: '#0d1117' },
   })
   fitAddon = new FitAddon()
@@ -2067,7 +2069,7 @@ onMounted(loadHosts)
             />
             <button v-if="hosts.length" class="base-btn base-btn--sm" @click="toggleOverview">{{ showOverview ? 'Hide overview' : 'Overview' }}</button>
             <button v-if="activeHost" class="base-btn base-btn--sm" @click="toggleDf">{{ showDf ? 'Hide usage' : 'Disk usage' }}</button>
-            <button v-if="activeHost" class="base-btn base-btn--primary base-btn--sm" @click="openTopology">🗺 Topology</button>
+            <button v-if="activeHost" class="base-btn base-btn--primary base-btn--sm" @click="openTopology"><NavIcon name="map" :size="14" /> Topology</button>
             <label v-if="activeHost" class="dk-autorefresh" title="Auto-refresh every 5s">
               <input type="checkbox" v-model="autoRefresh" /> Auto
             </label>
@@ -2141,12 +2143,8 @@ onMounted(loadHosts)
         </div>
 
         <!-- Empty state -->
-        <div v-if="!hosts.length" class="page-card dk-empty">
-          <div class="dk-empty-icon">🐳</div>
-          <h2>No Docker hosts yet</h2>
-          <p>Connect a server by SSH to browse and control its containers.</p>
-          <button v-if="canManage" class="base-btn base-btn--primary" @click="router.push({ name: 'ssh-hosts' })">Add your first host</button>
-          <p v-else class="dk-muted">You don't have permission to add Docker hosts.</p>
+        <div v-if="!hosts.length" class="page-card">
+          <EmptyState icon="docker" title="No servers yet" :text="canManage ? 'Add a server over SSH to browse and control its containers.' : 'Ask an administrator to add a server you can use.'" :action-label="canManage ? 'Add server' : undefined" :action-to="{ name: 'ssh-hosts', query: { new: '1' } }" />
         </div>
 
         <template v-else-if="activeHostId !== null">
@@ -2202,7 +2200,7 @@ onMounted(loadHosts)
               </template>
               <button v-if="canManage" class="base-btn base-btn--sm" :disabled="pruning" @click="pruneContainers">Prune stopped</button>
               <button v-if="canManage" class="base-btn base-btn--sm" @click="openCompose">Deploy stack</button>
-              <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="openRun">+ Run container</button>
+              <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="openRun">Run container</button>
             </template>
             <template v-else-if="tab === 'images'">
               <input
@@ -2212,7 +2210,7 @@ onMounted(loadHosts)
                 @keyup.enter="pullImageNow()"
               />
               <button v-if="canManage" class="base-btn base-btn--sm" :disabled="pulling || !pullImage.trim()" @click="pullImageNow()">{{ pulling ? 'Pulling…' : 'Pull' }}</button>
-              <button v-if="canManage" class="base-btn base-btn--sm" title="Pull from a private registry" @click="openPullAuth">🔒</button>
+              <button v-if="canManage" class="base-btn base-btn--sm" title="Pull from a private registry" @click="openPullAuth" aria-label="Pull from a private registry"><NavIcon name="lock" :size="14" /></button>
               <div class="dk-spacer"></div>
               <label v-if="canManage" class="base-btn base-btn--sm dk-import-btn">{{ pulling ? 'Importing…' : 'Import' }}<input type="file" accept=".tar" hidden @change="loadImageFile" /></label>
               <button v-if="canManage" class="base-btn base-btn--sm" @click="openBuild">Build image</button>
@@ -2222,13 +2220,13 @@ onMounted(loadHosts)
               <span class="dk-muted">{{ volumes.length }} volume{{ volumes.length === 1 ? '' : 's' }}</span>
               <div class="dk-spacer"></div>
               <button v-if="canManage" class="base-btn base-btn--sm" :disabled="pruning" @click="pruneVolumes">Prune unused</button>
-              <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="createVolForm = { name: '', driver: '' }; showCreateVol = true">+ Create volume</button>
+              <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="createVolForm = { name: '', driver: '' }; showCreateVol = true">Create volume</button>
             </template>
             <template v-else>
               <span class="dk-muted">{{ networks.length }} network{{ networks.length === 1 ? '' : 's' }}</span>
               <div class="dk-spacer"></div>
               <button v-if="canManage" class="base-btn base-btn--sm" :disabled="pruning" @click="pruneNetworks">Prune unused</button>
-              <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="createNetForm = { name: '', driver: 'bridge' }; showCreateNet = true">+ Create network</button>
+              <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="createNetForm = { name: '', driver: 'bridge' }; showCreateNet = true">Create network</button>
             </template>
           </div>
 
@@ -2477,7 +2475,7 @@ onMounted(loadHosts)
 
         <!-- Idle: hosts exist but none selected (after disconnect) -->
         <div v-else class="page-card dk-idle">
-          <div class="dk-idle-icon">🐳</div>
+          <div class="dk-idle-icon"><NavIcon name="docker" :size="24" /></div>
           <p>Select a host from the dropdown above to connect.</p>
         </div>
       </div>
@@ -2677,7 +2675,7 @@ onMounted(loadHosts)
             <div class="dk-kv" v-if="inspView.sizeRootFs != null"><span>Virtual size</span><span class="dk-mono">{{ formatBytes(inspView.sizeRootFs) }}</span></div>
             <div class="dk-kv" v-if="inspView.startedAt"><span>Started</span><span class="dk-mono">{{ inspView.startedAt }}</span></div>
             <div class="dk-kv" v-if="inspView.status !== 'running'"><span>Exit code</span><span class="dk-mono">{{ inspView.exitCode }}</span></div>
-            <button v-if="canManage" class="base-btn base-btn--xs" style="margin-top: 8px; align-self: flex-start" @click="openCommitInspect">📸 Snapshot to image</button>
+            <button v-if="canManage" class="base-btn base-btn--xs" style="margin-top: 8px; align-self: flex-start" @click="openCommitInspect">Snapshot to image</button>
           </section>
 
           <section v-if="topData && topData.processes.length" class="dk-detail">
@@ -2867,7 +2865,7 @@ onMounted(loadHosts)
           <div v-if="filesLoading" class="dk-muted">Loading…</div>
           <div v-else-if="!fileEntries.length" class="dk-muted">Empty directory.</div>
           <div v-for="e in fileEntries" :key="e.name" class="dk-file" :class="{ 'dk-file--dir': e.isDir }">
-            <span class="dk-file-name" @click="fileNavigate(e)">{{ e.isDir ? '📁' : '📄' }} {{ e.name }}</span>
+            <span class="dk-file-name" @click="fileNavigate(e)"><NavIcon :name="e.isDir ? 'folder' : 'file'" :size="14" /> {{ e.name }}</span>
             <span class="dk-mono dk-muted dk-file-mode">{{ e.mode }}</span>
             <span class="dk-muted dk-file-size">{{ e.isDir ? '' : formatBytes(e.size) }}</span>
             <button v-if="!e.isDir" class="base-btn base-btn--xs" @click="downloadFile(e)">Download</button>
@@ -2904,7 +2902,7 @@ onMounted(loadHosts)
     <!-- Commit (snapshot) modal -->
     <div v-if="showCommit" class="dk-modal-backdrop" @click.self="showCommit = false">
       <div class="dk-modal page-card">
-        <div class="dk-modal-title">📸 Snapshot container → image</div>
+        <div class="dk-modal-title">Snapshot container to image</div>
         <div class="dk-form">
           <div class="dk-form-row">
             <label class="dk-grow">Repository<input v-model="commitForm.repo" class="base-input" placeholder="myapp" /></label>
@@ -3054,7 +3052,7 @@ onMounted(loadHosts)
     <div v-if="showTopology" class="dk-topo-backdrop">
       <div class="dk-topo">
         <div class="dk-topo-head">
-          <span class="dk-modal-title dk-term-title">🗺 Topology — {{ activeHost?.name }}</span>
+          <span class="dk-modal-title dk-term-title">Topology — {{ activeHost?.name }}</span>
           <div class="dk-topo-legend">
             <span><i class="dk-lg dk-lg--net"></i> Network</span>
             <span><i class="dk-lg dk-lg--con"></i> Container</span>
@@ -3148,7 +3146,7 @@ onMounted(loadHosts)
             <button class="dk-icon-btn dk-term-font" title="Decrease font" @click="changeFont(-1)">A−</button>
             <button class="dk-icon-btn dk-term-font" title="Increase font" @click="changeFont(1)">A+</button>
             <button class="dk-icon-btn" :title="termFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'" @click="toggleTermFullscreen">
-              {{ termFullscreen ? '🗗' : '⛶' }}
+              {{ termFullscreen ? 'Exit full screen' : 'Full screen' }}
             </button>
             <button class="dk-icon-btn dk-slide-close" @click="closeTerminal">×</button>
           </div>
@@ -3183,7 +3181,7 @@ onMounted(loadHosts)
 
 .dk-table-wrap { padding: 4px 6px; overflow-x: auto; }
 .dk-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.dk-table th { text-align: left; padding: 10px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+.dk-table th { text-align: left; padding: 10px 12px; font-size: 12px; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; }
 .dk-th-sort { cursor: pointer; user-select: none; }
 .dk-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .dk-table tbody tr:last-child td { border-bottom: none; }
@@ -3208,10 +3206,10 @@ onMounted(loadHosts)
 .dk-spark-line { fill: none; stroke-width: 1.5; }
 .dk-spark-area { stroke: none; opacity: 0.15; }
 .dk-spark--cpu { stroke: var(--brand); fill: var(--brand); }
-.dk-spark--mem { stroke: #6366f1; fill: #6366f1; }
+.dk-spark--mem { stroke: var(--brand); fill: var(--brand); }
 .dk-spark--net { stroke: var(--warning); fill: var(--warning); }
 .dk-stat { display: flex; flex-direction: column; gap: 2px; }
-.dk-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.dk-stat-label { font-size: 12px; color: var(--text-muted); }
 .dk-stat-val { font-family: var(--mono); font-size: 13px; color: var(--text-primary); }
 
 .dk-host-strip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -3257,7 +3255,7 @@ onMounted(loadHosts)
 .dk-slide-body { flex: 1; overflow-y: auto; padding: 8px 20px 24px; }
 .dk-detail { padding: 14px 0; border-bottom: 1px solid var(--border); }
 .dk-detail:last-child { border-bottom: none; }
-.dk-detail h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 0 0 10px; font-weight: 600; }
+.dk-detail h4 { font-size: 12px; color: var(--text-muted); margin: 0 0 10px; font-weight: 600; }
 .dk-kv { display: flex; gap: 12px; font-size: 12px; padding: 3px 0; }
 .dk-kv > span:first-child { width: 86px; flex-shrink: 0; color: var(--text-muted); }
 .dk-kv > span:last-child { color: var(--text-secondary); word-break: break-all; }
@@ -3277,7 +3275,7 @@ onMounted(loadHosts)
 
 /* Compose group rows */
 .dk-group-row td { background: var(--bg-body); padding: 7px 12px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
-.dk-group-badge { font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; background: var(--brand-dim); color: var(--brand); padding: 1px 6px; border-radius: var(--r-xs); margin-right: 6px; }
+.dk-group-badge { font-size: 12px; background: var(--brand-dim); color: var(--brand); padding: 1px 6px; border-radius: var(--r-xs); margin-right: 6px; }
 
 /* Search + overview */
 .dk-search { min-width: 150px; max-width: 200px; }
@@ -3377,9 +3375,9 @@ onMounted(loadHosts)
 .dk-topo-legend { display: flex; gap: 14px; font-size: 11px; color: var(--text-muted); }
 .dk-topo-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .dk-lg { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
-.dk-lg--net { background: #6366f1; }
+.dk-lg--net { background: var(--brand); }
 .dk-lg--con { background: var(--success); }
-.dk-lg--vol { background: #f59e0b; }
+.dk-lg--vol { background: var(--warning); }
 .dk-topo-head .dk-term-head-actions { margin-left: auto; }
 .dk-topo-canvas { position: relative; flex: 1; min-height: 0; overflow: hidden; cursor: grab; background:
   radial-gradient(circle, rgba(255,255,255,0.04) 1px, transparent 1px); background-size: 22px 22px; background-color: var(--bg-body); }
@@ -3396,19 +3394,19 @@ onMounted(loadHosts)
 .dk-topo-svg { display: block; user-select: none; }
 
 .dk-edge { stroke-width: 1.5; opacity: 0.55; }
-.dk-edge--net { stroke: #6366f1; }
-.dk-edge--vol { stroke: #f59e0b; stroke-dasharray: 4 3; }
+.dk-edge--net { stroke: var(--brand); }
+.dk-edge--vol { stroke: var(--warning); stroke-dasharray: 4 3; }
 
 .dk-tnode { fill: var(--bg-elevated); stroke: var(--border-2); stroke-width: 1.5; }
 .dk-tnode--running { stroke: var(--success); }
 .dk-tnode--exited { stroke: var(--danger); }
 .dk-tnode--paused { stroke: var(--warning); }
-.dk-tnode--net { fill: rgba(99, 102, 241, 0.12); stroke: #6366f1; }
-.dk-tnode--vol { fill: rgba(245, 158, 11, 0.1); stroke: #f59e0b; }
+.dk-tnode--net { fill: var(--brand-dim); stroke: var(--brand); }
+.dk-tnode--vol { fill: var(--warning-bg); stroke: var(--warning); }
 .dk-tnode-label { font-size: 13px; font-weight: 600; fill: var(--text-primary); }
 .dk-tnode-sub { font-size: 11px; fill: var(--text-muted); font-family: var(--mono); }
 .dk-tnode-ports { font-size: 10px; fill: var(--brand); font-family: var(--mono); }
-.dk-tnode-proj { font-size: 9px; fill: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.dk-tnode-proj { font-size: 12px; fill: var(--text-muted); }
 
 /* Terminal modal */
 .dk-term-modal { width: 900px; max-width: 94vw; height: 560px; max-height: 86vh; background: #0d1117; border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); display: flex; flex-direction: column; overflow: hidden; }

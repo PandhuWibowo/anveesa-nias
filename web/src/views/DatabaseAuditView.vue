@@ -296,12 +296,12 @@ watch(selectedConnId, () => { void load() })
 }
 .dba-stat { padding:14px 16px; }
 .dba-stat__label {
-  font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.35px; color:var(--text-muted);
+  font-size: 12px; font-weight:700; color:var(--text-muted);
 }
 .dba-stat__value {
   margin-top:6px; font-size:24px; font-weight:700; color:var(--text-primary); font-variant-numeric:tabular-nums;
 }
-.dba-stat__value--warn { color:#d97706; }
+.dba-stat__value--warn { color:var(--warning); }
 .dba-toolbar, .dba-capabilities { padding:16px; }
 .dba-toolbar__grid {
   display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:12px;
@@ -309,7 +309,7 @@ watch(selectedConnId, () => { void load() })
 .dba-field { display:flex; flex-direction:column; gap:6px; }
 .dba-field--wide { grid-column:span 2; }
 .dba-field span, .dba-section-title {
-  font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.35px; color:var(--text-muted);
+  font-size: 12px; font-weight:700; color:var(--text-muted);
 }
 .dba-field select, .dba-field input {
   height:38px; border-radius:8px; border:1px solid var(--border); background:var(--bg-panel); color:var(--text-primary); padding:0 12px; font-size:13px;
@@ -320,13 +320,13 @@ watch(selectedConnId, () => { void load() })
 .dba-capability {
   padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--bg-panel); font-size:12px; color:var(--text-secondary);
 }
-.dba-capability--info { border-left:3px solid var(--brand); }
-.dba-capability--warning { border-left:3px solid #f59e0b; }
-.dba-capability--error { border-left:3px solid #ef4444; }
+.dba-capability--info { }
+.dba-capability--warning { border-left:3px solid var(--warning); }
+.dba-capability--error { border-left:3px solid var(--danger); }
 .dba-capability--unsupported { border-left:3px solid var(--text-muted); }
 .dba-list { display:flex; flex-direction:column; gap:12px; }
 .dba-card {
-  padding:16px; display:flex; flex-direction:column; gap:10px; border-left:3px solid var(--brand);
+  padding:16px; display:flex; flex-direction:column; gap:10px;
 }
 .dba-card--history { border-left-color:#0ea5e9; }
 .dba-card__top {
@@ -341,8 +341,8 @@ watch(selectedConnId, () => { void load() })
 .dba-pill--conn { background:var(--brand-dim); color:var(--brand); }
 .dba-pill--user { background:var(--bg-hover); color:var(--text-secondary); }
 .dba-pill--host { background:rgba(14,165,233,0.12); color:#0369a1; }
-.dba-pill--warn { background:rgba(245,158,11,0.14); color:#b45309; }
-.dba-pill--ok { background:rgba(16,185,129,0.14); color:#047857; }
+.dba-pill--warn { background:var(--warning-bg); color:var(--warning); }
+.dba-pill--ok { background:var(--success-bg); color:#047857; }
 .dba-card__time, .dba-card__meta {
   font-size:12px; color:var(--text-muted); font-variant-numeric:tabular-nums;
 }

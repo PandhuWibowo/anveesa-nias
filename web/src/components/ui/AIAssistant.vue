@@ -6,7 +6,7 @@
         <button class="ai-quick" @click="quickExplain" :disabled="!activeSql || loading" title="Explain active query">Explain</button>
         <button class="ai-quick" @click="quickFix" :disabled="!lastError || loading" title="Fix last error">Fix Error</button>
         <button class="ai-quick" @click="quickIndex" :disabled="!activeSql || loading" title="Suggest index">Index</button>
-        <button class="ai-quick ai-quick--settings" @click="showSettings = !showSettings" title="AI settings">⚙</button>
+        <button class="ai-quick ai-quick--settings" @click="showSettings = !showSettings" title="AI settings" aria-label="AI settings"><NavIcon name="sliders" :size="14" /></button>
       </div>
     </div>
 
@@ -65,6 +65,7 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted } from 'vue'
 import axios from 'axios'
+import NavIcon from '@/components/ui/NavIcon.vue'
 
 const props = defineProps<{
   activeSql?: string
@@ -196,7 +197,7 @@ function extractSQL(content: string): string | null {
 .ai-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
 .ai-quick-btns { display: flex; gap: 4px; }
 .ai-quick { padding: 3px 9px; font-size: 11px; background: var(--bg-sidebar); border: 1px solid var(--border); border-radius: 4px; color: var(--text-muted); cursor: pointer; }
-.ai-quick:hover:not(:disabled) { background: var(--accent); color: #fff; border-color: var(--accent); }
+.ai-quick:hover:not(:disabled) { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 .ai-quick:disabled { opacity: .4; cursor: default; }
 .ai-quick--settings { font-size: 13px; padding: 2px 8px; }
 .ai-settings { padding: 10px 12px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border); flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; }
@@ -206,11 +207,11 @@ function extractSQL(content: string): string | null {
 .ai-messages { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .ai-welcome { color: var(--text-muted); font-size: 13px; text-align: center; margin: auto; }
 .ai-msg { display: flex; flex-direction: column; gap: 4px; max-width: 100%; }
-.ai-msg--user .ai-msg-content { background: var(--accent); color: #fff; border-radius: 8px 8px 2px 8px; padding: 8px 12px; font-size: 13px; align-self: flex-end; }
+.ai-msg--user .ai-msg-content { background: var(--accent); color: var(--accent-fg); border-radius: 8px 8px 2px 8px; padding: 8px 12px; font-size: 13px; align-self: flex-end; }
 .ai-msg--user { align-items: flex-end; }
 .ai-msg--assistant .ai-msg-content { background: var(--bg-sidebar); border: 1px solid var(--border); border-radius: 2px 8px 8px 8px; padding: 8px 12px; font-size: 13px; }
-.ai-msg-label { font-size: 10px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: .4px; }
-.ai-copy-sql { align-self: flex-start; margin-top: 4px; font-size: 11px; background: var(--accent); color: #fff; border: none; border-radius: 4px; padding: 3px 10px; cursor: pointer; }
+.ai-msg-label { font-size: 12px; color: var(--text-muted); font-weight: 600; }
+.ai-copy-sql { align-self: flex-start; margin-top: 4px; font-size: 11px; background: var(--accent); color: var(--accent-fg); border: none; border-radius: 4px; padding: 3px 10px; cursor: pointer; }
 .ai-thinking { display: flex; gap: 4px; padding: 8px 12px; background: var(--bg-sidebar); border-radius: 8px; width: fit-content; }
 .ai-thinking span { width: 6px; height: 6px; background: var(--accent); border-radius: 50%; animation: ai-bounce .8s infinite; }
 .ai-thinking span:nth-child(2) { animation-delay: .15s; }
@@ -218,7 +219,7 @@ function extractSQL(content: string): string | null {
 @keyframes ai-bounce { 0%,60%,100% { transform: translateY(0); } 30% { transform: translateY(-5px); } }
 .ai-input-row { display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border); flex-shrink: 0; }
 .ai-textarea { flex: 1; background: var(--bg-sidebar); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-size: 13px; padding: 6px 10px; resize: none; font-family: inherit; }
-.ai-send-btn { background: var(--accent); border: none; border-radius: 6px; color: #fff; font-size: 16px; padding: 0 14px; cursor: pointer; flex-shrink: 0; }
+.ai-send-btn { background: var(--accent); border: none; border-radius: 6px; color: var(--accent-fg); font-size: 16px; padding: 0 14px; cursor: pointer; flex-shrink: 0; }
 .ai-send-btn:disabled { opacity: .4; cursor: default; }
 .ai-hint { font-size: 10px; color: var(--text-muted); text-align: right; padding: 0 12px 6px; flex-shrink: 0; }
 </style>

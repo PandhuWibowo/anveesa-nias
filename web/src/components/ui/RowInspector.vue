@@ -326,7 +326,7 @@ const canSave = computed(() => props.canEdit && props.columns.includes(props.pkC
 .ri-btn--primary {
   background: var(--brand);
   border-color: var(--brand);
-  color: #fff;
+  color: var(--accent-fg);
 }
 .ri-btn--primary:hover:not(:disabled) { filter: brightness(1.08); color: #fff; }
 .ri-btn--close {
@@ -375,20 +375,18 @@ const canSave = computed(() => props.canEdit && props.columns.includes(props.pkC
   padding: 1px 4px;
   border-radius: 3px;
   background: var(--brand);
-  color: #fff;
+  color: var(--accent-fg);
 }
 .ri-type {
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 600;
   padding: 1px 5px;
   border-radius: 3px;
   border: 1px solid var(--border);
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
 }
-.ri-type--null { color: #b45309; }
-.ri-type--number { color: #2563eb; }
+.ri-type--null { color: var(--warning); }
+.ri-type--number { color: var(--info); }
 .ri-type--json { color: #7c3aed; }
 .ri-type--boolean { color: #0891b2; }
 

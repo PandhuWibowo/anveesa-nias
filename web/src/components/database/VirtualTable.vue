@@ -547,11 +547,11 @@ function autoFitCol(col: string) {
 }
 .vt-cell:last-child { border-right: none; }
 .vt-cell--check { min-width: 36px; max-width: 36px; flex: none; justify-content: center; cursor: default; }
-.vt-row--selected { background: rgba(99,102,241,0.1) !important; }
+.vt-row--selected { background: var(--brand-dim) !important; }
 .vt-bulk-bar {
   flex-shrink: 0; display: flex; align-items: center; gap: 8px;
-  padding: 6px 12px; background: rgba(99,102,241,0.1);
-  border-bottom: 1px solid rgba(99,102,241,0.3);
+  padding: 6px 12px; background: var(--brand-dim);
+  border-bottom: 1px solid var(--brand-ring);
 }
 .vt-bulk-count { font-size: 12px; font-weight: 700; color: var(--brand); }
 .vt-profile-btn {
@@ -563,8 +563,7 @@ function autoFitCol(col: string) {
 .vt-cell--head {
   cursor: pointer;
   font-family: inherit;
-  font-weight: 600; font-size: 11px;
-  text-transform: uppercase; letter-spacing: 0.3px;
+  font-weight: 600; font-size: 12px;
   color: var(--text-muted);
   background: var(--bg-elevated);
   justify-content: space-between;
@@ -622,7 +621,7 @@ function autoFitCol(col: string) {
 }
 .vt-cell--dim { color: var(--text-muted); }
 .vt-null { color: var(--text-muted); font-style: italic; }
-.vt-num { color: #60a5fa; justify-content: flex-end; }
+.vt-num { color: var(--info); justify-content: flex-end; }
 .vt-bool { color: #c084fc; }
 .vt-sort-icon { font-size: 10px; margin-left: 4px; opacity: 0.6; }
 
@@ -637,9 +636,9 @@ function autoFitCol(col: string) {
   color: var(--accent);
 }
 .vt-edit-banner--dirty {
-  background: color-mix(in srgb, #f59e0b 8%, transparent);
-  border-bottom-color: color-mix(in srgb, #f59e0b 30%, transparent);
-  color: #b45309;
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--warning) 30%, transparent);
+  color: var(--warning);
 }
 .vt-edit-banner__info {
   display: flex; align-items: center; gap: 7px;
@@ -650,16 +649,16 @@ function autoFitCol(col: string) {
   display: flex; align-items: center; gap: 8px; flex-shrink: 0;
 }
 .vt-edit-unsaved {
-  font-size: 11.5px; font-weight: 600; color: #d97706;
-  background: rgba(245,158,11,.12); padding: 2px 8px;
+  font-size: 11.5px; font-weight: 600; color: var(--warning);
+  background: var(--warning-bg); padding: 2px 8px;
   border-radius: 4px; white-space: nowrap;
 }
 .vt-btn-save {
   display: flex; align-items: center; gap: 5px;
   padding: 5px 14px; font-size: 12.5px; font-weight: 700;
-  background: #22c55e; color: #fff; border: none;
+  background: var(--success); color: #fff; border: none;
   border-radius: 6px; cursor: pointer; white-space: nowrap;
-  box-shadow: 0 1px 4px rgba(34,197,94,.35);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--success) 35%, transparent);
   transition: opacity .15s;
 }
 .vt-btn-save:hover { opacity: .88; }
@@ -671,11 +670,11 @@ function autoFitCol(col: string) {
   transition: background .1s;
 }
 .vt-btn-discard:hover { background: var(--border); }
-.vt-row--dirty { background: color-mix(in srgb, #f59e0b 6%, transparent) !important; }
-.vt-row--dirty:hover { background: color-mix(in srgb, #f59e0b 10%, transparent) !important; }
+.vt-row--dirty { background: color-mix(in srgb, var(--warning) 6%, transparent) !important; }
+.vt-row--dirty:hover { background: color-mix(in srgb, var(--warning) 10%, transparent) !important; }
 .vt-cell--edited {
-  background: color-mix(in srgb, #f59e0b 12%, transparent);
-  color: #d97706 !important;
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  color: var(--warning) !important;
   font-weight: 600;
 }
 .vt-edit-input {
@@ -694,7 +693,7 @@ function autoFitCol(col: string) {
 }
 .vt-row-save {
   padding: 2px 8px; font-size: 11px; font-weight: 700;
-  background: var(--accent); color: #fff; border: none;
+  background: var(--accent); color: var(--accent-fg); border: none;
   border-radius: 4px; cursor: pointer; white-space: nowrap;
 }
 .vt-row-discard {

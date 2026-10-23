@@ -73,7 +73,10 @@ Connection credentials are AES-encrypted at rest using `NIAS_ENCRYPTION_KEY`.
 ### Frontend (`web/src/`)
 
 - **`router/index.ts`** — Vue Router with `requiresAuth` and `requiredPermissionsAny` meta. Route guard redirects unauthenticated users to `/login` and unauthorized users to `/welcome`. Navigation events are sent to `/api/audit/access` via `router.afterEach`.
-- **`layouts/AppLayout.vue`** — wraps all authenticated views; provides the nav sidebar.
+- **`layouts/AppLayout.vue`** — wraps all authenticated views: the sidebar (`components/layout/AppSidebar.vue`) lists a few *places* (Home, a connection place named after the active connection's driver, Analytics, Changes, Automation, Monitoring, Infrastructure, Settings); each place's pages render as tabs across the top of the content panel (`components/layout/SectionTabs.vue`); ⌘K opens the command palette (`components/layout/CommandPalette.vue`). All of it reads `NAV_SECTIONS` in `src/navigation.ts` — add a new page there, in exactly one section, with its `permissionsAny` (and `drivers` for connection tools).
+- **`DESIGN.md`** (repo root) — the design direction: Anveesa family palette (sky accent, navy canvas, Nias pink signature on the mark only), Figtree / Fraunces / IBM Plex Mono, layout and component rules. Read it before UI work.
+- **`styles/main.css`** — design tokens (light/dark) and shared classes (`page-hero`, `page-panel`, `page-card`, `page-tabs`, `base-btn`, `base-input`, `modal`, `badge`). Sky `--accent` is the only accent; new code uses the family token names (`--canvas`, `--bg`, `--surface`, `--text`, `--accent`); old names are aliases.
+- **Shared UI** — `components/ui/EmptyState.vue` for every empty / not-configured state (what's missing + one action); `components/ui/ConnectionGate.vue` for pages that need a connection of a given driver (lists matching connections or deep-links to `/connections?new=1&driver=…`). `/ssh-hosts?new=1` and `/kube-clusters?new=1` open their add forms directly.
 - **`views/`** — one large `.vue` file per page/feature. Many are 30–100 KB; they contain all component logic, template, and styles for that feature.
 - **`composables/`** — shared reactive state and API calls (`useAuth`, `useConnections`, `usePermissions`, `useSchema`, etc.). Components call these rather than making axios calls directly.
 

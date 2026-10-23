@@ -159,7 +159,7 @@ onMounted(loadAll)
           </div>
         </div>
         <div class="page-panel dash-agg-card">
-          <div class="dash-agg-card__icon" style="background:#6366f122;color:#6366f1">
+          <div class="dash-agg-card__icon" style="background:#6366f122;color:var(--brand)">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
           </div>
           <div>
@@ -168,7 +168,7 @@ onMounted(loadAll)
           </div>
         </div>
         <div class="page-panel dash-agg-card">
-          <div class="dash-agg-card__icon" style="background:#10b98122;color:#10b981">
+          <div class="dash-agg-card__icon" style="background:#10b98122;color:var(--success)">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
           </div>
           <div>
@@ -177,7 +177,7 @@ onMounted(loadAll)
           </div>
         </div>
         <div class="page-panel dash-agg-card">
-          <div class="dash-agg-card__icon" style="background:#f59e0b22;color:#f59e0b">
+          <div class="dash-agg-card__icon" style="background:#f59e0b22;color:var(--warning)">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           </div>
           <div>
@@ -186,7 +186,7 @@ onMounted(loadAll)
           </div>
         </div>
         <div class="page-panel dash-agg-card">
-          <div class="dash-agg-card__icon" style="background:#ef444422;color:#ef4444">
+          <div class="dash-agg-card__icon" style="background:#ef444422;color:var(--danger)">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
           </div>
           <div>
@@ -195,7 +195,7 @@ onMounted(loadAll)
           </div>
         </div>
         <div class="page-panel dash-agg-card">
-          <div class="dash-agg-card__icon" style="background:#dc262622;color:#dc2626">
+          <div class="dash-agg-card__icon" style="background:#dc262622;color:var(--danger)">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v6"/><path d="M12 22v-6"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="M2 12h6"/><path d="M22 12h-6"/><path d="m4.93 19.07 4.24-4.24"/><path d="m14.83 9.17 4.24-4.24"/></svg>
           </div>
           <div>
@@ -388,8 +388,7 @@ onMounted(loadAll)
   display: flex; align-items: center; justify-content: center;
 }
 .dash-agg-card__label {
-  font-size: 11px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 2px;
+  font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 2px;
 }
 .dash-agg-card__value {
   font-size: 20px; font-weight: 700; color: var(--text-primary);
@@ -406,7 +405,7 @@ onMounted(loadAll)
   display: flex; flex-direction: column; gap: 12px;
   transition: border-color var(--dur), transform var(--dur), box-shadow var(--dur);
 }
-.dash-conn-card:hover { border-color: var(--brand-dim); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.dash-conn-card:hover { border-color: var(--brand-dim); box-shadow: var(--shadow-sm); }
 .dash-conn-card--active { border-color: var(--brand); }
 
 .dash-conn-card__header {
@@ -429,7 +428,7 @@ onMounted(loadAll)
 
 .dash-redis-badge {
   display: flex; align-items: center; gap: 7px;
-  font-size: 12px; font-weight: 500; color: #dc2626;
+  font-size: 12px; font-weight: 500; color: var(--danger);
   background: #dc262614; border-radius: 6px; padding: 8px 12px;
 }
 
@@ -455,8 +454,7 @@ onMounted(loadAll)
   font-variant-numeric: tabular-nums;
 }
 .dash-conn-stat__lbl {
-  font-size: 10px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0.4px; color: var(--text-muted); margin-top: 2px;
+  font-size: 12px; font-weight: 600; color: var(--text-muted); margin-top: 2px;
 }
 
 .dash-conn-card__version {
@@ -472,17 +470,15 @@ onMounted(loadAll)
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: linear-gradient(180deg, rgba(239, 68, 68, 0.06), rgba(239, 68, 68, 0.01));
+  background: linear-gradient(180deg, var(--danger-bg), var(--danger-bg));
 }
 .dash-perf-block__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
   color: var(--text-muted);
 }
 .dash-perf-stats {
@@ -504,10 +500,8 @@ onMounted(loadAll)
 }
 .dash-perf-stat__lbl {
   margin-top: 2px;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.35px;
   color: var(--text-muted);
 }
 .dash-slow-list {
@@ -530,7 +524,7 @@ onMounted(loadAll)
   color: var(--text-muted);
 }
 .dash-slow-item__duration {
-  color: #dc2626;
+  color: var(--danger);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -547,7 +541,7 @@ onMounted(loadAll)
 .dash-slow-item__error {
   margin-top: 6px;
   font-size: 11px;
-  color: var(--error, #f87171);
+  color: var(--error, var(--danger));
 }
 .dash-slow-empty {
   font-size: 12px;
@@ -557,8 +551,7 @@ onMounted(loadAll)
 /* Expand top tables */
 .dash-expand-btn {
   display: flex; align-items: center; gap: 5px;
-  font-size: 11px; font-weight: 600; color: var(--text-muted);
-  text-transform: uppercase; letter-spacing: 0.4px;
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
   background: none; border: none; cursor: pointer; padding: 0;
   transition: color var(--dur);
 }
@@ -595,7 +588,7 @@ onMounted(loadAll)
 
 /* Error */
 .dash-conn-card__error {
-  font-size: 12px; color: var(--error, #f87171);
+  font-size: 12px; color: var(--error, var(--danger));
   display: flex; align-items: center; gap: 6px;
 }
 .dash-retry-btn {

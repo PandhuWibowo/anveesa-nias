@@ -288,7 +288,7 @@ const sequencesSort = useMatrixSort(sequenceColumns, () => sequenceRows.value)
   border-bottom: 1px solid var(--border);
   background: var(--bg-surface);
 }
-.schema-explorer__title { font-size: 20px; font-weight: 800; color: var(--text-primary); }
+.schema-explorer__title { font-size: 20px; font-weight: 600; color: var(--text-primary); }
 .schema-explorer__subtitle { margin-top: 6px; color: var(--text-secondary); max-width: 760px; line-height: 1.55; }
 .schema-explorer__controls { display: flex; gap: 10px; align-items: center; }
 .schema-explorer__layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 320px minmax(0, 1fr); }
@@ -307,24 +307,20 @@ const sequencesSort = useMatrixSort(sequenceColumns, () => sequenceRows.value)
 .schema-explorer__empty { display: grid; place-items: center; min-height: 240px; text-align: center; color: var(--text-muted); padding: 20px; }
 .schema-explorer__hero {
   padding: 18px 20px;
-  border: 1px solid color-mix(in srgb, var(--border) 78%, #0f766e 22%);
-  border-radius: 16px;
-  background:
-    radial-gradient(circle at top left, rgba(15, 118, 110, 0.12), transparent 34%),
-    linear-gradient(145deg, color-mix(in srgb, var(--bg-elevated) 88%, #f0fdfa 12%), var(--bg-elevated));
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
 }
-.schema-explorer__object-kicker { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; color: #0f766e; }
-.schema-explorer__object-title { font-size: 24px; font-weight: 800; color: var(--text-primary); margin-top: 4px; }
+.schema-explorer__object-kicker { font-size: 12.5px; font-weight: 500; color: var(--text-muted); }
+.schema-explorer__object-title { font-size: 22px; font-weight: 600; color: var(--text-primary); margin-top: 4px; }
 .schema-explorer__object-sub { color: var(--text-secondary); margin-top: 4px; }
 .schema-explorer__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.schema-explorer__panel { border: 1px solid var(--border); border-radius: 16px; background: color-mix(in srgb, var(--bg-elevated) 86%, transparent); overflow: hidden; }
+.schema-explorer__panel { border: 1px solid var(--border); border-radius: var(--r-lg); background: color-mix(in srgb, var(--bg-elevated) 86%, transparent); overflow: hidden; }
 .schema-explorer__panel-title {
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
   font-size: 12px;
   font-weight: 700;
-  letter-spacing: .08em;
-  text-transform: uppercase;
   color: var(--text-muted);
 }
 .schema-explorer__code {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import axios from 'axios'
 import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
 import SearchSelect from '@/components/ui/SearchSelect.vue'
@@ -8,6 +8,8 @@ import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useAuth } from '@/composables/useAuth'
 import { useListFilter } from '@/composables/useListFilter'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import NavIcon from '@/components/ui/NavIcon.vue'
 
 interface DockerHost {
   id: number
@@ -405,6 +407,14 @@ onMounted(async () => {
   await loadHosts()
   loadOverview()
 })
+
+// `?new=1` (from empty states elsewhere) opens the add form directly.
+const route = useRoute()
+watch(() => route.query.new, (v) => {
+  if (v !== '1') return
+  openAddHost()
+  router.replace({ query: { ...route.query, new: undefined } })
+}, { immediate: true })
 </script>
 
 <template>
@@ -425,7 +435,7 @@ onMounted(async () => {
               {{ overviewLoading ? 'Refreshing…' : 'Refresh status' }}
             </button>
             <button v-if="canManage" class="base-btn base-btn--primary base-btn--sm" @click="openAddHost">
-              + Add host
+              Add server
             </button>
           </div>
         </section>
@@ -493,7 +503,7 @@ onMounted(async () => {
                 title="Open in Docker"
                 @click="router.push({ name: 'docker', query: { host: h.id } })"
               >
-                <span class="ssh-pill-icon">🐳</span> Docker
+                <span class="ssh-pill-icon"><NavIcon name="docker" :size="13" /></span> Docker
               </button>
               <button
                 v-if="h.ssh_host"
@@ -501,7 +511,7 @@ onMounted(async () => {
                 title="Browse files via SFTP"
                 @click="router.push({ name: 'sftp', query: { host: h.id } })"
               >
-                <span class="ssh-pill-icon">🗂️</span> SFTP
+                <span class="ssh-pill-icon"><NavIcon name="folder" :size="13" /></span> Files
               </button>
               <button
                 v-if="h.ssh_host"
@@ -509,7 +519,7 @@ onMounted(async () => {
                 title="Manage Nginx"
                 @click="router.push({ name: 'nginx', query: { host: h.id } })"
               >
-                <span class="ssh-pill-icon">⚙️</span> Nginx
+                <span class="ssh-pill-icon"><NavIcon name="nginx" :size="13" /></span> Nginx
               </button>
             </div>
 
@@ -519,17 +529,14 @@ onMounted(async () => {
             </div>
           </div>
           </div>
-          <div v-else class="page-card ssh-empty">
-            <p>No hosts match "{{ search }}".</p>
+          <div v-else class="page-card">
+            <EmptyState compact icon="search" :title="`No servers match “${search}”`" text="Try a different name or clear the filter." />
           </div>
         </template>
 
         <!-- Empty state -->
-        <div v-else class="page-card ssh-empty">
-          <div class="ssh-empty-icon">🖥️</div>
-          <h2>No hosts yet</h2>
-          <p>Add a server to use it with Docker, SFTP, and Nginx — all from a single SSH connection.</p>
-          <button v-if="canManage" class="base-btn base-btn--primary" @click="openAddHost">Add your first host</button>
+        <div v-else class="page-card">
+          <EmptyState icon="server" title="No servers yet" text="Add a server once and use it from Docker, Files, Nginx, and Cron." :action-label="canManage ? 'Add server' : undefined" @action="openAddHost" />
         </div>
       </div>
     </div>
@@ -708,7 +715,7 @@ onMounted(async () => {
 .ssh-stat { display: flex; flex-direction: column; gap: 2px; }
 .ssh-stat-val { font-size: 20px; font-weight: 700; color: var(--text-primary); line-height: 1; }
 .ssh-stat-total { font-size: 13px; font-weight: 400; color: var(--text-muted); }
-.ssh-stat-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.ssh-stat-label { font-size: 12px; color: var(--text-muted); }
 .ssh-version { font-size: 14px; font-family: var(--mono); font-weight: 400; color: var(--text-secondary); }
 .ssh-err  { font-size: 12px; color: var(--danger); }
 .ssh-muted { font-size: 12px; color: var(--text-muted); }
