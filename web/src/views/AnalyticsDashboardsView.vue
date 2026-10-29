@@ -19,6 +19,7 @@ import {
 } from '@/utils/export'
 import type { XLSXSheet } from '@/utils/export'
 import ResultChart from '@/components/ui/ResultChart.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 interface Dashboard {
   id: number
@@ -330,6 +331,9 @@ async function loadDashboards() {
     const url = connId ? `/api/analytics-dashboards?conn_id=${connId}` : '/api/analytics-dashboards'
     const { data } = await axios.get<Dashboard[]>(url)
     dashboards.value = data ?? []
+    // `?id=` deep link (from the Analytics overview) opens that dashboard directly.
+    const wanted = Number(route.query.id)
+    if (wanted && dashboards.value.some((d) => d.id === wanted)) selectedDashboardId.value = wanted
     if (!selectedDashboardId.value && dashboards.value.length) {
       selectedDashboardId.value = dashboards.value[0].id
     }
@@ -1832,14 +1836,14 @@ body {
 .pdf-chart { width: 100%; height: 320px; overflow: hidden; }
 .pdf-chart svg { width: 100%; height: 100%; display: block; }
 .pdf-kpi { min-height: 210px; display: flex; flex-direction: column; justify-content: center; align-items: center; }
-.pdf-kpi__value { font-size: 54px; line-height: 1; font-weight: 800; }
+.pdf-kpi__value { font-size: 54px; line-height: 1; font-weight: 600; }
 .pdf-kpi__label { margin-top: 8px; color: #64748b; font-size: 14px; }
 .pdf-table { width: 100%; border-collapse: collapse; font-size: 11px; }
 .pdf-table th { background: #eef2f7; color: #111827; font-weight: 700; }
 .pdf-table th, .pdf-table td { border: 1px solid #d8dee9; padding: 6px 8px; text-align: left; vertical-align: top; }
 .pdf-table tbody tr:nth-child(even) { background: #f8fafc; }
 .pdf-note { margin: 8px 0 0; color: #64748b; font-size: 11px; }
-.pdf-error { color: #b91c1c; background: #fee2e2; border-radius: 8px; padding: 12px; font-family: monospace; }
+.pdf-error { color: var(--danger); background: #fee2e2; border-radius: 8px; padding: 12px; font-family: monospace; }
 </style>
 </head>
 <body>
@@ -2424,12 +2428,12 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="!isSharedView" class="adb-topbar__picker">
           <select v-model="selectedDashboardId" class="base-input adb-dashboard-select">
-            <option :value="null">Select dashboard</option>
+            <option :value="null" disabled>Choose dashboard</option>
             <option v-for="dashboard in dashboards" :key="dashboard.id" :value="dashboard.id">
               {{ dashboard.name }}
             </option>
           </select>
-          <button class="base-btn base-btn--primary base-btn--sm" @click="openCreateDashboard">New</button>
+          <button class="base-btn base-btn--primary base-btn--sm" @click="openCreateDashboard">New dashboard</button>
         </div>
         <div class="adb-topbar__actions">
           <div class="adb-export" data-export-ignore="true">
@@ -2566,20 +2570,18 @@ onBeforeUnmount(() => {
           </select>
           <button v-if="dashboardDetail.visibility === 'public'" class="base-btn base-btn--ghost base-btn--sm" :disabled="savingAccess || !shareURL" @click="copyShareLink">Copy Link</button>
           <button v-if="dashboardDetail.visibility === 'public'" class="base-btn base-btn--ghost base-btn--sm" :disabled="savingAccess || !dashboardEmbedCode" @click="copyDashboardEmbedCode">Copy Embed</button>
-          <button v-if="selectedDashboard" class="base-btn base-btn--ghost base-btn--sm" style="color:#f87171" @click="deleteDashboard(selectedDashboard.id)">Delete</button>
+          <button v-if="selectedDashboard" class="base-btn base-btn--ghost base-btn--sm" style="color:var(--danger)" @click="deleteDashboard(selectedDashboard.id)">Delete</button>
         </template>
       </section>
 
       <main class="adb-dashboard-canvas">
         <div v-if="loading" class="page-panel adb-empty adb-empty--canvas">Loading dashboards...</div>
         <div v-else-if="rendering" class="page-panel adb-empty adb-empty--canvas">Rendering dashboard...</div>
-        <div v-else-if="!selectedDashboardId && !isSharedView" class="page-panel adb-empty adb-empty--canvas">
-          <div>No dashboard selected.</div>
-          <button class="base-btn base-btn--primary base-btn--sm" @click="openCreateDashboard">Create Dashboard</button>
+        <div v-else-if="!selectedDashboardId && !isSharedView" class="page-panel adb-empty--canvas">
+          <EmptyState icon="dashboard" :title="dashboards.length ? 'Choose a dashboard' : 'No dashboards yet'" :text="dashboards.length ? 'Pick one from the menu above, or start a new one.' : 'A dashboard turns saved queries into charts, KPIs, and tables you can share or embed.'" action-label="New dashboard" @action="openCreateDashboard" />
         </div>
-        <div v-else-if="!filteredRenderedBlocks.length" class="page-panel adb-empty adb-empty--canvas">
-          <div>Dashboard blocks will appear here.</div>
-          <div v-if="editMode" class="adb-section-sub">Add a saved query from the edit tray to fill the canvas.</div>
+        <div v-else-if="!filteredRenderedBlocks.length" class="page-panel adb-empty--canvas">
+          <EmptyState icon="chart" title="This dashboard is empty" :text="editMode ? 'Add a saved query from the tray to place your first block.' : 'Switch to edit mode and add saved queries as charts, KPIs, or tables.'" :action-label="canEditDashboard && !editMode ? 'Edit dashboard' : undefined" @action="editMode = true" />
         </div>
         <div v-else class="adb-grid" :class="{ 'adb-grid--editing': editMode && !isSharedView }">
           <article
@@ -2646,7 +2648,7 @@ onBeforeUnmount(() => {
                   <span class="adb-drag-handle" title="Drag to reorder" @mousedown.prevent="handleDragHandleMouseDown(block, $event)">⠿</span>
                   <button class="base-btn base-btn--ghost base-btn--xs" @click="autoTuneRenderedBlock(block)">Auto</button>
                   <button class="base-btn base-btn--ghost base-btn--xs" @click="startEditBlock(block)">Edit</button>
-                  <button class="base-btn base-btn--ghost base-btn--xs" style="color:#f87171" @click="deleteBlock(block.id)">✕</button>
+                  <button class="base-btn base-btn--ghost base-btn--xs" style="color:var(--danger)" @click="deleteBlock(block.id)">✕</button>
                 </template>
               </div>
             </div>
@@ -2826,7 +2828,7 @@ onBeforeUnmount(() => {
                     :type="param.type === 'number' ? 'number' : (param.type === 'date' ? 'date' : 'text')"
                     placeholder="Default value"
                   />
-                  <button class="base-btn base-btn--ghost base-btn--xs" style="color:#f87171" @click="removeEditingParam(paramIndex)">Remove</button>
+                  <button class="base-btn base-btn--ghost base-btn--xs" style="color:var(--danger)" @click="removeEditingParam(paramIndex)">Remove</button>
                 </div>
               </div>
             </div>
@@ -2862,7 +2864,7 @@ onBeforeUnmount(() => {
 
 .adb-section-title {
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text-primary);
 }
 
@@ -2894,7 +2896,7 @@ onBeforeUnmount(() => {
   padding: 14px;
   border: 1px solid var(--border);
   border-radius: var(--r);
-  background: linear-gradient(180deg, rgba(79, 156, 249, 0.08), rgba(79, 156, 249, 0.02));
+  background: linear-gradient(180deg, var(--info-bg), var(--info-bg));
 }
 
 .adb-quick-add__row,
@@ -2942,7 +2944,7 @@ onBeforeUnmount(() => {
 .adb-canvas-card--drop-target,
 .adb-card--drop-target {
   border-color: var(--brand);
-  box-shadow: 0 0 0 2px rgba(79, 156, 249, 0.25);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--info) 25%, transparent);
   transition: border-color 0.1s, box-shadow 0.1s;
 }
 
@@ -2963,10 +2965,8 @@ onBeforeUnmount(() => {
 }
 
 :global(.adb-drag-ghost__badge) {
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: .1em;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
   padding: 2px 7px;
   border-radius: 999px;
   background: var(--brand-dim);
@@ -3007,7 +3007,7 @@ onBeforeUnmount(() => {
 .adb-card.adb-canvas-card--resizing {
   user-select: none;
   border-color: var(--brand);
-  box-shadow: 0 0 0 2px rgba(79, 156, 249, 0.18);
+  box-shadow: 0 0 0 2px var(--info-bg);
 }
 
 .adb-canvas-card__main {
@@ -3333,10 +3333,8 @@ onBeforeUnmount(() => {
   border-radius: 999px;
   background: var(--brand-dim);
   color: var(--brand);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: .06em;
-  text-transform: uppercase;
   flex-shrink: 0;
 }
 
@@ -3359,11 +3357,9 @@ onBeforeUnmount(() => {
 }
 
 .adb-table th {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 
 .adb-table td {
@@ -3387,7 +3383,7 @@ onBeforeUnmount(() => {
 .adb-linechart {
   width: 100%;
   height: 160px;
-  background: linear-gradient(180deg, rgba(79,156,249,.08), rgba(79,156,249,0));
+  background: linear-gradient(180deg, var(--info-bg), var(--info-bg));
   border-radius: var(--r);
 }
 
@@ -3400,7 +3396,7 @@ onBeforeUnmount(() => {
 
 .adb-kpi {
   font-size: clamp(28px, 3.5vw, 44px);
-  font-weight: 800;
+  font-weight: 600;
   line-height: 1.1;
   color: var(--text-primary);
   letter-spacing: -0.02em;
@@ -3448,16 +3444,13 @@ onBeforeUnmount(() => {
 .adb-error {
   padding: 12px;
   border-radius: var(--r);
-  background: rgba(239, 68, 68, 0.08);
-  color: #ef4444;
+  background: var(--danger-bg);
+  color: var(--danger);
   font-size: 12px;
 }
 
 .adb-full-shell {
-  background:
-    radial-gradient(circle at 8% 0%, rgba(92, 184, 165, 0.10), transparent 28%),
-    radial-gradient(circle at 92% 10%, rgba(221, 163, 81, 0.10), transparent 24%),
-    var(--bg-body);
+  background: var(--bg-body);
 }
 
 .adb-full-shell--embed {
@@ -3470,8 +3463,8 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px;
+  gap: 10px;
+  padding: 12px 16px;
   overflow: hidden;
 }
 
@@ -3496,6 +3489,14 @@ onBeforeUnmount(() => {
 
 .adb-topbar {
   flex-wrap: wrap;
+  /* A flat page header that bleeds to the edges, not a floating card. */
+  margin: -12px -16px 2px;
+  padding: 10px 16px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg-body);
+  box-shadow: none;
 }
 
 .adb-titlebar {
@@ -3574,7 +3575,7 @@ onBeforeUnmount(() => {
 .adb-chip--active {
   background: var(--brand);
   border-color: var(--brand);
-  color: #fff;
+  color: var(--accent-fg);
 }
 
 .adb-edit-tray {
@@ -3613,7 +3614,7 @@ onBeforeUnmount(() => {
 
 .adb-source-tab--active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-fg);
 }
 
 .adb-builder-grid {
@@ -3974,5 +3975,17 @@ onBeforeUnmount(() => {
     width: 100%;
     min-height: 1px;
   }
+}
+
+/* Phones: a block's title and its actions stay on one line so the chart, not
+   the chrome, fills the card. */
+@media (max-width: 720px) {
+  .adb-card__head { flex-direction: row; align-items: flex-start; justify-content: space-between; }
+  .adb-render-card__actions { flex-direction: row; align-items: center; width: auto; flex-shrink: 0; }
+  .adb-render-card__actions > * { width: auto; }
+  .adb-render-card__actions .adb-export-trigger { width: auto; }
+  /* Fixed desktop row heights leave charts a sliver once filters stack; size by content instead. */
+  .adb-grid { grid-auto-rows: auto; }
+  .adb-chart-fill { height: 240px; min-height: 240px; }
 }
 </style>

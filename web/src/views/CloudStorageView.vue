@@ -12,6 +12,8 @@ import { useAuth } from '@/composables/useAuth'
 import { useListFilter } from '@/composables/useListFilter'
 import { useSort } from '@/composables/useSort'
 import { useConnections, type DbDriver } from '@/composables/useConnections'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import NavIcon from '@/components/ui/NavIcon.vue'
 
 // One entry in the browser table — folders come from the backend's
 // CommonPrefixes (delimiter-based listing), files from Contents. Both carry
@@ -819,15 +821,15 @@ function formatTime(iso: string): string {
   return isNaN(d.getTime()) ? iso : d.toLocaleString()
 }
 function fileIcon(e: CsEntry): string {
-  if (e.isDir) return '📁'
+  if (e.isDir) return 'folder'
   const ext = e.name.split('.').pop()?.toLowerCase() || ''
-  if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) return '🖼️'
-  if (['zip', 'tar', 'gz', 'tgz', 'xz', 'bz2', '7z'].includes(ext)) return '🗜️'
-  if (['sh', 'bash', 'zsh'].includes(ext)) return '⚙️'
-  if (['json', 'yml', 'yaml', 'toml', 'env', 'conf', 'ini'].includes(ext)) return '🧾'
-  if (['md', 'txt', 'log'].includes(ext)) return '📝'
-  if (['sql', 'gz'].includes(ext)) return '🗄️'
-  return '📄'
+  if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) return 'image'
+  if (['zip', 'tar', 'gz', 'tgz', 'xz', 'bz2', '7z'].includes(ext)) return 'archive'
+  if (['sh', 'bash', 'zsh'].includes(ext)) return 'terminal'
+  if (['json', 'yml', 'yaml', 'toml', 'env', 'conf', 'ini'].includes(ext)) return 'code'
+  if (['md', 'txt', 'log'].includes(ext)) return 'document'
+  if (['sql', 'gz'].includes(ext)) return 'database'
+  return 'file'
 }
 
 onMounted(() => {
@@ -875,11 +877,8 @@ onMounted(() => {
           </div>
         </section>
 
-        <div v-if="!bucketConnections.length" class="page-card cs-empty">
-          <div class="cs-empty-icon">☁️</div>
-          <h2>No object storage connections</h2>
-          <p>Cloud Storage browses your existing AWS S3, GCP Storage, Alibaba OSS, or Huawei OBS connections.</p>
-          <button class="base-btn base-btn--primary" @click="router.push({ name: 'connections' })">Add a connection</button>
+        <div v-if="!bucketConnections.length" class="page-card">
+          <EmptyState icon="cloud" title="No object storage connections" text="Add an AWS S3, Google Cloud Storage, Alibaba OSS, or Huawei OBS connection to browse its buckets." action-label="Add storage connection" :action-to="{ name: 'connections', query: { new: '1', driver: 's3_aws' } }" />
         </div>
 
         <template v-else-if="connId !== null">
@@ -903,7 +902,7 @@ onMounted(() => {
               type="search"
               placeholder="Filter files…"
             />
-            <button v-if="canManage" class="base-btn base-btn--sm" @click="newFolder">+ Folder</button>
+            <button v-if="canManage" class="base-btn base-btn--sm" @click="newFolder">New folder</button>
             <label v-if="canManage" class="base-btn base-btn--primary base-btn--sm cs-upload-btn">
               ↑ Upload<input type="file" hidden multiple @change="onFilePick" />
             </label>
@@ -944,7 +943,7 @@ onMounted(() => {
                 <tr v-else-if="connError"><td colspan="5" class="cs-msg cs-err">{{ connError }}</td></tr>
                 <tr v-else-if="!entries.length">
                   <td colspan="5" class="cs-dir-empty">
-                    <span class="cs-dir-empty-icon">☁️</span>
+                    <span class="cs-dir-empty-icon"><NavIcon name="cloud" :size="22" /></span>
                     <span class="cs-dir-empty-title">Empty folder</span>
                     <span class="cs-dir-empty-hint">Upload a file or create a folder to get started.</span>
                   </td>
@@ -955,7 +954,7 @@ onMounted(() => {
                     <input type="checkbox" :checked="selected.has(e.name)" @change="toggleSelect(e.name)" />
                   </td>
                   <td class="cs-name" @click="e.isDir ? open(e) : openPreview(e)">
-                    <span class="cs-icon">{{ fileIcon(e) }}</span>
+                    <span class="cs-icon"><NavIcon :name="fileIcon(e)" :size="15" /></span>
                     <span class="cs-fname">{{ e.name }}</span>
                   </td>
                   <td class="cs-size">{{ e.isDir ? '—' : formatBytes(e.size) }}</td>
@@ -971,7 +970,7 @@ onMounted(() => {
 
         <!-- Idle: connections exist but none selected (after disconnect) -->
         <div v-else class="page-card cs-idle">
-          <div class="cs-idle-icon">☁️</div>
+          <div class="cs-idle-icon"><NavIcon name="cloud" :size="24" /></div>
           <p>Select a bucket from the dropdown above to connect.</p>
         </div>
       </div>
@@ -1008,7 +1007,7 @@ onMounted(() => {
 
         <div class="cs-transfer-source">
           <div v-for="e in moveToItems.slice(0, 8)" :key="e.key" class="cs-transfer-source-item">
-            <span class="cs-icon">{{ fileIcon(e) }}</span>{{ e.key }}
+            <span class="cs-icon"><NavIcon :name="fileIcon(e)" :size="15" /></span>{{ e.key }}
           </div>
           <div v-if="moveToItems.length > 8" class="cs-transfer-more">+{{ moveToItems.length - 8 }} more</div>
         </div>
@@ -1035,7 +1034,7 @@ onMounted(() => {
 
         <div class="cs-transfer-source">
           <div v-for="e in transferItems.slice(0, 8)" :key="e.key" class="cs-transfer-source-item">
-            <span class="cs-icon">{{ fileIcon(e) }}</span>{{ e.key }}
+            <span class="cs-icon"><NavIcon :name="fileIcon(e)" :size="15" /></span>{{ e.key }}
           </div>
           <div v-if="transferItems.length > 8" class="cs-transfer-more">+{{ transferItems.length - 8 }} more</div>
         </div>
@@ -1257,8 +1256,8 @@ onMounted(() => {
 /* Connection status badge */
 .cs-conn-status { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; border: 1px solid transparent; }
 .cs-conn-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-.cs-conn-status--connected { color: var(--success); background: var(--success-bg, rgba(34,197,94,0.12)); }
-.cs-conn-status--error { color: var(--danger); background: var(--danger-bg, rgba(239,68,68,0.12)); }
+.cs-conn-status--connected { color: var(--success); background: var(--success-bg, var(--success-bg)); }
+.cs-conn-status--error { color: var(--danger); background: var(--danger-bg, var(--danger-bg)); }
 .cs-conn-status--connecting { color: var(--text-muted); background: var(--bg-hover); }
 .cs-conn-status--connecting .cs-conn-dot { animation: cs-blink 1s ease-in-out infinite; }
 .cs-conn-status--unknown { color: var(--text-muted); background: var(--bg-hover); }
@@ -1290,7 +1289,7 @@ onMounted(() => {
 .cs-drop-hint { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; background: var(--brand-dim); color: var(--brand); font-size: 14px; pointer-events: none; }
 
 .cs-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.cs-table th { text-align: left; padding: 9px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+.cs-table th { text-align: left; padding: 9px 12px; font-size: 12px; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; }
 .cs-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .cs-table tbody tr:last-child td { border-bottom: none; }
 .cs-msg { text-align: center; color: var(--text-muted); padding: 24px; }

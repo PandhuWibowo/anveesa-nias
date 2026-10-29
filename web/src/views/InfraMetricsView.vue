@@ -6,6 +6,7 @@ import { useToast } from '@/composables/useToast'
 import { useSort } from '@/composables/useSort'
 import Pagination from '@/components/ui/Pagination.vue'
 import SortIcon from '@/components/ui/SortIcon.vue'
+import ConnectionGate from '@/components/ui/ConnectionGate.vue'
 
 // ── Shareable link helpers ────────────────────────────────────────
 function readURLParams() {
@@ -41,6 +42,7 @@ async function copyShareLink() {
 }
 
 const props = defineProps<{ activeConnId: number | null }>()
+const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
 const toast = useToast()
 const { connections } = useConnections()
 
@@ -855,24 +857,13 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
         <!-- Hero -->
         <section class="page-hero">
           <div class="page-hero__content">
-            <div class="page-kicker">Observability · Infrastructure</div>
-            <div class="page-title">Inventory</div>
-            <div class="page-subtitle">Infrastructure metrics from Metricbeat or Elastic Agent — hosts, pods, containers.</div>
+            <div class="page-title">Infra metrics</div>
+            <div class="page-subtitle">CPU, memory, disk, and network for your hosts, pods, and containers, from Metricbeat or Elastic Agent.</div>
           </div>
         </section>
 
         <!-- No connection / unsupported -->
-        <div v-if="!activeConnId" class="inv-empty">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4.03 3-9 3S3 13.66 3 12"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/></svg>
-          <div class="inv-empty-title">No connection selected</div>
-          <div class="inv-empty-sub">Select an Elasticsearch or OpenSearch connection from the top navigation bar.</div>
-        </div>
-        <div v-else-if="!isSupported" class="inv-empty">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-          <div class="inv-empty-title">Not supported for {{ activeConn?.driver }}</div>
-          <div class="inv-empty-sub">Infra Metrics requires an Elasticsearch or OpenSearch connection with Metricbeat or Elastic Agent data.</div>
-        </div>
-
+        <ConnectionGate v-if="!isSupported" :drivers="['elasticsearch', 'opensearch']" label="Elasticsearch or OpenSearch" short="search" purpose="that receives Metricbeat or Elastic Agent data" icon="gauge" @select="(id: number) => emit('set-conn', id)" />
         <template v-else>
           <!-- Main tab switcher -->
           <div class="inv-main-tabs">
@@ -1639,7 +1630,7 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
   cursor: pointer; transition: all 0.1s; font-family: inherit; line-height: 1;
 }
 .inv-time-pill:hover { border-color: var(--brand); color: var(--text-primary); }
-.inv-time-pill--active { border-color: var(--brand); color: var(--brand); background: rgba(99,102,241,0.08); }
+.inv-time-pill--active { border-color: var(--brand); color: var(--brand); background: var(--brand-dim); }
 
 /* Auto-refresh button */
 .inv-auto-refresh-btn {
@@ -1649,7 +1640,7 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
   cursor: pointer; transition: all 0.1s; font-family: inherit; line-height: 1;
 }
 .inv-auto-refresh-btn:hover { border-color: var(--brand); }
-.inv-auto-refresh-btn--on { border-color: #22c55e; color: #22c55e; background: rgba(34,197,94,0.08); }
+.inv-auto-refresh-btn--on { border-color: var(--success); color: var(--success); background: var(--success-bg); }
 .inv-auto-refresh-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .inv-view-toggle {
   display: inline-flex; align-items: center; gap: 2px;
@@ -1669,7 +1660,7 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
 }
 .inv-view-btn--active,
 .inv-icon-btn--active {
-  background: rgba(99,102,241,0.12); color: var(--brand);
+  background: var(--brand-dim); color: var(--brand);
 }
 .inv-anomaly-btn,
 .inv-compare-btn {
@@ -1687,22 +1678,22 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
 }
 .inv-anomaly-btn--active,
 .inv-compare-btn--active {
-  border-color: var(--brand); background: rgba(99,102,241,0.1); color: var(--brand);
+  border-color: var(--brand); background: var(--brand-dim); color: var(--brand);
 }
 .inv-anomaly-dot {
   width: 7px; height: 7px; border-radius: 50%;
-  background: #f59e0b; box-shadow: 0 0 0 2px rgba(245,158,11,0.14);
+  background: var(--warning); box-shadow: 0 0 0 2px var(--warning-bg);
   flex-shrink: 0;
 }
-.inv-icon-btn--danger { color: #f87171; }
+.inv-icon-btn--danger { color: var(--danger); }
 .inv-icon-btn--danger:hover {
-  background: rgba(248,113,113,0.12); color: #ef4444;
+  background: var(--danger-bg); color: var(--danger);
 }
 .inv-badge {
   position: absolute; top: -5px; right: -5px;
   min-width: 16px; height: 16px; padding: 0 4px;
   display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 999px; background: #ef4444; color: #fff;
+  border-radius: 999px; background: var(--danger); color: #fff;
   font-size: 9px; font-weight: 700; line-height: 1;
   box-shadow: 0 0 0 2px var(--bg-surface);
 }
@@ -1739,7 +1730,7 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
   transition: background 0.1s;
 }
 .inv-menu-item:hover { background: rgba(255,255,255,0.06); }
-.inv-menu-item--active { color: var(--brand); background: rgba(99,102,241,0.08); }
+.inv-menu-item--active { color: var(--brand); background: var(--brand-dim); }
 .inv-custom-input {
   min-height: 30px; padding: 5px 10px; border: 1px solid var(--brand); border-radius: 5px;
   background: var(--bg-body); color: var(--text-primary);
@@ -1757,8 +1748,7 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
 .inv-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .inv-th {
   padding: 11px 14px; border-bottom: 1px solid var(--border);
-  font-size: 11px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.08em; color: var(--text-muted); text-align: left;
+  font-size: 12px; font-weight: 700; color: var(--text-muted); text-align: left;
   background: rgba(255,255,255,0.02); cursor: pointer; user-select: none;
   white-space: nowrap;
 }
@@ -1770,7 +1760,7 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
 .inv-th--pin { width: 34px; min-width: 34px; }
 
 .inv-row:hover td { background: rgba(255,255,255,0.025); }
-.inv-row--pinned td { background: rgba(99,102,241,0.035); }
+.inv-row--pinned td { background: var(--brand-dim); }
 .inv-td { padding: 11px 14px; border-bottom: 1px solid var(--border); color: var(--text-primary); vertical-align: middle; }
 .inv-row:last-child .inv-td { border-bottom: none; }
 .inv-td--name { font-weight: 500; }
@@ -1799,20 +1789,20 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
   border: 1px solid transparent; border-radius: 5px; background: transparent;
   color: var(--text-muted); cursor: pointer; transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
-.inv-pin-btn:hover { border-color: var(--brand); color: var(--brand); background: rgba(99,102,241,0.08); }
-.inv-pin-btn--active { color: var(--brand); background: rgba(99,102,241,0.12); }
+.inv-pin-btn:hover { border-color: var(--brand); color: var(--brand); background: var(--brand-dim); }
+.inv-pin-btn--active { color: var(--brand); background: var(--brand-dim); }
 .inv-section-header td {
   background: rgba(255,255,255,0.025);
   border-bottom: 1px solid var(--border);
 }
 .inv-section-label {
   padding: 8px 16px; color: var(--text-muted);
-  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  font-size: 12px; font-weight: 700;
 }
 .inv-section-label svg { margin-right: 6px; vertical-align: -1px; color: var(--brand); }
 .inv-anomaly-dot-inline {
   display: inline-block; width: 7px; height: 7px; margin-right: 7px;
-  border-radius: 50%; background: #f59e0b; box-shadow: 0 0 0 2px rgba(245,158,11,0.14);
+  border-radius: 50%; background: var(--warning); box-shadow: 0 0 0 2px var(--warning-bg);
   vertical-align: middle;
 }
 
@@ -1842,8 +1832,8 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
 .inv-compare-chip {
   display: inline-flex; align-items: center; gap: 6px;
   max-width: 220px; padding: 4px 6px 4px 9px;
-  border: 1px solid rgba(99,102,241,0.35); border-radius: 999px;
-  background: rgba(99,102,241,0.08); color: var(--text-primary);
+  border: 1px solid var(--brand-ring); border-radius: 999px;
+  background: var(--brand-dim); color: var(--text-primary);
   font-size: 12px; font-weight: 500;
 }
 .inv-compare-chip-remove {
@@ -1854,7 +1844,7 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
 }
 .inv-compare-chip-remove:hover,
 .inv-compare-chip-remove:focus-visible {
-  background: rgba(239,68,68,0.14); color: #ef4444; outline: none;
+  background: var(--danger-bg); color: var(--danger); outline: none;
 }
 
 /* Alert rules panel */
@@ -1871,7 +1861,6 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
 .inv-side-panel .hd-close-btn { right: 12px; }
 .inv-side-panel-title {
   font-size: 12px; font-weight: 700; color: var(--text-primary);
-  letter-spacing: 0.03em; text-transform: uppercase;
 }
 .inv-alert-list {
   display: flex; flex-direction: column; gap: 8px;
@@ -1905,7 +1894,7 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
 }
 .inv-toggle-btn:hover { border-color: var(--brand); color: var(--text-primary); }
 .inv-toggle-btn--on {
-  border-color: #22c55e; background: rgba(34,197,94,0.1); color: #22c55e;
+  border-color: var(--success); background: var(--success-bg); color: var(--success);
 }
 .inv-alert-form {
   display: flex; flex-direction: column; gap: 8px;
@@ -1913,8 +1902,7 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
   background: rgba(255,255,255,0.015);
 }
 .inv-form-title {
-  font-size: 11px; font-weight: 700; color: var(--text-primary);
-  text-transform: uppercase; letter-spacing: 0.04em;
+  font-size: 12px; font-weight: 700; color: var(--text-primary);
 }
 .inv-form-row {
   display: flex; align-items: center; gap: 8px;
@@ -1947,8 +1935,7 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
   margin-bottom: 4px;
 }
 .inv-date-label {
-  font-size: 11px; color: var(--text-muted); font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.06em;
+  font-size: 12px; color: var(--text-muted); font-weight: 600;
 }
 .inv-date-input {
   min-height: 30px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 5px;
@@ -1966,7 +1953,7 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
 
 /* Clickable row */
 .inv-row--clickable { cursor: pointer; }
-.inv-row--clickable:hover td { background: rgba(99,102,241,0.06); }
+.inv-row--clickable:hover td { background: var(--brand-dim); }
 .inv-host-link { color: var(--brand); text-decoration: underline; text-decoration-style: dotted; }
 
 /* Heatmap */
@@ -1980,8 +1967,7 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
   border: 1px solid rgba(255,255,255,0.08); border-radius: 7px;
   cursor: pointer; overflow: hidden; transition: transform 0.12s, border-color 0.12s;
 }
-.inv-heatmap-cell:hover {
-  transform: translateY(-1px); border-color: var(--brand);
+.inv-heatmap-cell:hover { border-color: var(--brand);
 }
 .inv-heatmap-name {
   color: #fff; font-size: 12px; font-weight: 700;
@@ -1989,14 +1975,14 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
   text-shadow: 0 1px 2px rgba(0,0,0,0.35);
 }
 .inv-heatmap-val {
-  margin-top: 8px; color: #fff; font-size: 18px; font-weight: 800;
+  margin-top: 8px; color: #fff; font-size: 18px; font-weight: 600;
   font-variant-numeric: tabular-nums; text-shadow: 0 1px 2px rgba(0,0,0,0.35);
 }
 .inv-anomaly-badge {
   position: absolute; right: 8px; top: 8px;
   width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 50%; background: #f59e0b; color: #111827;
-  font-size: 11px; font-weight: 900;
+  border-radius: 50%; background: var(--warning); color: #111827;
+  font-size: 11px; font-weight: 600;
 }
 
 /* Host Detail Overlay */
@@ -2044,14 +2030,14 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
   cursor: pointer; font-family: inherit; transition: all 0.15s; white-space: nowrap;
 }
 .hd-tab:hover { color: var(--text-primary); background: rgba(255,255,255,0.06); }
-.hd-tab--active { background: var(--brand); color: #fff; }
+.hd-tab--active { background: var(--brand); color: var(--accent-fg); }
 .hd-close-btn {
   position: absolute; right: 16px; top: 50%; transform: translateY(-50%);
   width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
   border: 1px solid var(--border); border-radius: 5px; background: transparent;
   color: var(--text-muted); cursor: pointer; transition: all 0.1s;
 }
-.hd-close-btn:hover { border-color: #ef4444; color: #ef4444; }
+.hd-close-btn:hover { border-color: var(--danger); color: var(--danger); }
 
 .hd-annotation-form {
   display: flex; flex-direction: column; gap: 8px;
@@ -2095,7 +2081,7 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
   font-family: inherit; transition: all 0.15s;
 }
 .hd-cat-btn:hover { background: rgba(255,255,255,0.05); color: var(--text-primary); }
-.hd-cat-btn--active { background: rgba(99,102,241,0.12); color: var(--brand); }
+.hd-cat-btn--active { background: var(--brand-dim); color: var(--brand); }
 
 /* Charts area */
 .hd-charts { flex: 1; overflow-y: auto; padding: 14px; }
@@ -2162,42 +2148,41 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
   display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
   padding: 14px 18px; border-left: 3px solid transparent;
 }
-.cl-health--green { border-left-color: #22c55e; }
-.cl-health--yellow { border-left-color: #f59e0b; }
-.cl-health--red { border-left-color: #ef4444; }
+.cl-health--green { border-left-color: var(--success); }
+.cl-health--yellow { border-left-color: var(--warning); }
+.cl-health--red { border-left-color: var(--danger); }
 .cl-health--unknown { border-left-color: var(--border); }
 
 .cl-health-status { display: flex; align-items: center; gap: 10px; flex: 1; }
 .cl-health-dot {
   width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: var(--text-muted);
 }
-.cl-health--green .cl-health-dot { background: #22c55e; box-shadow: 0 0 6px #22c55e88; }
-.cl-health--yellow .cl-health-dot { background: #f59e0b; box-shadow: 0 0 6px #f59e0b88; }
-.cl-health--red .cl-health-dot { background: #ef4444; box-shadow: 0 0 6px #ef444488; }
+.cl-health--green .cl-health-dot { background: var(--success); box-shadow: 0 0 6px #22c55e88; }
+.cl-health--yellow .cl-health-dot { background: var(--warning); box-shadow: 0 0 6px #f59e0b88; }
+.cl-health--red .cl-health-dot { background: var(--danger); box-shadow: 0 0 6px #ef444488; }
 .cl-health-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
 .cl-health-label { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); }
-.cl-health--green .cl-health-label { color: #22c55e; }
-.cl-health--yellow .cl-health-label { color: #f59e0b; }
-.cl-health--red .cl-health-label { color: #ef4444; }
+.cl-health--green .cl-health-label { color: var(--success); }
+.cl-health--yellow .cl-health-label { color: var(--warning); }
+.cl-health--red .cl-health-label { color: var(--danger); }
 
 .cl-health-stats { display: flex; gap: 20px; }
 .cl-stat { text-align: center; }
 .cl-stat-val { font-size: 18px; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
 .cl-stat-label { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
-.cl-stat--warn .cl-stat-val { color: #f59e0b; }
+.cl-stat--warn .cl-stat-val { color: var(--warning); }
 
 .cl-section-title {
-  font-size: 11px; font-weight: 600; color: var(--text-muted);
-  letter-spacing: 0.06em; text-transform: uppercase;
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
   margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
 }
 
-.cl-master-star { color: #f59e0b; margin-right: 4px; font-size: 11px; }
+.cl-master-star { color: var(--warning); margin-right: 4px; font-size: 11px; }
 
 .cl-role-badge {
   display: inline-flex; align-items: center;
   padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 600;
-  background: rgba(99,102,241,0.1); color: var(--brand); letter-spacing: 0.03em;
+  background: var(--brand-dim); color: var(--brand); letter-spacing: 0.03em;
   font-family: monospace;
 }
 
@@ -2205,8 +2190,8 @@ watch(mainTab, tab => { if (tab === 'cluster') loadClusterData() })
   display: inline-flex; padding: 2px 7px; border-radius: 4px;
   font-size: 10px; font-weight: 600;
 }
-.cl-idx-status--green { background: rgba(34,197,94,0.1); color: #22c55e; }
-.cl-idx-status--yellow { background: rgba(245,158,11,0.1); color: #f59e0b; }
-.cl-idx-status--red { background: rgba(239,68,68,0.1); color: #ef4444; }
+.cl-idx-status--green { background: var(--success-bg); color: var(--success); }
+.cl-idx-status--yellow { background: var(--warning-bg); color: var(--warning); }
+.cl-idx-status--red { background: var(--danger-bg); color: var(--danger); }
 .cl-idx-status--close { background: rgba(100,100,100,0.1); color: var(--text-muted); }
 </style>

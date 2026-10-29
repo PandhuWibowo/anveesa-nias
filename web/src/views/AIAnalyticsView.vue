@@ -100,14 +100,14 @@ const selectedConnection = computed(() =>
 const chartTone = computed(() => {
   const t = streamSummary.value?.chart_type || result.value?.chart_type || streamPlan.value?.chart_type
   switch (t) {
-    case 'line': return { label: 'Line trend', color: '#2563eb' }
-    case 'area': return { label: 'Area trend', color: '#0f766e' }
-    case 'bar': return { label: 'Bar comparison', color: '#7c3aed' }
-    case 'horizontal-bar': return { label: 'Horizontal bar', color: '#7c3aed' }
-    case 'scatter': return { label: 'Scatter plot', color: '#0891b2' }
-    case 'pie': return { label: 'Pie distribution', color: '#ea580c' }
-    case 'donut': return { label: 'Donut chart', color: '#ea580c' }
-    case 'kpi': return { label: 'KPI metric', color: '#059669' }
+    case 'line': return { label: 'Line trend', color: 'var(--accent)' }
+    case 'area': return { label: 'Area trend', color: 'var(--accent)' }
+    case 'bar': return { label: 'Bar comparison', color: 'var(--accent)' }
+    case 'horizontal-bar': return { label: 'Horizontal bar', color: 'var(--accent)' }
+    case 'scatter': return { label: 'Scatter plot', color: 'var(--accent)' }
+    case 'pie': return { label: 'Pie distribution', color: 'var(--accent)' }
+    case 'donut': return { label: 'Donut chart', color: 'var(--accent)' }
+    case 'kpi': return { label: 'KPI metric', color: 'var(--accent)' }
     default: return { label: 'Table view', color: 'var(--brand)' }
   }
 })
@@ -405,30 +405,19 @@ onBeforeUnmount(() => {
       <div class="page-stack">
 
         <!-- ── Header ── -->
-        <header class="aia-header page-panel">
-          <div class="aia-header__inner">
-            <div class="aia-header__icon">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 2a10 10 0 1 0 10 10"/><path d="M18 2v4h4"/><path d="M12 12V8"/><path d="M12 12l3-3"/>
-              </svg>
-            </div>
-            <div>
-              <div class="aia-header__title">AI Analytics</div>
-              <div class="aia-header__sub">Ask questions in plain language — AI generates safe read-only SQL and a summary.</div>
-            </div>
+        <section class="page-hero">
+          <div class="page-hero__content">
+            <div class="page-title">Ask your data</div>
+            <div class="page-subtitle">Ask a question in plain language. You get read-only SQL, the result, and a short summary.</div>
           </div>
-          <div class="aia-header__actions">
-            <button v-if="pinnedReports.length" class="base-btn base-btn--ghost base-btn--sm" @click="showPinnedReports = !showPinnedReports">
+          <div class="page-hero__actions">
+            <button v-if="pinnedReports.length" class="base-btn base-btn--sm" :class="{ 'is-active': showPinnedReports }" @click="showPinnedReports = !showPinnedReports">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
-              Saved
+              Pinned reports
               <span class="aia-badge-count">{{ pinnedReports.length }}</span>
             </button>
-            <button class="base-btn base-btn--ghost base-btn--sm" @click="fetchConnections">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.5"/></svg>
-              Refresh
-            </button>
           </div>
-        </header>
+        </section>
 
         <!-- ── Saved reports ── -->
         <Transition name="slide-down">
@@ -800,8 +789,7 @@ onBeforeUnmount(() => {
 .aia-badge-brand {
   padding: 2px 8px; border-radius: 999px;
   background: var(--brand-dim); color: var(--brand);
-  font-size: 10px; font-weight: 700; letter-spacing: 0.05em;
-  text-transform: uppercase; flex-shrink: 0;
+  font-size: 12px; font-weight: 700; flex-shrink: 0;
 }
 .aia-ctx-hint { color: var(--text-muted); font-size: 11px; }
 .aia-ctx-clear {
@@ -816,8 +804,7 @@ onBeforeUnmount(() => {
 .aia-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .aia-field { display: flex; flex-direction: column; gap: 4px; }
 .aia-label {
-  font-size: 11px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.07em;
+  font-size: 12px; font-weight: 600;
   color: var(--text-muted);
 }
 .aia-select-wrap { position: relative; display: flex; align-items: center; }
@@ -830,7 +817,7 @@ onBeforeUnmount(() => {
 .aia-driver-badge {
   width: 20px; height: 20px; border-radius: 5px;
   background: var(--brand-dim); color: var(--brand);
-  font-size: 9px; font-weight: 800;
+  font-size: 9px; font-weight: 600;
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
 
@@ -839,8 +826,7 @@ onBeforeUnmount(() => {
 .aia-prompts-section { display: flex; flex-direction: column; gap: 8px; }
 .aia-prompts-group { display: flex; flex-direction: column; gap: 5px; }
 .aia-prompts-label {
-  font-size: 10px; font-weight: 700;
-  text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted);
+  font-size: 12px; font-weight: 700; color: var(--text-muted);
 }
 .aia-chips { display: flex; flex-wrap: wrap; gap: 5px; }
 .aia-chip {
@@ -860,7 +846,7 @@ onBeforeUnmount(() => {
 .aia-error-bar {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 14px; border-radius: var(--r);
-  background: var(--danger-bg); border: 1px solid rgba(232,128,128,0.2);
+  background: var(--danger-bg); border: 1px solid var(--danger-bg);
   color: var(--danger); font-size: 13px;
 }
 .aia-error-dismiss {
@@ -978,8 +964,7 @@ onBeforeUnmount(() => {
 .aia-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .aia-table thead th {
   padding: 8px 14px; text-align: left;
-  font-size: 10.5px; font-weight: 700;
-  text-transform: uppercase; letter-spacing: 0.08em;
+  font-size: 12px; font-weight: 700;
   color: var(--text-muted); background: rgba(255,255,255,0.02);
   border-bottom: 1px solid var(--border); white-space: nowrap;
 }

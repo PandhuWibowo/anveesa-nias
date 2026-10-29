@@ -5,6 +5,7 @@ import { useAuth } from '@/composables/useAuth'
 import { useToast } from '@/composables/useToast'
 import { useListFilter } from '@/composables/useListFilter'
 import RowActionsMenu, { type RowAction } from '@/components/ui/RowActionsMenu.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 interface ConnectionOption {
   id: number
@@ -157,6 +158,7 @@ const eventTypeSuggestions = [
   'approval_request.updated',
   'approval_request.approved',
   'approval_request.rejected',
+  'approval_request.changes_requested',
   'approval_request.executed',
   'approval_request.failed',
   'approval_request.overdue',
@@ -525,34 +527,25 @@ onMounted(loadAll)
 
 <template>
   <section class="notif-page">
-    <header class="notif-hero">
-      <div>
-        <div class="notif-eyebrow">Notifications</div>
-        <h1>Inbox, routing rules, and platform delivery</h1>
-        <p>Track approvals, data script requests, backup requests, and wire alerts into Slack, Discord, Telegram, or generic webhooks.</p>
+    <section class="page-hero">
+      <div class="page-hero__content">
+        <div class="page-title">Notifications</div>
+        <div class="page-subtitle">Approvals, script and backup requests that need you — and where alerts get delivered.</div>
       </div>
-      <div class="notif-hero__stats">
-        <div class="notif-stat">
-          <span class="notif-stat__label">Unread</span>
-          <strong>{{ unreadCount }}</strong>
-        </div>
-        <div class="notif-stat" v-if="canManage">
-          <span class="notif-stat__label">Integrations</span>
-          <strong>{{ targets.length }}</strong>
-        </div>
-        <div class="notif-stat" v-if="canManage">
-          <span class="notif-stat__label">Rules</span>
-          <strong>{{ rules.length }}</strong>
-        </div>
-      </div>
-    </header>
+    </section>
 
-    <div class="notif-tabs">
-      <button class="notif-tab" :class="{ 'notif-tab--active': activeTab === 'inbox' }" @click="activeTab = 'inbox'">Inbox</button>
-      <button v-if="canManage" class="notif-tab" :class="{ 'notif-tab--active': activeTab === 'integrations' }" @click="activeTab = 'integrations'">Integrations</button>
-      <button v-if="canManage" class="notif-tab" :class="{ 'notif-tab--active': activeTab === 'rules' }" @click="activeTab = 'rules'">Rules</button>
-      <button v-if="canManage" class="notif-tab" :class="{ 'notif-tab--active': activeTab === 'deliveries' }" @click="activeTab = 'deliveries'">Delivery Logs</button>
-    </div>
+    <nav class="page-tabs">
+      <button class="page-tab" :class="{ 'is-active': activeTab === 'inbox' }" @click="activeTab = 'inbox'">
+        Inbox <span v-if="unreadCount" class="notif-tab-count">{{ unreadCount }}</span>
+      </button>
+      <button v-if="canManage" class="page-tab" :class="{ 'is-active': activeTab === 'integrations' }" @click="activeTab = 'integrations'">
+        Integrations <span class="notif-tab-count notif-tab-count--muted">{{ targets.length }}</span>
+      </button>
+      <button v-if="canManage" class="page-tab" :class="{ 'is-active': activeTab === 'rules' }" @click="activeTab = 'rules'">
+        Rules <span class="notif-tab-count notif-tab-count--muted">{{ rules.length }}</span>
+      </button>
+      <button v-if="canManage" class="page-tab" :class="{ 'is-active': activeTab === 'deliveries' }" @click="activeTab = 'deliveries'">Delivery log</button>
+    </nav>
 
     <div v-if="activeTab === 'inbox'" class="notif-panel">
       <div class="notif-panel__head">
@@ -560,9 +553,9 @@ onMounted(loadAll)
           <h2>Inbox</h2>
           <p>Personal and global workflow notifications.</p>
         </div>
-        <button class="base-btn base-btn--ghost base-btn--sm" :disabled="loading || unreadCount === 0" @click="markAllRead">Mark All Read</button>
+        <button class="base-btn base-btn--ghost base-btn--sm" :disabled="loading || unreadCount === 0" @click="markAllRead">Mark all read</button>
       </div>
-      <div v-if="!inboxItems.length" class="notif-empty">No notifications yet.</div>
+      <EmptyState v-if="!inboxItems.length" compact icon="bell" title="You're all caught up" text="Approval requests, script runs, and backup requests that need you will show up here." />
       <div v-else class="notif-list">
         <article v-for="item in inboxItems" :key="item.id" class="notif-item" :class="[`notif-item--${item.severity || 'info'}`, { 'notif-item--read': item.read }]">
           <div class="notif-item__meta">
@@ -862,12 +855,28 @@ onMounted(loadAll)
 </template>
 
 <style scoped>
+.notif-tab-count {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--brand);
+  color: var(--brand-fg);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+}
+.notif-tab-count--muted { background: var(--bg-hover-strong); color: var(--text-muted); }
+
 .notif-page {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding: 18px;
+  gap: 20px;
+  height: 100%;
+  overflow-y: auto;
+  padding: 28px 32px 48px;
 }
+@media (max-width: 900px) { .notif-page { padding: 20px 16px 32px; } }
 
 .notif-hero {
   display: flex;
@@ -875,10 +884,8 @@ onMounted(loadAll)
   gap: 18px;
   padding: 22px;
   border: 1px solid var(--border);
-  border-radius: 20px;
-  background:
-    radial-gradient(circle at top right, rgba(79, 156, 249, 0.18), transparent 32%),
-    linear-gradient(135deg, var(--bg-surface), var(--bg-surface-hover));
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
 }
 
 .notif-hero h1 {
@@ -896,8 +903,6 @@ onMounted(loadAll)
 
 .notif-eyebrow {
   font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
   color: var(--brand);
   font-weight: 700;
 }
@@ -919,7 +924,7 @@ onMounted(loadAll)
 
 .notif-stat {
   padding: 14px;
-  border-radius: 16px;
+  border-radius: var(--r-lg);
 }
 
 .notif-stat strong {
@@ -930,8 +935,6 @@ onMounted(loadAll)
 
 .notif-stat__label {
   font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
   color: var(--text-muted);
 }
 
@@ -957,7 +960,7 @@ onMounted(loadAll)
 }
 
 .notif-panel {
-  border-radius: 18px;
+  border-radius: var(--r-lg);
   padding: 18px;
 }
 
@@ -991,7 +994,7 @@ onMounted(loadAll)
 }
 
 .notif-item {
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   padding: 14px 16px;
 }
 
@@ -1000,19 +1003,19 @@ onMounted(loadAll)
 }
 
 .notif-item--info {
-  border-left: 4px solid #4f9cf9;
+  border-left: 3px solid var(--info);
 }
 
 .notif-item--success {
-  border-left: 4px solid #27ae60;
+  border-left: 3px solid var(--success);
 }
 
 .notif-item--warning {
-  border-left: 4px solid #f39c12;
+  border-left: 3px solid var(--warning);
 }
 
 .notif-item--error {
-  border-left: 4px solid #e74c3c;
+  border-left: 3px solid var(--danger);
 }
 
 .notif-item__meta {
@@ -1110,7 +1113,7 @@ onMounted(loadAll)
 }
 
 .notif-card {
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   padding: 12px 14px;
   display: flex;
   justify-content: space-between;
@@ -1136,7 +1139,7 @@ onMounted(loadAll)
   gap: 6px;
   padding: 14px 16px;
   border: 1px solid rgba(231, 76, 60, 0.24);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: rgba(231, 76, 60, 0.08);
   color: #c0392b;
 }

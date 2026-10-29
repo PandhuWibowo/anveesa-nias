@@ -521,6 +521,10 @@ func UpdateApprovalRequest() http.HandlerFunc {
 			http.Error(w, jsonError("executing or completed requests cannot be edited"), http.StatusBadRequest)
 			return
 		}
+		if req.Status == QueryApprovalStatusRejected {
+			http.Error(w, jsonError("rejected requests cannot be edited; create a new request instead"), http.StatusBadRequest)
+			return
+		}
 
 		var body UpdateQueryApprovalRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -655,7 +659,7 @@ func GetApprovalProgress() http.HandlerFunc {
 			if step, _ := getStepByWorkflowAndOrder(req.WorkflowID, req.CurrentStep); step != nil {
 				eligible, _ := isUserEligibleForStep(step.ID, userID, role)
 				alreadyActed, _ := hasUserActedOnStep(req.ID, step.ID, userID, req.Revision)
-				canApprove = eligible && !alreadyActed
+				canApprove = req.Status == QueryApprovalStatusPendingReview && eligible && !alreadyActed
 			}
 		}
 		canManageApproved := role == "admin"
@@ -664,6 +668,7 @@ func GetApprovalProgress() http.HandlerFunc {
 		}
 		canExecute := req.Status == QueryApprovalStatusApproved && canManageApproved
 		canRevise := req.Status != QueryApprovalStatusExecuting && req.Status != QueryApprovalStatusDone &&
+			req.Status != QueryApprovalStatusRejected &&
 			(role == "admin" || userID == req.CreatorID) &&
 			(req.Status != QueryApprovalStatusApproved || canManageApproved)
 
@@ -702,12 +707,22 @@ func ApproveApprovalStep() http.HandlerFunc {
 			http.Error(w, jsonError("invalid request"), http.StatusBadRequest)
 			return
 		}
-		if body.Action != "approved" && body.Action != "rejected" {
-			http.Error(w, jsonError("action must be approved or rejected"), http.StatusBadRequest)
+		// "rejected" is final; "changes_requested" sends the request back to the
+		// creator as a draft they can revise and resubmit.
+		if body.Action != "approved" && body.Action != "rejected" && body.Action != "changes_requested" {
+			http.Error(w, jsonError("action must be approved, rejected, or changes_requested"), http.StatusBadRequest)
 			return
 		}
 		if body.Action == "rejected" && strings.TrimSpace(body.Note) == "" {
+			http.Error(w, jsonError("note is required when rejecting"), http.StatusBadRequest)
+			return
+		}
+		if body.Action == "changes_requested" && strings.TrimSpace(body.Note) == "" {
 			http.Error(w, jsonError("note is required when requesting changes"), http.StatusBadRequest)
+			return
+		}
+		if req.Status != QueryApprovalStatusPendingReview {
+			http.Error(w, jsonError("only requests pending review can be acted on"), http.StatusBadRequest)
 			return
 		}
 
@@ -728,10 +743,16 @@ func ApproveApprovalStep() http.HandlerFunc {
 			return
 		}
 
+		// query_approval.action only allows approved/rejected; both negative
+		// outcomes are recorded as "rejected" and told apart by the request status.
+		recordedAction := body.Action
+		if recordedAction == "changes_requested" {
+			recordedAction = "rejected"
+		}
 		if _, err := appdb.DB.Exec(appdb.ConvertQuery(`
 			INSERT INTO query_approval (request_id, step_id, revision, user_id, username, action, note)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`), id, step.ID, req.Revision, userID, username, body.Action, strings.TrimSpace(body.Note)); err != nil {
+		`), id, step.ID, req.Revision, userID, username, recordedAction, strings.TrimSpace(body.Note)); err != nil {
 			http.Error(w, jsonError("failed to record approval action"), http.StatusInternalServerError)
 			return
 		}
@@ -746,6 +767,28 @@ func ApproveApprovalStep() http.HandlerFunc {
 			EmitNotification(NotificationEventInput{
 				EventType:     "approval_request.rejected",
 				Category:      "approval",
+				Severity:      "error",
+				Title:         "Approval request rejected",
+				Message:       fmt.Sprintf("%s rejected \"%s\"", usernameOrFallback(username, ""), req.Title),
+				EntityType:    "approval_request",
+				EntityID:      req.ID,
+				ConnectionID:  req.ConnID,
+				ActorUserID:   userID,
+				TargetUserIDs: []int64{req.CreatorID},
+				Payload:       map[string]any{"note": strings.TrimSpace(body.Note), "status": "rejected"},
+			})
+			json.NewEncoder(w).Encode(map[string]string{"message": "request rejected"})
+			return
+		}
+		if body.Action == "changes_requested" {
+			_, _ = appdb.DB.Exec(appdb.ConvertQuery(`
+				UPDATE query_approval_request
+				SET status = 'draft', reviewer_id = ?, review_note = ?, updated_at = ?
+				WHERE id = ?
+			`), userID, strings.TrimSpace(body.Note), now, id)
+			EmitNotification(NotificationEventInput{
+				EventType:     "approval_request.changes_requested",
+				Category:      "approval",
 				Severity:      "warning",
 				Title:         "Approval request needs changes",
 				Message:       fmt.Sprintf("%s requested changes on \"%s\"", usernameOrFallback(username, ""), req.Title),
@@ -754,7 +797,7 @@ func ApproveApprovalStep() http.HandlerFunc {
 				ConnectionID:  req.ConnID,
 				ActorUserID:   userID,
 				TargetUserIDs: []int64{req.CreatorID},
-				Payload:       map[string]any{"note": strings.TrimSpace(body.Note), "status": "rejected"},
+				Payload:       map[string]any{"note": strings.TrimSpace(body.Note), "status": "draft"},
 			})
 			json.NewEncoder(w).Encode(map[string]string{"message": "changes requested"})
 			return

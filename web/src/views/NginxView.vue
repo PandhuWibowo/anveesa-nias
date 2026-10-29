@@ -12,6 +12,8 @@ import SearchSelect from '@/components/ui/SearchSelect.vue'
 import SortIcon from '@/components/ui/SortIcon.vue'
 import ActionIcon from '@/components/ui/ActionIcon.vue'
 import SftpFolderPicker from '@/components/ui/SftpFolderPicker.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import NavIcon from '@/components/ui/NavIcon.vue'
 
 type NginxTab = 'config' | 'sites' | 'logs' | 'map' | 'certs' | 'status'
 interface NginxCert {
@@ -1140,10 +1142,8 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <div v-if="!hosts.length" class="page-card ng-empty">
-          <div class="ng-empty-icon">🌐</div>
-          <h2>No SSH servers</h2>
-          <p>Nginx management uses your remote SSH hosts. Add one under <b>Infrastructure → SSH Hosts</b> first.</p>
+        <div v-if="!hosts.length" class="page-card">
+          <EmptyState icon="nginx" title="No servers yet" text="Nginx management runs over SSH. Add the server that hosts Nginx to edit configs and follow logs." action-label="Add server" :action-to="{ name: 'ssh-hosts', query: { new: '1' } }" />
         </div>
 
         <!-- FLEET: all hosts at once -->
@@ -1595,7 +1595,7 @@ onBeforeUnmount(() => {
 
         <!-- Idle: hosts exist but none selected (after disconnect) -->
         <div v-else class="page-card ng-idle">
-          <div class="ng-idle-icon">🌐</div>
+          <div class="ng-idle-icon"><NavIcon name="nginx" :size="24" /></div>
           <p>Select a host from the dropdown above to connect.</p>
         </div>
       </div>
@@ -1645,9 +1645,9 @@ onBeforeUnmount(() => {
   border-radius: 50%;
   flex-shrink: 0;
 }
-.ng-conn-status--connected { background: rgba(34,197,94,0.12); color: var(--success); border-color: rgba(34,197,94,0.25); }
+.ng-conn-status--connected { background: var(--success-bg); color: var(--success); border-color: color-mix(in srgb, var(--success) 25%, transparent); }
 .ng-conn-status--connected .ng-conn-dot { background: var(--success); }
-.ng-conn-status--error { background: rgba(239,68,68,0.1); color: var(--danger); border-color: rgba(239,68,68,0.25); }
+.ng-conn-status--error { background: var(--danger-bg); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 25%, transparent); }
 .ng-conn-status--error .ng-conn-dot { background: var(--danger); }
 .ng-conn-status--connecting { background: var(--bg-hover); color: var(--text-muted); border-color: var(--border); }
 .ng-conn-status--connecting .ng-conn-dot { background: var(--text-muted); animation: blink 1s step-end infinite; }
@@ -1664,7 +1664,7 @@ onBeforeUnmount(() => {
 .ng-settings { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; padding: 12px 14px; }
 .ng-set { display: flex; flex-direction: column; gap: 4px; }
 .ng-set--grow { flex: 1 1 220px; }
-.ng-set label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); font-weight: 600; }
+.ng-set label { font-size: 12px; color: var(--text-muted); font-weight: 600; }
 .ng-set .base-input { width: 100%; font-family: var(--mono); font-size: 12px; }
 .ng-optional { text-transform: none; letter-spacing: normal; font-weight: 400; opacity: 0.7; }
 .ng-pathrow { display: flex; align-items: center; gap: 4px; }
@@ -1676,9 +1676,9 @@ onBeforeUnmount(() => {
 .ng-sudo input { cursor: pointer; }
 
 .ng-statusbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.ng-pill { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; text-transform: uppercase; letter-spacing: 0.03em; }
-.ng-pill--ok { background: var(--success-dim, rgba(34,197,94,0.15)); color: var(--success); }
-.ng-pill--warn { background: var(--warning-dim, rgba(234,179,8,0.15)); color: var(--warning); }
+.ng-pill { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 99px; }
+.ng-pill--ok { background: var(--success-dim, var(--success-bg)); color: var(--success); }
+.ng-pill--warn { background: var(--warning-dim, var(--warning-bg)); color: var(--warning); }
 .ng-pill--off { background: var(--bg-hover); color: var(--text-muted); }
 .ng-version { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
 .ng-cmdout { flex: 1 1 100%; margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: 8px 10px; color: var(--text-secondary); }
@@ -1691,7 +1691,7 @@ onBeforeUnmount(() => {
 
 .ng-split { display: grid; grid-template-columns: 300px 1fr; gap: 0; padding: 0; overflow: hidden; min-height: 460px; }
 .ng-hosttree { border-right: 1px solid var(--border); overflow-y: auto; max-height: 70vh; }
-.ng-hosttree-head { padding: 9px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+.ng-hosttree-head { padding: 9px 12px; font-size: 12px; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; }
 .ng-hostrow-btn { display: flex; align-items: center; gap: 6px; width: 100%; background: none; border: none; border-bottom: 1px solid var(--border); padding: 8px 12px; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); cursor: pointer; text-align: left; }
 .ng-hostrow-btn:hover { background: var(--bg-hover); }
 .ng-hostrow-btn--focused { color: var(--brand); }
@@ -1715,7 +1715,7 @@ onBeforeUnmount(() => {
 .ng-tabchip:hover { color: var(--text-primary); }
 .ng-tabchip--active { color: var(--text-primary); background: var(--bg-surface); border-bottom: 2px solid var(--brand); }
 .ng-tabchip-name { font-family: var(--mono); }
-.ng-tabchip-host { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; opacity: 0.8; }
+.ng-tabchip-host { font-size: 12px; color: var(--text-muted); opacity: 0.8; }
 .ng-tabchip-dot { color: var(--brand); font-size: 8px; }
 .ng-tabchip-close { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: var(--r-sm); font-size: 14px; line-height: 1; color: var(--text-muted); }
 .ng-tabchip-close:hover { background: var(--bg-hover); color: var(--danger); }
@@ -1731,7 +1731,7 @@ onBeforeUnmount(() => {
 .ng-sites-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 12px; color: var(--text-muted); }
 .ng-sites-hint { font-size: 11px; color: var(--text-muted); }
 .ng-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.ng-table th { text-align: left; padding: 9px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+.ng-table th { text-align: left; padding: 9px 12px; font-size: 12px; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; }
 .ng-th-sort { cursor: pointer; user-select: none; }
 .ng-th-sort:hover { color: var(--text-primary); }
 .ng-table td { padding: 9px 12px; border-bottom: 1px solid var(--border); }
@@ -1762,7 +1762,7 @@ onBeforeUnmount(() => {
 /* Map */
 .ng-mapwrap { display: flex; flex-direction: column; gap: 14px; }
 .ng-mapcard { padding: 4px 6px; }
-.ng-mapcard-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; }
+.ng-mapcard-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
 .ng-mapsearch { flex: 0 1 220px; margin-left: auto; text-transform: none; letter-spacing: normal; }
 .ng-count { display: inline-block; background: var(--bg-hover); color: var(--text-muted); border-radius: 99px; padding: 1px 8px; font-size: 11px; margin-left: 4px; }
 .ng-mono { font-family: var(--mono); font-size: 12px; color: var(--text-secondary); word-break: break-all; }
@@ -1779,7 +1779,7 @@ onBeforeUnmount(() => {
 .ng-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
 .ng-metric { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 18px 16px; text-align: center; }
 .ng-metric-val { font-size: 28px; font-weight: 700; color: var(--text-primary); font-family: var(--mono); }
-.ng-metric-lbl { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 4px; }
+.ng-metric-lbl { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
 
 /* Effective config modal */
 .ng-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 120; padding: 24px; }

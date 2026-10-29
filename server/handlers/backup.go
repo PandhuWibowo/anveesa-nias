@@ -134,7 +134,7 @@ func backupOptionsFromQuery(r *http.Request) BackupOptions {
 // depends on (e.g. a CREATE TABLE ... DEFAULT nextval(seq) failing because the
 // CREATE SEQUENCE before it was skipped).
 var allowedRestoreStatements = []string{
-	"INSERT ", "CREATE TABLE", "CREATE INDEX", "CREATE UNIQUE INDEX",
+	"INSERT ", "CREATE DATABASE", "CREATE TABLE", "CREATE INDEX", "CREATE UNIQUE INDEX",
 	"CREATE SEQUENCE", "CREATE TYPE", "CREATE OR REPLACE VIEW", "CREATE VIEW",
 	"SELECT SETVAL(",
 	"DROP TABLE", "DROP INDEX", "ALTER TABLE", "SET ", "BEGIN", "COMMIT", "ROLLBACK", "DO ",
@@ -160,17 +160,18 @@ func isAllowedRestoreStatement(stmt string) bool {
 // a truncated statement preview rather than failing.
 
 var (
-	reInsertInto  = regexp.MustCompile(`(?is)^INSERT\s+INTO\s+([^\s(]+)`)
-	reCreateTable = regexp.MustCompile(`(?is)^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s(]+)`)
-	reCreateIndex = regexp.MustCompile(`(?is)^CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\S+\s+ON\s+([^\s(]+)`)
-	reCreateSeq   = regexp.MustCompile(`(?is)^CREATE\s+SEQUENCE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)`)
-	reCreateType  = regexp.MustCompile(`(?is)^CREATE\s+TYPE\s+(\S+)`)
-	reCreateView  = regexp.MustCompile(`(?is)^CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(\S+)`)
-	reAlterTable  = regexp.MustCompile(`(?is)^ALTER\s+TABLE\s+([^\s(]+)`)
-	reDropTable   = regexp.MustCompile(`(?is)^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([^\s(]+)`)
-	reDropIndex   = regexp.MustCompile(`(?is)^DROP\s+INDEX\s+(?:IF\s+EXISTS\s+)?([^\s(]+)`)
-	reSetval      = regexp.MustCompile(`(?is)^SELECT\s+SETVAL\(\s*'([^']+)'`)
-	reDoTable     = regexp.MustCompile(`(?is)ALTER\s+TABLE\s+([^\s(]+)`)
+	reInsertInto     = regexp.MustCompile(`(?is)^INSERT\s+INTO\s+([^\s(]+)`)
+	reCreateDatabase = regexp.MustCompile(`(?is)^CREATE\s+DATABASE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+?);?$`)
+	reCreateTable    = regexp.MustCompile(`(?is)^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s(]+)`)
+	reCreateIndex    = regexp.MustCompile(`(?is)^CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\S+\s+ON\s+([^\s(]+)`)
+	reCreateSeq      = regexp.MustCompile(`(?is)^CREATE\s+SEQUENCE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)`)
+	reCreateType     = regexp.MustCompile(`(?is)^CREATE\s+TYPE\s+(\S+)`)
+	reCreateView     = regexp.MustCompile(`(?is)^CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(\S+)`)
+	reAlterTable     = regexp.MustCompile(`(?is)^ALTER\s+TABLE\s+([^\s(]+)`)
+	reDropTable      = regexp.MustCompile(`(?is)^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([^\s(]+)`)
+	reDropIndex      = regexp.MustCompile(`(?is)^DROP\s+INDEX\s+(?:IF\s+EXISTS\s+)?([^\s(]+)`)
+	reSetval         = regexp.MustCompile(`(?is)^SELECT\s+SETVAL\(\s*'([^']+)'`)
+	reDoTable        = regexp.MustCompile(`(?is)ALTER\s+TABLE\s+([^\s(]+)`)
 )
 
 // cleanIdent strips quoting/brackets and collapses `"schema"."table"` down to
@@ -187,6 +188,8 @@ func describeStatement(stmt string) string {
 	switch {
 	case reInsertInto.MatchString(s):
 		return "Inserting into " + cleanIdent(reInsertInto.FindStringSubmatch(s)[1])
+	case reCreateDatabase.MatchString(s):
+		return "Creating database " + cleanIdent(reCreateDatabase.FindStringSubmatch(s)[1])
 	case reCreateTable.MatchString(s):
 		return "Creating table " + cleanIdent(reCreateTable.FindStringSubmatch(s)[1])
 	case reCreateIndex.MatchString(s):
@@ -312,6 +315,20 @@ type ColumnAddition struct {
 // ColumnsAdded (the atomic counter) always reflects the true total.
 const maxTrackedColumnAdditions = 50
 
+// SkippedStatement pairs a skipped statement's human-readable label with why
+// it was skipped — a skip is a deliberate "this was a no-op, not an error"
+// outcome (e.g. an index that already exists on the target), but silent
+// no-ops are indistinguishable from "did this dump actually restore
+// everything?" without a reason attached.
+type SkippedStatement struct {
+	Statement string `json:"statement"`
+	Reason    string `json:"reason"`
+}
+
+// maxTrackedSkippedStatements mirrors maxTrackedRowFailures's rationale —
+// Skipped (the atomic counter) always reflects the true total.
+const maxTrackedSkippedStatements = 50
+
 const (
 	RestoreJobRunning  RestoreJobStatus = "running"
 	RestoreJobDone     RestoreJobStatus = "done"
@@ -352,6 +369,12 @@ type RestoreJob struct {
 	// additions (table, column, inferred type) for diagnostics — mu-protected,
 	// same capped-list rationale as FailedRowDetails.
 	ColumnsAddedDetails []ColumnAddition `json:"columns_added_details,omitempty"`
+
+	// SkippedDetails captures up to maxTrackedSkippedStatements individual
+	// skipped statements (what, and why) for diagnostics — mu-protected, same
+	// capped-list rationale as FailedRowDetails. Skipped (the atomic counter)
+	// always reflects the true total regardless of this cap.
+	SkippedDetails []SkippedStatement `json:"skipped_details,omitempty"`
 
 	// Current/CurrentCount/Recent give a human-readable window into what the
 	// executor is actually doing right now (e.g. "Inserting into orders"), not
@@ -411,6 +434,10 @@ func RestoreBackup() http.HandlerFunc {
 			SkipConflicts   bool   `json:"skip_conflicts"`
 			ContinueOnError bool   `json:"continue_on_error"`
 			AutoAddColumns  bool   `json:"auto_add_columns"`
+			// DestDatabase, for mysql/mariadb targets only, restores the dump
+			// under a different database name than the one it was taken from —
+			// see mysqlRestoreDBRewriter for why that's otherwise baked in.
+			DestDatabase string `json:"dest_database"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
@@ -517,6 +544,16 @@ func RestoreBackup() http.HandlerFunc {
 				}
 				job.mu.Unlock()
 			}
+			onSkip := func(stmt, reason string) {
+				job.mu.Lock()
+				if len(job.SkippedDetails) < maxTrackedSkippedStatements {
+					job.SkippedDetails = append(job.SkippedDetails, SkippedStatement{
+						Statement: describeStatement(stmt),
+						Reason:    reason,
+					})
+				}
+				job.mu.Unlock()
+			}
 
 			// Two-tier strategy: the first attempt streams directly from the
 			// bucket, overlapping network transfer with DB execution — the
@@ -602,7 +639,7 @@ func RestoreBackup() http.HandlerFunc {
 					break
 				}
 
-				executed, _, execErr := execRestoreStream(jobCtx, tx, reader, driver, req.SkipConflicts, req.ContinueOnError, req.AutoAddColumns, &job.Executed, &job.Skipped, &job.FailedRows, &job.ColumnsAdded, onExec, onFail, onColumnAdd)
+				executed, _, execErr := execRestoreStream(jobCtx, tx, reader, driver, req.SkipConflicts, req.ContinueOnError, req.AutoAddColumns, strings.TrimSpace(req.DestDatabase), &job.Executed, &job.Skipped, &job.FailedRows, &job.ColumnsAdded, onExec, onFail, onColumnAdd, onSkip)
 				if closer != nil {
 					closer.Close()
 				}
@@ -626,6 +663,7 @@ func RestoreBackup() http.HandlerFunc {
 						job.FirstRowError = ""
 						job.FailedRowDetails = nil
 						job.ColumnsAddedDetails = nil
+						job.SkippedDetails = nil
 						job.mu.Unlock()
 						select {
 						case <-time.After(3 * time.Second):
@@ -692,6 +730,7 @@ func GetRestoreJobStatus() http.HandlerFunc {
 		firstRowError := job.FirstRowError
 		failedRowDetails := job.FailedRowDetails
 		columnsAddedDetails := job.ColumnsAddedDetails
+		skippedDetails := job.SkippedDetails
 		job.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"id":                    job.ID,
@@ -700,6 +739,7 @@ func GetRestoreJobStatus() http.HandlerFunc {
 			"done_at":               doneAt,
 			"executed":              atomic.LoadInt64(&job.Executed),
 			"skipped":               atomic.LoadInt64(&job.Skipped),
+			"skipped_details":       skippedDetails,
 			"failed_rows":           atomic.LoadInt64(&job.FailedRows),
 			"first_row_error":       firstRowError,
 			"failed_row_details":    failedRowDetails,
@@ -750,6 +790,16 @@ func writeBackupDump(ctx context.Context, w io.Writer, db *sql.DB, driver, dbNam
 	// rather than whatever DATABASE() returns for the connection.
 	if (driver == "mysql" || driver == "mariadb") && schema == "" && dbName != "" {
 		schema = dbName
+	}
+
+	// Every table/view/index reference in a MySQL/MariaDB dump is qualified with
+	// this exact database name (see quoteIdentForDriver) — a connection here can
+	// target any database on its server, so statements can't rely on an ambient
+	// "current" database. Restoring into a destination server that has never
+	// seen this database name would otherwise fail on statement 1 with "Unknown
+	// database" (MySQL error 1049), so make sure it exists before anything else runs.
+	if (driver == "mysql" || driver == "mariadb") && schema != "" {
+		fmt.Fprintf(w, "CREATE DATABASE IF NOT EXISTS `%s`;\n\n", strings.ReplaceAll(schema, "`", "``"))
 	}
 
 	// Emit SET search_path for PostgreSQL so that unqualified names in FK
@@ -1683,6 +1733,65 @@ func resolveSchema(driver, schema string) string {
 	}
 }
 
+// reDBQualifier matches this app's own MySQL/MariaDB db-qualified reference
+// shape, “ `db`.`something` “ — two adjacent backtick-quoted identifiers
+// joined by a dot, exactly what quoteIdentForDriver emits for every
+// table/view a mysql/mariadb dump touches (see mysqlRestoreDBRewriter). This
+// specific two-token shape only ever appears in identifier position in this
+// app's own dumps — row data is single-quoted, never backtick-quoted — so
+// matching it is safe even against a raw, not-yet-split statement.
+var reDBQualifier = regexp.MustCompile("`([^`]+)`\\.`[^`]+`")
+
+// mysqlRestoreDBRewriter lets a MySQL/MariaDB restore land in a database with
+// a different name than the one the dump was taken from — every table/view
+// reference in such a dump is qualified with the exact source database name
+// (see quoteIdentForDriver's mysql/mariadb case), so restoring into a
+// same-server connection under a new name would otherwise still write into
+// (and require the pre-existence of) the old one. destDatabase empty means
+// "no rewrite" — the zero value is a no-op passthrough.
+type mysqlRestoreDBRewriter struct {
+	destDatabase string
+	srcDatabase  string // learned from the dump's own first qualified statement
+	detected     bool
+}
+
+// detect learns the source database name from stmt if it hasn't already —
+// tried against the CREATE DATABASE statement first (the very first
+// statement in dumps generated after this rewriter existed), falling back to
+// any db-qualified reference (present in every dump, including ones taken
+// before the CREATE DATABASE statement was added).
+func (rw *mysqlRestoreDBRewriter) detect(stmt string) {
+	if rw.detected {
+		return
+	}
+	if m := reCreateDatabase.FindStringSubmatch(stmt); m != nil {
+		rw.srcDatabase = cleanIdent(m[1])
+		rw.detected = true
+		return
+	}
+	if m := reDBQualifier.FindStringSubmatch(stmt); m != nil {
+		rw.srcDatabase = m[1]
+		rw.detected = true
+	}
+}
+
+// rewrite substitutes every occurrence of the source database's qualifier
+// with the destination one. Safe to call on a full raw statement (including
+// an INSERT's VALUES data) as well as on an identifier-only fragment (e.g.
+// insertBatchParts' prefix) — the qualifier shape it targets can't occur
+// inside this app's own (single-quoted) string literals.
+func (rw *mysqlRestoreDBRewriter) rewrite(stmt string) string {
+	rw.detect(stmt)
+	if rw.destDatabase == "" || !rw.detected || rw.srcDatabase == rw.destDatabase {
+		return stmt
+	}
+	out := strings.ReplaceAll(stmt, "`"+rw.srcDatabase+"`.", "`"+rw.destDatabase+"`.")
+	if reCreateDatabase.MatchString(out) {
+		out = strings.ReplaceAll(out, "`"+rw.srcDatabase+"`", "`"+rw.destDatabase+"`")
+	}
+	return out
+}
+
 // quoteIdentForDriver quotes an identifier using the correct dialect.
 // If schema is empty, just quote the table name.
 func quoteIdentForDriver(driver, schema, name string) string {
@@ -1783,19 +1892,66 @@ const maxRestoreStatementBytes = 512 * 1024 * 1024
 // addStatementIfNotExists makes schema-creating statements idempotent even if
 // the dump wasn't generated with the backup-time "IF NOT EXISTS" option —
 // without this, CREATE TABLE would still fail immediately, before even
-// reaching the INSERTs that addConflictSkip protects.
-func addStatementIfNotExists(stmt string) string {
+// reaching the INSERTs that addConflictSkip protects. CREATE INDEX is left
+// untouched for MySQL/MariaDB: unlike CREATE TABLE, neither one accepts an
+// IF NOT EXISTS clause on CREATE INDEX at all — rewriting it that way is a
+// syntax error (1064), not a no-op. Those two drivers instead get an
+// already-exists CREATE INDEX tolerated at execution time by
+// isMySQLDuplicateIndexErr, right where the statement actually runs.
+func addStatementIfNotExists(stmt, driver string) string {
 	upper := strings.ToUpper(stmt)
 	switch {
 	case strings.HasPrefix(upper, "CREATE TABLE ") && !strings.Contains(upper, "IF NOT EXISTS"):
 		return "CREATE TABLE IF NOT EXISTS " + stmt[len("CREATE TABLE "):]
 	case strings.HasPrefix(upper, "CREATE SEQUENCE ") && !strings.Contains(upper, "IF NOT EXISTS"):
 		return "CREATE SEQUENCE IF NOT EXISTS " + stmt[len("CREATE SEQUENCE "):]
-	case strings.HasPrefix(upper, "CREATE UNIQUE INDEX ") || strings.HasPrefix(upper, "CREATE INDEX "):
+	case (driver != "mysql" && driver != "mariadb") && (strings.HasPrefix(upper, "CREATE UNIQUE INDEX ") || strings.HasPrefix(upper, "CREATE INDEX ")):
 		return addIfNotExistsToIndex(stmt)
 	default:
 		return stmt
 	}
+}
+
+// isCreateIndexStatement reports whether stmt is a CREATE [UNIQUE] INDEX —
+// used to scope isMySQLDuplicateIndexErr's tolerance to exactly the
+// statement shape it's meant for.
+func isCreateIndexStatement(stmt string) bool {
+	upper := strings.ToUpper(stmt)
+	return strings.HasPrefix(upper, "CREATE INDEX ") || strings.HasPrefix(upper, "CREATE UNIQUE INDEX ")
+}
+
+// isAlterTableAddConstraintStatement reports whether stmt is one of this
+// app's own mysql/mariadb "ALTER TABLE `t` ADD CONSTRAINT `name` FOREIGN KEY
+// ..." statements (see generateFKsDDL) — the other statement shape that can
+// hit ER_FK_DUP_NAME (1826) on a re-run, alongside CREATE INDEX. Unlike the
+// equivalent postgres DDL (wrapped in its own DO $$ ... EXCEPTION WHEN
+// duplicate_object block), mysql/mariadb has no idempotent syntax for this at
+// all, so — like CREATE INDEX — it needs execution-time tolerance instead.
+func isAlterTableAddConstraintStatement(stmt string) bool {
+	upper := strings.ToUpper(stmt)
+	return strings.HasPrefix(upper, "ALTER TABLE ") && strings.Contains(upper, " ADD CONSTRAINT ")
+}
+
+// isMySQLDuplicateIndexErr reports whether err is MySQL/MariaDB's way of
+// saying a CREATE INDEX's name is already taken on that table — the error a
+// CREATE INDEX gets under skipConflicts instead of a syntax-level IF NOT
+// EXISTS the way CREATE TABLE gets (see addStatementIfNotExists), since
+// neither driver supports that clause on CREATE INDEX at all. Two distinct
+// error codes cover this, and InnoDB genuinely can raise either for the same
+// plain CREATE INDEX statement depending on what already holds the name:
+//   - 1061 (ER_DUP_KEYNAME, "Duplicate key name") — an index already has it.
+//   - 1826 (ER_FK_DUP_NAME, "Duplicate foreign key constraint name") — a
+//     foreign key constraint already has it. This app's own dumps commonly
+//     hit this one: post-data emits both a named index and a same-named FK
+//     constraint for the same column (the FK's supporting index), so once
+//     the FK constraint from a prior restore attempt already exists,
+//     re-creating "just the index" on a re-run collides against it.
+func isMySQLDuplicateIndexErr(driver string, err error) bool {
+	if driver != "mysql" && driver != "mariadb" {
+		return false
+	}
+	var myErr *mysql.MySQLError
+	return errors.As(err, &myErr) && (myErr.Number == 1061 || myErr.Number == 1826)
 }
 
 // addConflictSkip rewrites a plain INSERT into this driver's "ignore on
@@ -1848,13 +2004,35 @@ func execWithSavepoint(ctx context.Context, tx *sql.Tx, driver, stmt string) (ro
 	}
 	if _, err := tx.ExecContext(ctx, stmt); err != nil {
 		if _, rbErr := tx.ExecContext(ctx, rollbackTo); rbErr != nil {
-			return nil, rbErr
+			// rbErr alone ("SAVEPOINT ... does not exist") is a red herring —
+			// it means the savepoint we just created is already gone, which
+			// happens when the server unilaterally ended the transaction
+			// after we set it (e.g. InnoDB auto-rolling back the whole
+			// transaction on a deadlock, or a lock-wait timeout under
+			// innodb_rollback_on_timeout). err is the statement's own
+			// failure and the actual root cause — surface both so it's
+			// diagnosable instead of replacing it with the confusing
+			// secondary error.
+			return nil, fmt.Errorf("%w (savepoint cleanup also failed, the transaction was likely already aborted by the server — e.g. a deadlock or lock-wait timeout: %v)", err, rbErr)
 		}
 		return err, nil
 	}
 	if release != "" {
 		if _, err := tx.ExecContext(ctx, release); err != nil {
-			return nil, err
+			// Unlike the rollbackTo case above, stmt has already succeeded by
+			// this point — its data is committed (or safely part of the
+			// transaction) regardless of what happens next, so a failed
+			// RELEASE can never mean data was lost. The one way this fires in
+			// practice: autoAddColumns ran an ALTER TABLE for this same row
+			// (see execWithSavepointAutoRepair) between the SAVEPOINT above
+			// and here — MySQL/MariaDB DDL implicitly commits, which tears
+			// down the savepoint we're now trying to release along with it,
+			// so RELEASE fails with "SAVEPOINT ... does not exist" even
+			// though stmt ran fine. RELEASE is purely advisory cleanup (frees
+			// the savepoint slot early); a missing savepoint has nothing left
+			// to clean up, so treating this as fatal would abort an
+			// otherwise-successful restore over a no-op.
+			return nil, nil
 		}
 	}
 	return nil, nil
@@ -1914,7 +2092,7 @@ func missingColumnFromErr(driver string, err error) (column string, ok bool) {
 				return m[1], true
 			}
 		}
-	case "mysql":
+	case "mysql", "mariadb":
 		var myErr *mysql.MySQLError
 		if errors.As(err, &myErr) && myErr.Number == 1054 {
 			if m := reMySQLUnknownColumn.FindStringSubmatch(myErr.Message); m != nil {
@@ -2241,7 +2419,20 @@ func execWithSavepointAutoRepair(
 		default:
 			sqlType := sqlColumnType(driver, inferLiteralBucket(vals[pos]))
 			alterStmt := "ALTER TABLE " + tableRef + " ADD COLUMN " + quoteIdent(driver, col) + " " + sqlType
-			alterRowErr, alterFatalErr := execWithSavepoint(ctx, tx, driver, alterStmt)
+			var alterRowErr, alterFatalErr error
+			if driver == "mysql" || driver == "mariadb" {
+				// MySQL/MariaDB DDL causes an implicit COMMIT, which silently
+				// discards any SAVEPOINT taken inside the transaction. Wrapping
+				// the ALTER in one is worse than useless here: it can't be rolled
+				// back either way, and the subsequent RELEASE SAVEPOINT fails
+				// with "SAVEPOINT ... does not exist" (1305) once the implicit
+				// commit has already erased it — which execWithSavepoint reports
+				// as fatal, aborting the entire restore over a single missing
+				// column. Run it unwrapped instead.
+				_, alterRowErr = tx.ExecContext(ctx, alterStmt)
+			} else {
+				alterRowErr, alterFatalErr = execWithSavepoint(ctx, tx, driver, alterStmt)
+			}
 			if alterFatalErr != nil {
 				return nil, alterFatalErr
 			}
@@ -2294,8 +2485,20 @@ func execWithSavepointAutoRepair(
 // (type inferred from the failing statement's own literal value) and a
 // retry before falling back to the continueOnError/abort behavior above —
 // see execWithSavepointAutoRepair; onColumnAdd, if non-nil, is called once
-// per column actually added.
-func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver string, skipConflicts, continueOnError, autoAddColumns bool, executedCounter, skippedCounter, failedCounter, columnsAddedCounter *int64, onExec func(stmt string, n int), onFail func(stmt string, err error), onColumnAdd func(table, column, sqlType string)) (executed, skipped int, err error) {
+// per column actually added. destDatabase, when non-empty on a mysql/mariadb
+// restore, redirects every db-qualified reference in the dump from whatever
+// database it was taken from onto this one instead — see
+// mysqlRestoreDBRewriter; ignored for every other driver, since none of them
+// qualify identifiers with a database name in the first place. onSkip, if
+// non-nil, is called with the skipped statement's text and a short reason —
+// either it's a statement shape isAllowedRestoreStatement doesn't recognize,
+// or (skipConflicts only) it already exists on the target.
+func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver string, skipConflicts, continueOnError, autoAddColumns bool, destDatabase string, executedCounter, skippedCounter, failedCounter, columnsAddedCounter *int64, onExec func(stmt string, n int), onFail func(stmt string, err error), onColumnAdd func(table, column, sqlType string), onSkip func(stmt, reason string)) (executed, skipped int, err error) {
+	var dbRewrite *mysqlRestoreDBRewriter
+	if destDatabase != "" && (driver == "mysql" || driver == "mariadb") {
+		dbRewrite = &mysqlRestoreDBRewriter{destDatabase: destDatabase}
+	}
+
 	br := bufio.NewReaderSize(r, 256*1024)
 	var cur strings.Builder
 	inStr := false
@@ -2347,7 +2550,7 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 	// blocks, SET, or a lone (unbatched) INSERT.
 	execStatement := func(stmt string) error {
 		if skipConflicts {
-			stmt = addStatementIfNotExists(stmt)
+			stmt = addStatementIfNotExists(stmt, driver)
 			stmt = addConflictSkip(stmt, driver)
 		}
 
@@ -2389,6 +2592,24 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 				return nil
 			}
 		} else if _, execErr := tx.ExecContext(ctx, stmt); execErr != nil {
+			// MySQL/MariaDB CREATE INDEX and ALTER TABLE ADD CONSTRAINT (the
+			// FK statement generateFKsDDL emits) have no IF NOT EXISTS/
+			// idempotent syntax to lean on up front the way CREATE TABLE and
+			// postgres's DO-block-wrapped FK statement do — see
+			// addStatementIfNotExists and generateFKsDDL. Under skipConflicts,
+			// tolerate the "already exists" error here at execution time
+			// instead, the only place those two drivers give us to detect it.
+			if skipConflicts && isMySQLDuplicateIndexErr(driver, execErr) &&
+				(isCreateIndexStatement(stmt) || isAlterTableAddConstraintStatement(stmt)) {
+				skipped++
+				if skippedCounter != nil {
+					atomic.AddInt64(skippedCounter, 1)
+				}
+				if onSkip != nil {
+					onSkip(stmt, "already exists on target ("+execErr.Error()+")")
+				}
+				return nil
+			}
 			return execErr
 		}
 
@@ -2420,7 +2641,7 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 		combined := prefix + strings.Join(tuples, ", ")
 		rewritten := combined
 		if skipConflicts {
-			rewritten = addStatementIfNotExists(rewritten)
+			rewritten = addStatementIfNotExists(rewritten, driver)
 			rewritten = addConflictSkip(rewritten, driver)
 		}
 
@@ -2474,7 +2695,14 @@ func execRestoreStream(ctx context.Context, tx *sql.Tx, r io.Reader, driver stri
 			if skippedCounter != nil {
 				atomic.AddInt64(skippedCounter, 1)
 			}
+			if onSkip != nil {
+				onSkip(stmt, "unsupported statement type for restore")
+			}
 			return nil
+		}
+
+		if dbRewrite != nil {
+			stmt = dbRewrite.rewrite(stmt)
 		}
 
 		if prefix, tuple, ok := insertBatchParts(stmt); ok {

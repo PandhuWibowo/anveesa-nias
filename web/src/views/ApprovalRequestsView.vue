@@ -4,6 +4,7 @@ import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useAuth } from '@/composables/useAuth'
 import { useDatabases } from '@/composables/useDatabases'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 interface ApprovalRequest {
   id: number
@@ -88,7 +89,7 @@ const selectedId = ref<number | null>(null)
 const selected = ref<ApprovalRequest | null>(null)
 const progress = ref<ApprovalProgressResponse | null>(null)
 const note = ref('')
-const filter = ref<'all' | 'pending_review' | 'approved' | 'rejected' | 'done' | 'failed'>('all')
+const filter = ref<'all' | 'pending_review' | 'draft' | 'approved' | 'rejected' | 'done' | 'failed'>('all')
 const createOpen = ref(false)
 const createSubmitting = ref(false)
 const editingRequestId = ref<number | null>(null)
@@ -264,15 +265,19 @@ async function loadDetail(id: number) {
   }
 }
 
-async function actOnStep(action: 'approved' | 'rejected') {
+async function actOnStep(action: 'approved' | 'rejected' | 'changes_requested') {
   if (!selected.value) return
+  if (action !== 'approved' && !note.value.trim()) {
+    toast.error(action === 'rejected' ? 'Add a note explaining the rejection' : 'Add a note describing the changes needed')
+    return
+  }
   try {
     await axios.post(`/api/approval-requests/${selected.value.id}/approve-step`, {
       action,
       note: note.value.trim(),
     })
     note.value = ''
-    toast.success(action === 'approved' ? 'Approval recorded' : 'Changes requested')
+    toast.success(action === 'approved' ? 'Approval recorded' : action === 'rejected' ? 'Request rejected' : 'Changes requested')
     await fetchRequests()
   } catch (error: any) {
     toast.error(error.response?.data?.error || 'Failed to record action')
@@ -399,9 +404,18 @@ async function runSelectedDryRun() {
   }
 }
 
+function statusLabel(status: string) {
+  return status === 'draft' ? 'changes requested' : status.replace('_', ' ')
+}
+
+function approvalActionLabel(action: string) {
+  // Both outcomes are stored as "rejected"; a draft request means changes were requested.
+  return action === 'rejected' && selected.value?.status === 'draft' ? 'requested changes' : action
+}
+
 function statusClass(status: string) {
   return {
-    'req-status--pending': status === 'pending_review',
+    'req-status--pending': status === 'pending_review' || status === 'draft',
     'req-status--approved': status === 'approved' || status === 'done',
     'req-status--rejected': status === 'rejected' || status === 'failed',
   }
@@ -433,35 +447,32 @@ onMounted(async () => {
     <div class="req-scroll">
       <div class="req-header">
         <div class="req-header-copy">
-          <div class="req-kicker">Approval Center</div>
           <div class="req-title">Approval Requests</div>
           <div class="req-sub">Track write SQL awaiting approval and execute approved requests.</div>
         </div>
         <div class="req-header-actions">
-          <button class="base-btn base-btn--primary base-btn--sm" @click="openCreate">New Request</button>
           <select v-model="filter" class="base-input">
             <option value="all">All statuses</option>
             <option value="pending_review">Pending review</option>
+            <option value="draft">Changes requested</option>
             <option value="approved">Approved</option>
             <option value="rejected">Rejected</option>
             <option value="done">Executed</option>
             <option value="failed">Failed</option>
           </select>
           <button class="base-btn base-btn--ghost base-btn--sm" @click="fetchRequests">Refresh</button>
+          <button class="base-btn base-btn--primary base-btn--sm" @click="openCreate">New request</button>
         </div>
       </div>
 
-      <div class="req-layout">
+      <div v-if="!loading && !requests.length && filter === 'all'" class="page-card">
+        <EmptyState icon="check" title="No approval requests yet" text="Write SQL that hits a connection with an approval workflow lands here for review. You can also submit one directly." action-label="New request" @action="openCreate" />
+      </div>
+      <div v-else class="req-layout">
         <aside class="req-list-wrap">
           <div class="req-list-head">Requests</div>
           <div v-if="loading" class="req-empty">Loading requests…</div>
-          <div v-else-if="filteredRequests.length === 0" class="req-empty">
-            <div class="req-empty__title">No approval requests yet</div>
-            <div class="req-empty__text">Requests appear here after a non-admin user submits write SQL against a connection covered by an active workflow.</div>
-            <div class="req-empty__actions">
-              <button class="base-btn base-btn--primary base-btn--sm" @click="openCreate">Create Request</button>
-            </div>
-          </div>
+          <div v-else-if="filteredRequests.length === 0" class="req-empty"><div class="req-empty__text">No requests match this status.</div></div>
           <div v-else class="req-list">
             <button
               v-for="request in filteredRequests"
@@ -472,7 +483,7 @@ onMounted(async () => {
             >
               <div class="req-list__top">
                 <div class="req-list__title">{{ request.title }}</div>
-                <span class="req-status" :class="statusClass(request.status)">{{ request.status.replace('_', ' ') }}</span>
+                <span class="req-status" :class="statusClass(request.status)">{{ statusLabel(request.status) }}</span>
               </div>
               <div class="req-list__meta">
                 <span class="req-list__chip">{{ request.connection }}</span>
@@ -485,13 +496,7 @@ onMounted(async () => {
 
         <section class="req-detail-wrap">
           <div v-if="detailLoading" class="req-empty">Loading request detail…</div>
-          <div v-else-if="!selected || !progress" class="req-empty">
-            <div class="req-empty__title">Nothing to review yet</div>
-            <div class="req-empty__text">Create a request directly here by choosing a connection and pasting the write SQL that needs approval.</div>
-            <div class="req-empty__actions">
-              <button class="base-btn base-btn--primary base-btn--sm" @click="openCreate">New Request</button>
-            </div>
-          </div>
+          <EmptyState v-else-if="!selected || !progress" compact icon="check" title="Select a request" text="Its SQL, approval steps, and execution result show here." />
           <template v-else>
             <div class="req-hero">
               <div class="req-hero__grid" />
@@ -500,7 +505,7 @@ onMounted(async () => {
               <div>
                 <div class="req-detail-title">{{ selected.title }}</div>
                 <div class="req-detail-meta">
-                  <span class="req-status" :class="statusClass(selected.status)">{{ selected.status.replace('_', ' ') }}</span>
+                  <span class="req-status" :class="statusClass(selected.status)">{{ statusLabel(selected.status) }}</span>
                   <span>{{ selected.connection }} • {{ selected.environment }}</span>
                   <span v-if="selected.database">{{ selected.database }}</span>
                   <span>Revision {{ selected.revision }}</span>
@@ -549,7 +554,7 @@ onMounted(async () => {
                   </div>
                   <div v-if="step.approvals.length > 0" class="req-step__actions">
                     <div v-for="approval in step.approvals" :key="approval.id" class="req-step__action">
-                      <strong>{{ approval.username }}</strong> {{ approval.action }}
+                      <strong>{{ approval.username }}</strong> {{ approvalActionLabel(approval.action) }}
                       <span v-if="approval.note"> · {{ approval.note }}</span>
                     </div>
                   </div>
@@ -559,10 +564,11 @@ onMounted(async () => {
 
             <div v-if="progress.can_approve" class="req-panel">
               <div class="req-panel__title">Current Step Action</div>
-              <input v-model="note" class="base-input" placeholder="Approval note or requested changes…" />
+              <input v-model="note" class="base-input" placeholder="Approval note, requested changes, or rejection reason…" />
               <div class="req-approve__actions">
                 <button class="base-btn base-btn--primary base-btn--sm" @click="actOnStep('approved')">Approve</button>
-                <button class="base-btn base-btn--ghost base-btn--sm" style="color:var(--danger)" @click="actOnStep('rejected')">Request Changes</button>
+                <button class="base-btn base-btn--ghost base-btn--sm" @click="actOnStep('changes_requested')">Request Changes</button>
+                <button class="base-btn base-btn--ghost base-btn--sm" style="color:var(--danger)" @click="actOnStep('rejected')">Reject</button>
               </div>
             </div>
 
@@ -730,133 +736,79 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 24px;
-  padding: 20px 22px;
-  border: 1px solid color-mix(in srgb, var(--border) 72%, #f59e0b 28%);
-  border-radius: 14px;
-  background:
-    radial-gradient(circle at top left, rgba(245, 158, 11, 0.16), transparent 34%),
-    linear-gradient(135deg, color-mix(in srgb, var(--bg-elevated) 86%, #f8fafc 14%), var(--bg-elevated));
-  position: relative;
-  overflow: hidden;
-}
-.req-header::after {
-  content: '';
-  position: absolute;
-  inset: auto -80px -90px auto;
-  width: 220px;
-  height: 220px;
-  background: radial-gradient(circle, rgba(16, 185, 129, 0.08), transparent 68%);
-  pointer-events: none;
+  align-items: flex-end;
+  flex-wrap: wrap;
 }
 .req-header-copy { position: relative; z-index: 1; max-width: 560px; }
 .req-kicker {
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.6px;
-  text-transform: uppercase;
-  color: #f59e0b;
-  margin-bottom: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-bottom: 4px;
 }
-.req-title { font-size: 24px; font-weight: 800; color: var(--text-primary); letter-spacing: -0.02em; }
-.req-sub { font-size: 13px; color: var(--text-muted); margin-top: 6px; line-height: 1.6; }
-.req-header-actions { min-width: 220px; display: flex; gap: 8px; flex-wrap: wrap; }
-.req-header-actions .base-input { min-width: 180px; }
+.req-title { font-size: 22px; font-weight: 600; color: var(--text-primary); letter-spacing: -0.015em; }
+.req-sub { font-size: 14px; color: var(--text-secondary); margin-top: 4px; line-height: 1.55; }
+.req-header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.req-header-actions .base-input { width: auto; min-width: 160px; }
 .req-layout { display: grid; grid-template-columns: 320px 1fr; gap: 18px; min-height: 0; }
 .req-list-wrap, .req-detail-wrap, .req-panel, .req-panel--desc {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 90%, #ffffff 10%), var(--bg-elevated));
+  background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.08);
+  border-radius: var(--r-lg);
 }
 .req-list-wrap { overflow: hidden; }
-.req-list-head { padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-surface); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted); }
+.req-list-head { padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-surface); font-size: 12px; font-weight: 500; color: var(--text-muted); }
 .req-list { min-height: 420px; }
 .req-list__item {
   width: 100%;
   border: 0;
   border-bottom: 1px solid var(--border);
-  background: linear-gradient(180deg, transparent, transparent);
+  background: transparent;
   text-align: left;
   padding: 14px 16px;
   cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  transition: background 0.16s ease, transform 0.16s ease;
+  transition: background var(--dur) var(--ease);
 }
-.req-list__item:hover {
-  background: linear-gradient(135deg, color-mix(in srgb, var(--bg-hover) 70%, #f59e0b 30%), var(--bg-hover));
-  transform: translateY(-1px);
-}
+.req-list__item:hover { background: var(--bg-hover-strong); }
 .req-list__item--active {
-  background: linear-gradient(135deg, color-mix(in srgb, var(--bg-hover) 55%, #f59e0b 45%), var(--bg-hover));
-  box-shadow: inset 3px 0 0 #f59e0b;
+  background: var(--brand-dim);
+  box-shadow: inset 2px 0 0 var(--brand);
 }
 .req-list__top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.req-list__title { font-size: 13px; font-weight: 700; color: var(--text-primary); line-height: 1.4; }
+.req-list__title { font-size: 13.5px; font-weight: 600; color: var(--text-primary); line-height: 1.4; }
 .req-list__meta, .req-list__sub { font-size: 12px; color: var(--text-muted); display: flex; gap: 8px; flex-wrap: wrap; }
 .req-list__chip {
   display: inline-flex;
   align-items: center;
-  padding: 3px 9px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--bg-body) 76%, #ffffff 24%);
-  border: 1px solid color-mix(in srgb, var(--border) 82%, #f59e0b 18%);
+  padding: 1px 7px;
+  border-radius: var(--r-xs);
+  background: var(--bg-hover-strong);
 }
 .req-detail-wrap { min-height: 420px; padding: 16px; display: flex; flex-direction: column; gap: 16px; position: relative; overflow: hidden; }
-.req-hero {
-  height: 92px;
-  border-radius: 12px;
-  background:
-    radial-gradient(circle at top left, rgba(245, 158, 11, 0.26), transparent 34%),
-    radial-gradient(circle at 80% 10%, rgba(34, 197, 94, 0.12), transparent 28%),
-    linear-gradient(135deg, #111827, #1f2937 55%, #0f172a);
-  border: 1px solid rgba(255,255,255,0.08);
-  position: relative;
-  overflow: hidden;
-}
-.req-hero__grid {
-  position: absolute;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(255,255,255,0.06) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,0.06) 1px, transparent 1px);
-  background-size: 22px 22px;
-  mask-image: linear-gradient(180deg, rgba(255,255,255,0.75), transparent);
-}
-.req-detail-head { display: flex; justify-content: space-between; gap: 16px; margin-top: -54px; padding: 0 10px; position: relative; z-index: 1; }
-.req-detail-head > div:first-child {
-  background: color-mix(in srgb, var(--bg-elevated) 88%, #ffffff 12%);
-  border: 1px solid color-mix(in srgb, var(--border) 80%, #f59e0b 20%);
-  border-radius: 12px;
-  padding: 14px 16px;
-  backdrop-filter: blur(12px);
-  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.16);
-}
-.req-detail-title { font-size: 20px; font-weight: 800; color: var(--text-primary); margin-bottom: 6px; letter-spacing: -0.02em; }
+.req-hero { display: none; }
+.req-detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.req-detail-title { font-size: 18px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px; letter-spacing: -0.02em; }
 .req-detail-meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--text-muted); }
 .req-detail-actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
   align-self: flex-start;
-  padding: 10px;
-  border: 1px solid color-mix(in srgb, var(--border) 80%, #f59e0b 20%);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--bg-elevated) 88%, #ffffff 12%);
-  backdrop-filter: blur(12px);
-  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.16);
 }
 .req-panel, .req-panel--desc { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; border-radius: 12px; }
-.req-panel__title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted); }
+.req-panel__title { font-size: 12.5px; font-weight: 500; color: var(--text-muted); }
 .req-panel--desc { font-size: 13px; color: var(--text-secondary); }
 .req-sql {
   margin: 0;
   padding: 14px;
-  border-radius: 10px;
-  background: linear-gradient(180deg, #111827, #0f172a);
-  border: 1px solid rgba(255,255,255,0.08);
-  color: #dbe4f0;
+  border-radius: var(--r);
+  background: var(--bg-body);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-family: var(--mono);
   overflow: auto;
   font-size: 12px;
   line-height: 1.5;
@@ -895,38 +847,37 @@ onMounted(async () => {
   font-weight: 700;
 }
 .req-status--pending {
-  color: #b45309;
-  border-color: rgba(245, 158, 11, 0.35);
-  background: rgba(245, 158, 11, 0.12);
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+  background: var(--warning-bg);
 }
 .req-status--approved {
-  color: #15803d;
-  border-color: rgba(34, 197, 94, 0.3);
-  background: rgba(34, 197, 94, 0.12);
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 30%, transparent);
+  background: var(--success-bg);
 }
 .req-status--rejected {
-  color: #b91c1c;
-  border-color: rgba(248, 113, 113, 0.3);
-  background: rgba(248, 113, 113, 0.12);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+  background: var(--danger-bg);
 }
-.req-step--approved { border-color: rgba(34, 197, 94, 0.25); }
-.req-step--approved .req-step__rail { background: linear-gradient(180deg, #22c55e, #16a34a); }
-.req-step--rejected { border-color: rgba(248, 113, 113, 0.25); }
-.req-step--rejected .req-step__rail { background: linear-gradient(180deg, #fb7185, #ef4444); }
-.req-step--pending .req-step__rail { background: linear-gradient(180deg, #f59e0b, #d97706); }
+.req-step--approved { border-color: color-mix(in srgb, var(--success) 25%, transparent); }
+.req-step--approved .req-step__rail { background: linear-gradient(180deg, var(--success), var(--success)); }
+.req-step--rejected { border-color: color-mix(in srgb, var(--danger) 25%, transparent); }
+.req-step--rejected .req-step__rail { background: linear-gradient(180deg, #fb7185, var(--danger)); }
+.req-step--pending .req-step__rail { background: var(--warning); }
 .req-step--waiting { opacity: 0.75; }
-.req-error { padding: 12px; border-radius: 8px; background: rgba(248, 113, 113, 0.08); color: #f87171; font-size: 12px; border: 1px solid rgba(248, 113, 113, 0.18); }
+.req-error { padding: 12px; border-radius: 8px; background: var(--danger-bg); color: var(--danger); font-size: 12px; border: 1px solid var(--danger-bg); }
 .req-empty { padding: 28px; color: var(--text-muted); }
 .req-empty__title { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px; }
 .req-empty__text { font-size: 12px; line-height: 1.5; }
 .req-empty__actions { margin-top: 12px; }
-.req-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.req-overlay { position: fixed; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center; z-index: 1000; }
 .req-dialog {
-  background:
-    radial-gradient(circle at top left, rgba(245, 158, 11, 0.12), transparent 28%),
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 92%, #ffffff 8%), var(--bg-elevated));
-  border: 1px solid color-mix(in srgb, var(--border) 82%, #f59e0b 18%);
-  border-radius: 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
   width: min(700px, 92vw);
   max-height: 90vh;
   overflow: auto;
@@ -934,7 +885,7 @@ onMounted(async () => {
 }
 .req-dialog__head, .req-dialog__foot { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
 .req-dialog__foot { border-bottom: none; border-top: 1px solid var(--border); justify-content: flex-end; gap: 8px; }
-.req-dialog__eyebrow { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--brand); margin-bottom: 4px; }
+.req-dialog__eyebrow { font-size: 12px; font-weight: 700; color: var(--brand); margin-bottom: 4px; }
 .req-dialog__title { font-size: 15px; color: var(--text-primary); font-weight: 600; }
 .req-dialog__body { padding: 20px; display: flex; flex-direction: column; gap: 16px; }
 .req-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -967,9 +918,9 @@ onMounted(async () => {
 }
 .req-section-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
 .req-section-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; line-height: 1.4; }
-.req-label { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted); margin-bottom: 4px; }
+.req-label { display: block; font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; }
 .req-helper { font-size: 12px; color: var(--text-muted); }
-.req-helper--warn { color: #f59e0b; }
+.req-helper--warn { color: var(--warning); }
 .req-db-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: start; }
 .req-summary-card {
   padding: 12px;
@@ -978,7 +929,7 @@ onMounted(async () => {
   background: linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 92%, #ffffff 8%), var(--bg-elevated));
 }
 .req-summary-card--muted { opacity: 0.7; }
-.req-summary-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted); margin-bottom: 6px; }
+.req-summary-label { font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 6px; }
 .req-summary-value { font-size: 13px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .req-summary-text { font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-top: 4px; }
 .req-summary-placeholder { font-size: 12px; color: var(--text-muted); }
@@ -1002,14 +953,14 @@ onMounted(async () => {
   background: linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 92%, #ffffff 8%), var(--bg-elevated));
 }
 .req-dryrun--ok {
-  border-color: rgba(34, 197, 94, 0.28);
-  background: rgba(34, 197, 94, 0.06);
+  border-color: color-mix(in srgb, var(--success) 28%, transparent);
+  background: var(--success-bg);
 }
 .req-dryrun--err {
-  border-color: rgba(248, 113, 113, 0.28);
-  background: rgba(248, 113, 113, 0.06);
+  border-color: color-mix(in srgb, var(--danger) 28%, transparent);
+  background: var(--danger-bg);
 }
-.req-dryrun__title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted); margin-bottom: 6px; }
+.req-dryrun__title { font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 6px; }
 .req-dryrun__message { font-size: 12px; color: var(--text-primary); line-height: 1.5; }
 .req-dryrun__details {
   margin-top: 8px;
@@ -1043,10 +994,10 @@ onMounted(async () => {
   width: 8px;
   height: 8px;
   border-radius: 999px;
-  background: #f59e0b;
+  background: var(--warning);
   flex-shrink: 0;
 }
-.req-footer-dot--ready { background: #22c55e; }
+.req-footer-dot--ready { background: var(--success); }
 .req-footer-actions { display: flex; gap: 8px; }
 
 @media (max-width: 960px) {

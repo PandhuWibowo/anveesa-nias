@@ -658,6 +658,13 @@ const restoreError = ref('')
 const restoreSkipConflicts = ref(false)
 const restoreContinueOnError = ref(false)
 const restoreAutoAddColumns = ref(false)
+const restoreDestDatabase = ref('')
+
+// MySQL/MariaDB dumps qualify every table reference with the exact source
+// database name (see mysqlRestoreDBRewriter server-side) — restoring under a
+// different name is only meaningful, and only supported, for those drivers.
+const restoreConnDriver = computed(() => connections.value.find(c => c.id === restoreConnId.value)?.driver)
+const restoreSupportsDestDatabase = computed(() => restoreConnDriver.value === 'mysql' || restoreConnDriver.value === 'mariadb')
 
 async function uploadFile(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
@@ -754,6 +761,8 @@ const restoreFailedRowDetails = ref<{ statement: string; error: string }[]>([])
 const restoreFailedRowsOpen = ref(false)
 const restoreColumnsAddedDetails = ref<{ table: string; column: string; type: string }[]>([])
 const restoreColumnsAddedOpen = ref(false)
+const restoreSkippedDetails = ref<{ statement: string; reason: string }[]>([])
+const restoreSkippedOpen = ref(false)
 const restoreCurrentCount = ref(0)
 const restoreRecent = ref<string[]>([])
 const restoreCancelled = ref(false)
@@ -857,6 +866,7 @@ async function pollRestoreJob(jobId: string) {
       restoreFirstRowError.value = status.first_row_error ?? ''
       restoreFailedRowDetails.value = status.failed_row_details ?? []
       restoreColumnsAddedDetails.value = status.columns_added_details ?? []
+      restoreSkippedDetails.value = status.skipped_details ?? []
       restoreCurrentCount.value = status.current_count ?? 0
       restoreRecent.value = status.recent ?? []
 
@@ -911,13 +921,16 @@ async function runRestore() {
   restoreFailedRowsOpen.value = false
   restoreColumnsAddedDetails.value = []
   restoreColumnsAddedOpen.value = false
+  restoreSkippedDetails.value = []
+  restoreSkippedOpen.value = false
   restoreCurrentCount.value = 0
   restoreRecent.value = []
 
   try {
+    const destDatabase = restoreSupportsDestDatabase.value ? restoreDestDatabase.value.trim() : ''
     const payload = restoreSource.value === 'bucket'
-      ? { dest_conn_id: restoreBucketConnId.value, object_key: restoreSelectedKey.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value, auto_add_columns: restoreAutoAddColumns.value }
-      : { sql: restoreSQL.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value, auto_add_columns: restoreAutoAddColumns.value }
+      ? { dest_conn_id: restoreBucketConnId.value, object_key: restoreSelectedKey.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value, auto_add_columns: restoreAutoAddColumns.value, dest_database: destDatabase }
+      : { sql: restoreSQL.value, skip_conflicts: restoreSkipConflicts.value, continue_on_error: restoreContinueOnError.value, auto_add_columns: restoreAutoAddColumns.value, dest_database: destDatabase }
     // POST returns immediately with a job_id (HTTP 202) — the restore itself
     // runs in a background goroutine so it isn't bound by the request/response
     // lifetime (a big dump can take many minutes; a blocking request would be
@@ -1627,6 +1640,19 @@ onMounted(async () => {
           <div class="page-card__body bv-card-body">
             <ConnectionPicker v-model="restoreConnId" :drivers="DB_DRIVERS" placeholder="Select connection…" full-width />
 
+            <div v-if="restoreSupportsDestDatabase" class="form-group">
+              <label class="form-label">Restore into database (optional)</label>
+              <input
+                class="base-input"
+                v-model="restoreDestDatabase"
+                placeholder="Default: the database name baked into the dump"
+                :disabled="restoreLoading"
+              />
+              <span class="bv-skip-conflicts__hint">
+                MySQL/MariaDB dumps have the source database's exact name baked into every statement. Leave blank to restore under that same name (creating it if missing) — or type a different name here to land the dump in a different database on this connection's server.
+              </span>
+            </div>
+
             <div class="page-tabs bv-tabs">
               <button class="page-tab" :class="{ 'is-active': restoreSource === 'upload' }" @click="restoreSource = 'upload'">
                 Upload File
@@ -1823,6 +1849,22 @@ onMounted(async () => {
               </div>
             </div>
 
+            <div v-if="restoreSkippedDetails.length" class="bv-skipped">
+              <button type="button" class="bv-skipped__toggle" @click="restoreSkippedOpen = !restoreSkippedOpen">
+                <svg :style="{ transform: restoreSkippedOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                {{ restoreSkippedOpen ? 'Hide' : 'Show' }} skipped statements ({{ restoreSkippedDetails.length }}{{ restoreProgress.skipped > restoreSkippedDetails.length ? ` of ${restoreProgress.skipped}` : '' }})
+              </button>
+              <div v-if="restoreSkippedOpen" class="bv-skipped__list">
+                <div v-for="(s, i) in restoreSkippedDetails" :key="i" class="bv-skipped__row">
+                  <span class="bv-skipped__stmt">{{ s.statement }}</span>
+                  <span class="bv-skipped__reason">{{ s.reason }}</span>
+                </div>
+                <div v-if="restoreProgress.skipped > restoreSkippedDetails.length" class="bv-skipped__more">
+                  + {{ (restoreProgress.skipped - restoreSkippedDetails.length).toLocaleString() }} more not shown
+                </div>
+              </div>
+            </div>
+
             <div v-if="restoreFailedRowDetails.length" class="bv-failed-rows">
               <button type="button" class="bv-failed-rows__toggle" @click="restoreFailedRowsOpen = !restoreFailedRowsOpen">
                 <svg :style="{ transform: restoreFailedRowsOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
@@ -1946,8 +1988,6 @@ onMounted(async () => {
   gap: 7px;
   font-size: 11.5px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
   color: var(--text-muted);
   padding-bottom: 2px;
   border-bottom: 1px solid var(--border);
@@ -2080,10 +2120,8 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
   color: var(--text-muted);
 }
 
@@ -2317,9 +2355,7 @@ onMounted(async () => {
   min-width: 90px;
   font-weight: 600;
   color: var(--text-muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-size: 12px;
   flex-shrink: 0;
 }
 
@@ -2543,10 +2579,8 @@ onMounted(async () => {
 .bv-error-row__label {
   min-width: 75px;
   flex-shrink: 0;
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
   color: var(--text-muted);
 }
 
@@ -2691,7 +2725,7 @@ onMounted(async () => {
   width: 100%;
   text-align: left;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: var(--bg-elevated);
   padding: 12px 14px;
   cursor: pointer;
@@ -2723,7 +2757,7 @@ onMounted(async () => {
 
 .bv-detail-card {
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: var(--bg-elevated);
   padding: 16px;
   display: flex;
@@ -2748,13 +2782,13 @@ onMounted(async () => {
 
 .bv-status[data-status="approved"],
 .bv-status[data-status="done"],
-.bv-status[data-status="success"] { background: rgba(34, 197, 94, 0.15); color: #16a34a; }
+.bv-status[data-status="success"] { background: var(--success-bg); color: var(--success); }
 
 .bv-status[data-status="pending_review"],
-.bv-status[data-status="executing"] { background: rgba(245, 158, 11, 0.16); color: #d97706; }
+.bv-status[data-status="executing"] { background: var(--warning-bg); color: var(--warning); }
 
 .bv-status[data-status="rejected"],
-.bv-status[data-status="failed"] { background: rgba(239, 68, 68, 0.14); color: #dc2626; }
+.bv-status[data-status="failed"] { background: var(--danger-bg); color: var(--danger); }
 
 .bv-status[data-status="canceled"] { background: var(--bg-surface); color: var(--text-muted); }
 
@@ -2795,8 +2829,8 @@ onMounted(async () => {
   flex-shrink: 0;
 }
 
-.bv-activity-item__icon[data-status="success"] { color: #16a34a; }
-.bv-activity-item__icon[data-status="failed"] { color: #dc2626; }
+.bv-activity-item__icon[data-status="success"] { color: var(--success); }
+.bv-activity-item__icon[data-status="failed"] { color: var(--danger); }
 .bv-activity-item__icon[data-status="canceled"] { color: var(--text-muted); }
 
 .bv-activity-item__body { flex: 1; min-width: 0; }
@@ -2839,7 +2873,7 @@ onMounted(async () => {
 .bv-activity-item__error {
   margin-top: 4px;
   font-size: 11px;
-  color: #dc2626;
+  color: var(--danger);
   word-break: break-word;
 }
 
@@ -2910,9 +2944,9 @@ onMounted(async () => {
 }
 
 .notice { border-radius: 10px; padding: 10px 14px; font-size: 12.5px; display: flex; align-items: center; gap: 8px; }
-.notice--ok { background: rgba(74, 222, 128, 0.1); border: 1px solid rgba(74, 222, 128, 0.3); color: #16a34a; }
-.notice--error { background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.25); color: #dc2626; }
-.notice--warn, .notice--info { background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.22); color: #b45309; }
+.notice--ok { background: var(--success-bg); border: 1px solid color-mix(in srgb, var(--success) 30%, transparent); color: var(--success); }
+.notice--error { background: var(--danger-bg); border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent); color: var(--danger); }
+.notice--warn, .notice--info { background: var(--warning-bg); border: 1px solid color-mix(in srgb, var(--warning) 22%, transparent); color: var(--warning); }
 
 /* ── Responsive ── */
 @media (max-width: 1100px) {
@@ -2981,11 +3015,9 @@ onMounted(async () => {
   gap: 12px;
   padding: 8px 14px;
   background: var(--bg-2);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 
 .bv-dl-files__row {
@@ -3027,11 +3059,9 @@ onMounted(async () => {
   border: none;
   cursor: pointer;
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
   text-align: left;
 }
 .bv-sort-th:first-child { padding-left: 14px; }
@@ -3110,19 +3140,19 @@ onMounted(async () => {
   font-size: 12px;
 }
 .bv-restore-progress__failed {
-  color: #d97706;
+  color: var(--warning);
   font-size: 12px;
   font-weight: 600;
 }
 
 .bv-columns-added__badge {
-  color: #2563eb;
+  color: var(--info);
   font-size: 12px;
   font-weight: 600;
 }
 
 .bv-columns-added {
-  border: 1px solid color-mix(in srgb, #2563eb 35%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--info) 35%, var(--border));
   border-radius: 8px;
   overflow: hidden;
 }
@@ -3132,12 +3162,12 @@ onMounted(async () => {
   gap: 6px;
   width: 100%;
   padding: 8px 12px;
-  background: color-mix(in srgb, #2563eb 8%, transparent);
+  background: color-mix(in srgb, var(--info) 8%, transparent);
   border: none;
   cursor: pointer;
   font-size: 12.5px;
   font-weight: 600;
-  color: #2563eb;
+  color: var(--info);
   text-align: left;
 }
 .bv-columns-added__list {
@@ -3170,8 +3200,57 @@ onMounted(async () => {
   font-style: italic;
 }
 
+.bv-skipped {
+  border: 1px solid color-mix(in srgb, #64748b 35%, var(--border));
+  border-radius: 8px;
+  overflow: hidden;
+}
+.bv-skipped__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  background: color-mix(in srgb, #64748b 8%, transparent);
+  border: none;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #64748b;
+  text-align: left;
+}
+.bv-skipped__list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+.bv-skipped__row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.bv-skipped__stmt {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.bv-skipped__reason {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.bv-skipped__more {
+  padding: 8px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-style: italic;
+}
 .bv-failed-rows {
-  border: 1px solid color-mix(in srgb, #d97706 35%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border));
   border-radius: 8px;
   overflow: hidden;
 }
@@ -3181,12 +3260,12 @@ onMounted(async () => {
   gap: 6px;
   width: 100%;
   padding: 8px 12px;
-  background: color-mix(in srgb, #d97706 8%, transparent);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
   border: none;
   cursor: pointer;
   font-size: 12.5px;
   font-weight: 600;
-  color: #d97706;
+  color: var(--warning);
   text-align: left;
 }
 .bv-failed-rows__list {
@@ -3227,8 +3306,8 @@ onMounted(async () => {
   padding: 8px 10px;
   margin-bottom: 2px;
   border-radius: 6px;
-  background: color-mix(in srgb, #d97706 12%, transparent);
-  color: #d97706;
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  color: var(--warning);
   font-size: 12px;
   font-weight: 600;
 }
@@ -3236,7 +3315,7 @@ onMounted(async () => {
   flex-basis: 100%;
   font-size: 11px;
   font-weight: 400;
-  color: color-mix(in srgb, #d97706 80%, var(--text-muted));
+  color: color-mix(in srgb, var(--warning) 80%, var(--text-muted));
 }
 .bv-restore-progress__elapsed {
   color: var(--text-muted);

@@ -304,7 +304,7 @@ function formatJSON(v: any): string {
           <option value="" disabled>Select cluster</option>
           <option v-for="c in searchConnections" :key="c.id" :value="c.id">{{ c.name }}</option>
         </select>
-        <button v-if="isSearch && watcherAvailable" class="base-btn base-btn--primary base-btn--sm" @click="openNewWatch">+ New Watch</button>
+        <button v-if="isSearch && watcherAvailable" class="base-btn base-btn--primary base-btn--sm" @click="openNewWatch">New watch</button>
         <button class="base-btn base-btn--ghost base-btn--sm" :disabled="!isSearch || loading" @click="loadWatches">Refresh</button>
       </div>
     </header>
@@ -494,7 +494,7 @@ function formatJSON(v: any): string {
 .sw-title { display: flex; align-items: center; gap: 12px; }
 .sw-title h1 { margin: 0; font-size: 20px; color: var(--text-primary); }
 .sw-title p { margin: 2px 0 0; font-size: 12px; color: var(--text-muted); }
-.sw-logo { width: 38px; height: 38px; border-radius: 8px; background: #f59e0b; color: #fff; display: grid; place-items: center; font-weight: 800; font-size: 10px; flex-shrink: 0; }
+.sw-logo { width: 38px; height: 38px; border-radius: 8px; background: var(--warning); color: #fff; display: grid; place-items: center; font-weight: 600; font-size: 10px; flex-shrink: 0; }
 .sw-actions { display: flex; align-items: center; gap: 8px; }
 .sw-select { width: 220px; }
 
@@ -507,7 +507,7 @@ function formatJSON(v: any): string {
 /* Stats */
 .sw-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .sw-stat { border: 1px solid var(--border); background: var(--bg-elevated); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 5px; }
-.sw-stat span { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+.sw-stat span { color: var(--text-muted); font-size: 12px; font-weight: 600; }
 .sw-stat strong { color: var(--text-primary); font-size: 16px; font-weight: 700; }
 .sw-stat strong.ok { color: var(--success); }
 
@@ -522,7 +522,7 @@ function formatJSON(v: any): string {
 /* Table */
 .sw-table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
 .sw-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.sw-table th { background: var(--bg-elevated); color: var(--text-muted); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; padding: 8px 12px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--border); }
+.sw-table th { background: var(--bg-elevated); color: var(--text-muted); font-weight: 700; font-size: 12px; padding: 8px 12px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--border); }
 .sw-table th.sw-th-sort { cursor: pointer; user-select: none; }
 .sw-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--text-primary); vertical-align: middle; }
 .sw-table tr:last-child td { border-bottom: none; }
@@ -537,7 +537,7 @@ function formatJSON(v: any): string {
 .sw-actions-cell .base-btn { margin-right: 4px; }
 
 /* Badges */
-.sw-badge { border-radius: 4px; padding: 2px 8px; font-size: 10.5px; font-weight: 700; text-transform: uppercase; display: inline-block; }
+.sw-badge { border-radius: 4px; padding: 2px 8px; font-size: 12px; font-weight: 700; display: inline-block; }
 .sw-active { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 28%, transparent); }
 .sw-inactive { background: var(--bg-body); color: var(--text-muted); border: 1px solid var(--border); }
 .sw-executed { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 28%, transparent); }
@@ -559,7 +559,7 @@ function formatJSON(v: any): string {
 .sw-modal-close { border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 16px; padding: 4px; }
 .sw-modal-body { padding: 20px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; flex: 1; }
 .sw-modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--border); }
-.sw-label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.sw-label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 700; color: var(--text-muted); }
 .sw-label .base-input { color: var(--text-primary); font-size: 13px; }
 .sw-editor-textarea { min-height: 360px; font-family: var(--mono); font-size: 12px; line-height: 1.6; resize: vertical; }
 .sw-exec-loading { text-align: center; padding: 32px; color: var(--text-muted); }

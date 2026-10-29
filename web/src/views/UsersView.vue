@@ -364,8 +364,7 @@ const roleColors: Record<string, string> = {
 .u-table th {
   background: rgba(255, 255, 255, 0.02); padding: 11px 18px;
   border-bottom: 1px solid var(--border);
-  font-size: 11px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0.12em; color: var(--text-muted); text-align: left;
+  font-size: 12px; font-weight: 600; color: var(--text-muted); text-align: left;
 }
 .u-table td {
   padding: 12px 18px; border-bottom: 1px solid var(--border);
@@ -376,13 +375,12 @@ const roleColors: Record<string, string> = {
 .u-td-dim { color: var(--text-muted); font-size: 12px; }
 .u-td-name { font-weight: 600; }
 .u-role {
-  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  font-size: 12px; font-weight: 600;
   padding: 4px 10px; border-radius: 999px; border: 1px solid;
-  letter-spacing: 0.12em;
 }
 .u-row-actions { display: flex; gap: 6px; }
 .u-btn-del { color: var(--danger) !important; }
-.u-btn-del:hover { background: rgba(239, 68, 68, 0.1) !important; }
+.u-btn-del:hover { background: var(--danger-bg) !important; }
 .u-empty { text-align:center;color:var(--text-muted);font-size:13px;padding:24px; }
 
 /* Filter bar */
@@ -433,8 +431,7 @@ const roleColors: Record<string, string> = {
   box-shadow: 0 8px 24px rgba(0,0,0,0.3); z-index: 100;
 }
 .u-col-menu-title {
-  font-size: 10px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.1em; color: var(--text-muted); margin-bottom: 8px;
+  font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 8px;
 }
 .u-col-item {
   display: flex; align-items: center; gap: 8px;
@@ -457,8 +454,7 @@ const roleColors: Record<string, string> = {
 }
 .u-dialog-title { font-size: 15px; color: var(--text-primary); margin-bottom: 16px; }
 .u-label {
-  display: block; font-size: 11px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.4px;
+  display: block; font-size: 12px; font-weight: 600;
   color: var(--text-muted); margin-bottom: 5px;
 }
 .u-select, .u-input {

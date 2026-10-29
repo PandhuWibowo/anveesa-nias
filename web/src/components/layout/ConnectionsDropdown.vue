@@ -5,6 +5,7 @@ import { useConnections, type Connection } from '@/composables/useConnections'
 import { useFolders, type ConnectionFolder } from '@/composables/useFolders'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
+import NavIcon from '@/components/ui/NavIcon.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{
@@ -246,8 +247,8 @@ function isDropTarget(folderId: number | null) {
       <input v-model="newFolderName" class="cdrop__form-input" placeholder="Folder name…" @keydown.enter="submitNewFolder" @keydown.esc="showNewFolder=false" autofocus />
       <div class="cdrop__form-row">
         <select v-model="newFolderVisibility" class="cdrop__form-select">
-          <option value="private">🔒 Private</option>
-          <option value="shared">🌐 Shared</option>
+          <option value="private">Private</option>
+          <option value="shared">Shared</option>
         </select>
         <select v-model="newFolderParent" class="cdrop__form-select">
           <option :value="null">No parent</option>
@@ -286,7 +287,7 @@ function isDropTarget(folderId: number | null) {
           </button>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" :style="{ color: folder.color, flexShrink: 0 }"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           <span class="cdrop__folder-name">{{ folder.name }}</span>
-          <span class="cdrop__vis" :title="folder.visibility">{{ folder.visibility === 'shared' ? '🌐' : '🔒' }}</span>
+          <span class="cdrop__vis" :title="folder.visibility"><NavIcon :name="folder.visibility === 'shared' ? 'globe' : 'lock'" :size="11" /></span>
           <span class="cdrop__count">{{ (connsByFolder.get(folder.id) ?? []).length }}</span>
         </div>
 
@@ -309,7 +310,7 @@ function isDropTarget(folderId: number | null) {
               </button>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" :style="{ color: child.color, flexShrink: 0 }"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
               <span class="cdrop__folder-name">{{ child.name }}</span>
-              <span class="cdrop__vis">{{ child.visibility === 'shared' ? '🌐' : '🔒' }}</span>
+              <span class="cdrop__vis"><NavIcon :name="child.visibility === 'shared' ? 'globe' : 'lock'" :size="11" /></span>
             </div>
             <template v-if="!collapsedFolders.has(child.id)">
               <div v-for="conn in (connsByFolder.get(child.id) ?? [])" :key="conn.id"
@@ -388,8 +389,8 @@ function isDropTarget(folderId: number | null) {
             <input v-model="editFolderName" class="cdrop__form-input" />
             <label class="cdrop-modal__label">Visibility</label>
             <select v-model="editFolderVisibility" class="cdrop__form-select" style="width:100%">
-              <option value="private">🔒 Private</option>
-              <option value="shared">🌐 Shared</option>
+              <option value="private">Private</option>
+              <option value="shared">Shared</option>
             </select>
             <label class="cdrop-modal__label">Color</label>
             <div class="cdrop__colors">
@@ -413,24 +414,24 @@ function isDropTarget(folderId: number | null) {
           <template v-if="contextMenu.type === 'folder'">
             <button class="ctx-item" @click="startEditFolder(contextMenu.item as ConnectionFolder)">✎ Edit folder</button>
             <button class="ctx-item" @click="toggleFolderVis(contextMenu.item as ConnectionFolder)">
-              {{ (contextMenu.item as ConnectionFolder).visibility === 'shared' ? '🔒 Make private' : '🌐 Make shared' }}
+              {{ (contextMenu.item as ConnectionFolder).visibility === 'shared' ? 'Make private' : 'Make shared' }}
             </button>
             <div class="ctx-divider"/>
-            <button class="ctx-item ctx-item--danger" @click="doDeleteFolder(contextMenu.item as ConnectionFolder)">🗑 Delete folder</button>
+            <button class="ctx-item ctx-item--danger" @click="doDeleteFolder(contextMenu.item as ConnectionFolder)">Delete folder</button>
           </template>
           <template v-else>
             <button class="ctx-item" @click="selectConn(contextMenu.item as Connection)">▶ Open</button>
             <button class="ctx-item" @click="toggleConnVis(contextMenu.item as Connection)">
-              {{ (contextMenu.item as Connection).visibility === 'shared' ? '🔒 Make private' : '🌐 Make shared' }}
+              {{ (contextMenu.item as Connection).visibility === 'shared' ? 'Make private' : 'Make shared' }}
             </button>
             <div class="ctx-divider"/>
             <div class="ctx-submenu-label">Move to folder</div>
-            <button class="ctx-item" @click="moveConnToFolder((contextMenu.item as Connection).id, null)">📂 Unfiled</button>
+            <button class="ctx-item" @click="moveConnToFolder((contextMenu.item as Connection).id, null)">Unfiled</button>
             <button v-for="f in folders" :key="f.id" class="ctx-item" @click="moveConnToFolder((contextMenu.item as Connection).id, f.id)">
-              <span :style="{ color: f.color }">📁</span> {{ f.name }}
+              <span :style="{ color: f.color, display: 'inline-flex' }"><NavIcon name="folder" :size="13" /></span> {{ f.name }}
             </button>
             <div class="ctx-divider"/>
-            <button class="ctx-item ctx-item--danger" @click="doDeleteConn(contextMenu.item as Connection)">🗑 Delete</button>
+            <button class="ctx-item ctx-item--danger" @click="doDeleteConn(contextMenu.item as Connection)">Delete</button>
           </template>
         </div>
       </div>
@@ -461,10 +462,8 @@ function isDropTarget(folderId: number | null) {
   flex-shrink: 0;
 }
 .cdrop__title {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
   color: var(--text-muted);
 }
 .cdrop__icon-btn {
@@ -719,7 +718,7 @@ function isDropTarget(folderId: number | null) {
   border-bottom: 1px solid var(--border);
 }
 .cdrop-modal__body { padding: 14px; display: flex; flex-direction: column; gap: 6px; }
-.cdrop-modal__label { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+.cdrop-modal__label { font-size: 12px; color: var(--text-muted); font-weight: 600; }
 
 @media (max-width: 520px) {
   .cdrop {

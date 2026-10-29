@@ -1552,12 +1552,12 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
           </div>
           <div v-if="tab.result" style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column">
             <div v-if="tab.result.kind==='error'" class="res-error">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="flex-shrink:0;color:#f87171"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/></svg>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="flex-shrink:0;color:var(--danger)"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/></svg>
               {{ (tab.result as any).error }}
             </div>
             <template v-else-if="(tab.result.kind==='query'||tab.result.kind==='stream')&&tab.activeResultTab!=='chart'">
               <div v-if="!(tab.result as any).columns?.length" class="res-ok">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:#4ade80;flex-shrink:0"><polyline points="20 6 9 17 4 12"/></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:var(--success);flex-shrink:0"><polyline points="20 6 9 17 4 12"/></svg>
                 Query OK
                 <span v-if="(tab.result as any).affected_rows > 0" style="color:var(--text-muted)">· {{ (tab.result as any).affected_rows }} row{{ (tab.result as any).affected_rows === 1 ? '' : 's' }} affected</span>
                 <span v-else style="color:var(--text-muted)">· 0 rows affected</span>
@@ -1762,7 +1762,6 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 .sp-tab:hover { 
   color: var(--text-primary);
   background: color-mix(in srgb, var(--bg-elevated) 70%, transparent);
-  transform: translateY(-1px);
 }
 
 .sp-tab--active { 
@@ -1825,7 +1824,6 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 
 .sp-tab-new:hover { 
   background: var(--brand-dim);
-  transform: translateY(-1px);
 }
 
 /* The + button sits outside .sp-tabs (which scrolls) so its menu is never clipped. */
@@ -1873,7 +1871,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 }
 .panel-header { display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text-secondary);flex-shrink:0;background:color-mix(in srgb,var(--bg-surface) 95%,transparent); }
 .driver-badge { display:inline-flex;align-items:center;justify-content:center;width:24px;height:18px;border-radius:4px;font-size:9px;font-weight:700;color:#fff;letter-spacing:.4px; }
-.schema-type-badge { display:inline-flex;align-items:center;padding:2px 8px;border-radius:5px;font-size:10px;font-weight:700;background:var(--bg-elevated);color:var(--text-muted);border:1px solid var(--border);text-transform:uppercase;letter-spacing:.5px; }
+.schema-type-badge { display:inline-flex;align-items:center;padding:2px 8px;border-radius:5px;font-size: 12px;font-weight:700;background:var(--bg-elevated);color:var(--text-muted);border:1px solid var(--border); }
 .empty-state { display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;min-height:240px;text-align:center;color:var(--text-muted);padding:32px;font-size:13px; }
 .empty-state svg { opacity:.4; }
 
@@ -1894,7 +1892,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 .filter-inline-input--active { border-color:var(--brand);background:var(--bg-surface); }
 .filter-clear-btn { flex-shrink:0;width:20px;height:20px;border:none;background:none;color:var(--text-muted);font-size:11px;cursor:pointer;border-radius:4px;display:flex;align-items:center;justify-content:center;padding:0; }
 .filter-clear-btn:hover { background:var(--bg-elevated);color:var(--text-primary); }
-.filter-inline-error { flex-shrink:0;width:18px;height:18px;border-radius:50%;background:#f87171;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;cursor:default; }
+.filter-inline-error { flex-shrink:0;width:18px;height:18px;border-radius:50%;background:var(--danger);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;cursor:default; }
 
 /* ── Browse SQL panel (editor above the data grid) ─────────────── */
 .browse-sql { flex-shrink:0;border-bottom:1px solid var(--border);background:var(--bg-surface);display:flex;flex-direction:column; }
@@ -1902,7 +1900,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 .browse-sql__toggle { display:flex;align-items:center;gap:5px;border:none;background:none;padding:2px 4px;color:var(--text-muted);font-size:10px;font-weight:700;letter-spacing:0.4px;cursor:pointer;border-radius:4px; }
 .browse-sql__toggle:hover { color:var(--text-primary);background:var(--bg-elevated); }
 .browse-sql__badge { font-size:10px;font-weight:700;color:var(--brand);background:var(--brand-dim);padding:1px 7px;border-radius:4px;letter-spacing:0.3px;flex-shrink:0; }
-.browse-sql__error-inline { font-size:11px;color:#f87171;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0; }
+.browse-sql__error-inline { font-size:11px;color:var(--danger);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0; }
 .browse-sql__hint { font-size:10px;color:var(--text-muted);font-family:var(--mono,monospace);flex-shrink:0; }
 .browse-sql__editor { height:96px;border-top:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden; }
 
@@ -1931,7 +1929,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 .res-tab:disabled { opacity:.35;cursor:default; }
 .res-tab__badge { background:var(--brand-dim);color:var(--brand);border-radius:10px;padding:0 5px;font-size:10px;font-weight:700; }
 .res-meta { font-size:11px;color:var(--text-muted);padding:0 4px; }
-.res-error { display:flex;align-items:flex-start;gap:8px;padding:12px;font-size:12px;color:#f87171;background:rgba(248,113,113,.06);border-bottom:1px solid rgba(248,113,113,.15);line-height:1.5;flex-shrink:0; }
+.res-error { display:flex;align-items:flex-start;gap:8px;padding:12px;font-size:12px;color:var(--danger);background:var(--danger-bg);border-bottom:1px solid var(--danger-bg);line-height:1.5;flex-shrink:0; }
 .res-ok { display:flex;align-items:center;gap:6px;padding:20px 16px;font-size:13px;color:var(--text-primary);font-weight:500; }
 .res-explain { flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden; }
 .res-explain__header { display:flex;gap:8px;padding:6px 12px;border-bottom:1px solid var(--border);background:var(--bg-surface);flex-shrink:0; }
@@ -1943,12 +1941,12 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 .res-list-item__meta { display:flex;gap:10px;margin-top:3px;font-size:11px;color:var(--text-muted); }
 .script-result { margin-bottom:8px;border:1px solid var(--border);border-radius:6px;overflow:hidden; }
 .script-result-header { display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg-surface);font-size:11.5px; }
-.script-result-header.is-error { background:rgba(248,113,113,.08); }
+.script-result-header.is-error { background:var(--danger-bg); }
 .script-result-num { font-weight:700;color:var(--text-muted); }
 .script-result-sql { flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--text-primary); }
 .script-result-meta { color:var(--text-muted); }
-.script-result-ok { color:#4ade80; }
-.script-result-err { color:#f87171; }
+.script-result-ok { color:var(--success); }
+.script-result-err { color:var(--danger); }
 .imp-overlay { position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:1000; }
 .imp-modal { background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;width:min(720px,94vw);max-height:80vh;display:flex;flex-direction:column;box-shadow:0 24px 64px rgba(0,0,0,.5); }
 .imp-header { display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--border); }
@@ -2066,14 +2064,9 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 
 .explorer-hero { 
   padding: 28px 32px;
-  border: 1px solid color-mix(in srgb, var(--border) 60%, var(--brand) 40%);
-  border-radius: 16px;
-  background: 
-    radial-gradient(circle at top right, color-mix(in srgb, var(--brand) 8%, transparent), transparent 50%),
-    linear-gradient(135deg, 
-      color-mix(in srgb, var(--bg-elevated) 95%, var(--brand) 5%),
-      var(--bg-elevated)
-    );
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
   box-shadow: 0 4px 16px rgba(0,0,0,.06);
   position: relative;
   overflow: hidden;
@@ -2087,15 +2080,13 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
   right: 0;
   width: 200px;
   height: 200px;
-  background: radial-gradient(circle, color-mix(in srgb, var(--brand) 10%, transparent), transparent 70%);
+  display: none;
   pointer-events: none;
 }
 
 .explorer-hero__kicker { 
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 1.2px;
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--brand);
   opacity: 0.9;
   position: relative;
@@ -2104,7 +2095,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 
 .explorer-hero__title { 
   font-size: 26px;
-  font-weight: 800;
+  font-weight: 600;
   color: var(--text-primary);
   margin-top: 8px;
   position: relative;
@@ -2141,7 +2132,6 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
 }
 
 .explorer-panel:hover {
-  box-shadow: 0 4px 16px rgba(0,0,0,.06);
   border-color: color-mix(in srgb, var(--border) 70%, var(--brand) 30%);
 }
 
@@ -2200,10 +2190,8 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
   z-index: 1;
   text-align: left;
   padding: 10px 16px;
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.6px;
-  text-transform: uppercase;
   color: var(--text-muted);
   background: color-mix(in srgb, var(--bg-surface) 60%, var(--bg-elevated));
   border-bottom: 1px solid var(--border);
@@ -2263,11 +2251,9 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
   align-items: center;
   justify-content: center;
   padding: 2px 9px;
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.4px;
   border-radius: 6px;
-  text-transform: uppercase;
 }
 
 .ex-pill--solid {
@@ -2291,10 +2277,8 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
   gap: 10px;
   padding: 12px 18px;
   border-bottom: 1px solid var(--border);
-  font-size: 10.5px;
-  font-weight: 800;
-  letter-spacing: 0.8px;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--text-muted);
   background: linear-gradient(to bottom, 
     color-mix(in srgb, var(--bg-surface) 70%, transparent),
@@ -2319,10 +2303,8 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
   cursor: pointer;
   transition: all .15s ease;
 }

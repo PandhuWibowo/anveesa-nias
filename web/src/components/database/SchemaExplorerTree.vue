@@ -148,7 +148,7 @@ function iconForGroup(group: SchemaObjectGroup) {
   font-size: 14px; 
   text-align: center;
   background: var(--bg-elevated);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   border: 2px dashed var(--border);
 }
 
@@ -164,7 +164,6 @@ function iconForGroup(group: SchemaObjectGroup) {
 
 .explorer-tree__group:hover { 
   border-color: color-mix(in srgb, var(--border) 60%, var(--brand) 40%);
-  box-shadow: 0 2px 8px rgba(0,0,0,.08);
 }
 
 .explorer-tree__group-btn {
@@ -178,8 +177,6 @@ function iconForGroup(group: SchemaObjectGroup) {
   color: var(--text-primary);
   font-size: 11.5px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
   cursor: pointer;
   transition: background .15s ease;
   line-height: 1;
@@ -296,18 +293,18 @@ function iconForGroup(group: SchemaObjectGroup) {
 }
 
 .explorer-tree__item-ico[data-icon="table"] { 
-  background: #0f766e;
-  box-shadow: 0 0 12px rgba(15, 118, 110, 0.7), 0 2px 6px rgba(15, 118, 110, 0.4);
+  background: var(--brand);
+  box-shadow: 0 0 12px var(--brand), 0 2px 6px var(--brand-ring);
 }
 
 .explorer-tree__item-ico[data-icon="view"] { 
-  background: #2563eb;
-  box-shadow: 0 0 12px rgba(37, 99, 235, 0.7), 0 2px 6px rgba(37, 99, 235, 0.4);
+  background: var(--info);
+  box-shadow: 0 0 12px var(--info), 0 2px 6px color-mix(in srgb, var(--info) 40%, transparent);
 }
 
 .explorer-tree__item-ico[data-icon="index"] { 
-  background: #f59e0b;
-  box-shadow: 0 0 12px rgba(245, 158, 11, 0.7), 0 2px 6px rgba(245, 158, 11, 0.4);
+  background: var(--warning);
+  box-shadow: 0 0 12px var(--warning), 0 2px 6px color-mix(in srgb, var(--warning) 40%, transparent);
 }
 
 .explorer-tree__item-ico[data-icon="sequence"] { 
@@ -316,13 +313,13 @@ function iconForGroup(group: SchemaObjectGroup) {
 }
 
 .explorer-tree__item-ico[data-icon="trigger"] { 
-  background: #dc2626;
-  box-shadow: 0 0 12px rgba(220, 38, 38, 0.7), 0 2px 6px rgba(220, 38, 38, 0.4);
+  background: var(--danger);
+  box-shadow: 0 0 12px var(--danger), 0 2px 6px color-mix(in srgb, var(--danger) 40%, transparent);
 }
 
 .explorer-tree__item-ico[data-icon="routine"] { 
-  background: #059669;
-  box-shadow: 0 0 12px rgba(5, 150, 105, 0.7), 0 2px 6px rgba(5, 150, 105, 0.4);
+  background: var(--success);
+  box-shadow: 0 0 12px var(--success), 0 2px 6px color-mix(in srgb, var(--success) 40%, transparent);
 }
 
 .explorer-tree__item-ico[data-icon="type"] { 

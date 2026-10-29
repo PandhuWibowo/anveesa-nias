@@ -103,8 +103,7 @@ const groups = [
   display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
 }
 .km-group-title {
-  font-size: 10.5px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.6px; color: var(--brand); margin-bottom: 10px;
+  font-size: 12px; font-weight: 700; color: var(--brand); margin-bottom: 10px;
 }
 .km-rows { display: flex; flex-direction: column; gap: 6px; }
 .km-row {

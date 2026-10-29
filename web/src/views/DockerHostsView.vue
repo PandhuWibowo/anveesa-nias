@@ -485,10 +485,8 @@ onMounted(async () => {
   color: var(--text-muted);
 }
 .dkh-stat-label {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 .dkh-version {
   font-size: 14px;

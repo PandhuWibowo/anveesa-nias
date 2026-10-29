@@ -2,6 +2,7 @@
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import axios from 'axios'
 import { useConnections } from '@/composables/useConnections'
+import NavIcon from '@/components/ui/NavIcon.vue'
 
 const props = defineProps<{ activeConnId?: number | null; initialDb?: string | null }>()
 
@@ -985,7 +986,7 @@ onBeforeUnmount(() => {
                 class="erd-col"
                 :class="{ 'erd-col--pk': col.is_primary_key, 'erd-col--alt': ci % 2 === 1 }"
               >
-                <span class="erd-col__icon">{{ col.is_primary_key ? '🔑' : '' }}</span>
+                <span class="erd-col__icon"><NavIcon v-if="col.is_primary_key" name="key" :size="12" /></span>
                 <span class="erd-col__name">{{ col.name }}</span>
                 <span class="erd-col__type">
                   {{ col.data_type.replace('character varying', 'varchar').replace('timestamp without time zone', 'ts').slice(0, 14) }}
@@ -1064,7 +1065,7 @@ onBeforeUnmount(() => {
         Inferred link
       </span>
       <span class="er-legend__item">
-        <span style="color:#f2c97d;font-size:12px">🔑</span> Primary key
+        <span style="color:var(--warning);display:inline-flex"><NavIcon name="key" :size="12" /></span> Primary key
       </span>
       <span class="er-legend__hint">Click a table to explore its neighbours · Drag header to move · Scroll to zoom</span>
       <span class="er-legend__stat">
@@ -1108,16 +1109,16 @@ onBeforeUnmount(() => {
 /* ── Toolbar ─────────────────────────────────────────────────────── */
 .er-toolbar {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 0 16px; height: 44px; flex-shrink: 0;
+  padding: 6px 16px; min-height: 48px; flex-shrink: 0; flex-wrap: wrap;
   background: var(--bg-surface); border-bottom: 1px solid var(--border);
   gap: 12px;
 }
 .er-toolbar__left  { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .er-toolbar__right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.er-toolbar__title { font-size: 13px; font-weight: 600; color: var(--text-primary); flex-shrink: 0; }
+.er-toolbar__title { font-size: 14.5px; font-weight: 600; color: var(--text-primary); flex-shrink: 0; }
 .er-toolbar__conn  { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-secondary); flex-shrink: 0; }
 .er-driver-badge   {
-  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  font-size: 12px; font-weight: 600;
   background: var(--brand-dim); color: var(--brand);
   padding: 1px 6px; border-radius: 4px;
 }
@@ -1128,7 +1129,7 @@ onBeforeUnmount(() => {
   background: var(--brand-dim); border: 1px solid color-mix(in srgb, var(--brand) 35%, transparent);
   border-radius: 999px; padding: 2px 4px 2px 10px; height: 26px;
 }
-.er-focus-chip__label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--brand); flex-shrink: 0; }
+.er-focus-chip__label { font-size: 12px; font-weight: 700; color: var(--brand); flex-shrink: 0; }
 .er-focus-chip__name {
   font-size: 12px; font-weight: 600; color: var(--text-primary);
   max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -1139,7 +1140,7 @@ onBeforeUnmount(() => {
   width: 18px; height: 18px; border-radius: 50%;
   font-size: 11px; color: var(--text-muted); line-height: 1;
 }
-.er-depth button.active { background: var(--brand); color: #fff; font-weight: 700; }
+.er-depth button.active { background: var(--brand); color: var(--accent-fg); font-weight: 700; }
 .er-focus-chip__close {
   border: none; background: transparent; cursor: pointer;
   width: 20px; height: 20px; border-radius: 50%;
@@ -1215,7 +1216,6 @@ onBeforeUnmount(() => {
 .erd-table--dimmed { opacity: 0.4; }
 
 .erd-table:hover:not(.erd-table--dimmed) {
-  box-shadow: 0 4px 16px rgba(0,0,0,0.14), 0 2px 6px rgba(0,0,0,0.08);
   border-color: var(--brand);
 }
 
@@ -1232,10 +1232,10 @@ onBeforeUnmount(() => {
 
 .erd-table__badge {
   flex-shrink: 0;
-  font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  font-size: 12px; font-weight: 700;
   padding: 2px 5px; border-radius: 4px;
 }
-.erd-table__badge--table { background: rgba(92,184,165,0.15); color: var(--success, #5cb8a5); }
+.erd-table__badge--table { background: var(--brand-dim); color: var(--success, var(--brand)); }
 .erd-table__badge--view  { background: var(--brand-dim); color: var(--brand); }
 
 .erd-table__name {
@@ -1262,11 +1262,11 @@ onBeforeUnmount(() => {
 .erd-col {
   display: flex; align-items: center; gap: 5px;
   padding: 0 10px; height: 24px;
-  font-size: 11px; font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; font-family: var(--mono);
 }
 
 .erd-col--alt { background: rgba(128,128,128,0.04); }
-.erd-col--pk  { background: rgba(242,201,125,0.07) !important; }
+.erd-col--pk  { background: var(--warning-bg) !important; }
 
 .erd-col__icon { width: 14px; font-size: 9px; flex-shrink: 0; line-height: 1; }
 .erd-col__name { flex: 1; min-width: 0; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1299,7 +1299,7 @@ onBeforeUnmount(() => {
 }
 
 .er-panel {
-  border: 1px solid var(--border); border-radius: 14px;
+  border: 1px solid var(--border); border-radius: var(--r-lg);
   background: rgba(255,255,255,0.02);
   padding: 14px; display: grid; gap: 10px;
 }
@@ -1324,7 +1324,7 @@ onBeforeUnmount(() => {
 .er-detail-head, .er-column-row__name { display: flex; align-items: center; gap: 8px; }
 
 .er-detail-type, .er-pk {
-  font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  font-size: 12px; font-weight: 700;
   border-radius: 999px; padding: 2px 7px;
   background: var(--brand-dim); color: var(--brand);
 }

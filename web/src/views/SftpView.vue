@@ -14,6 +14,8 @@ import { useAuth } from '@/composables/useAuth'
 import { useListFilter } from '@/composables/useListFilter'
 import { useSort } from '@/composables/useSort'
 import { type DbDriver } from '@/composables/useConnections'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import NavIcon from '@/components/ui/NavIcon.vue'
 
 interface SshHost {
   id: number
@@ -621,15 +623,15 @@ function formatTime(unix: number): string {
   return new Date(unix * 1000).toLocaleString()
 }
 function fileIcon(e: SftpEntry): string {
-  if (e.isDir) return '📁'
-  if (e.isLink) return '🔗'
+  if (e.isDir) return 'folder'
+  if (e.isLink) return 'link'
   const ext = e.name.split('.').pop()?.toLowerCase() || ''
-  if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) return '🖼️'
-  if (['zip', 'tar', 'gz', 'tgz', 'xz', 'bz2', '7z'].includes(ext)) return '🗜️'
-  if (['sh', 'bash', 'zsh'].includes(ext)) return '⚙️'
-  if (['json', 'yml', 'yaml', 'toml', 'env', 'conf', 'ini'].includes(ext)) return '🧾'
-  if (['md', 'txt', 'log'].includes(ext)) return '📝'
-  return '📄'
+  if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) return 'image'
+  if (['zip', 'tar', 'gz', 'tgz', 'xz', 'bz2', '7z'].includes(ext)) return 'archive'
+  if (['sh', 'bash', 'zsh'].includes(ext)) return 'terminal'
+  if (['json', 'yml', 'yaml', 'toml', 'env', 'conf', 'ini'].includes(ext)) return 'code'
+  if (['md', 'txt', 'log'].includes(ext)) return 'document'
+  return 'file'
 }
 
 onMounted(loadHosts)
@@ -664,11 +666,8 @@ onMounted(loadHosts)
           </div>
         </section>
 
-        <div v-if="!hosts.length" class="page-card sf-empty">
-          <div class="sf-empty-icon">🗂️</div>
-          <h2>No SSH servers</h2>
-          <p>SFTP uses your remote SSH hosts. Add one under <b>SFTP Hosts</b> first.</p>
-          <button v-if="canManage" class="base-btn base-btn--primary" @click="router.push({ name: 'ssh-hosts' })">Add your first host</button>
+        <div v-if="!hosts.length" class="page-card">
+          <EmptyState icon="folder" title="No servers yet" text="Add a server over SSH to browse, upload, and download its files." :action-label="canManage ? 'Add server' : undefined" :action-to="{ name: 'ssh-hosts', query: { new: '1' } }" />
         </div>
 
         <template v-else-if="hostId !== null">
@@ -692,7 +691,7 @@ onMounted(loadHosts)
               type="search"
               placeholder="Filter files…"
             />
-            <button v-if="canManage" class="base-btn base-btn--sm" @click="newFolder">+ Folder</button>
+            <button v-if="canManage" class="base-btn base-btn--sm" @click="newFolder">New folder</button>
             <label v-if="canManage" class="base-btn base-btn--primary base-btn--sm sf-upload-btn">
               ↑ Upload<input type="file" hidden multiple @change="onFilePick" />
             </label>
@@ -733,7 +732,7 @@ onMounted(loadHosts)
                 <tr v-else-if="connError"><td colspan="6" class="sf-msg sf-err">{{ connError }}</td></tr>
                 <tr v-else-if="!entries.length">
                   <td colspan="6" class="sf-dir-empty">
-                    <span class="sf-dir-empty-icon">📁</span>
+                    <span class="sf-dir-empty-icon"><NavIcon name="folder" :size="22" /></span>
                     <span class="sf-dir-empty-title">Empty directory</span>
                     <span class="sf-dir-empty-hint">Upload a file or create a folder to get started.</span>
                   </td>
@@ -744,7 +743,7 @@ onMounted(loadHosts)
                     <input type="checkbox" :checked="selected.has(e.name)" @change="toggleSelect(e.name)" />
                   </td>
                   <td class="sf-name" @click="e.isDir ? open(e) : view(e)">
-                    <span class="sf-icon">{{ fileIcon(e) }}</span>
+                    <span class="sf-icon"><NavIcon :name="fileIcon(e)" :size="15" /></span>
                     <span class="sf-fname">{{ e.name }}</span>
                   </td>
                   <td class="sf-size">{{ e.isDir ? '—' : formatBytes(e.size) }}</td>
@@ -761,7 +760,7 @@ onMounted(loadHosts)
 
         <!-- Idle: hosts exist but none selected (after disconnect) -->
         <div v-else class="page-card sf-idle">
-          <div class="sf-idle-icon">🗂️</div>
+          <div class="sf-idle-icon"><NavIcon name="folder" :size="24" /></div>
           <p>Select a host from the dropdown above to connect.</p>
         </div>
       </div>
@@ -911,8 +910,8 @@ onMounted(loadHosts)
 /* Connection status badge */
 .sf-conn-status { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; border: 1px solid transparent; }
 .sf-conn-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-.sf-conn-status--connected { color: var(--success); background: var(--success-bg, rgba(34,197,94,0.12)); }
-.sf-conn-status--error { color: var(--danger); background: var(--danger-bg, rgba(239,68,68,0.12)); }
+.sf-conn-status--connected { color: var(--success); background: var(--success-bg, var(--success-bg)); }
+.sf-conn-status--error { color: var(--danger); background: var(--danger-bg, var(--danger-bg)); }
 .sf-conn-status--connecting { color: var(--text-muted); background: var(--bg-hover); }
 .sf-conn-status--connecting .sf-conn-dot { animation: sf-blink 1s ease-in-out infinite; }
 .sf-conn-status--unknown { color: var(--text-muted); background: var(--bg-hover); }
@@ -942,7 +941,7 @@ onMounted(loadHosts)
 .sf-drop-hint { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; background: var(--brand-dim); color: var(--brand); font-size: 14px; pointer-events: none; }
 
 .sf-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.sf-table th { text-align: left; padding: 9px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+.sf-table th { text-align: left; padding: 9px 12px; font-size: 12px; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 600; }
 .sf-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .sf-table tbody tr:last-child td { border-bottom: none; }
 .sf-msg { text-align: center; color: var(--text-muted); padding: 24px; }

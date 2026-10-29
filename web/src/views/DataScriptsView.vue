@@ -8,6 +8,7 @@ import { useToast } from '@/composables/useToast'
 import { useAuth } from '@/composables/useAuth'
 import { useListFilter } from '@/composables/useListFilter'
 import ScriptEditor from '@/components/ui/ScriptEditor.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 interface DataScript {
   id: number
@@ -500,21 +501,22 @@ onMounted(async () => {
       <div class="page-stack">
         <section class="page-hero">
           <div class="page-hero__content">
-            <div class="page-kicker">Automation</div>
-            <div class="page-title">Data Scripts</div>
-            <div class="page-subtitle">Scripts are reusable definitions. Requests are created only after you run Preview Plan and generate a plan from a saved version.</div>
+            <div class="page-title">Data scripts</div>
+            <div class="page-subtitle">Reusable scripts that change data safely: preview the plan against a connection, then send it for approval.</div>
+          </div>
+          <div class="page-hero__actions">
+            <button class="base-btn base-btn--primary base-btn--sm" type="button" @click="createPanelOpen = !createPanelOpen">
+              {{ createPanelOpen ? 'Cancel' : 'New script' }}
+            </button>
           </div>
         </section>
 
-        <section class="page-card ds-create-panel">
+        <section v-if="createPanelOpen" class="page-card ds-create-panel">
           <div class="ds-section-head">
             <div>
-              <div class="ds-section-title">Create Script</div>
-              <div class="ds-section-subtitle">Start a new native data script without compressing the main editor area.</div>
+              <div class="ds-section-title">New script</div>
+              <div class="ds-section-subtitle">Name it, pick a language, and write the code. You can preview it against a connection after saving.</div>
             </div>
-            <button class="base-btn base-btn--ghost base-btn--sm" type="button" @click="createPanelOpen = !createPanelOpen">
-              {{ createPanelOpen ? 'Hide' : 'Show' }}
-            </button>
           </div>
 
           <div v-if="createPanelOpen" class="ds-create">
@@ -535,16 +537,15 @@ onMounted(async () => {
               :show-preview-button="false"
             />
             <button class="base-btn base-btn--primary base-btn--sm" :disabled="savingScript || !createForm.name.trim() || !createForm.source_code.trim()" @click="createScript">
-              {{ savingScript ? 'Creating…' : 'Create Script' }}
+              {{ savingScript ? 'Saving…' : 'Save script' }}
             </button>
           </div>
-          <div v-else class="ds-collapsed-note">Creation form hidden to keep the editor workspace visible.</div>
-        </section>
+                  </section>
 
         <section class="page-card ds-library-panel">
           <div class="ds-section-head">
             <div>
-              <div class="ds-section-title">Saved Scripts</div>
+              <div class="ds-section-title">Saved scripts</div>
               <div class="ds-section-subtitle">{{ scripts.length }} available</div>
             </div>
             <button class="base-btn base-btn--ghost base-btn--sm" type="button" @click="libraryPanelOpen = !libraryPanelOpen">
@@ -556,7 +557,7 @@ onMounted(async () => {
             <input v-model="scriptSearch" class="base-input ds-search" type="search" placeholder="Filter scripts…" />
           </div>
           <div v-if="libraryPanelOpen && loading" class="ds-empty">Loading scripts…</div>
-          <div v-else-if="libraryPanelOpen && !scripts.length" class="ds-empty">No scripts yet.</div>
+          <EmptyState v-else-if="libraryPanelOpen && !scripts.length" compact icon="code" title="No scripts yet" text="Write a script once, then preview and run it against any connection with approval." action-label="New script" @action="createPanelOpen = true" />
           <div v-else-if="libraryPanelOpen && !filteredScripts.length" class="ds-empty">No scripts match "{{ scriptSearch }}".</div>
           <div v-else-if="libraryPanelOpen" class="ds-script-grid">
             <button
@@ -788,57 +789,57 @@ onMounted(async () => {
 .ds-section-head--tight { margin-bottom:10px; }
 .ds-section-title { font-size:14px; font-weight:700; color:var(--text-primary); }
 .ds-section-subtitle { font-size:12px; color:var(--text-muted); }
-.ds-create { display:flex; flex-direction:column; gap:10px; margin-bottom:18px; padding:14px; border:1px solid var(--border); border-radius:16px; background:rgba(255,255,255,0.02); }
+.ds-create { display:flex; flex-direction:column; gap:10px; margin-bottom:18px; padding:14px; border:1px solid var(--border); border-radius: var(--r-lg); background:rgba(255,255,255,0.02); }
 .ds-create .base-input { width:100%; }
-.ds-collapsed-note { padding: 12px 14px; border:1px dashed var(--border); border-radius:14px; color:var(--text-muted); font-size:12px; background:rgba(255,255,255,0.02); }
-.ds-source { width:100%; min-height:220px; border:1px solid var(--border); border-radius:14px; background:var(--bg-elevated); color:var(--text-primary); font:12px/1.55 var(--mono, "JetBrains Mono", monospace); padding:14px; resize:vertical; }
+.ds-collapsed-note { padding: 12px 14px; border:1px dashed var(--border); border-radius: var(--r-lg); color:var(--text-muted); font-size:12px; background:rgba(255,255,255,0.02); }
+.ds-source { width:100%; min-height:220px; border:1px solid var(--border); border-radius: var(--r-lg); background:var(--bg-elevated); color:var(--text-primary); font:12px/1.55 var(--mono); padding:14px; resize:vertical; }
 .ds-source--compact { min-height:160px; }
 .ds-source-editor { min-height: 0; }
 .ds-version-strip { display:flex; gap:10px; overflow:auto; padding:2px 2px 6px; margin-bottom:14px; }
 .ds-version-chip { display:flex; flex-direction:column; gap:2px; min-width:118px; text-align:left; border:1px solid var(--border); border-radius:12px; background:var(--bg-elevated); padding:10px 12px; color:var(--text-secondary); font-size:11px; cursor:pointer; }
 .ds-version-chip--active { border-color: var(--brand); box-shadow: inset 0 0 0 1px var(--brand); color:var(--text-primary); }
 .ds-language-badge { display:inline-flex; align-items:center; padding:6px 10px; border:1px solid var(--border); border-radius:999px; background:rgba(255,255,255,0.02); color:var(--text-secondary); font-size:11px; font-weight:700; }
-.ds-empty { padding:18px; border:1px dashed var(--border); border-radius:14px; color:var(--text-muted); font-size:12px; text-align:center; }
+.ds-empty { padding:18px; border:1px dashed var(--border); border-radius: var(--r-lg); color:var(--text-muted); font-size:12px; text-align:center; }
 .ds-search-row { margin-bottom:12px; }
 .ds-search { width:100%; max-width:280px; }
-.ds-script-item, .ds-plan-item { width:100%; text-align:left; border:1px solid var(--border); border-radius:14px; background:var(--bg-elevated); padding:12px 14px; margin-bottom:10px; cursor:pointer; }
+.ds-script-item, .ds-plan-item { width:100%; text-align:left; border:1px solid var(--border); border-radius: var(--r-lg); background:var(--bg-elevated); padding:12px 14px; margin-bottom:10px; cursor:pointer; }
 .ds-script-item--active, .ds-plan-item--active { border-color: var(--brand); box-shadow: inset 0 0 0 1px var(--brand); }
 .ds-script-item__name { font-size:13px; font-weight:600; color:var(--text-primary); }
 .ds-script-item__meta, .ds-plan-item__meta, .ds-meta { font-size:11px; color:var(--text-muted); display:flex; gap:10px; flex-wrap:wrap; }
 .ds-script-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; }
 .ds-script-grid .ds-script-item { margin-bottom:0; min-height:78px; }
 .ds-toolbar, .ds-actions, .ds-summary, .ds-flags { display:flex; gap:10px; flex-wrap:wrap; }
-.ds-toolbar { margin-bottom:14px; padding:14px; border:1px solid var(--border); border-radius:16px; background:rgba(255,255,255,0.02); }
+.ds-toolbar { margin-bottom:14px; padding:14px; border:1px solid var(--border); border-radius: var(--r-lg); background:rgba(255,255,255,0.02); }
 .ds-toolbar > * { flex:1 1 180px; }
-.ds-toolbar-note { margin-top:-4px; margin-bottom:14px; padding:10px 12px; border-radius:12px; background:rgba(245,158,11,.12); color:#b45309; font-size:12px; }
+.ds-toolbar-note { margin-top:-4px; margin-bottom:14px; padding:10px 12px; border-radius:12px; background:var(--warning-bg); color:var(--warning); font-size:12px; }
 .ds-editor-meta { display:flex; justify-content:space-between; gap:10px; margin-top:10px; font-size:11px; color:var(--text-muted); }
-.ds-help { display:flex; flex-direction:column; gap:6px; margin-top:14px; padding:14px; border-radius:16px; background:var(--bg-elevated); border:1px solid var(--border); color:var(--text-secondary); font-size:12px; }
+.ds-help { display:flex; flex-direction:column; gap:6px; margin-top:14px; padding:14px; border-radius: var(--r-lg); background:var(--bg-elevated); border:1px solid var(--border); color:var(--text-secondary); font-size:12px; }
 .ds-help__title { font-weight:700; color:var(--text-primary); }
 .ds-plan-list { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:10px; margin-bottom:4px; }
 .ds-plan-item { margin-bottom:0; }
 .ds-plan-detail { margin-top:18px; padding-top:18px; border-top:1px solid var(--border); }
 .ds-plan-item__top { display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:12px; color:var(--text-secondary); margin-bottom:6px; }
 .ds-status { display:inline-flex; align-items:center; padding:3px 8px; border-radius:999px; font-size:11px; font-weight:700; text-transform:capitalize; background:var(--bg-surface); color:var(--text-secondary); }
-.ds-status[data-status="approved"], .ds-status[data-status="done"] { background: rgba(34,197,94,.15); color:#16a34a; }
-.ds-status[data-status="pending_review"], .ds-status[data-status="executing"] { background: rgba(245,158,11,.16); color:#d97706; }
-.ds-status[data-status="rejected"], .ds-status[data-status="failed"] { background: rgba(239,68,68,.14); color:#dc2626; }
-.ds-stat { min-width:92px; padding:12px 14px; border:1px solid var(--border); border-radius:14px; background:var(--bg-elevated); display:flex; flex-direction:column; gap:4px; }
+.ds-status[data-status="approved"], .ds-status[data-status="done"] { background: var(--success-bg); color:var(--success); }
+.ds-status[data-status="pending_review"], .ds-status[data-status="executing"] { background: var(--warning-bg); color:var(--warning); }
+.ds-status[data-status="rejected"], .ds-status[data-status="failed"] { background: var(--danger-bg); color:var(--danger); }
+.ds-stat { min-width:92px; padding:12px 14px; border:1px solid var(--border); border-radius: var(--r-lg); background:var(--bg-elevated); display:flex; flex-direction:column; gap:4px; }
 .ds-stat strong { font-size:18px; color:var(--text-primary); text-transform:capitalize; }
-.ds-stat span { font-size:11px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em; }
-.ds-flag { display:inline-flex; padding:4px 8px; border-radius:999px; background:rgba(59,130,246,.12); color:#2563eb; font-size:11px; font-weight:700; }
+.ds-stat span { font-size: 12px; color:var(--text-muted); }
+.ds-flag { display:inline-flex; padding:4px 8px; border-radius:999px; background:var(--info-bg); color:var(--info); font-size:11px; font-weight:700; }
 .ds-note { width:100%; min-height:84px; }
 .ds-review { display:flex; flex-direction:column; gap:10px; margin-top:16px; }
-.ds-workflow-box { display:flex; flex-direction:column; gap:8px; padding:12px 14px; border:1px solid var(--border); border-radius:14px; background:var(--bg-elevated); }
+.ds-workflow-box { display:flex; flex-direction:column; gap:8px; padding:12px 14px; border:1px solid var(--border); border-radius: var(--r-lg); background:var(--bg-elevated); }
 .ds-workflow-box__head { display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:12px; color:var(--text-primary); }
-.ds-workflow-empty { font-size:12px; color:#b45309; background:rgba(245,158,11,.12); border-radius:10px; padding:8px 10px; }
+.ds-workflow-empty { font-size:12px; color:var(--warning); background:var(--warning-bg); border-radius:10px; padding:8px 10px; }
 .ds-workflow-hint { font-size:12px; color:var(--text-muted); }
-.ds-message, .ds-error { margin-top:12px; padding:12px 14px; border-radius:14px; font-size:12px; }
-.ds-message { background:rgba(59,130,246,.08); color:var(--text-secondary); }
-.ds-error { background:rgba(239,68,68,.1); color:#b91c1c; }
-.ds-item-warning { font-size:11px; color:#b45309; background:rgba(245,158,11,.12); border-radius:10px; padding:8px 10px; }
+.ds-message, .ds-error { margin-top:12px; padding:12px 14px; border-radius: var(--r-lg); font-size:12px; }
+.ds-message { background:var(--info-bg); color:var(--text-secondary); }
+.ds-error { background:var(--danger-bg); color:var(--danger); }
+.ds-item-warning { font-size:11px; color:var(--warning); background:var(--warning-bg); border-radius:10px; padding:8px 10px; }
 .ds-items { margin-top:16px; display:flex; flex-direction:column; gap:12px; }
 .ds-items__head { font-size:12px; font-weight:700; color:var(--text-primary); }
-.ds-item-row { border:1px solid var(--border); border-radius:14px; background:var(--bg-elevated); padding:12px 14px; display:flex; flex-direction:column; gap:8px; }
+.ds-item-row { border:1px solid var(--border); border-radius: var(--r-lg); background:var(--bg-elevated); padding:12px 14px; display:flex; flex-direction:column; gap:8px; }
 .ds-item-row__top { font-size:12px; font-weight:700; color:var(--text-primary); }
 .ds-item-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; }
 .ds-item-row code, .ds-help code {

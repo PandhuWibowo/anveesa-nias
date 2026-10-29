@@ -9,6 +9,7 @@ import '@vue-flow/controls/dist/style.css'
 import { usePipelines, type Pipeline, type PipelineRun, type PipelineRunLog } from '@/composables/usePipelines'
 import { useConnections } from '@/composables/useConnections'
 import { useToast } from '@/composables/useToast'
+import EmptyState from '@/components/ui/EmptyState.vue'
 type ToastType = 'success' | 'error' | 'info'
 type InspectorTab = 'config' | 'runs' | 'schedule' | 'docs'
 type DocLanguage = 'id' | 'en'
@@ -36,7 +37,7 @@ const runBusinessDate = ref(new Date().toISOString().slice(0, 10))
 const runParamsText = ref('{\n  "batch_id": "manual"\n}')
 const catalogSearch = ref('')
 const inspectorTab = ref<InspectorTab>('config')
-const docLanguage = ref<DocLanguage>('id')
+const docLanguage = ref<DocLanguage>('en')
 const showDashboardDocs = ref(false)
 const showCatalogPanel = ref(true)
 const showBuildGuide = ref(true)
@@ -955,12 +956,20 @@ function runStatusClass(status: string) {
   <div class="pipelines-shell">
     <!-- ── List View ────────────────────────────────────────── -->
     <div v-if="view === 'list'" class="list-view">
-      <div class="list-header">
-        <h1 class="page-title">NIAS FlowGrid</h1>
-        <button class="base-btn base-btn--primary" @click="openCreateModal">+ New Pipeline</button>
-      </div>
+      <section class="page-hero list-header">
+        <div class="page-hero__content">
+          <div class="page-title">Pipelines</div>
+          <div class="page-subtitle">Move and transform data between sources on a visual canvas, then run it on demand or on a schedule.</div>
+        </div>
+        <div class="page-hero__actions">
+          <button class="base-btn base-btn--sm" :class="{ 'is-active': showDashboardDocs }" @click="showDashboardDocs = !showDashboardDocs">
+            {{ showDashboardDocs ? 'Hide guide' : 'Guide' }}
+          </button>
+          <button class="base-btn base-btn--primary base-btn--sm" @click="openCreateModal">New pipeline</button>
+        </div>
+      </section>
 
-      <section class="dashboard-doc-strip">
+      <section v-if="showDashboardDocs" class="dashboard-doc-strip">
         <div class="doc-strip-copy">
           <span class="panel-kicker">{{ docCopy.guideKicker }}</span>
           <strong>{{ docCopy.heroTitle }}</strong>
@@ -977,16 +986,11 @@ function runStatusClass(status: string) {
               {{ option.label }}
             </button>
           </div>
-          <button class="base-btn base-btn--ghost" @click="showDashboardDocs = !showDashboardDocs">
-            {{ showDashboardDocs ? 'Hide docs' : 'Show docs' }}
-          </button>
         </div>
       </section>
 
       <div v-if="loading" class="empty-state">Loading…</div>
-      <div v-else-if="pipelines.length === 0" class="empty-state">
-        No pipelines yet. Create one to get started.
-      </div>
+      <EmptyState v-else-if="pipelines.length === 0" icon="pipeline" title="No pipelines yet" text="Connect a source to a destination, add transforms in between, and run it on demand or on a schedule." action-label="New pipeline" @action="openCreateModal" />
       <div v-else class="pipeline-grid">
         <div v-for="p in pipelines" :key="p.id" class="pipeline-card" @click="openPipeline(p.id)">
           <div class="card-header">
@@ -1677,23 +1681,12 @@ function runStatusClass(status: string) {
 /* ── List ──────────────────────────────────────────────────── */
 .list-view {
   flex: 1;
-  padding: 18px;
+  padding: 28px 32px 48px;
   overflow-y: auto;
 }
+@media (max-width: 900px) { .list-view { padding: 20px 16px 32px; } }
 
-.list-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.page-title {
-  font-size: 20px;
-  font-weight: 700;
-  margin: 0;
-}
+.list-header { margin-bottom: 20px; }
 
 .dashboard-doc-strip {
   display: flex;
@@ -2078,10 +2071,8 @@ function runStatusClass(status: string) {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
 }
 
 .run-controls input,
@@ -2224,11 +2215,9 @@ function runStatusClass(status: string) {
 .panel-kicker {
   display: block;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.6px;
   line-height: 1.1;
-  text-transform: uppercase;
 }
 
 .panel-title {
@@ -2302,11 +2291,9 @@ function runStatusClass(status: string) {
 }
 
 .palette-label {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
   margin-bottom: 6px;
   padding: 0 4px;
 }
@@ -2706,11 +2693,9 @@ function runStatusClass(status: string) {
 
 .config-field label {
   display: block;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
   margin-bottom: 4px;
 }
 
