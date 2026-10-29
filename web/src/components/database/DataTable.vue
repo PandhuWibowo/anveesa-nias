@@ -15,6 +15,8 @@ interface Props {
   editable?: boolean
   addable?: boolean
   pkColumn?: string
+  /** Column name → database data type (enables date/time pickers in the row editor). */
+  columnTypes?: Record<string, string>
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -27,6 +29,7 @@ const props = withDefaults(defineProps<Props>(), {
   editable: false,
   addable: false,
   pkColumn: '',
+  columnTypes: () => ({}),
 })
 
 const emit = defineEmits<{
@@ -624,6 +627,7 @@ defineExpose({ startAddRow })
       :row-index="(page - 1) * pageSize + inspector.rowIndex"
       :pk-column="pkColumn"
       :can-edit="!!pkColumn"
+      :column-types="columnTypes"
       @save="handleInspectorSave"
       @close="inspector.show = false"
     />
