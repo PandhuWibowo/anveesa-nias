@@ -11,6 +11,8 @@ interface Props {
   /** Whether the Edit button is offered at all (table must be editable). */
   canEdit?: boolean
   title?: string
+  /** Column name → database data type, used to offer date/time pickers. */
+  columnTypes?: Record<string, string>
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -18,6 +20,7 @@ const props = withDefaults(defineProps<Props>(), {
   pkColumn: '',
   canEdit: false,
   title: '',
+  columnTypes: () => ({}),
 })
 
 const emit = defineEmits<{
@@ -76,6 +79,92 @@ function isDirty(col: string): boolean {
   const draft = drafts.value[col]
   if (draft === null || original === null || original === undefined) return draft !== original
   return String(draft) !== String(original ?? '')
+}
+
+// ── Date / time pickers ──────────────────────────────────────────────────────
+// Temporal columns get a native picker next to the free-text input. The text
+// input stays so values the picker can't express (fractional seconds, explicit
+// offsets) can still be typed by hand.
+type TemporalKind = 'date' | 'time' | 'datetime'
+
+function temporalKind(col: string): TemporalKind | null {
+  const t = (props.columnTypes[col] ?? '').toLowerCase().trim()
+  if (!t) return null
+  if (/timestamp|datetime/.test(t)) return 'datetime'
+  if (/^date\b/.test(t)) return 'date'
+  if (/^time(tz)?\b/.test(t)) return 'time'
+  return null
+}
+
+function isZonedType(col: string): boolean {
+  const t = (props.columnTypes[col] ?? '').toLowerCase()
+  return t.includes('with time zone') || /tz\b/.test(t) || t.includes('offset')
+}
+
+const pickerTypes: Record<TemporalKind, string> = { date: 'date', time: 'time', datetime: 'datetime-local' }
+
+const DATE_RE = /(\d{4}-\d{2}-\d{2})/
+const TIME_RE = /(\d{2}:\d{2}(?::\d{2})?)/
+const OFFSET_RE = /(Z|[+-]\d{2}(?::?\d{2})?)$/
+
+/** Converts the current DB value into the format the native picker expects. */
+function pickerValue(col: string): string {
+  const val = currentValue(col)
+  if (val === null || val === undefined) return ''
+  const str = String(val).trim()
+  const kind = temporalKind(col)
+  const date = str.match(DATE_RE)?.[1] ?? ''
+  // Skip past the date so its digits aren't mistaken for a time.
+  const time = (date ? str.slice(str.indexOf(date) + date.length) : str).match(TIME_RE)?.[1] ?? ''
+  if (kind === 'date') return date
+  if (kind === 'time') return time
+  return date ? `${date}T${time || '00:00:00'}` : ''
+}
+
+function pad(n: number): string {
+  return String(n).padStart(2, '0')
+}
+
+function localOffset(d: Date): string {
+  const mins = -d.getTimezoneOffset()
+  const sign = mins >= 0 ? '+' : '-'
+  const abs = Math.abs(mins)
+  return `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
+}
+
+/** Offset to keep on zoned columns: the original value's, else the browser's. */
+function offsetFor(col: string): string {
+  if (!isZonedType(col)) return ''
+  const orig = rawValue(col)
+  const m = orig === null || orig === undefined ? null : String(orig).trim().match(OFFSET_RE)
+  return m ? m[1] : localOffset(new Date())
+}
+
+function withSeconds(time: string): string {
+  return time.length === 5 ? `${time}:00` : time
+}
+
+function onPickerInput(col: string, event: Event) {
+  const raw = (event.target as HTMLInputElement).value
+  if (!raw) return
+  const kind = temporalKind(col)
+  let next = raw
+  if (kind === 'time') next = withSeconds(raw) + offsetFor(col)
+  else if (kind === 'datetime') {
+    const [d, t] = raw.split('T')
+    next = `${d} ${withSeconds(t ?? '00:00')}${offsetFor(col)}`
+  }
+  drafts.value = { ...drafts.value, [col]: next }
+}
+
+function setNow(col: string) {
+  const d = new Date()
+  const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  const offset = isZonedType(col) ? localOffset(d) : ''
+  const kind = temporalKind(col)
+  const next = kind === 'date' ? date : kind === 'time' ? `${time}${offset}` : `${date} ${time}${offset}`
+  drafts.value = { ...drafts.value, [col]: next }
 }
 
 const dirtyColumns = computed(() => props.columns.filter(isDirty))
@@ -199,6 +288,25 @@ const canSave = computed(() => props.canEdit && props.columns.includes(props.pkC
                   rows="4"
                   @input="onFieldInput(col, $event)"
                 />
+                <div v-else-if="temporalKind(col)" class="ri-temporal">
+                  <input
+                    class="ri-input ri-input--picker"
+                    :type="pickerTypes[temporalKind(col)!]"
+                    :step="temporalKind(col) === 'date' ? undefined : 1"
+                    :value="pickerValue(col)"
+                    :title="`Pick ${temporalKind(col)}`"
+                    @input="onPickerInput(col, $event)"
+                  />
+                  <input
+                    class="ri-input"
+                    :value="currentValue(col) === null || currentValue(col) === undefined ? '' : displayValue(currentValue(col))"
+                    :placeholder="currentValue(col) === null ? 'NULL' : ''"
+                    @input="onFieldInput(col, $event)"
+                  />
+                  <button class="ri-mini ri-mini--text" type="button" :title="temporalKind(col) === 'date' ? 'Set to today' : 'Set to now'" @click="setNow(col)">
+                    {{ temporalKind(col) === 'date' ? 'Today' : 'Now' }}
+                  </button>
+                </div>
                 <input
                   v-else
                   class="ri-input"
@@ -416,6 +524,10 @@ const canSave = computed(() => props.canEdit && props.columns.includes(props.pkC
 }
 .ri-input:focus { outline: none; border-color: var(--brand); }
 .ri-input--area { resize: vertical; line-height: 1.45; }
+.ri-temporal { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ri-temporal > .ri-input { flex: 1 1 160px; min-width: 0; }
+.ri-temporal > .ri-input--picker { flex: 0 1 auto; width: auto; color-scheme: light dark; cursor: pointer; }
+.ri-temporal .ri-mini--text { width: auto; padding: 0 8px; font-size: 11px; border-color: var(--border); }
 
 .ri-field__tools {
   display: flex;

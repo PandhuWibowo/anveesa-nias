@@ -308,6 +308,10 @@ function inferColumnsFromTypeError(message: string, values: Record<string, unkno
   return candidates.join(', ')
 }
 
+function columnTypeMap(tab: TableTab): Record<string, string> {
+  return Object.fromEntries(tab.dataTableColumns.map(c => [c.name, c.data_type]))
+}
+
 function rowSaveError(error: unknown, action: string, fallback: string, values: Record<string, unknown>) {
   const message = readableError(error, { action, fallback })
   const columns = inferColumnsFromTypeError(message, values)
@@ -1216,6 +1220,7 @@ function driverLabel(d: string) { return ({ postgres: 'PG', mysql: 'MY', mariadb
               :columns="tab.columns" :rows="tab.rows" :loading="tab.loading"
               :page="tab.page" :page-size="tab.pageSize" :total-rows="tab.totalRows"
               :editable="tab.editMode" :addable="true" :pk-column="tab.pkColumn"
+              :column-types="columnTypeMap(tab)"
               @page-change="handlePageChange" @page-size-change="handlePageSizeChange"
               @sort="handleSort" @save-row="handleSaveRow" @save-all-rows="handleSaveAllRows"
               @delete-row="handleDeleteRow" @add-row="handleAddRow"
