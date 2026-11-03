@@ -734,6 +734,7 @@ func DeleteConnection() http.HandlerFunc {
 		}
 
 		EvictFromPool(id)
+		StopConnectionTunnel(id)
 		appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM connections WHERE id=?`), id)
 		w.WriteHeader(http.StatusNoContent)
 	}
