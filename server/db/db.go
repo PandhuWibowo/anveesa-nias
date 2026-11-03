@@ -1218,6 +1218,21 @@ func migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_kube_clusters_owner ON kube_clusters(owner_id)`,
 
+		// Public tunnels — a TCP forwarder exposing a connection on a public
+		// port. status is 'active' or 'revoked'; active rows are re-bound on
+		// startup by handlers.RestoreActivePublicTunnels.
+		`CREATE TABLE IF NOT EXISTS connection_public_tunnels (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			connection_id INTEGER NOT NULL,
+			port          INTEGER NOT NULL,
+			token         TEXT NOT NULL,
+			status        TEXT NOT NULL DEFAULT 'active',
+			created_by    TEXT NOT NULL DEFAULT '',
+			created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+			revoked_at    DATETIME
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_connection_public_tunnels_conn ON connection_public_tunnels(connection_id)`,
+
 		// Cron scheduler manages each host's *native* crontab live over SSH
 		// (crontab -l / crontab -), so no cron tables are stored here.
 
