@@ -712,6 +712,16 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 					http.NotFound(w, r)
 				}
 
+			// ── Alibaba Cloud SLS (read-only log search on "sls" connections) ──
+			case sub == "sls" && len(parts) >= 3 && parts[2] == "logstores" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SLSLogstores())(w, r)
+			case sub == "sls" && len(parts) >= 3 && parts[2] == "fields" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SLSFields())(w, r)
+			case sub == "sls" && len(parts) >= 3 && parts[2] == "histogram" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SLSHistogram())(w, r)
+			case sub == "sls" && len(parts) >= 3 && parts[2] == "logs" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SLSLogs())(w, r)
+
 			// ── Cloud Storage (browse s3_aws/s3_gcp/s3_oss/s3_obs connections) ──
 			// download/zip self-authenticate via ?token= (browser-native streaming),
 			// same pattern as SFTP's download/zip.

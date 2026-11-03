@@ -30,6 +30,7 @@ const driverLabel: Record<string, string> = {
   s3_gcp: 'GCP Cloud Storage',
   s3_oss: 'Alibaba OSS',
   s3_obs: 'Huawei OBS',
+  sls: 'Alibaba Cloud SLS',
 }
 
 function isObjectStorageDriver(driver: string) { return driver === 's3_aws' || driver === 's3_gcp' || driver === 's3_oss' || driver === 's3_obs' }
@@ -43,6 +44,7 @@ function activeConnRoute() {
   if (activeConn.value.driver === 'mongodb') return 'mongodb'
   if (activeConn.value.driver === 'cassandra') return 'cassandra'
   if (isSearchDriver(activeConn.value.driver)) return 'search'
+  if (activeConn.value.driver === 'sls') return 'sls'
   if (isObjectStorageDriver(activeConn.value.driver)) return 'connections'
   return 'query'
 }
@@ -55,6 +57,7 @@ function activeConnTargetLabel() {
   if (activeConn.value.driver === 'mongodb') return `Open MongoDB management for ${activeConn.value.name}`
   if (activeConn.value.driver === 'cassandra') return `Open Cassandra workbench for ${activeConn.value.name}`
   if (isSearchDriver(activeConn.value.driver)) return `Open search browser for ${activeConn.value.name}`
+  if (activeConn.value.driver === 'sls') return `Search logs in ${activeConn.value.name}`
   if (isObjectStorageDriver(activeConn.value.driver)) return `Manage object storage connection ${activeConn.value.name}`
   return `Open query editor for ${activeConn.value.name}`
 }
