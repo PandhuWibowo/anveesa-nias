@@ -186,6 +186,13 @@ defineProps<{
     </g>
 
     <!-- ── Alibaba OSS: layered cloud ─────────────────────────── -->
+    <!-- ── Alibaba SLS: log lines under a magnifier ──────────── -->
+    <g v-else-if="driver === 'sls'">
+      <path d="M3.5 6H15M3.5 10.5H11M3.5 15H9" stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+      <circle cx="15.5" cy="14.5" r="4" stroke="white" stroke-width="2" fill="none" opacity="0.95"/>
+      <path d="M18.5 17.5L21 20" stroke="white" stroke-width="2.2" stroke-linecap="round" opacity="0.95"/>
+    </g>
+
     <g v-else-if="driver === 's3_oss'">
       <!-- main cloud -->
       <path d="M17.5 9.5C17.3 7.5 15.6 6 13.5 6C12.7 6 12 6.2 11.4 6.7C10.6 5.1 9 4 7 4C4.2 4 2 6.2 2 9C2 9.1 2 9.2 2 9.3C1.4 9.8 1 10.6 1 11.5C1 13.4 2.6 15 4.5 15H17.5C19.4 15 21 13.4 21 11.5C21 9.8 19.8 8.4 18.2 8C18 8.5 17.8 9 17.5 9.5Z" fill="white" opacity="0.9"/>

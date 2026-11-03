@@ -91,6 +91,7 @@ Reusable presets that store `driver + host + port + database + ssl + ssh_host/po
 ### Key Integrations
 
 - **Kafka** — `handlers/kafka.go` for topic browsing, message production/consumption.
+- **Alibaba Cloud SLS** — `handlers/sls.go`: read-only log search on `sls` connections (host = region endpoint, database = project, username/password = AccessKey ID/secret). A small REST client signs requests with the SLS v1 hmac-sha1 scheme (pinned to the official SDK in `sls_test.go`); no SDK dependency. Endpoints under `/api/connections/{id}/sls/` (`logstores`, `fields`, `histogram`, `logs`), gated by `connections.view`/`schema.browse`. UI: `SlsView.vue`, the reference explorer page in DESIGN.md.
 - **Redis** — `handlers/redis.go` for key browsing and ops (separate from the app's own cache).
 - **Laravel Queue** — `handlers/laravel_queue.go` for queue monitoring and job management.
 - **AI** — `handlers/ai.go` for AI-assisted SQL/analytics; provider configured via `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` env vars.

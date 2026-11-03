@@ -249,6 +249,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['sftp.access', 'sftp.manage'] },
         },
         {
+          path: 'sls',
+          name: 'sls',
+          component: () => import('@/views/SlsView.vue'),
+          meta: { requiredPermissionsAny: ['connections.view', 'schema.browse'] },
+        },
+        {
           path: 'cloud-storage',
           name: 'cloud-storage',
           component: () => import('@/views/CloudStorageView.vue'),

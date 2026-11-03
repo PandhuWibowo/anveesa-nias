@@ -53,6 +53,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { name: 'kafka', label: 'Kafka', desc: 'Topics, partitions, consumer groups', icon: 'kafka', drivers: ['kafka'], permissionsAny: ['kafka.view'] },
       { name: 'search', label: 'Indices', desc: 'Elasticsearch and OpenSearch indices', icon: 'search', drivers: SEARCH, permissionsAny: ['schema.browse', 'connections.view'], keywords: 'elasticsearch opensearch search' },
       { name: 'search-policies', label: 'Policies', desc: 'ILM, templates, shard allocation', icon: 'policy', drivers: SEARCH, permissionsAny: ['schema.browse', 'connections.view'], keywords: 'search ilm' },
+      { name: 'sls', label: 'Log search', desc: 'Search Alibaba Cloud SLS logstores', icon: 'logs', drivers: ['sls'], permissionsAny: ['connections.view', 'schema.browse'], keywords: 'alibaba sls log service logstore aliyun' },
       { name: 'cloud-storage', label: 'Files', desc: 'Browse buckets', icon: 'cloud', drivers: BUCKETS, permissionsAny: ['cloudstorage.access', 'cloudstorage.manage'], keywords: 'object storage s3 bucket' },
     ],
   },
@@ -158,6 +159,7 @@ export function workspaceMeta(driver: string | null | undefined): { label: strin
     mongodb: { label: 'MongoDB', icon: 'document' },
     cassandra: { label: 'Cassandra', icon: 'layers' },
     kafka: { label: 'Kafka', icon: 'kafka' },
+    sls: { label: 'Log service', icon: 'logs' },
   }
   return names[driver] ?? { label: 'Connection', icon: 'plug' }
 }

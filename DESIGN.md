@@ -12,7 +12,37 @@ Dial: ENERGY 1 / RHYTHM 1 / MOTION 1
 
 ## Identity
 
-Nias is the Anveesa studio for databases and the infrastructure around them: SQL, schemas, dashboards, approvals and audit, plus Redis, Kafka, search clusters, Docker, Kubernetes and servers over SSH. It is self-hosted and runs in the browser.
+Nias is the Anveesa studio for databases and the infrastructure around them: SQL, schemas, dashboards, approvals and audit, plus Redis, Kafka, search clusters, cloud logs (Alibaba Cloud SLS), Docker, Kubernetes and servers over SSH. It is self-hosted and runs in the browser.
+
+## Principles
+
+Every page should feel **seamless, intuitive, modern and simple**. These words describe how the app feels to use; they never appear in UI copy (see Writing). Each one is written down as rules here, so a review can check them.
+
+### Seamless: no dead ends, no lost context
+- Every state leads somewhere. Empty, error, not-configured and no-permission states each name the next step and offer the action that takes it.
+- State survives navigation. A place reopens where you left it, and a page remembers its last choice per connection (the last logstore, chosen columns, a time range) in `localStorage`. Reading it must never break the page when storage is unavailable.
+- Work happens in place. Details open inline (expand a row, a side panel) instead of on a new page; changing a filter updates the results without a reload.
+- Loading never blanks the screen. Previous results stay visible and dimmed until new ones arrive, and a newer request cancels the older one.
+- When there is only one sensible choice, it is made for you: the only matching connection, the first logstore.
+
+### Intuitive: the next step is obvious
+- One primary action per view, at the end of the main control row.
+- The data is the interface. Click a chart bar to zoom into that time; click a value to filter by it; hover a value to see the action.
+- Defaults work on first use: a short time range, a placeholder that shows a real example query, the most common option first.
+- Name things the way people say them, and put the technical term second ("Log service", with "SLS" in the description).
+- Keyboard paths exist for frequent actions: Enter runs, Esc closes, ⌘K jumps anywhere.
+
+### Modern: quick and calm
+- Something visible happens within 100ms of every click: a pressed state, a busy label ("Searching…"), or dimmed results.
+- Loads over ~300ms show a skeleton shaped like the content. Never a full-page spinner.
+- Control bars over long results are sticky; the results scroll underneath.
+- Both themes and phone width are part of the definition of done, not a follow-up.
+
+### Simple: show less
+- Show the part most people use. The rest sits behind progressive disclosure: Advanced options, an expanded row, a ⋯ menu.
+- Each thing has one way to do it. Don't add a second button that does the same thing.
+- Nothing purely decorative: no stat tiles without a decision behind them, no divider where spacing already separates.
+- A page is one column of content plus at most one side list.
 
 ## Personality
 
@@ -112,7 +142,7 @@ Nias has more than fifty pages, but nobody needs fifty links. The sidebar lists 
 | Place | Pages (tabs) |
 |---|---|
 | Home | Greeting, search, recent pages, connections |
-| *Connection place* — named after the active connection ("Database", "Redis", "Search", "Kafka", "Storage", …) | Only the tools that work with that connection. Postgres: SQL Studio, Objects, ER diagram, Schema diff, Row history, Sessions, Logs, Users, Replication, Parameters. Redis: Redis, Laravel queue. Search: Indices, Policies. Buckets: Files. |
+| *Connection place* — named after the active connection ("Database", "Redis", "Search", "Kafka", "Storage", "Log service", …) | Only the tools that work with that connection. Postgres: SQL Studio, Objects, ER diagram, Schema diff, Row history, Sessions, Logs, Users, Replication, Parameters. Redis: Redis, Laravel queue. Search: Indices, Policies. Buckets: Files. Alibaba Cloud SLS: Log search. |
 | Analytics | Overview, Dashboards, Saved queries, Ask your data |
 | Changes | Approvals, Change sets, Data scripts, Script requests, Approval rules |
 | Automation | Schedules, Pipelines, Backups, Watchers |
@@ -134,7 +164,32 @@ Rules:
 - **Sidebar** sits on the canvas, 244px wide; it collapses to a 56px icon rail with ⌘\ / Ctrl+\. Top to bottom: the Nias mark, search (opens the palette), the connection switcher, Home, the places, then notifications, Settings, the account menu and the theme toggle.
 - **Content panel** floats on the canvas with an 8px gap, 12px radius and `--shadow-panel`. Section tabs sit at its top edge; every page renders below them. On screens under 900px the panel goes edge to edge and the sidebar becomes a drawer behind a top bar that names the current place.
 - **Page header** (`.page-hero`): title and one line of context on the left, actions on the right with the primary action last. Stats, when a page has them, sit on their own row under the title (`.page-metrics`).
-- **Workspace pages** (SQL Studio, ER diagram, Objects, Dashboards, Kafka, Redis, Docker, Kubernetes) use a compact toolbar instead of a page header, so the data gets the height.
+- **Workspace pages** (SQL Studio, ER diagram, Objects, Dashboards, Kafka, Redis, Log search, Docker, Kubernetes) use a compact toolbar instead of a page header, so the data gets the height.
+
+### Explorer pages
+
+Pages that search a large stream (logs, messages, documents) share one layout. `views/SlsView.vue` is the reference.
+
+```
+┌──────────────┬──────────────────────────────────────────────────┐
+│ Project      │ ⌕ query ……………………………………  [Last 15 min ▾] [Search] │  ← sticky
+│ Logstores  8 │ 879 logs · Last 15 minutes · 132 ms               │
+│ ▸ app-logs   │ ▁▃▂▇▁▂▅▁▂▃▁▂▇▃▁  (click a bar to zoom)             │
+│   gateway    │ ──────────────────────────────────────────────── │
+│ Fields     9 │ › 11-03 19:12:12  level: info  status: 200 …      │
+│ ☑ level      │ ⌄ 11-03 19:12:05  level: error status: 502 …      │
+│ ☐ trace      │     key    value             [Filter] [Exclude]   │
+│              │ [Load 100 more]  Showing 100 of 879               │
+└──────────────┴──────────────────────────────────────────────────┘
+```
+
+- **Side list** (248px): the containers to browse (logstores, topics, collections), then the fields. Ticking a field shows it as a column. Under 900px the list moves above the results and the fields are hidden.
+- **Query bar**: the query input (mono), a time-range select, and the primary action. Enter runs the search. The placeholder shows a real query.
+- **Summary line**: the total count, the range in words, the duration, and a warning badge only when results are partial.
+- **Histogram**: one muted sky series. Click a bar to zoom into it, which adds a "Reset range" chip; hover shows the time and count.
+- **Rows**: time in mono, then `key: value` pairs clamped to three lines. A row expands in place to show every field, with JSON pretty-printed and Filter / Exclude shown on hover. Severity (error, warn) is the one allowed colored left edge.
+- **Analytics results** (a query with a SQL part) render as a plain table instead of rows.
+- Load more is explicit ("Load 100 more", with "Showing N of M"); no infinite scroll.
 
 ## Components
 
@@ -184,7 +239,7 @@ Bottom right, one line where possible, an icon in the status color. Errors stay 
 - Address the user as "you"; describe outcomes ("Runs every 5 minutes and alerts you when it fails").
 - Name things the way people say them: servers, files, object storage, logs. Keep the technical word in the description when it helps ("Servers — SSH hosts used by Docker, Files, Nginx and Cron").
 - Errors say what happened and what to do: "This database has no failed_jobs table. Pick the database your Laravel app uses."
-- No exclamation marks, no emoji, no "Oops", no "seamless", "powerful" or "blazing fast".
+- No exclamation marks, no emoji, no "Oops", no "seamless", "powerful" or "blazing fast". The Principles describe how the app should feel; the UI shows it instead of saying it.
 
 ## Accessibility
 

@@ -44,6 +44,7 @@ var allowedDrivers = map[string]bool{
 	"s3_gcp":        true,
 	"s3_oss":        true,
 	"s3_obs":        true,
+	"sls":           true,
 }
 
 // encryptionKey for credential encryption (should be set from environment)
@@ -170,7 +171,7 @@ type ConnectionInput struct {
 func validateConnectionInput(in *ConnectionInput) error {
 	// Validate driver
 	if !allowedDrivers[in.Driver] {
-		return fmt.Errorf("invalid driver: must be sqlite, postgres, mysql, mariadb, mssql, redis, memcache, kafka, mongodb, cassandra, elasticsearch, opensearch, s3_aws, s3_gcp, s3_oss, or s3_obs")
+		return fmt.Errorf("invalid driver: must be sqlite, postgres, mysql, mariadb, mssql, redis, memcache, kafka, mongodb, cassandra, elasticsearch, opensearch, s3_aws, s3_gcp, s3_oss, s3_obs, or sls")
 	}
 
 	// Validate port
@@ -190,6 +191,19 @@ func validateConnectionInput(in *ConnectionInput) error {
 		}
 		if strings.TrimSpace(in.Password) == "" {
 			return fmt.Errorf("secret key is required")
+		}
+	} else if in.Driver == "sls" {
+		if strings.TrimSpace(in.Host) == "" {
+			return fmt.Errorf("SLS endpoint is required")
+		}
+		if strings.TrimSpace(in.Database) == "" {
+			return fmt.Errorf("SLS project is required")
+		}
+		if strings.TrimSpace(in.Username) == "" {
+			return fmt.Errorf("AccessKey ID is required")
+		}
+		if strings.TrimSpace(in.Password) == "" {
+			return fmt.Errorf("AccessKey secret is required")
 		}
 	} else if in.Driver == "mongodb" {
 		if strings.TrimSpace(in.Host) == "" {
@@ -246,7 +260,7 @@ func isValidHostname(host string) bool {
 
 func buildDSN(in ConnectionInput) (string, error) {
 	switch in.Driver {
-	case "redis", "memcache", "kafka", "mongodb", "cassandra", "elasticsearch", "opensearch", "s3_aws", "s3_gcp", "s3_oss", "s3_obs":
+	case "redis", "memcache", "kafka", "mongodb", "cassandra", "elasticsearch", "opensearch", "s3_aws", "s3_gcp", "s3_oss", "s3_obs", "sls":
 		return "", fmt.Errorf("%s does not use SQL DSN", in.Driver)
 	case "sqlite":
 		dbPath := strings.TrimSpace(in.Database)
@@ -931,6 +945,16 @@ func TestConnection() http.HandlerFunc {
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 			defer cancel()
 			if err := testSearchInput(ctx, in); err != nil {
+				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"message": "Connection successful"})
+			return
+		}
+		if in.Driver == "sls" {
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			if err := testSLSInput(ctx, in); err != nil {
 				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
 				return
 			}
