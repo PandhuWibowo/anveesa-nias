@@ -9,7 +9,7 @@ Codebase context for AI agents and automated tooling.
 - **Backend**: Go HTTP API in `server/` — stdlib `net/http`, no router framework, single `main.go` for all route registration.
 - **Frontend**: Vue 3 + Vite SPA in `web/` — one large `.vue` file per feature page, composables for shared state/API calls.
 - **Internal DB**: PostgreSQL or MySQL only (no SQLite for the app's own storage). Inline migrations in `server/db/db.go` — no migration tool.
-- **User DBs**: connects to PostgreSQL, MySQL, MariaDB, SQLite, SQL Server, Redis, Memcache, Kafka, MongoDB, Cassandra, Elasticsearch, OpenSearch, S3-compatible stores.
+- **User DBs**: connects to PostgreSQL, MySQL, MariaDB, SQLite, SQL Server, Redis, Memcache, Kafka, MongoDB, Cassandra, Elasticsearch, OpenSearch, S3-compatible stores, Alibaba Cloud SLS.
 
 ## Key Invariants
 
@@ -41,6 +41,7 @@ server/
     kube_exec.go               # K8s pod logs-follow + exec terminal (WebSocket)
     ai.go                      # AI-assisted SQL/analytics
     kafka.go                   # Kafka topic browse/produce/consume
+    sls.go                     # Alibaba Cloud SLS logstores + log search (signed REST, no SDK)
     redis.go                   # Redis key browser
     scheduler.go               # Cron-style scheduled queries
     workflow_approval.go       # Multi-step query approval flows

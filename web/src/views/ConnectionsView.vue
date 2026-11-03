@@ -56,6 +56,7 @@ const defaultPorts: Record<DbDriver, number> = {
   s3_gcp: 443,
   s3_oss: 443,
   s3_obs: 443,
+  alibaba_sls: 443,
 }
 
 const defaultHosts: Record<DbDriver, string> = {
@@ -75,6 +76,7 @@ const defaultHosts: Record<DbDriver, string> = {
   s3_gcp: 'storage.googleapis.com',
   s3_oss: 'oss-cn-hangzhou.aliyuncs.com',
   s3_obs: 'obs.ap-southeast-1.myhuaweicloud.com',
+  alibaba_sls: 'ap-southeast-5.log.aliyuncs.com',
 }
 
 const form = reactive<ConnectionForm>({
@@ -139,6 +141,7 @@ const driverGroups: Array<{ key: string; label: string; options: DriverOption[] 
     options: [
       { key: 'elasticsearch', label: 'Elasticsearch', badge: 'ES', sub: 'v8+' },
       { key: 'opensearch', label: 'OpenSearch', badge: 'OS', sub: 'v2+' },
+      { key: 'alibaba_sls', label: 'Alibaba SLS', badge: 'SLS', sub: 'log service' },
     ],
   },
   {
@@ -170,6 +173,7 @@ const defaultDatabases: Record<DbDriver, string> = {
   s3_gcp: '',
   s3_oss: '',
   s3_obs: '',
+  alibaba_sls: '',
 }
 
 const driverDescriptions: Record<DbDriver, string> = {
@@ -189,6 +193,7 @@ const driverDescriptions: Record<DbDriver, string> = {
   s3_gcp:   'Google Cloud Storage via the S3-compatible API. Endpoint, bucket, and service-account credentials are required.',
   s3_oss:   'Alibaba Cloud OSS via the S3-compatible API. Provide your OSS endpoint, bucket, and access credentials.',
   s3_obs:   'Huawei Cloud OBS via the S3-compatible API. Provide your OBS endpoint, bucket, and access credentials.',
+  alibaba_sls: 'Alibaba Cloud Simple Log Service. Provide the region endpoint, the SLS project, and a RAM AccessKey with read access to its logstores.',
 }
 
 // ── Computed driver flags ─────────────────────────────────────────
@@ -200,6 +205,7 @@ const isMongoDB   = computed(() => form.driver === 'mongodb')
 const isCassandra = computed(() => form.driver === 'cassandra')
 const isSearch    = computed(() => form.driver === 'elasticsearch' || form.driver === 'opensearch')
 const isS3        = computed(() => isObjectStorageDriver(form.driver))
+const isSLS       = computed(() => form.driver === 'alibaba_sls')
 const isRDBMS     = computed(() => ['postgres', 'mysql', 'mariadb', 'mssql'].includes(form.driver))
 
 function isObjectStorageDriver(driver: DbDriver) {
@@ -211,7 +217,7 @@ function driverCategory(driver: DbDriver): string {
   if (driver === 'redis' || driver === 'memcache') return 'cache'
   if (driver === 'kafka') return 'streaming'
   if (driver === 'mongodb' || driver === 'cassandra') return 'document'
-  if (driver === 'elasticsearch' || driver === 'opensearch') return 'search'
+  if (driver === 'elasticsearch' || driver === 'opensearch' || driver === 'alibaba_sls') return 'search'
   return 's3'
 }
 
@@ -221,11 +227,11 @@ function categoryLabel(driver: DbDriver): string {
 }
 
 function driverBadge(driver: DbDriver) {
-  return ({ sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF', mongodb: 'MG', cassandra: 'CA', elasticsearch: 'ES', opensearch: 'OS', s3_aws: 'S3', s3_gcp: 'GCS', s3_oss: 'OSS', s3_obs: 'OBS' } as Record<DbDriver, string>)[driver] ?? driver.slice(0, 2).toUpperCase()
+  return ({ sqlite: 'SL', postgres: 'PG', mysql: 'MY', mariadb: 'MB', mssql: 'MS', redis: 'RD', memcache: 'MC', kafka: 'KF', mongodb: 'MG', cassandra: 'CA', elasticsearch: 'ES', opensearch: 'OS', s3_aws: 'S3', s3_gcp: 'GCS', s3_oss: 'OSS', s3_obs: 'OBS', alibaba_sls: 'SLS' } as Record<DbDriver, string>)[driver] ?? driver.slice(0, 2).toUpperCase()
 }
 
 function driverFullName(driver: DbDriver) {
-  return ({ sqlite: 'SQLite', postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', mssql: 'SQL Server', redis: 'Redis', memcache: 'Memcache', kafka: 'Kafka', mongodb: 'MongoDB', cassandra: 'Cassandra', elasticsearch: 'Elasticsearch', opensearch: 'OpenSearch', s3_aws: 'AWS S3', s3_gcp: 'GCP Storage', s3_oss: 'Alibaba OSS', s3_obs: 'Huawei OBS' } as Record<DbDriver, string>)[driver] ?? driver
+  return ({ sqlite: 'SQLite', postgres: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', mssql: 'SQL Server', redis: 'Redis', memcache: 'Memcache', kafka: 'Kafka', mongodb: 'MongoDB', cassandra: 'Cassandra', elasticsearch: 'Elasticsearch', opensearch: 'OpenSearch', s3_aws: 'AWS S3', s3_gcp: 'GCP Storage', s3_oss: 'Alibaba OSS', s3_obs: 'Huawei OBS', alibaba_sls: 'Alibaba SLS' } as Record<DbDriver, string>)[driver] ?? driver
 }
 
 function connDetailLine(conn: { driver: DbDriver; host: string; port: number; database: string; username: string }): string {
@@ -233,6 +239,10 @@ function connDetailLine(conn: { driver: DbDriver; host: string; port: number; da
   if (isObjectStorageDriver(conn.driver)) {
     const bucket = conn.database || '(no bucket)'
     return `${bucket}  ·  ${conn.host}`
+  }
+  if (conn.driver === 'alibaba_sls') {
+    const project = conn.database || '(no project)'
+    return `${project}  ·  ${conn.host}`
   }
   if (conn.driver === 'memcache') {
     return `${conn.host}${conn.port ? ':' + conn.port : ''}`
@@ -274,6 +284,7 @@ function openConnectionLabel(driver: DbDriver): string {
   if (driver === 'cassandra') return 'Browse'
   if (driver === 'elasticsearch' || driver === 'opensearch') return 'Browse'
   if (isObjectStorageDriver(driver)) return 'Browse'
+  if (driver === 'alibaba_sls') return 'Search'
   return 'Open'
 }
 
@@ -281,7 +292,7 @@ function selectDriver(d: DbDriver) {
   const previousDefaultHost = defaultHosts[form.driver]
   form.driver = d
   form.port = defaultPorts[d]
-  form.ssl = isObjectStorageDriver(d) ? true : form.ssl
+  form.ssl = isObjectStorageDriver(d) || d === 'alibaba_sls' ? true : form.ssl
   if (!form.host || form.host === previousDefaultHost || form.host === 'localhost') {
     form.host = defaultHosts[d]
   }
@@ -405,6 +416,13 @@ function validateForm(): string | null {
     if (!form.username.trim()) return 'Access key is required'
     if (!form.password.trim()) return 'Secret key is required'
   }
+  if (form.driver === 'alibaba_sls') {
+    if (!form.host.trim()) return 'SLS endpoint is required'
+    if (!form.database.trim()) return 'SLS project is required'
+    if (!form.username.trim()) return 'AccessKey ID is required'
+    // On edit a blank secret keeps the stored one.
+    if (!editingId.value && !form.password.trim()) return 'AccessKey secret is required'
+  }
   if ((form.driver === 'elasticsearch' || form.driver === 'opensearch') && !form.host.trim()) {
     return 'Search endpoint host is required'
   }
@@ -476,6 +494,7 @@ function parseConnectionURL(raw: string) {
       gcs: 's3_gcp', gs: 's3_gcp',
       oss: 's3_oss',
       obs: 's3_obs',
+      sls: 'alibaba_sls',
     }
     const driver = driverMap[scheme] ?? ('postgres' as DbDriver)
     form.driver = driver
@@ -1010,6 +1029,39 @@ watch(() => route.query.new, (v) => {
                   <div class="field-note field-note--info">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
                     SSL/TLS is always enabled for object storage.
+                  </div>
+                </template>
+
+                <!-- ── Alibaba Cloud SLS ───────────────────────────────── -->
+                <template v-else-if="isSLS">
+                  <div class="form-group">
+                    <label class="form-label">Endpoint</label>
+                    <input v-model="form.host" class="base-input" :placeholder="defaultHosts[form.driver]" />
+                    <div class="form-hint">The SLS region endpoint (without https://), e.g. ap-southeast-5.log.aliyuncs.com or the -intranet endpoint.</div>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Project</label>
+                    <input v-model="form.database" class="base-input" placeholder="k8s-log-c123456789" />
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label class="form-label">AccessKey ID</label>
+                      <input v-model="form.username" class="base-input" placeholder="LTAI5t..." autocomplete="off" />
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">AccessKey Secret</label>
+                      <div class="pw-wrap">
+                        <input v-model="form.password" class="base-input" :type="showPassword ? 'text' : 'password'" placeholder="••••••••" autocomplete="off" />
+                        <button type="button" class="pw-eye" @click="showPassword = !showPassword" :title="showPassword ? 'Hide' : 'Show'">
+                          <svg v-if="showPassword" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="field-note field-note--info">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    Requests are signed with the AccessKey and sent over HTTPS. A read-only RAM policy (log:ListLogStores, log:GetLogStoreLogs, log:GetLogStoreHistogram) is enough.
                   </div>
                 </template>
 
@@ -1707,6 +1759,7 @@ watch(() => route.query.new, (v) => {
 .conn-badge--s3_gcp    { background: #4285f4; }
 .conn-badge--s3_oss    { background: #ff6a00; }
 .conn-badge--s3_obs    { background: #c00000; }
+.conn-badge--alibaba_sls { background: #ff6a00; }
 
 /* ── Modal backdrop + shell ── */
 .conn-modal-backdrop {
@@ -1987,6 +2040,7 @@ watch(() => route.query.new, (v) => {
 .provider-card__icon--s3_gcp   { background: #4285f4; }
 .provider-card__icon--s3_oss   { background: #ff6a00; }
 .provider-card__icon--s3_obs   { background: #c00000; }
+.provider-card__icon--alibaba_sls { background: #ff6a00; }
 
 .provider-card__body {
   display: flex;
