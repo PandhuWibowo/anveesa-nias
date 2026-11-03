@@ -187,6 +187,12 @@ const router = createRouter({
           meta: { requiredPermissionsAny: ['cassandra.view'] },
         },
         {
+          path: 'sls',
+          name: 'sls',
+          component: () => import('@/views/SLSView.vue'),
+          meta: { requiredPermissionsAny: ['schema.browse', 'connections.view'] },
+        },
+        {
           path: 'search',
           name: 'search',
           component: () => import('@/views/SearchView.vue'),

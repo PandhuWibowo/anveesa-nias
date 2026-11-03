@@ -19,6 +19,7 @@ export type DbDriver =
   | 's3_gcp'
   | 's3_oss'
   | 's3_obs'
+  | 'alibaba_sls'
 
 export interface Connection {
   id: number
