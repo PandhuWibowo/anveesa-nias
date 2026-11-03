@@ -6,7 +6,9 @@ import { useAuth } from '@/composables/useAuth'
 import { useTheme } from '@/composables/useTheme'
 import { useConnections } from '@/composables/useConnections'
 import { useCommandPalette } from '@/composables/useCommandPalette'
-import { MAIN_SECTIONS, SETTINGS_SECTION, sectionOf, workspaceMeta, type NavItem, type NavSection } from '@/navigation'
+import { MAIN_SECTIONS, SETTINGS_SECTION, sectionLabel, sectionOf, workspaceMeta, type NavItem, type NavSection } from '@/navigation'
+import { t } from '@/i18n'
+import LanguageMenu from '@/components/ui/LanguageMenu.vue'
 import { useNavigation } from '@/composables/useNavigation'
 import { DRIVER_COLOR, DRIVER_NAME } from '@/utils/drivers'
 import NavIcon from '@/components/ui/NavIcon.vue'
@@ -48,7 +50,7 @@ type SidebarEntry = { section: NavSection; label: string; icon: string; target: 
 
 const entries = computed<SidebarEntry[]>(() =>
   MAIN_SECTIONS.map((section) => {
-    const meta = section.connectionScoped ? workspaceMeta(activeDriver.value) : { label: section.label, icon: section.icon }
+    const meta = section.connectionScoped ? workspaceMeta(activeDriver.value) : { label: sectionLabel(section), icon: section.icon }
     return { section, ...meta, target: nav.entryFor(section, activeDriver.value) }
   }).filter((e) => e.target || e.section.connectionScoped),
 )
@@ -144,30 +146,30 @@ watch(() => route.fullPath, () => { connOpen.value = false; userOpen.value = fal
 </script>
 
 <template>
-  <aside class="sb" :class="{ 'sb--collapsed': collapsed, 'sb--mobile-open': mobileOpen }" aria-label="Primary">
+  <aside class="sb" :class="{ 'sb--collapsed': collapsed, 'sb--mobile-open': mobileOpen }" :aria-label="t('shell.primaryNav')">
     <!-- Brand -->
     <div class="sb__brand">
-      <router-link :to="{ name: 'welcome' }" class="sb__logo" title="Home" @click="emit('close-mobile')">
+      <router-link :to="{ name: 'welcome' }" class="sb__logo" :title="t('shell.home')" @click="emit('close-mobile')">
         <span class="sb__mark">
           <NavIcon name="nias" :size="15" />
         </span>
         <span class="sb__name">Nias</span>
       </router-link>
-      <button class="sb__icon-btn sb__collapse" type="button" :title="collapsed ? 'Expand sidebar' : 'Collapse sidebar'" :aria-label="collapsed ? 'Expand sidebar' : 'Collapse sidebar'" @click="emit('toggle-collapse')">
+      <button class="sb__icon-btn sb__collapse" type="button" :title="collapsed ? t('shell.expandSidebar') : t('shell.collapseSidebar')" :aria-label="collapsed ? t('shell.expandSidebar') : t('shell.collapseSidebar')" @click="emit('toggle-collapse')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" />
         </svg>
       </button>
-      <button class="sb__icon-btn sb__close" type="button" aria-label="Close menu" @click="emit('close-mobile')">
+      <button class="sb__icon-btn sb__close" type="button" :aria-label="t('shell.closeMenu')" @click="emit('close-mobile')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
       </button>
     </div>
 
     <!-- Search + connection -->
     <div class="sb__top">
-      <button class="sb__search" type="button" :title="`Search (${modKey}K)`" @click="palette.show(); emit('close-mobile')">
+      <button class="sb__search" type="button" :title="t('shell.searchShortcut', { key: `${modKey}K` })" @click="palette.show(); emit('close-mobile')">
         <NavIcon name="search" :size="15" />
-        <span class="sb__search-label">Search</span>
+        <span class="sb__search-label">{{ t('common.search') }}</span>
         <kbd class="sb__kbd">{{ modKey }}K</kbd>
       </button>
 
@@ -176,7 +178,7 @@ watch(() => route.fullPath, () => { connOpen.value = false; userOpen.value = fal
         class="sb__conn"
         :class="{ 'is-open': connOpen }"
         type="button"
-        :title="activeConn ? `${activeConn.name} · ${DRIVER_NAME[activeConn.driver] ?? activeConn.driver}` : 'Choose a connection'"
+        :title="activeConn ? `${activeConn.name} · ${DRIVER_NAME[activeConn.driver] ?? activeConn.driver}` : t('shell.chooseConnection')"
         @click="connOpen = !connOpen; userOpen = false"
       >
         <span v-if="activeConn" class="sb__driver" :style="{ background: DRIVER_COLOR[activeConn.driver] ?? '#4b5563' }">
@@ -184,8 +186,8 @@ watch(() => route.fullPath, () => { connOpen.value = false; userOpen.value = fal
         </span>
         <span v-else class="sb__driver sb__driver--empty"><NavIcon name="plug" :size="13" /></span>
         <span class="sb__conn-text">
-          <span class="sb__conn-name">{{ activeConn ? activeConn.name : 'No connection' }}</span>
-          <span class="sb__conn-sub">{{ activeConn ? (activeConn.host || DRIVER_NAME[activeConn.driver]) : 'Choose one to start' }}</span>
+          <span class="sb__conn-name">{{ activeConn ? activeConn.name : t('shell.noConnection') }}</span>
+          <span class="sb__conn-sub">{{ activeConn ? (activeConn.host || DRIVER_NAME[activeConn.driver]) : t('shell.chooseToStart') }}</span>
         </span>
         <svg class="sb__chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 9 4-4 4 4M8 15l4 4 4-4" /></svg>
       </button>
@@ -207,11 +209,11 @@ watch(() => route.fullPath, () => { connOpen.value = false; userOpen.value = fal
         class="sb__item"
         :class="{ 'is-active': route.name === 'welcome' }"
         :aria-current="route.name === 'welcome' ? 'page' : undefined"
-        :title="collapsed ? 'Home' : undefined"
+        :title="collapsed ? t('shell.home') : undefined"
         @click="emit('close-mobile')"
       >
         <NavIcon name="home" :size="16" />
-        <span class="sb__item-label">Home</span>
+        <span class="sb__item-label">{{ t('shell.home') }}</span>
       </router-link>
 
       <div class="sb__sep" />
@@ -238,14 +240,14 @@ watch(() => route.fullPath, () => { connOpen.value = false; userOpen.value = fal
         :to="{ name: 'notifications' }"
         class="sb__item"
         :class="{ 'is-active': route.name === 'notifications' }"
-        :title="collapsed ? 'Notifications' : undefined"
+        :title="collapsed ? t('shell.notifications') : undefined"
         @click="emit('close-mobile')"
       >
         <span class="sb__bell">
           <NavIcon name="bell" :size="16" />
           <span v-if="unread > 0 && collapsed" class="sb__bell-dot" />
         </span>
-        <span class="sb__item-label">Notifications</span>
+        <span class="sb__item-label">{{ t('shell.notifications') }}</span>
         <span v-if="unread > 0" class="sb__count">{{ unread > 99 ? '99+' : unread }}</span>
       </router-link>
 
@@ -255,11 +257,11 @@ watch(() => route.fullPath, () => { connOpen.value = false; userOpen.value = fal
         class="sb__item"
         :class="{ 'is-active': currentSection?.id === 'settings' }"
         :aria-current="currentSection?.id === 'settings' ? 'page' : undefined"
-        :title="collapsed ? 'Settings' : undefined"
+        :title="collapsed ? t('shell.settings') : undefined"
         @click.prevent="openSettings"
       >
         <NavIcon name="settings" :size="16" />
-        <span class="sb__item-label">Settings</span>
+        <span class="sb__item-label">{{ t('shell.settings') }}</span>
       </a>
 
       <div class="sb__foot-row">
@@ -267,35 +269,36 @@ watch(() => route.fullPath, () => { connOpen.value = false; userOpen.value = fal
           <button class="sb__user" type="button" :aria-expanded="userOpen" @click="userOpen = !userOpen; connOpen = false">
             <span class="sb__avatar">{{ initial }}</span>
             <span class="sb__user-text">
-              <span class="sb__user-name">{{ user?.username ?? 'User' }}</span>
+              <span class="sb__user-name">{{ user?.username ?? t('shell.user') }}</span>
               <span class="sb__user-role">{{ user?.role }}</span>
             </span>
           </button>
           <Transition name="pop">
             <div v-if="userOpen" class="sb__menu" role="menu">
               <button class="sb__menu-item" role="menuitem" type="button" @click="goAccount('security')">
-                <NavIcon name="lock" :size="15" /> Password and 2FA
+                <NavIcon name="lock" :size="15" /> {{ t('shell.passwordAnd2fa') }}
               </button>
               <button class="sb__menu-item" role="menuitem" type="button" @click="goAccount('docs')">
-                <NavIcon name="book" :size="15" /> Documentation
+                <NavIcon name="book" :size="15" /> {{ t('shell.documentation') }}
               </button>
               <div class="sb__menu-sep" />
               <button class="sb__menu-item sb__menu-item--danger" role="menuitem" type="button" @click="handleLogout">
-                <NavIcon name="logout" :size="15" /> Sign out
+                <NavIcon name="logout" :size="15" /> {{ t('shell.signOut') }}
               </button>
             </div>
           </Transition>
         </div>
-        <router-link v-else :to="{ name: 'docs' }" class="sb__item sb__docs" :title="collapsed ? 'Documentation' : undefined">
+        <router-link v-else :to="{ name: 'docs' }" class="sb__item sb__docs" :title="collapsed ? t('shell.documentation') : undefined">
           <NavIcon name="book" :size="16" />
-          <span class="sb__item-label">Documentation</span>
+          <span class="sb__item-label">{{ t('shell.documentation') }}</span>
         </router-link>
 
+        <LanguageMenu class="sb__lang" :collapsed="collapsed" />
         <button
           class="sb__icon-btn sb__theme"
           type="button"
-          :title="mode === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
-          :aria-label="mode === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
+          :title="mode === 'dark' ? t('shell.lightTheme') : t('shell.darkTheme')"
+          :aria-label="mode === 'dark' ? t('shell.lightTheme') : t('shell.darkTheme')"
           @click="toggleTheme"
         >
           <NavIcon :name="mode === 'dark' ? 'sun' : 'moon'" :size="16" />

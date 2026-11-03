@@ -9,7 +9,8 @@ import ToastContainer from '@/components/ui/ToastContainer.vue'
 import ConfirmModal from '@/components/ui/ConfirmModal.vue'
 import { useConnections } from '@/composables/useConnections'
 import { useCommandPalette } from '@/composables/useCommandPalette'
-import { NAV_GROUPS, navKey, sectionOf, workspaceMeta } from '@/navigation'
+import { NAV_GROUPS, navKey, sectionOf, workspaceMeta, sectionLabel } from '@/navigation'
+import { t } from '@/i18n'
 import { useNavigation } from '@/composables/useNavigation'
 
 const LS_KEY = 'activeConnId'
@@ -68,8 +69,8 @@ watch(() => route.fullPath, () => {
 const currentLabel = computed(() => {
   const tab = typeof route.query.tab === 'string' ? route.query.tab : null
   const section = sectionOf(route.name as string, tab)
-  if (!section) return route.name === 'welcome' ? 'Home' : 'Nias'
-  return section.connectionScoped ? workspaceMeta(activeDriver.value).label : section.label
+  if (!section) return route.name === 'welcome' ? t('shell.home') : 'Nias'
+  return section.connectionScoped ? workspaceMeta(activeDriver.value).label : sectionLabel(section)
 })
 
 function onKey(e: KeyboardEvent) {
@@ -99,11 +100,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
     <div class="app-content">
       <header class="mobile-bar">
-        <button class="mobile-bar__btn" type="button" aria-label="Open menu" @click="mobileOpen = true">
+        <button class="mobile-bar__btn" type="button" :aria-label="t('shell.openMenu')" @click="mobileOpen = true">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
         </button>
         <span class="mobile-bar__title">{{ currentLabel }}</span>
-        <button class="mobile-bar__btn" type="button" aria-label="Search" @click="palette.show()">
+        <button class="mobile-bar__btn" type="button" :aria-label="t('common.search')" @click="palette.show()">
           <NavIcon name="search" :size="18" />
         </button>
       </header>

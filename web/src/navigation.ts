@@ -2,6 +2,10 @@
 // sections; each section's pages appear as tabs at the top of the content
 // panel (SectionTabs.vue). The command palette and Home read the same data.
 // Permission strings mirror the route guards in router/index.ts.
+// Labels here are the English source; show them through itemLabel / itemDesc /
+// sectionLabel so they follow the user's language (i18n/locales/*).
+
+import { tr } from '@/i18n'
 
 export type NavItem = {
   name: string
@@ -146,12 +150,23 @@ export function navKey(item: Pick<NavItem, 'name' | 'query'>) {
   return item.query?.tab ? `${item.name}:${item.query.tab}` : item.name
 }
 
+/** A page's label and description in the current language. */
+export function itemLabel(item: Pick<NavItem, 'name' | 'query' | 'label'>) {
+  return tr(`nav.${navKey(item)}`, item.label)
+}
+export function itemDesc(item: Pick<NavItem, 'name' | 'query' | 'desc'>) {
+  return tr(`nav.${navKey(item)}.desc`, item.desc)
+}
+export function sectionLabel(section: Pick<NavSection, 'id' | 'label'>) {
+  return tr(`section.${section.id}`, section.label)
+}
+
 /** What the connection-scoped section is called for the active connection's driver. */
 export function workspaceMeta(driver: string | null | undefined): { label: string; icon: string } {
-  if (!driver) return { label: 'Connect a database', icon: 'plug' }
-  if (SQL.includes(driver)) return { label: 'Database', icon: 'database' }
-  if (SEARCH.includes(driver)) return { label: 'Search', icon: 'search' }
-  if (BUCKETS.includes(driver)) return { label: 'Storage', icon: 'cloud' }
+  if (!driver) return { label: tr('workspace.none', 'Connect a database'), icon: 'plug' }
+  if (SQL.includes(driver)) return { label: tr('workspace.database', 'Database'), icon: 'database' }
+  if (SEARCH.includes(driver)) return { label: tr('workspace.search', 'Search'), icon: 'search' }
+  if (BUCKETS.includes(driver)) return { label: tr('workspace.storage', 'Storage'), icon: 'cloud' }
   const names: Record<string, { label: string; icon: string }> = {
     redis: { label: 'Redis', icon: 'key' },
     memcache: { label: 'Memcache', icon: 'key' },
@@ -159,7 +174,9 @@ export function workspaceMeta(driver: string | null | undefined): { label: strin
     cassandra: { label: 'Cassandra', icon: 'layers' },
     kafka: { label: 'Kafka', icon: 'kafka' },
   }
-  return names[driver] ?? { label: 'Connection', icon: 'plug' }
+  const named = names[driver]
+  if (named) return { ...named, label: tr(`workspace.${driver}`, named.label) }
+  return { label: tr('workspace.connection', 'Connection'), icon: 'plug' }
 }
 
 /** The section that owns a route (tab-aware for pages like Roles / Access groups). */

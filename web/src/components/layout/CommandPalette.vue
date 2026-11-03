@@ -5,7 +5,8 @@ import { useAuth } from '@/composables/useAuth'
 import { useTheme } from '@/composables/useTheme'
 import { useConnections } from '@/composables/useConnections'
 import { useCommandPalette } from '@/composables/useCommandPalette'
-import { NAV_GROUPS, navKey, type NavItem } from '@/navigation'
+import { NAV_GROUPS, itemDesc, itemLabel, navKey, sectionLabel, type NavItem } from '@/navigation'
+import { t, locale, setLocale, LOCALES } from '@/i18n'
 import { DRIVER_COLOR, DRIVER_NAME, connectionRoute } from '@/utils/drivers'
 import NavIcon from '@/components/ui/NavIcon.vue'
 import DriverIcon from '@/components/ui/DriverIcon.vue'
@@ -37,7 +38,7 @@ const pages = computed<Array<NavItem & { group: string }>>(() =>
   NAV_GROUPS.flatMap((g) =>
     g.items
       .filter((i) => !i.permissionsAny?.length || hasAnyPermission(i.permissionsAny))
-      .map((i) => ({ ...i, group: g.label })),
+      .map((i) => ({ ...i, group: sectionLabel(g) })),
   ),
 )
 
@@ -48,8 +49,8 @@ function go(item: NavItem) {
 const pageEntries = computed<Entry[]>(() =>
   pages.value.map((p) => ({
     id: `page:${navKey(p)}`,
-    section: 'Pages',
-    label: p.label,
+    section: t('palette.pages'),
+    label: itemLabel(p),
     hint: p.group,
     icon: p.icon,
     run: () => go(p),
@@ -59,7 +60,7 @@ const pageEntries = computed<Entry[]>(() =>
 const connEntries = computed<Entry[]>(() =>
   connections.value.map((c) => ({
     id: `conn:${c.id}`,
-    section: 'Connections',
+    section: t('palette.connections'),
     label: c.name,
     hint: DRIVER_NAME[c.driver] ?? c.driver,
     driver: c.driver,
@@ -73,13 +74,16 @@ const connEntries = computed<Entry[]>(() =>
 const actionEntries = computed<Entry[]>(() => {
   const list: Entry[] = []
   if (hasAnyPermission(['connections.view'])) {
-    list.push({ id: 'act:new-conn', section: 'Actions', label: 'Add connection', hint: 'Connections', icon: 'plus', run: () => router.push({ name: 'connections', query: { new: '1' } }) })
+    list.push({ id: 'act:new-conn', section: t('palette.actions'), label: t('palette.addConnection'), hint: t('palette.hint.connections'), icon: 'plus', run: () => router.push({ name: 'connections', query: { new: '1' } }) })
   }
-  list.push({ id: 'act:theme', section: 'Actions', label: mode.value === 'dark' ? 'Switch to light theme' : 'Switch to dark theme', hint: 'Appearance', icon: mode.value === 'dark' ? 'sun' : 'moon', run: toggleTheme })
-  list.push({ id: 'act:docs', section: 'Actions', label: 'Open documentation', hint: 'Help', icon: 'book', run: () => router.push({ name: 'docs' }) })
+  list.push({ id: 'act:theme', section: t('palette.actions'), label: mode.value === 'dark' ? t('shell.lightTheme') : t('shell.darkTheme'), hint: t('palette.hint.appearance'), icon: mode.value === 'dark' ? 'sun' : 'moon', run: toggleTheme })
+  for (const l of LOCALES.filter((x) => x.code !== locale.value)) {
+    list.push({ id: `act:lang:${l.code}`, section: t('palette.actions'), label: t('palette.switchLanguage', { name: l.label }), hint: t('palette.hint.language'), icon: 'globe', run: () => setLocale(l.code) })
+  }
+  list.push({ id: 'act:docs', section: t('palette.actions'), label: t('palette.openDocs'), hint: t('palette.hint.help'), icon: 'book', run: () => router.push({ name: 'docs' }) })
   if (authEnabled.value) {
-    list.push({ id: 'act:security', section: 'Actions', label: 'Security and 2FA', hint: 'Account', icon: 'lock', run: () => router.push({ name: 'security' }) })
-    list.push({ id: 'act:logout', section: 'Actions', label: 'Sign out', hint: 'Account', icon: 'logout', run: async () => { await logout(); router.push({ name: 'login' }) } })
+    list.push({ id: 'act:security', section: t('palette.actions'), label: t('palette.security'), hint: t('palette.hint.account'), icon: 'lock', run: () => router.push({ name: 'security' }) })
+    list.push({ id: 'act:logout', section: t('palette.actions'), label: t('shell.signOut'), hint: t('palette.hint.account'), icon: 'logout', run: async () => { await logout(); router.push({ name: 'login' }) } })
   }
   return list
 })
@@ -108,7 +112,7 @@ const results = computed<Entry[]>(() => {
     const recents = recent.value
       .map((k) => byId.get(`page:${k}`))
       .filter((e): e is Entry => !!e)
-      .map((e) => ({ ...e, section: 'Recent' }))
+      .map((e) => ({ ...e, section: t('palette.recent') }))
     const recentIds = new Set(recents.map((e) => e.id))
     return [
       ...recents,
@@ -118,7 +122,7 @@ const results = computed<Entry[]>(() => {
     ]
   }
   const all = [...pageEntries.value, ...connEntries.value, ...actionEntries.value]
-  const keywordsById = new Map(pages.value.map((p) => [`page:${navKey(p)}`, `${p.keywords ?? ''} ${p.desc}`]))
+  const keywordsById = new Map(pages.value.map((p) => [`page:${navKey(p)}`, `${p.keywords ?? ''} ${p.label} ${p.desc} ${itemDesc(p)}`]))
   return all
     .map((e) => {
       const primary = score(e.label, q)
@@ -178,7 +182,7 @@ function onKey(e: KeyboardEvent) {
   <Teleport to="body">
     <Transition name="palette">
       <div v-if="open" class="palette-backdrop" @mousedown.self="hide">
-        <div class="palette" role="dialog" aria-label="Go to page or connection" @keydown="onKey">
+        <div class="palette" role="dialog" :aria-label="t('palette.dialogLabel')" @keydown="onKey">
           <div class="palette__search">
             <NavIcon name="search" :size="16" />
             <input
@@ -186,8 +190,8 @@ function onKey(e: KeyboardEvent) {
               v-model="query"
               class="palette__input"
               type="text"
-              placeholder="Jump to a page, connection, or action"
-              aria-label="Search"
+              :placeholder="t('palette.placeholder')"
+              :aria-label="t('common.search')"
               role="combobox"
               aria-expanded="true"
               aria-controls="palette-list"
@@ -200,7 +204,7 @@ function onKey(e: KeyboardEvent) {
 
           <div id="palette-list" ref="listEl" class="palette__list" role="listbox">
             <div v-if="!results.length" class="palette__empty">
-              Nothing matches “{{ query }}”. Try a page name like “docker” or a connection name.
+              {{ t('palette.noResults', { q: query }) }}
             </div>
             <div v-for="group in grouped" :key="group.section" class="palette__group">
               <div class="palette__section">{{ group.section }}</div>
@@ -227,8 +231,8 @@ function onKey(e: KeyboardEvent) {
           </div>
 
           <div class="palette__foot">
-            <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
-            <span><kbd>↵</kbd> open</span>
+            <span><kbd>↑</kbd><kbd>↓</kbd> {{ t('palette.navigate') }}</span>
+            <span><kbd>↵</kbd> {{ t('palette.open') }}</span>
           </div>
         </div>
       </div>
