@@ -121,6 +121,7 @@ const driverColors: Record<string, string> = {
   s3_gcp:   '#4285f4',
   s3_oss:   '#ff6a00',
   s3_obs:   '#c00000',
+  alibaba_sls: '#ff6a00',
 }
 const driverLabels: Record<string, string> = {
   sqlite: 'SL',
@@ -139,6 +140,7 @@ const driverLabels: Record<string, string> = {
   s3_gcp:   'GCS',
   s3_oss:   'OSS',
   s3_obs:   'OBS',
+  alibaba_sls: 'SLS',
 }
 
 function pick(conn: Connection) {

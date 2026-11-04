@@ -500,6 +500,12 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.CloudAuditLogs())(w, r)
 			case sub == "cloud-logs" && len(parts) >= 3 && parts[2] == "audit-log-links" && r.Method == http.MethodPost:
 				requireAny(handlers.PermSchemaBrowse, handlers.PermConnectionsView)(handlers.CloudAuditLogLinks())(w, r)
+			case sub == "sls" && len(parts) >= 3 && parts[2] == "logstores" && r.Method == http.MethodGet:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SLSLogstores())(w, r)
+			case sub == "sls" && len(parts) >= 3 && parts[2] == "logs" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SLSLogs())(w, r)
+			case sub == "sls" && len(parts) >= 3 && parts[2] == "histogram" && r.Method == http.MethodPost:
+				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SLSHistogram())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "info" && r.Method == http.MethodGet:
 				requireAny(handlers.PermConnectionsView, handlers.PermSchemaBrowse)(handlers.SearchInfo())(w, r)
 			case sub == "search" && len(parts) >= 3 && parts[2] == "indices" && r.Method == http.MethodGet:

@@ -44,6 +44,7 @@ var allowedDrivers = map[string]bool{
 	"s3_gcp":        true,
 	"s3_oss":        true,
 	"s3_obs":        true,
+	"alibaba_sls":   true,
 }
 
 // encryptionKey for credential encryption (should be set from environment)
@@ -170,7 +171,7 @@ type ConnectionInput struct {
 func validateConnectionInput(in *ConnectionInput) error {
 	// Validate driver
 	if !allowedDrivers[in.Driver] {
-		return fmt.Errorf("invalid driver: must be sqlite, postgres, mysql, mariadb, mssql, redis, memcache, kafka, mongodb, cassandra, elasticsearch, opensearch, s3_aws, s3_gcp, s3_oss, or s3_obs")
+		return fmt.Errorf("invalid driver: must be sqlite, postgres, mysql, mariadb, mssql, redis, memcache, kafka, mongodb, cassandra, elasticsearch, opensearch, s3_aws, s3_gcp, s3_oss, s3_obs, or alibaba_sls")
 	}
 
 	// Validate port
@@ -209,6 +210,18 @@ func validateConnectionInput(in *ConnectionInput) error {
 		if strings.TrimSpace(in.Host) == "" {
 			return fmt.Errorf("search endpoint host is required")
 		}
+	} else if isSLSDriver(in.Driver) {
+		if strings.TrimSpace(in.Host) == "" {
+			return fmt.Errorf("SLS endpoint is required")
+		}
+		if !slsProjectNamePattern.MatchString(strings.TrimSpace(in.Database)) {
+			return fmt.Errorf("SLS project must be 3-63 lowercase letters, digits or hyphens")
+		}
+		if strings.TrimSpace(in.Username) == "" {
+			return fmt.Errorf("AccessKey ID is required")
+		}
+		// The secret is not required here: on update a blank one keeps the
+		// stored secret, and newSLSClient rejects an empty one before any call.
 	} else if in.Port < 1 || in.Port > 65535 {
 		return fmt.Errorf("invalid port: must be 1-65535")
 	}
@@ -246,7 +259,7 @@ func isValidHostname(host string) bool {
 
 func buildDSN(in ConnectionInput) (string, error) {
 	switch in.Driver {
-	case "redis", "memcache", "kafka", "mongodb", "cassandra", "elasticsearch", "opensearch", "s3_aws", "s3_gcp", "s3_oss", "s3_obs":
+	case "redis", "memcache", "kafka", "mongodb", "cassandra", "elasticsearch", "opensearch", "s3_aws", "s3_gcp", "s3_oss", "s3_obs", "alibaba_sls":
 		return "", fmt.Errorf("%s does not use SQL DSN", in.Driver)
 	case "sqlite":
 		dbPath := strings.TrimSpace(in.Database)
@@ -430,6 +443,10 @@ func CreateConnection() http.HandlerFunc {
 		// Validate input
 		if err := validateConnectionInput(&in); err != nil {
 			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			return
+		}
+		if isSLSDriver(in.Driver) && strings.TrimSpace(in.Password) == "" {
+			http.Error(w, jsonError("AccessKey secret is required"), http.StatusBadRequest)
 			return
 		}
 
@@ -734,6 +751,7 @@ func DeleteConnection() http.HandlerFunc {
 		}
 
 		EvictFromPool(id)
+		StopConnectionTunnel(id)
 		appdb.DB.Exec(appdb.ConvertQuery(`DELETE FROM connections WHERE id=?`), id)
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -930,6 +948,16 @@ func TestConnection() http.HandlerFunc {
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 			defer cancel()
 			if err := testSearchInput(ctx, in); err != nil {
+				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"message": "Connection successful"})
+			return
+		}
+		if isSLSDriver(in.Driver) {
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			if err := testSLSInput(ctx, in); err != nil {
 				http.Error(w, jsonError("connection failed: "+err.Error()), http.StatusBadGateway)
 				return
 			}

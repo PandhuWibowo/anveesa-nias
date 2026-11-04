@@ -194,6 +194,13 @@ defineProps<{
       <path d="M5 21C6.5 20 8.5 20 10 21C11.5 22 13.5 22 15 21C16.5 20 18.5 20 20 21" stroke="white" stroke-width="1.6" stroke-linecap="round" fill="none" opacity="0.5"/>
     </g>
 
+    <!-- ── Alibaba SLS: log lines with a magnifier ───────────── -->
+    <g v-else-if="driver === 'alibaba_sls'">
+      <path d="M3 5H17M3 9.5H13M3 14H9" stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.9"/>
+      <circle cx="15.5" cy="15.5" r="4" stroke="white" stroke-width="2" fill="none" opacity="0.95"/>
+      <path d="M18.5 18.5L21.5 21.5" stroke="white" stroke-width="2.2" stroke-linecap="round" opacity="0.95"/>
+    </g>
+
     <!-- ── Huawei OBS: 6-petal flower ─────────────────────────── -->
     <g v-else-if="driver === 's3_obs'">
       <!-- petals (6, evenly spaced) -->

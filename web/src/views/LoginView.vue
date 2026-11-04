@@ -3,6 +3,8 @@ import { ref, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuth } from '@/composables/useAuth'
 import NavIcon from '@/components/ui/NavIcon.vue'
+import LanguageMenu from '@/components/ui/LanguageMenu.vue'
+import { t, type MessageKey } from '@/i18n'
 
 const router = useRouter()
 const { login } = useAuth()
@@ -10,7 +12,8 @@ const { login } = useAuth()
 const username = ref('')
 const password = ref('')
 const totpCode = ref('')
-const error = ref('')
+// A message key, or a server-provided message shown as-is.
+const error = ref<{ key?: MessageKey; text?: string } | null>(null)
 const loading = ref(false)
 const requires2fa = ref(false)
 const showPassword = ref(false)
@@ -18,17 +21,17 @@ const codeInput = ref<HTMLInputElement | null>(null)
 
 async function handleLogin() {
   if (!username.value || !password.value) {
-    error.value = 'Enter your username and password.'
+    error.value = { key: 'auth.err.missing' }
     return
   }
 
   if (requires2fa.value && !totpCode.value) {
-    error.value = 'Enter the code from your authenticator app.'
+    error.value = { key: 'auth.err.missingCode' }
     return
   }
 
   loading.value = true
-  error.value = ''
+  error.value = null
 
   const result = await login(username.value, password.value, totpCode.value || undefined)
   loading.value = false
@@ -37,18 +40,18 @@ async function handleLogin() {
     router.push(result.mustSetupMfa ? { name: 'security', query: { setup: 'mfa' } } : { name: 'welcome' })
   } else if (result.requires2fa) {
     requires2fa.value = true
-    error.value = ''
+    error.value = null
     await nextTick()
     codeInput.value?.focus()
   } else {
-    error.value = result.error || 'That username and password don’t match.'
+    error.value = result.error ? { text: result.error } : { key: 'auth.err.mismatch' }
   }
 }
 
 function back() {
   requires2fa.value = false
   totpCode.value = ''
-  error.value = ''
+  error.value = null
 }
 </script>
 
@@ -58,17 +61,18 @@ function back() {
       <div class="login__brand">
         <span class="login__mark"><NavIcon name="nias" :size="18" /></span>
         <span class="login__name">Anveesa Nias</span>
+        <LanguageMenu class="login__lang" variant="inline" />
       </div>
 
-      <h1 class="login__title">{{ requires2fa ? 'Two-step verification' : 'Sign in' }}</h1>
+      <h1 class="login__title">{{ requires2fa ? t('auth.twoStep') : t('auth.signIn') }}</h1>
       <p class="login__sub">
-        {{ requires2fa ? `Enter the 6-digit code from your authenticator app, or a backup code, for ${username}.` : 'Use the account your administrator gave you.' }}
+        {{ requires2fa ? t('auth.twoStepHelp', { user: username }) : t('auth.signInHelp') }}
       </p>
 
       <form class="login__form" novalidate @submit.prevent="handleLogin">
         <template v-if="!requires2fa">
           <div class="form-group">
-            <label class="form-label" for="login-user">Username</label>
+            <label class="form-label" for="login-user">{{ t('auth.username') }}</label>
             <input
               id="login-user"
               v-model="username"
@@ -81,7 +85,7 @@ function back() {
             />
           </div>
           <div class="form-group">
-            <label class="form-label" for="login-pass">Password</label>
+            <label class="form-label" for="login-pass">{{ t('auth.password') }}</label>
             <div class="login__pw">
               <input
                 id="login-pass"
@@ -93,18 +97,18 @@ function back() {
               <button
                 type="button"
                 class="login__pw-toggle"
-                :aria-label="showPassword ? 'Hide password' : 'Show password'"
+                :aria-label="showPassword ? t('auth.hidePassword') : t('auth.showPassword')"
                 :aria-pressed="showPassword"
                 @click="showPassword = !showPassword"
               >
-                {{ showPassword ? 'Hide' : 'Show' }}
+                {{ showPassword ? t('common.hide') : t('common.show') }}
               </button>
             </div>
           </div>
         </template>
 
         <div v-else class="form-group">
-          <label class="form-label" for="login-code">Verification code</label>
+          <label class="form-label" for="login-code">{{ t('auth.code') }}</label>
           <input
             id="login-code"
             ref="codeInput"
@@ -117,14 +121,14 @@ function back() {
           />
         </div>
 
-        <div v-if="error" class="notice notice--error" role="alert">{{ error }}</div>
+        <div v-if="error" class="notice notice--error" role="alert">{{ error.key ? t(error.key) : error.text }}</div>
 
         <button class="base-btn base-btn--primary login__submit" type="submit" :disabled="loading">
           <svg v-if="loading" class="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
-          {{ loading ? (requires2fa ? 'Verifying…' : 'Signing in…') : (requires2fa ? 'Verify' : 'Sign in') }}
+          {{ loading ? (requires2fa ? t('auth.verifying') : t('auth.signingIn')) : (requires2fa ? t('auth.verify') : t('auth.signIn')) }}
         </button>
         <button v-if="requires2fa" type="button" class="base-btn base-btn--ghost login__submit" @click="back">
-          Use a different account
+          {{ t('auth.differentAccount') }}
         </button>
       </form>
     </main>
@@ -144,6 +148,7 @@ function back() {
   width: 100%;
   max-width: 360px;
 }
+.login__lang { margin-left: auto; }
 .login__brand {
   display: flex;
   align-items: center;

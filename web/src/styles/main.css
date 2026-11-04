@@ -225,6 +225,17 @@ html[data-theme='light'] {
   --success-dim:       var(--success-bg);
 }
 
+/* Chinese: Latin glyphs stay Figtree / Plex Mono; Han glyphs come from the
+   system's CJK UI font, so no web font download is needed. Fraunces has no CJK
+   cut, so display text uses the UI stack. */
+:root:lang(zh) {
+  --font:    'Figtree', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', 'Source Han Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --display: var(--font);
+  --mono:    'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, 'PingFang SC', 'Microsoft YaHei', monospace;
+}
+:lang(zh) body { line-height: 1.6; }
+
+
 body {
   background: var(--canvas);
   color: var(--text);
