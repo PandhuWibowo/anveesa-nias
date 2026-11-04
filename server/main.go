@@ -687,9 +687,11 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermRowHistoryView)(handlers.UndoRowChange())(w, r)
 
 			// ── DB User Management ────────────────────────────────────
-			case sub == "db-users" && r.Method == http.MethodGet:
+			// len(parts) == 2: only /db-users itself — /db-users/{username}/... is routed below
+			// (without it, GET .../{username}/grants returned the user list instead of grants).
+			case sub == "db-users" && len(parts) == 2 && r.Method == http.MethodGet:
 				requireAny(handlers.PermDBUsersManage)(handlers.ListDBUsers())(w, r)
-			case sub == "db-users" && r.Method == http.MethodPost:
+			case sub == "db-users" && len(parts) == 2 && r.Method == http.MethodPost:
 				requireAny(handlers.PermDBUsersManage)(handlers.CreateDBUser())(w, r)
 			case sub == "db-users-dbs" && r.Method == http.MethodGet:
 				requireAny(handlers.PermDBUsersManage)(handlers.ListDBsForGrantPicker())(w, r)
@@ -701,6 +703,8 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 				requireAny(handlers.PermDBUsersManage)(handlers.ListSequencesForGrantPicker())(w, r)
 			case sub == "db-users-functions" && r.Method == http.MethodGet:
 				requireAny(handlers.PermDBUsersManage)(handlers.ListFunctionsForGrantPicker())(w, r)
+			case sub == "db-users-schema-owners" && r.Method == http.MethodGet:
+				requireAny(handlers.PermDBUsersManage)(handlers.ListSchemaOwnersForGrantPicker())(w, r)
 
 			// Routes with username segment: /api/connections/{id}/db-users/{username}[/...]
 			case len(parts) >= 3 && parts[1] == "db-users":
@@ -712,6 +716,10 @@ func registerRoutes(mux *http.ServeMux, cfg *config.Config) {
 					requireAny(handlers.PermDBUsersManage)(handlers.GetDBUserGrants())(w, r)
 				case lastSeg == "grants" && r.Method == http.MethodPut:
 					requireAny(handlers.PermDBUsersManage)(handlers.ApplyDBUserGrants())(w, r)
+				case lastSeg == "access" && r.Method == http.MethodPost:
+					requireAny(handlers.PermDBUsersManage)(handlers.DBUserAccess())(w, r)
+				case lastSeg == "default-privileges" && r.Method == http.MethodGet:
+					requireAny(handlers.PermDBUsersManage)(handlers.GetDBUserDefaultPrivileges())(w, r)
 				case r.Method == http.MethodDelete:
 					requireAny(handlers.PermDBUsersManage)(handlers.DropDBUser())(w, r)
 				default:

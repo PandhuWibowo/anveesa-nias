@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -418,7 +417,9 @@ func GetDBUserGrants() http.HandlerFunc {
 
 		switch driver {
 		case "postgres":
-			grants, err = pgGetGrants(r.Context(), db, username)
+			// Read every reachable database so schema/table grants outside the
+			// connection's own database show up too (each entry carries its database).
+			grants, err = pgGetGrantsAllDBs(r.Context(), connID, db, username)
 		case "mysql", "mariadb":
 			if host == "" {
 				host = "%"
@@ -747,6 +748,7 @@ func ApplyDBUserGrants() http.HandlerFunc {
 		}
 
 		var body struct {
+			dbAccessRequestOpts
 			Host   string       `json:"host"`
 			Grants []GrantEntry `json:"grants"`
 		}
@@ -761,161 +763,43 @@ func ApplyDBUserGrants() http.HandlerFunc {
 			return
 		}
 
+		// Plan first (exact GRANT/REVOKE statements per database), then preview,
+		// apply or submit for approval — see respondDBAccessPlan.
+		var batches []grantBatch
 		switch driver {
 		case "postgres":
-			if err := applyPGGrantsMultiDB(r.Context(), connID, db, username, body.Grants); err != nil {
-				http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
-				return
-			}
+			batches, err = planPGGrantChanges(r.Context(), connID, db, username, body.Grants)
 
 		case "mysql", "mariadb":
 			host := body.Host
 			if host == "" {
 				host = "%"
 			}
-			if err := applyMySQLGrants(r.Context(), db, username, host, body.Grants); err != nil {
-				http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
-				return
-			}
+			batches, err = planMySQLGrantChanges(r.Context(), db, username, host, body.Grants)
 
 		default:
 			http.Error(w, jsonError("unsupported driver"), http.StatusBadRequest)
 			return
 		}
+		if err != nil {
+			http.Error(w, jsonError(err.Error()), http.StatusInternalServerError)
+			return
+		}
 
-		json.NewEncoder(w).Encode(map[string]string{"status": "applied"})
+		respondDBAccessPlan(w, r, connID, db, driver, batches, body.dbAccessRequestOpts, fmt.Sprintf("Update grants for %s", username))
 	}
 }
 
 // applyPGGrantsMultiDB groups grants by their target database and applies each
 // group via a dedicated connection to that database.
+// The diff is computed across all databases at once (planPGGrantChanges) so a
+// grant is only revoked when it is really missing from the desired set.
 func applyPGGrantsMultiDB(ctx context.Context, connID int64, defaultDB *sql.DB, username string, desired []GrantEntry) error {
-	// Group by target database.
-	// - "database" level grants have a Database field; they can be applied from any DB.
-	// - "schema" and "table" level grants must be applied from within their target database.
-	type dbGroup struct {
-		targetDB string // empty = use defaultDB
-		grants   []GrantEntry
-	}
-	groups := make(map[string][]GrantEntry)
-	for _, g := range desired {
-		var key string
-		switch g.Level {
-		case "schema", "table", "sequence", "function":
-			key = g.Database // GRANT must run inside this database
-		default:
-			key = "" // database-level grants run from the current connection
-		}
-		groups[key] = append(groups[key], g)
-	}
-
-	for dbKey, grp := range groups {
-		var execDB *sql.DB
-		var tempConn bool
-		if dbKey != "" {
-			tc, _, err := openTempConn(connID, dbKey)
-			if err != nil {
-				return fmt.Errorf("cannot connect to database %q: %w", dbKey, err)
-			}
-			execDB = tc
-			tempConn = true
-		} else {
-			execDB = defaultDB
-		}
-
-		if err := applyPGGrants(ctx, execDB, username, grp); err != nil {
-			if tempConn {
-				execDB.Close()
-			}
-			return err
-		}
-		if tempConn {
-			execDB.Close()
-		}
-	}
-	return nil
-}
-
-func applyPGGrants(ctx context.Context, db *sql.DB, username string, desired []GrantEntry) error {
-	// Get current grants
-	current, err := pgGetGrants(ctx, db, username)
+	batches, err := planPGGrantChanges(ctx, connID, defaultDB, username, desired)
 	if err != nil {
 		return err
 	}
-
-	// Build lookup maps
-	type key struct{ level, database, schema, table string }
-	currentMap := make(map[key]map[string]bool)
-	for _, g := range current {
-		k := key{g.Level, g.Database, g.Schema, g.Table}
-		currentMap[k] = toPrivSet(g.Privileges)
-	}
-	desiredMap := make(map[key]map[string]bool)
-	for _, g := range desired {
-		k := key{g.Level, g.Database, g.Schema, g.Table}
-		desiredMap[k] = toPrivSet(filterAllowedPrivs(g.Privileges,
-			mergeMaps(pgTablePrivileges, pgSchemaPrivileges, pgDatabasePrivileges, pgSequencePrivileges, pgFunctionPrivileges)))
-	}
-
-	// Compute grants to add and revoke
-	type change struct {
-		grant  bool
-		entry  GrantEntry
-		privs  []string
-	}
-	var changes []change
-
-	// All keys from both maps
-	allKeys := make(map[key]bool)
-	for k := range currentMap {
-		allKeys[k] = true
-	}
-	for k := range desiredMap {
-		allKeys[k] = true
-	}
-
-	for k := range allKeys {
-		cur := currentMap[k]
-		des := desiredMap[k]
-
-		// Privs to grant (in desired but not current)
-		var toGrant []string
-		for p := range des {
-			if !cur[p] {
-				toGrant = append(toGrant, p)
-			}
-		}
-		// Privs to revoke (in current but not desired)
-		var toRevoke []string
-		for p := range cur {
-			if !des[p] {
-				toRevoke = append(toRevoke, p)
-			}
-		}
-		sort.Strings(toGrant)
-		sort.Strings(toRevoke)
-
-		entry := GrantEntry{Level: k.level, Database: k.database, Schema: k.schema, Table: k.table}
-
-		if len(toGrant) > 0 {
-			changes = append(changes, change{grant: true, entry: entry, privs: toGrant})
-		}
-		if len(toRevoke) > 0 {
-			changes = append(changes, change{grant: false, entry: entry, privs: toRevoke})
-		}
-	}
-
-	for _, c := range changes {
-		stmt, err := buildPGGrantStmt(c.grant, username, c.entry, c.privs)
-		if err != nil {
-			continue // skip invalid entries
-		}
-		if _, err := db.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("failed to execute %q: %w", stmt, err)
-		}
-	}
-
-	return nil
+	return execGrantBatches(ctx, connID, defaultDB, "postgres", batches)
 }
 
 func buildPGGrantStmt(isGrant bool, username string, entry GrantEntry, privs []string) (string, error) {
@@ -987,70 +871,11 @@ func buildPGGrantStmt(isGrant bool, username string, entry GrantEntry, privs []s
 }
 
 func applyMySQLGrants(ctx context.Context, db *sql.DB, username, host string, desired []GrantEntry) error {
-	current, err := mysqlGetGrants(ctx, db, username, host)
+	batches, err := planMySQLGrantChanges(ctx, db, username, host, desired)
 	if err != nil {
 		return err
 	}
-
-	type key struct{ level, database, table string }
-	currentMap := make(map[key]map[string]bool)
-	for _, g := range current {
-		k := key{g.Level, g.Database, g.Table}
-		currentMap[k] = toPrivSet(g.Privileges)
-	}
-	desiredMap := make(map[key]map[string]bool)
-	for _, g := range desired {
-		k := key{g.Level, g.Database, g.Table}
-		desiredMap[k] = toPrivSet(filterAllowedPrivs(g.Privileges, mysqlPrivileges))
-	}
-
-	allKeys := make(map[key]bool)
-	for k := range currentMap {
-		allKeys[k] = true
-	}
-	for k := range desiredMap {
-		allKeys[k] = true
-	}
-
-	userSpec := fmt.Sprintf("'%s'@'%s'", escapeMySQL(username), escapeMySQL(host))
-
-	for k := range allKeys {
-		cur := currentMap[k]
-		des := desiredMap[k]
-
-		var toGrant []string
-		for p := range des {
-			if !cur[p] {
-				toGrant = append(toGrant, p)
-			}
-		}
-		var toRevoke []string
-		for p := range cur {
-			if !des[p] {
-				toRevoke = append(toRevoke, p)
-			}
-		}
-		sort.Strings(toGrant)
-		sort.Strings(toRevoke)
-
-		target := mysqlGrantTarget(k.level, k.database, k.table)
-
-		if len(toGrant) > 0 {
-			stmt := fmt.Sprintf("GRANT %s ON %s TO %s", strings.Join(toGrant, ", "), target, userSpec)
-			if _, err := db.ExecContext(ctx, stmt); err != nil {
-				return fmt.Errorf("GRANT failed: %w", err)
-			}
-		}
-		if len(toRevoke) > 0 {
-			stmt := fmt.Sprintf("REVOKE %s ON %s FROM %s", strings.Join(toRevoke, ", "), target, userSpec)
-			if _, err := db.ExecContext(ctx, stmt); err != nil {
-				return fmt.Errorf("REVOKE failed: %w", err)
-			}
-		}
-	}
-
-	db.ExecContext(ctx, "FLUSH PRIVILEGES")
-	return nil
+	return execGrantBatches(ctx, 0, db, "mysql", batches)
 }
 
 func mysqlGrantTarget(level, database, table string) string {

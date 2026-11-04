@@ -6,13 +6,13 @@ import { useTheme } from '@/composables/useTheme'
 import { useAuth } from '@/composables/useAuth'
 
 const { naiveTheme, themeOverrides, syncTheme } = useTheme()
-const { authReady, authEnabled, isAuthenticated, fetchMe } = useAuth()
+const { authReady, authEnabled, isAuthenticated, ensureAuth } = useAuth()
 const router = useRouter()
 const route = useRoute()
 
 onMounted(async () => {
   syncTheme()
-  await fetchMe()
+  await ensureAuth()
   
   // After auth check, redirect to login if auth is enabled and user is not authenticated
   if (authEnabled.value && !isAuthenticated.value && route.name !== 'login') {
