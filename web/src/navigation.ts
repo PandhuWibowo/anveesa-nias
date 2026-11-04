@@ -46,7 +46,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { name: 'row-history', label: 'Row history', desc: 'Row-level change log', icon: 'rowhistory', drivers: SQL, permissionsAny: ['rowhistory.view'] },
       { name: 'database-audit', label: 'Sessions', desc: 'Live sessions and external access', icon: 'shield', drivers: SQL, permissionsAny: ['databaseaudit.view'] },
       { name: 'database-logs', label: 'Logs', desc: 'Slow log, error log, SQL audit', icon: 'audit', drivers: ['postgres'], permissionsAny: ['schema.browse', 'connections.view'], keywords: 'database logs slow query' },
-      { name: 'db-users', label: 'Users', desc: 'Database users and grants', icon: 'users', drivers: ['postgres', 'mysql', 'mariadb'], permissionsAny: ['dbusers.manage'], keywords: 'database users grants' },
+      { name: 'db-users', label: 'DB Users & Grants', desc: 'Database users, grants and schema access', icon: 'lock', drivers: ['postgres', 'mysql', 'mariadb'], permissionsAny: ['dbusers.manage'], keywords: 'database users grants privileges access role permission revoke default privileges akses' },
       { name: 'pg-replication', label: 'Replication', desc: 'Publications and subscriptions', icon: 'replicate', drivers: ['postgres'], permissionsAny: ['pgreplication.view', 'pgreplication.manage'], keywords: 'postgres' },
       { name: 'pg-parameters', label: 'Parameters', desc: 'pg_settings and ALTER SYSTEM', icon: 'sliders', drivers: ['postgres'], permissionsAny: ['pgparameters.view', 'pgparameters.manage'], keywords: 'postgres settings' },
       { name: 'redis', label: 'Redis', desc: 'Scan and inspect keys', icon: 'key', drivers: ['redis'], permissionsAny: ['redis.view'] },

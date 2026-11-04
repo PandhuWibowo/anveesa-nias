@@ -6,6 +6,7 @@ import { useFolders, type ConnectionFolder } from '@/composables/useFolders'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import NavIcon from '@/components/ui/NavIcon.vue'
+import { useAuth } from '@/composables/useAuth'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{
@@ -14,6 +15,14 @@ const emit = defineEmits<{
 }>()
 
 const router = useRouter()
+const { hasAnyPermission } = useAuth()
+
+// Shortcut from the connection's context menu to DB Users & Grants.
+function manageDbAccess(conn: Connection) {
+  emit('select-conn', conn.id)
+  emit('close')
+  router.push({ name: 'db-users', query: { conn: conn.id } })
+}
 const { connections, removeConnection, fetchConnections } = useConnections()
 const { folders, error: folderError, fetchFolders, createFolder, updateFolder, deleteFolder, moveConnection, setConnectionVisibility } = useFolders()
 const { confirm } = useConfirm()
@@ -421,6 +430,11 @@ function isDropTarget(folderId: number | null) {
           </template>
           <template v-else>
             <button class="ctx-item" @click="selectConn(contextMenu.item as Connection)">▶ Open</button>
+            <button
+              v-if="['postgres', 'mysql', 'mariadb'].includes((contextMenu.item as Connection).driver) && hasAnyPermission(['dbusers.manage'])"
+              class="ctx-item"
+              @click="manageDbAccess(contextMenu.item as Connection)"
+            >DB users &amp; grants</button>
             <button class="ctx-item" @click="toggleConnVis(contextMenu.item as Connection)">
               {{ (contextMenu.item as Connection).visibility === 'shared' ? 'Make private' : 'Make shared' }}
             </button>

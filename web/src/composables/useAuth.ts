@@ -19,6 +19,7 @@ const user = ref<User | null>(null)
 const persistedToken = localStorage.getItem(STORAGE_KEY) ?? sessionStorage.getItem(LEGACY_STORAGE_KEY) ?? ''
 const token = ref<string>(persistedToken)
 const authReady = ref(false)
+let authLoading: Promise<void> | null = null
 const authEnabled = ref(false)
 
 if (persistedToken && !localStorage.getItem(STORAGE_KEY)) {
@@ -135,6 +136,15 @@ export function useAuth() {
     }
   }
 
+  // ensureAuth loads the session once and shares the in-flight request, so the
+  // router guard can wait for it on a hard reload: before this, the first
+  // navigation ran with authEnabled still false and skipped permission checks.
+  function ensureAuth(): Promise<void> {
+    if (authReady.value) return Promise.resolve()
+    if (!authLoading) authLoading = fetchMe().finally(() => { authLoading = null })
+    return authLoading
+  }
+
   async function login(username: string, password: string, totpCode?: string): Promise<{ success: boolean; requires2fa?: boolean; username?: string; mustSetupMfa?: boolean; error?: string }> {
     try {
       const { data } = await axios.post('/api/auth/login', { username, password, totp_code: totpCode })
@@ -193,6 +203,7 @@ export function useAuth() {
     hasPermission,
     hasAnyPermission,
     fetchMe,
+    ensureAuth,
     login,
     markMfaSetupComplete,
     logout,

@@ -116,7 +116,7 @@ const nav: Record<string, string> = {
   'nav.row-history': '行历史', 'nav.row-history.desc': '行级变更记录',
   'nav.database-audit': '会话', 'nav.database-audit.desc': '实时会话与外部访问',
   'nav.database-logs': '日志', 'nav.database-logs.desc': '慢查询日志、错误日志、SQL 审计',
-  'nav.db-users': '用户', 'nav.db-users.desc': '数据库用户与授权',
+  'nav.db-users': '数据库用户与授权', 'nav.db-users.desc': '数据库用户、授权与 schema 访问',
   'nav.pg-replication': '复制', 'nav.pg-replication.desc': '发布与订阅',
   'nav.pg-parameters': '参数', 'nav.pg-parameters.desc': 'pg_settings 与 ALTER SYSTEM',
   'nav.redis.desc': '扫描并查看键',
