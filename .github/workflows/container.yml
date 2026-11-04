@@ -172,15 +172,11 @@ jobs:
       - name: Create GitHub release
         if: steps.semver.outputs.should_tag == 'true' && github.ref == 'refs/heads/main'
         env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.semver.outputs.version_tag }}
         shell: bash
         run: |
           set -euo pipefail
-          # GITHUB_TOKEN cannot create tags on commits that change workflow files,
-          # so prefer GH_PAT (a token with the `workflow` scope).
-          export GH_TOKEN="${GH_PAT:-$FALLBACK_TOKEN}"
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
