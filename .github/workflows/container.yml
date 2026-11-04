@@ -4,8 +4,7 @@ on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
+  # Run manually on a tag ref to rebuild that version's image.
   workflow_dispatch:
 
 env:
@@ -45,7 +44,15 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           }
 
-          current_tag="$(git tag --points-at HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1 || true)"
+          # Versions are tagged without a prefix (2.2.0); older tags used a v prefix
+          # (v1.25.21). Accept both, compare by number.
+          highest_semver_tag() {
+            grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
+              | awk '{ v = $0; sub(/^v/, "", v); print v, $0 }' \
+              | sort -V -k1,1 | tail -n 1 | cut -d' ' -f2
+          }
+
+          current_tag="$(git tag --points-at HEAD | highest_semver_tag || true)"
           if [[ -n "$current_tag" ]]; then
             version="${current_tag#v}"
             IFS='.' read -r major minor patch <<< "$version"
@@ -61,7 +68,7 @@ jobs:
             exit 0
           fi
 
-          latest_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1 || true)"
+          latest_tag="$(git tag --list | highest_semver_tag || true)"
           if [[ -n "$latest_tag" ]]; then
             base_version="${latest_tag#v}"
             range="$latest_tag..HEAD"
@@ -117,7 +124,7 @@ jobs:
             echo "has_version=true"
             echo "should_tag=true"
             echo "version=$version"
-            echo "version_tag=v$version"
+            echo "version_tag=$version"
             echo "major=$major"
             echo "major_minor=$major.$minor"
             echo "bump=$bump"
@@ -148,6 +155,8 @@ jobs:
             ${{ env.DOCKERHUB_IMAGE }}
           tags: |
             type=raw,value=${{ steps.semver.outputs.version_tag }},enable=${{ steps.semver.outputs.has_version == 'true' }}
+            type=raw,value=${{ steps.semver.outputs.major_minor }},enable=${{ steps.semver.outputs.has_version == 'true' }}
+            type=raw,value=${{ steps.semver.outputs.major }},enable=${{ steps.semver.outputs.has_version == 'true' }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and push
@@ -160,18 +169,17 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Create git version tag
+      - name: Create GitHub release
         if: steps.semver.outputs.should_tag == 'true' && github.ref == 'refs/heads/main'
         env:
-          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.semver.outputs.version_tag }}
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag "${{ steps.semver.outputs.version_tag }}"
-          # GITHUB_TOKEN cannot push tags on commits that contain workflow file changes.
-          # GH_PAT must be a Personal Access Token with the `workflow` scope.
-          PUSH_TOKEN="${GH_PAT:-${{ secrets.GITHUB_TOKEN }}}"
-          git push "https://x-access-token:${PUSH_TOKEN}@github.com/${{ github.repository }}.git" \
-            "refs/tags/${{ steps.semver.outputs.version_tag }}"
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --generate-notes \
+            --latest

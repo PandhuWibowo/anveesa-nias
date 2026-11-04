@@ -22,6 +22,15 @@ const langs: Array<{ key: Lang; label: string }> = [
 
 const conn = computed(() => props.connection)
 
+// Escape the SQL for the string literal each generated snippet embeds it in.
+// Backslashes go first so the escapes added afterwards stay intact.
+const escapePyTripleQuoted = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+const escapeJsTemplate = (s: string) =>
+  s.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${')
+const escapePhpSingleQuoted = (s: string) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+// Go raw strings have no escapes and cannot contain a backtick, so splice one in.
+const goRawString = (s: string) => '`' + s.replace(/`/g, '` + "`" + `') + '`'
+
 const code = computed(() => {
   const sql = props.sql.trim()
   const c = conn.value
@@ -44,7 +53,7 @@ const code = computed(() => {
 })
 
 function generatePython(sql: string, c: Connection) {
-  const escaped = sql.replace(/"""/g, '\\"\\"\\"')
+  const escaped = escapePyTripleQuoted(sql)
   switch (c.driver) {
     case 'postgres':
       return `import psycopg2
@@ -87,7 +96,7 @@ conn.close()`
 }
 
 function generateJS(sql: string, c: Connection) {
-  const escaped = sql.replace(/`/g, '\\`')
+  const escaped = escapeJsTemplate(sql)
   switch (c.driver) {
     case 'postgres':
       return `import { Pool } from 'pg'
@@ -154,7 +163,7 @@ func main() {
     }
     defer db.Close()
 
-    rows, err := db.Query(\`${sql}\`)
+    rows, err := db.Query(${goRawString(sql)})
     if err != nil {
         fmt.Printf("run query: %v\n", err)
         return
@@ -180,7 +189,7 @@ function generateCurl(sql: string) {
 }
 
 function generatePHP(sql: string, c: Connection) {
-  const escaped = sql.replace(/'/g, "\\'")
+  const escaped = escapePhpSingleQuoted(sql)
   switch (c.driver) {
     case 'postgres':
       return `<?php
