@@ -4,7 +4,8 @@ import { useRouter } from 'vue-router'
 import { useAuth } from '@/composables/useAuth'
 import { useConnections, type Connection } from '@/composables/useConnections'
 import { useCommandPalette } from '@/composables/useCommandPalette'
-import { NAV_GROUPS, navKey, type NavItem } from '@/navigation'
+import { NAV_GROUPS, itemLabel, navKey, sectionLabel, type NavItem } from '@/navigation'
+import { t } from '@/i18n'
 import { DRIVER_COLOR, DRIVER_NAME, connectionRoute } from '@/utils/drivers'
 import NavIcon from '@/components/ui/NavIcon.vue'
 import DriverIcon from '@/components/ui/DriverIcon.vue'
@@ -22,8 +23,8 @@ const modKey = isMac ? '⌘' : 'Ctrl'
 
 const greeting = computed(() => {
   const h = new Date().getHours()
-  const part = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'
-  return user.value?.username ? `${part}, ${user.value.username}` : part
+  const part = t(h < 12 ? 'home.morning' : h < 18 ? 'home.afternoon' : 'home.evening')
+  return user.value?.username ? t('home.greeting', { part, name: user.value.username }) : part
 })
 
 const groups = computed(() =>
@@ -34,7 +35,7 @@ const groups = computed(() =>
 )
 
 const recentPages = computed(() => {
-  const byKey = new Map(groups.value.flatMap((g) => g.items.map((i) => [navKey(i), { ...i, group: g.label }] as const)))
+  const byKey = new Map(groups.value.flatMap((g) => g.items.map((i) => [navKey(i), { ...i, group: sectionLabel(g) }] as const)))
   return palette.recent.value.map((k) => byKey.get(k)).filter((i): i is NavItem & { group: string } => !!i).slice(0, 4)
 })
 
@@ -59,18 +60,18 @@ function openConnection(c: Connection) {
           <h1 class="home__title">{{ greeting }}</h1>
           <button class="home__search" type="button" @click="palette.show()">
             <NavIcon name="search" :size="18" />
-            <span class="home__search-text">Jump to a page, connection, or action</span>
+            <span class="home__search-text">{{ t('home.search') }}</span>
             <kbd>{{ modKey }}</kbd><kbd>K</kbd>
           </button>
         </header>
 
         <section v-if="recentPages.length" class="home__section">
-          <h2 class="home__h2">Pick up where you left off</h2>
+          <h2 class="home__h2">{{ t('home.recent') }}</h2>
           <div class="home__recent">
             <button v-for="item in recentPages" :key="navKey(item)" class="home__recent-item" type="button" @click="open(item)">
               <span class="home__recent-icon"><NavIcon :name="item.icon" :size="18" /></span>
               <span class="home__recent-text">
-                <span class="home__recent-label">{{ item.label }}</span>
+                <span class="home__recent-label">{{ itemLabel(item) }}</span>
                 <span class="home__recent-group">{{ item.group }}</span>
               </span>
             </button>
@@ -79,9 +80,9 @@ function openConnection(c: Connection) {
 
         <section class="home__section">
           <div class="home__section-head">
-            <h2 class="home__h2">Connections</h2>
+            <h2 class="home__h2">{{ t('home.connections') }}</h2>
             <router-link v-if="canManageConnections && connections.length" :to="{ name: 'connections' }" class="home__link">
-              Manage all {{ connections.length }}
+              {{ t('home.manageAll', { n: connections.length }) }}
             </router-link>
           </div>
 
@@ -90,14 +91,12 @@ function openConnection(c: Connection) {
           </div>
 
           <div v-else-if="!connections.length" class="home__empty">
-            <p class="home__empty-title">No connections yet</p>
+            <p class="home__empty-title">{{ t('home.noConnections') }}</p>
             <p class="home__empty-text">
-              {{ canManageConnections
-                ? 'Add a database, cache, queue, or bucket to start browsing and querying it here.'
-                : 'Ask an administrator to share a connection with you.' }}
+              {{ canManageConnections ? t('home.noConnectionsAdmin') : t('home.noConnectionsUser') }}
             </p>
             <button v-if="canManageConnections" class="base-btn base-btn--primary" type="button" @click="router.push({ name: 'connections', query: { new: '1' } })">
-              <NavIcon name="plus" :size="15" /> Add connection
+              <NavIcon name="plus" :size="15" /> {{ t('home.addConnection') }}
             </button>
           </div>
 
@@ -117,7 +116,7 @@ function openConnection(c: Connection) {
                 <span class="home__conn-name">{{ c.name }}</span>
                 <span class="home__conn-sub">{{ DRIVER_NAME[c.driver] ?? c.driver }}<template v-if="c.host"> · {{ c.host }}</template></span>
               </span>
-              <span v-if="c.id === activeConnId" class="badge badge--success">Active</span>
+              <span v-if="c.id === activeConnId" class="badge badge--success">{{ t('common.active') }}</span>
             </button>
             <button
               v-if="canManageConnections"
@@ -126,7 +125,7 @@ function openConnection(c: Connection) {
               @click="router.push({ name: 'connections', query: { new: '1' } })"
             >
               <span class="home__driver home__driver--add"><NavIcon name="plus" :size="16" /></span>
-              <span class="home__conn-name">Add connection</span>
+              <span class="home__conn-name">{{ t('home.addConnection') }}</span>
             </button>
           </div>
         </section>

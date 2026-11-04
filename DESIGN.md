@@ -185,6 +185,42 @@ Bottom right, one line where possible, an icon in the status color. Errors stay 
 - Name things the way people say them: servers, files, object storage, logs. Keep the technical word in the description when it helps ("Servers — SSH hosts used by Docker, Files, Nginx and Cron").
 - Errors say what happened and what to do: "This database has no failed_jobs table. Pick the database your Laravel app uses."
 - No exclamation marks, no emoji, no "Oops", no "seamless", "powerful" or "blazing fast".
+- Chinese copy follows the same rules; see Languages › Writing in Chinese.
+
+## Languages
+
+Nias speaks English and Simplified Chinese (简体中文). Many of its users read Chinese first, so switching language should take no effort and leave nothing half-switched.
+
+### Choosing a language
+- The first visit follows the browser's language. A Chinese browser opens in Chinese, including the sign-in screen, before anyone has to find a setting.
+- The globe button (sidebar footer, and top right on the sign-in screen) switches instantly, with no reload and no lost state. The palette offers it too ("切换语言为 English").
+- Each language is written in its own script in the picker ("English", "简体中文"), so it can be found from either language. The choice is remembered per browser, and `<html lang>` follows it so screen readers and fonts switch too.
+
+### What stays in English
+- Product and driver names (PostgreSQL, Redis, Kafka, Docker, Nginx, Kubernetes, SLS), SQL, keys, hostnames, file paths, log lines and every value from the user's own data. Engineers read and search these in English.
+- The palette matches a page by its Chinese label and its English name, so typing "docker" or "redis" works whatever language is showing.
+
+### Fallback
+- A string that hasn't been translated shows its English text, never a raw key. Pages are translated one at a time without breaking anything in between.
+- Translate a whole surface at once (a page, a dialog), not a few words of it; a sentence that mixes languages reads worse than one left in English.
+
+### Chinese typography
+- Latin glyphs keep Figtree and IBM Plex Mono; Han glyphs come from the system's CJK font (PingFang SC, Microsoft YaHei, Noto Sans SC). No CJK web font is downloaded, so the app stays light.
+- Fraunces has no Chinese cut, so in Chinese the display face falls back to the UI font.
+- Body line height is 1.6 in Chinese (1.5 in English).
+- Chinese is shorter but taller than English. Never size a control to fit one language's text; let it grow, and truncate with a tooltip when it must.
+
+### Writing in Chinese
+- Address the user as 你, not 您. It matches the warm, plain personality above.
+- Use full-width punctuation (，。：“”（）) in Chinese sentences, and put a space between Han characters and Latin words or numbers ("添加 Redis 连接", "管理全部 12 个").
+- Buttons are short verbs: 保存, 运行, 添加连接, 退出登录. No exclamation marks, and no 哦 / 啦 filler.
+- Use the terms Chinese engineers already use: 连接, 数据库, 数据表, 索引, 变更集, 审批, 定时任务, 服务器, 集群.
+
+### Implementation
+- `web/src/i18n`: `t('key', { params })` for UI strings, and `tr('nav.<key>', englishLabel)` for navigation, whose English lives in `navigation.ts`. Show page and section names with `itemLabel`, `itemDesc` and `sectionLabel`.
+- `locales/en.ts` is the source and defines the typed keys. Add a string to `en.ts` and `zh-CN.ts` in the same change.
+- Store a message key in state, not a translated sentence, so it re-renders when the language changes. Format numbers and dates with `Intl` and the current locale.
+- Errors from the server are shown as they come; translating them is a separate step.
 
 ## Accessibility
 

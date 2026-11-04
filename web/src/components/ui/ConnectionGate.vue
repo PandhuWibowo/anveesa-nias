@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '@/i18n'
 import { computed } from 'vue'
 import { useAuth } from '@/composables/useAuth'
 import { useConnections, type DbDriver } from '@/composables/useConnections'
@@ -25,7 +26,7 @@ const { hasAnyPermission } = useAuth()
 const matches = computed(() => connections.value.filter((c) => props.drivers.includes(c.driver) && !c.disconnected))
 const canCreate = computed(() => hasAnyPermission(['connections.create', 'connections.view']))
 const article = computed(() => (/^[aeiou]/i.test(props.label) ? 'an' : 'a'))
-const addLabel = computed(() => `Add ${props.short ?? props.label} connection`)
+const addLabel = computed(() => t('gate.add', { label: props.short ?? props.label }))
 const addTo = computed(() => ({ name: 'connections', query: { new: '1', driver: props.drivers[0] } }))
 </script>
 
@@ -34,13 +35,13 @@ const addTo = computed(() => ({ name: 'connections', query: { new: '1', driver: 
     <EmptyState
       v-if="!matches.length"
       :icon="icon"
-      :title="`No ${label} connections yet`"
-      :text="`Add ${article} ${label} connection ${purpose}.`"
+      :title="t('gate.emptyTitle', { label })"
+      :text="t('gate.emptyText', { label, purpose, a: article })"
       :action-label="canCreate ? addLabel : undefined"
       :action-to="canCreate ? addTo : undefined"
     />
     <template v-else>
-      <EmptyState :icon="icon" :title="`Choose a ${label} connection`" :text="`Pick one ${purpose}.`" />
+      <EmptyState :icon="icon" :title="t('gate.chooseTitle', { label })" :text="t('gate.chooseText', { purpose })" />
       <div class="gate__list">
         <button v-for="c in matches" :key="c.id" class="gate__item" type="button" @click="emit('select', c.id)">
           <span class="gate__driver" :style="{ background: DRIVER_COLOR[c.driver] ?? '#4b5563' }">

@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useNavigation } from '@/composables/useNavigation'
-import { navKey, sectionOf, type NavItem } from '@/navigation'
+import { itemDesc, itemLabel, navKey, sectionLabel, sectionOf, type NavItem } from '@/navigation'
 
 // The pages of the current section, as tabs across the top of the content panel.
 // The sidebar picks the section; these pick the page — one click either way.
@@ -29,7 +29,7 @@ function isActive(item: NavItem) {
 </script>
 
 <template>
-  <nav v-if="items.length > 1" class="stabs" :aria-label="section?.label">
+  <nav v-if="items.length > 1" class="stabs" :aria-label="section ? sectionLabel(section) : undefined">
     <a
       v-for="item in items"
       :key="navKey(item)"
@@ -37,10 +37,10 @@ function isActive(item: NavItem) {
       class="stabs__tab"
       :class="{ 'is-active': isActive(item) }"
       :aria-current="isActive(item) ? 'page' : undefined"
-      :title="item.desc"
+      :title="itemDesc(item)"
       @click.prevent="router.push({ name: item.name, query: item.query })"
     >
-      {{ item.label }}
+      {{ itemLabel(item) }}
     </a>
   </nav>
 </template>
