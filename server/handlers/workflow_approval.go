@@ -422,69 +422,80 @@ func CreateApprovalRequest() http.HandlerFunc {
 			return
 		}
 
-		workflowID, err := resolveWorkflowID(userID, role, body.ConnID, body.WorkflowID)
+		req, status, err := createApprovalRequestRecord(userID, username, role, body)
 		if err != nil {
-			http.Error(w, jsonError(err.Error()), http.StatusBadRequest)
+			http.Error(w, jsonError(err.Error()), status)
 			return
-		}
-		if workflowID == 0 {
-			http.Error(w, jsonError("no applicable workflow found"), http.StatusBadRequest)
-			return
-		}
-
-		now := time.Now().UTC().Format("2006-01-02 15:04:05")
-		
-		var reqID int64
-		if appdb.IsPostgreSQL() || appdb.IsMySQL() {
-			// Use RETURNING for PostgreSQL/MySQL
-			err := appdb.DB.QueryRow(`
-				INSERT INTO query_approval_request
-					(title, description, conn_id, database_name, statement, status, creator_id, workflow_id, current_step, revision, created_at, updated_at)
-				VALUES ($1, $2, $3, $4, $5, 'pending_review', $6, $7, 1, 1, $8, $9) RETURNING id
-			`, body.Title, strings.TrimSpace(body.Description), body.ConnID, strings.TrimSpace(body.Database), body.Statement, userID, workflowID, now, now).Scan(&reqID)
-			if err != nil {
-				http.Error(w, jsonError("failed to create approval request"), http.StatusInternalServerError)
-				return
-			}
-		} else {
-			// Use LastInsertId for SQLite
-			res, err := appdb.DB.Exec(`
-				INSERT INTO query_approval_request
-					(title, description, conn_id, database_name, statement, status, creator_id, workflow_id, current_step, revision, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, 'pending_review', ?, ?, 1, 1, ?, ?)
-			`, body.Title, strings.TrimSpace(body.Description), body.ConnID, strings.TrimSpace(body.Database), body.Statement, userID, workflowID, now, now)
-			if err != nil {
-				http.Error(w, jsonError("failed to create approval request"), http.StatusInternalServerError)
-				return
-			}
-			reqID, _ = res.LastInsertId()
-		}
-		req, _ := getApprovalRequestByID(reqID)
-		if req != nil && username != "" {
-			req.CreatorName = username
-		}
-		if req != nil {
-			targetUserIDs := []int64{req.CreatorID}
-			if step, _ := getStepByWorkflowAndOrder(req.WorkflowID, req.CurrentStep); step != nil {
-				targetUserIDs = append(targetUserIDs, getWorkflowApproverUserIDs(step.ID)...)
-			}
-			EmitNotification(NotificationEventInput{
-				EventType:     "approval_request.created",
-				Category:      "approval",
-				Severity:      "info",
-				Title:         "Approval request submitted",
-				Message:       fmt.Sprintf("%s submitted approval request \"%s\"", usernameOrFallback(username, req.CreatorName), req.Title),
-				EntityType:    "approval_request",
-				EntityID:      req.ID,
-				ConnectionID:  req.ConnID,
-				ActorUserID:   req.CreatorID,
-				TargetUserIDs: targetUserIDs,
-				Payload: map[string]any{"status": req.Status, "title": req.Title},
-			})
 		}
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(req)
 	}
+}
+
+// createApprovalRequestRecord stores a pending approval request and notifies the
+// first step's approvers. It is shared by the SQL editor and DB Users & Grants;
+// on error it returns the HTTP status to answer with.
+func createApprovalRequestRecord(userID int64, username, role string, body CreateQueryApprovalRequest) (*QueryApprovalRequest, int, error) {
+	workflowID, err := resolveWorkflowID(userID, role, body.ConnID, body.WorkflowID)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+	if workflowID == 0 {
+		return nil, http.StatusBadRequest, fmt.Errorf("no applicable workflow found")
+	}
+
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	
+	var reqID int64
+	if appdb.IsPostgreSQL() || appdb.IsMySQL() {
+		// Use RETURNING for PostgreSQL/MySQL
+		err := appdb.DB.QueryRow(`
+			INSERT INTO query_approval_request
+				(title, description, conn_id, database_name, statement, status, creator_id, workflow_id, current_step, revision, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, 'pending_review', $6, $7, 1, 1, $8, $9) RETURNING id
+		`, body.Title, strings.TrimSpace(body.Description), body.ConnID, strings.TrimSpace(body.Database), body.Statement, userID, workflowID, now, now).Scan(&reqID)
+		if err != nil {
+			return nil, http.StatusInternalServerError, fmt.Errorf("failed to create approval request")
+		}
+	} else {
+		// Use LastInsertId for SQLite
+		res, err := appdb.DB.Exec(`
+			INSERT INTO query_approval_request
+				(title, description, conn_id, database_name, statement, status, creator_id, workflow_id, current_step, revision, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, 'pending_review', ?, ?, 1, 1, ?, ?)
+		`, body.Title, strings.TrimSpace(body.Description), body.ConnID, strings.TrimSpace(body.Database), body.Statement, userID, workflowID, now, now)
+		if err != nil {
+			return nil, http.StatusInternalServerError, fmt.Errorf("failed to create approval request")
+		}
+		reqID, _ = res.LastInsertId()
+	}
+	req, _ := getApprovalRequestByID(reqID)
+	if req != nil && username != "" {
+		req.CreatorName = username
+	}
+	if req != nil {
+		targetUserIDs := []int64{req.CreatorID}
+		if step, _ := getStepByWorkflowAndOrder(req.WorkflowID, req.CurrentStep); step != nil {
+			targetUserIDs = append(targetUserIDs, getWorkflowApproverUserIDs(step.ID)...)
+		}
+		EmitNotification(NotificationEventInput{
+			EventType:     "approval_request.created",
+			Category:      "approval",
+			Severity:      "info",
+			Title:         "Approval request submitted",
+			Message:       fmt.Sprintf("%s submitted approval request \"%s\"", usernameOrFallback(username, req.CreatorName), req.Title),
+			EntityType:    "approval_request",
+			EntityID:      req.ID,
+			ConnectionID:  req.ConnID,
+			ActorUserID:   req.CreatorID,
+			TargetUserIDs: targetUserIDs,
+			Payload: map[string]any{"status": req.Status, "title": req.Title},
+		})
+	}
+	if req == nil {
+		return nil, http.StatusInternalServerError, fmt.Errorf("failed to load approval request")
+	}
+	return req, http.StatusCreated, nil
 }
 
 func UpdateApprovalRequest() http.HandlerFunc {
@@ -912,7 +923,15 @@ func ExecuteApprovalRequest() http.HandlerFunc {
 		}
 
 		start := time.Now()
-		res, execErr := db.ExecContext(r.Context(), req.Statement)
+		var res sql.Result
+		var execErr error
+		if script, ok := parseDBAccessScript(req.Statement); ok && (driver == "postgres" || driver == "mysql" || driver == "mariadb") {
+			// Generated by DB Users & Grants: run statement by statement inside
+			// the target database (PostgreSQL GRANTs on schemas are per-database).
+			execErr = runDBAccessScript(r.Context(), req.ConnID, db, driver, script)
+		} else {
+			res, execErr = db.ExecContext(r.Context(), req.Statement)
+		}
 		durationMs := time.Since(start).Milliseconds()
 		if execErr != nil {
 			markApprovalRequestExecution(id, QueryApprovalStatusFailed, sanitizeDBError(execErr))
@@ -934,7 +953,10 @@ func ExecuteApprovalRequest() http.HandlerFunc {
 			return
 		}
 
-		affected, _ := res.RowsAffected()
+		var affected int64
+		if res != nil {
+			affected, _ = res.RowsAffected()
+		}
 		markApprovalRequestExecution(id, QueryApprovalStatusDone, "")
 		EmitNotification(NotificationEventInput{
 			EventType:     "approval_request.executed",

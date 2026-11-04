@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import axios from 'axios'
 import { useToast } from '@/composables/useToast'
 import { useConnections } from '@/composables/useConnections'
@@ -8,11 +9,13 @@ import { useListFilter } from '@/composables/useListFilter'
 import { useSort } from '@/composables/useSort'
 import SortIcon from '@/components/ui/SortIcon.vue'
 import ConnectionGate from '@/components/ui/ConnectionGate.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 const props = defineProps<{ activeConnId: number | null }>()
 const emit = defineEmits<{ (e: 'set-conn', id: number): void }>()
 const toast = useToast()
 const { connections } = useConnections()
+const route = useRoute()
 
 const activeConn = computed(() =>
   props.activeConnId != null ? connections.value.find(c => c.id === props.activeConnId) ?? null : null
@@ -33,6 +36,8 @@ interface DBUser {
 
 const users = ref<DBUser[]>([])
 const loadingUsers = ref(false)
+// true when the API answers 403: the account lacks "Manage Database Users & Grants"
+const forbidden = ref(false)
 const selectedUser = ref<DBUser | null>(null)
 
 const { search: userSearch, filtered: searchedUsers } = useListFilter(users, (u, q) =>
@@ -49,11 +54,18 @@ async function loadUsers() {
   loadingUsers.value = true
   try {
     const { data } = await axios.get<DBUser[]>(`/api/connections/${props.activeConnId}/db-users`)
+    forbidden.value = false
     users.value = data ?? []
     if (selectedUser.value) {
       selectedUser.value = users.value.find(u => u.username === selectedUser.value!.username && u.host === selectedUser.value!.host) ?? null
     }
   } catch (e) {
+    if (axios.isAxiosError(e) && e.response?.status === 403) {
+      forbidden.value = true
+      users.value = []
+      selectedUser.value = null
+      return
+    }
     toast.error(readableError(e, { action: 'Load DB users', fallback: 'Failed to load database users' }))
   } finally {
     loadingUsers.value = false
@@ -63,6 +75,9 @@ async function loadUsers() {
 function selectUser(u: DBUser) {
   selectedUser.value = u
   loadGrants(u)
+  // The endpoint answers [] for MySQL, so no driver check here (the connection
+  // list may still be loading on a deep link).
+  loadDefaultPrivs(u)
   activeTab.value = 'grants'
 }
 
@@ -175,21 +190,380 @@ function hasPriv(level: GrantEntry['level'], priv: string, database?: string, sc
 
 async function saveGrants() {
   if (!selectedUser.value || !props.activeConnId) return
-  savingGrants.value = true
+  // Review the exact GRANT/REVOKE statements first; apply or send for approval from there.
+  const u = selectedUser.value
+  await openPlan({
+    title: `Review grant changes — ${u.username}`,
+    method: 'put',
+    url: `/api/connections/${props.activeConnId}/db-users/${encodeURIComponent(u.username)}/grants`,
+    payload: { host: u.host || '%', grants: editingGrants.value.filter(g => (g.privileges ?? []).length > 0) },
+    onDone: async () => {
+      grantsDirty.value = false
+      await loadGrants(u)
+    },
+  })
+}
+
+// ── Plan review: preview SQL → apply now or submit for approval ───
+
+interface GrantBatch { database?: string; statements: string[] }
+interface WorkflowOption { id: number; name: string }
+interface PlanOptions {
+  title: string
+  method: 'put' | 'post'
+  url: string
+  payload: Record<string, unknown>
+  fromWizard?: boolean
+  onDone?: () => void | Promise<void>
+}
+
+const plan = reactive({
+  open: false,
+  loading: false,
+  busy: false,
+  error: '',
+  title: '',
+  batches: [] as GrantBatch[],
+  approvalRequired: false,
+  workflows: [] as WorkflowOption[],
+  workflowId: null as number | null,
+  requestTitle: '',
+  requestDesc: '',
+  showRequestForm: false,
+})
+let planOpts: PlanOptions | null = null
+
+const planStatementCount = computed(() => plan.batches.reduce((n, b) => n + b.statements.length, 0))
+const planSql = computed(() => plan.batches
+  .map(b => (b.database ? `-- database: ${b.database}\n` : '') + b.statements.map(st => `${st};`).join('\n'))
+  .join('\n\n'))
+
+async function callPlan(mode: 'preview' | 'apply' | 'request', extra: Record<string, unknown> = {}) {
+  if (!planOpts) throw new Error('no plan')
+  const body = { ...planOpts.payload, mode, ...extra }
+  return planOpts.method === 'put'
+    ? axios.put(planOpts.url, body)
+    : axios.post(planOpts.url, body)
+}
+
+async function openPlan(opts: PlanOptions) {
+  planOpts = opts
+  Object.assign(plan, {
+    open: true, loading: true, busy: false, error: '', title: opts.title, batches: [],
+    approvalRequired: false, workflows: [], workflowId: null, requestTitle: '', requestDesc: '', showRequestForm: false,
+  })
   try {
-    await axios.put(
-      `/api/connections/${props.activeConnId}/db-users/${encodeURIComponent(selectedUser.value.username)}/grants`,
-      { host: selectedUser.value.host || '%', grants: editingGrants.value.filter(g => (g.privileges ?? []).length > 0) }
-    )
-    toast.success('Grants saved successfully')
-    grantsDirty.value = false
-    await loadGrants(selectedUser.value)
+    const { data } = await callPlan('preview')
+    plan.batches = data?.batches ?? []
+    plan.approvalRequired = !!data?.approval_required
+    plan.workflows = data?.workflows ?? []
+    plan.workflowId = plan.workflows[0]?.id ?? null
+    plan.showRequestForm = plan.approvalRequired
   } catch (e) {
-    toast.error(readableError(e, { action: 'Save grants', fallback: 'Failed to save grants' }))
+    plan.error = readableError(e, { action: 'Preview', fallback: 'Failed to build the SQL for this change' })
   } finally {
-    savingGrants.value = false
+    plan.loading = false
   }
 }
+
+async function finishPlan() {
+  plan.open = false
+  if (planOpts?.fromWizard) wiz.open = false
+  await planOpts?.onDone?.()
+}
+
+async function applyPlan() {
+  plan.busy = true
+  plan.error = ''
+  try {
+    const { data } = await callPlan('apply')
+    toast.success(data?.status === 'unchanged' ? 'Nothing to change' : 'Grants applied')
+    await finishPlan()
+  } catch (e) {
+    if (axios.isAxiosError(e) && e.response?.status === 409 && e.response.data?.approval_required) {
+      plan.approvalRequired = true
+      plan.workflows = e.response.data.workflows ?? []
+      plan.workflowId = plan.workflows[0]?.id ?? null
+      plan.showRequestForm = true
+      plan.error = 'This connection requires approval for changes. Submit it as an approval request instead.'
+    } else {
+      plan.error = readableError(e, { action: 'Apply grants', fallback: 'Failed to apply grants' })
+    }
+  } finally {
+    plan.busy = false
+  }
+}
+
+async function requestPlan() {
+  plan.busy = true
+  plan.error = ''
+  try {
+    const { data } = await callPlan('request', {
+      workflow_id: plan.workflowId ?? 0,
+      title: plan.requestTitle.trim(),
+      description: plan.requestDesc.trim(),
+    })
+    const ids = (data?.requests ?? []).map((r: { id: number }) => `#${r.id}`).join(', ')
+    toast.success(`Approval request ${ids} submitted. It runs once approved (Changes › Approvals).`)
+    await finishPlan()
+  } catch (e) {
+    plan.error = readableError(e, { action: 'Submit for approval', fallback: 'Failed to submit approval request' })
+  } finally {
+    plan.busy = false
+  }
+}
+
+function planOptsFromWizard() {
+  return !!planOpts?.fromWizard
+}
+
+function backToWizard() {
+  plan.open = false
+  wiz.open = true
+}
+
+async function copyPlanSql() {
+  try {
+    await navigator.clipboard.writeText(planSql.value)
+    toast.success('SQL copied')
+  } catch {
+    toast.error('Could not copy to clipboard')
+  }
+}
+
+// ── Grant access wizard (schema-wide presets) ─────────────────────
+
+type AccessPreset = 'readonly' | 'readwrite' | 'custom'
+
+const wiz = reactive({
+  open: false,
+  action: 'grant' as 'grant' | 'revoke',
+  userKey: '',
+  database: '',
+  schema: '',
+  preset: 'readonly' as AccessPreset,
+  tablePrivs: ['SELECT'] as string[],
+  seqPrivs: ['USAGE', 'SELECT'] as string[],
+  includeSeq: true,
+  includeFuture: true,
+  futureRoles: [] as string[],
+})
+const wizSchemas = ref<string[]>([])
+const wizOwners = ref<{ current_user: string; schema_owner: string; owners: string[] }>({ current_user: '', schema_owner: '', owners: [] })
+const wizOwnersLoading = ref(false)
+
+const userKey = (u: DBUser) => `${u.username}@${u.host || ''}`
+const wizUser = computed(() => users.value.find(u => userKey(u) === wiz.userKey) ?? null)
+
+// Roles whose new objects can be covered by ALTER DEFAULT PRIVILEGES
+const wizRoleChoices = computed(() => {
+  const set = new Set<string>()
+  if (wizOwners.value.current_user) set.add(wizOwners.value.current_user)
+  if (wizOwners.value.schema_owner) set.add(wizOwners.value.schema_owner)
+  for (const o of wizOwners.value.owners) set.add(o)
+  // pg_* roles (e.g. pg_database_owner, owner of "public" since PG15) are built-in
+  // pseudo-roles that never create tables themselves
+  return [...set].filter(r => !r.startsWith('pg_'))
+})
+
+const presetInfo: Record<AccessPreset, { label: string; pg: string; mysql: string }> = {
+  readonly: { label: 'Read only', pg: 'SELECT on tables · USAGE, SELECT on sequences', mysql: 'SELECT, SHOW VIEW' },
+  readwrite: { label: 'Read / write', pg: 'SELECT, INSERT, UPDATE, DELETE · sequences USAGE, SELECT, UPDATE', mysql: 'SELECT, INSERT, UPDATE, DELETE, SHOW VIEW' },
+  custom: { label: 'Custom', pg: 'Pick the privileges yourself', mysql: 'Pick the privileges yourself' },
+}
+
+async function openWizard(prefill: { user?: string; host?: string; database?: string; schema?: string; action?: 'grant' | 'revoke' } = {}) {
+  const preUser = prefill.user
+    ? users.value.find(u => u.username === prefill.user && (prefill.host == null || (u.host || '') === prefill.host))
+    : selectedUser.value
+  Object.assign(wiz, {
+    open: true,
+    action: prefill.action ?? 'grant',
+    userKey: preUser ? userKey(preUser) : '',
+    database: prefill.database ?? (isPG.value ? (activeConn.value?.database || '') : ''),
+    schema: prefill.schema ?? (isPG.value ? 'public' : ''),
+    preset: 'readonly',
+    tablePrivs: isPG.value ? ['SELECT'] : ['SELECT'],
+    seqPrivs: ['USAGE', 'SELECT'],
+    includeSeq: true,
+    includeFuture: true,
+    futureRoles: [],
+  })
+  wizSchemas.value = []
+  await loadAvailableDbs()
+  if (isPG.value) {
+    if (!wiz.database && availableDbs.value.length) wiz.database = availableDbs.value[0]
+    await onWizDatabaseChange(false)
+  }
+}
+
+async function onWizDatabaseChange(resetSchema = true) {
+  if (!isPG.value || !props.activeConnId) return
+  if (resetSchema) wiz.schema = ''
+  wizSchemas.value = []
+  if (!wiz.database) return
+  try {
+    const { data } = await axios.get<string[]>(`/api/connections/${props.activeConnId}/db-users-schemas`, { params: { db: wiz.database } })
+    wizSchemas.value = data ?? []
+  } catch { wizSchemas.value = [] }
+  if (wiz.schema && !wizSchemas.value.includes(wiz.schema)) wiz.schema = ''
+  if (!wiz.schema && wizSchemas.value.includes('public')) wiz.schema = 'public'
+  await onWizSchemaChange()
+}
+
+async function onWizSchemaChange() {
+  wizOwners.value = { current_user: '', schema_owner: '', owners: [] }
+  wiz.futureRoles = []
+  if (!isPG.value || !props.activeConnId || !wiz.schema) return
+  wizOwnersLoading.value = true
+  try {
+    const { data } = await axios.get(`/api/connections/${props.activeConnId}/db-users-schema-owners`, { params: { db: wiz.database, schema: wiz.schema } })
+    wizOwners.value = { current_user: data?.current_user ?? '', schema_owner: data?.schema_owner ?? '', owners: data?.owners ?? [] }
+    // Default: cover objects created by whoever already owns tables here (usually the
+    // migration/app role); with no tables yet, the connection's own user.
+    wiz.futureRoles = wizOwners.value.owners.length ? [...wizOwners.value.owners] : (wizOwners.value.current_user ? [wizOwners.value.current_user] : [])
+  } catch { /* owners are a convenience; the plan still works without FOR ROLE */ } finally {
+    wizOwnersLoading.value = false
+  }
+}
+
+function toggleIn(list: string[], v: string) {
+  const i = list.indexOf(v)
+  if (i >= 0) list.splice(i, 1)
+  else list.push(v)
+}
+
+const wizCanPreview = computed(() => {
+  if (!wizUser.value) return false
+  if (isPG.value) {
+    if (!wiz.database || !wiz.schema) return false
+  } else if (!wiz.database) return false
+  if (wiz.action === 'grant' && wiz.preset === 'custom' && wiz.tablePrivs.length === 0) return false
+  return true
+})
+
+async function previewWizard() {
+  const u = wizUser.value
+  if (!u || !props.activeConnId) return
+  const payload: Record<string, unknown> = {
+    action: wiz.action,
+    host: u.host || '%',
+    database: wiz.database,
+    schema: isPG.value ? wiz.schema : '',
+    preset: wiz.preset,
+    table_privileges: wiz.tablePrivs,
+    sequence_privileges: wiz.seqPrivs,
+    include_sequences: isPG.value && wiz.includeSeq,
+    include_future: isPG.value && wiz.includeFuture,
+    future_for_roles: isPG.value && wiz.includeFuture ? wiz.futureRoles : [],
+  }
+  wiz.open = false
+  const scope = isPG.value ? `${wiz.database}.${wiz.schema}` : wiz.database
+  await openPlan({
+    title: `${wiz.action === 'revoke' ? 'Revoke' : 'Grant'} ${u.username} access to ${scope}`,
+    method: 'post',
+    url: `/api/connections/${props.activeConnId}/db-users/${encodeURIComponent(u.username)}/access`,
+    payload,
+    fromWizard: true,
+    onDone: async () => {
+      if (selectedUser.value && userKey(selectedUser.value) === userKey(u)) {
+        await loadGrants(u)
+        if (isPG.value) await loadDefaultPrivs(u)
+      } else {
+        selectUser(u)
+      }
+    },
+  })
+}
+
+// ── Default privileges (PostgreSQL: future objects) ───────────────
+
+interface DefaultPriv {
+  database: string
+  schema: string
+  owner: string
+  object_type: string
+  objects: string
+  privileges: string[]
+}
+
+const defaultPrivs = ref<DefaultPriv[]>([])
+const loadingDefaultPrivs = ref(false)
+
+async function loadDefaultPrivs(u: DBUser) {
+  if (!props.activeConnId) return
+  loadingDefaultPrivs.value = true
+  defaultPrivs.value = []
+  try {
+    const { data } = await axios.get<DefaultPriv[]>(
+      `/api/connections/${props.activeConnId}/db-users/${encodeURIComponent(u.username)}/default-privileges`
+    )
+    defaultPrivs.value = data ?? []
+  } catch (e) {
+    toast.error(readableError(e, { action: 'Load default privileges', fallback: 'Failed to load default privileges' }))
+  } finally {
+    loadingDefaultPrivs.value = false
+  }
+}
+
+async function revokeDefaultPriv(d: DefaultPriv) {
+  const u = selectedUser.value
+  if (!u || !props.activeConnId) return
+  await openPlan({
+    title: `Stop granting ${d.objects.toLowerCase()} created by ${d.owner} to ${u.username}`,
+    method: 'post',
+    url: `/api/connections/${props.activeConnId}/db-users/${encodeURIComponent(u.username)}/access`,
+    payload: { action: 'revoke_default', database: d.database, schema: d.schema, owner: d.owner, object_type: d.object_type },
+    onDone: () => loadDefaultPrivs(u),
+  })
+}
+
+// ── Access summary (per database › schema) ────────────────────────
+
+interface AccessSummary {
+  key: string
+  database: string
+  schema: string
+  schemaPrivs: string[]
+  tableCount: number
+  tablePrivs: string[]
+  sequenceCount: number
+  futureObjects: string[]
+}
+
+const accessSummary = computed<AccessSummary[]>(() => {
+  if (!isPG.value) return []
+  const map = new Map<string, AccessSummary>()
+  const get = (database: string, schema: string) => {
+    const key = `${database}\u0000${schema}`
+    let e = map.get(key)
+    if (!e) {
+      e = { key, database, schema, schemaPrivs: [], tableCount: 0, tablePrivs: [], sequenceCount: 0, futureObjects: [] }
+      map.set(key, e)
+    }
+    return e
+  }
+  for (const g of grants.value) {
+    if (!g.schema) continue
+    const e = get(g.database ?? '', g.schema)
+    if (g.level === 'schema') e.schemaPrivs = [...g.privileges]
+    if (g.level === 'table') {
+      e.tableCount++
+      for (const p of g.privileges) if (!e.tablePrivs.includes(p)) e.tablePrivs.push(p)
+    }
+    if (g.level === 'sequence') e.sequenceCount++
+  }
+  for (const d of defaultPrivs.value) {
+    if (!d.schema) continue
+    const e = get(d.database, d.schema)
+    const label = `${d.objects.toLowerCase()}: ${d.privileges.join(', ')}`
+    if (!e.futureObjects.includes(label)) e.futureObjects.push(label)
+  }
+  // Hide schemas that only have the default PUBLIC USAGE and nothing else
+  return [...map.values()]
+    .filter(e => e.tableCount > 0 || e.sequenceCount > 0 || e.futureObjects.length > 0)
+    .sort((a, b) => (a.database + a.schema).localeCompare(b.database + b.schema))
+})
 
 // ── Add grant row ─────────────────────────────────────────────────
 
@@ -426,19 +800,58 @@ async function dropUser(u: DBUser) {
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────
-const activeTab = ref<'grants' | 'password'>('grants')
+const activeTab = ref<'grants' | 'defaults' | 'password'>('grants')
 
 // ── Init ─────────────────────────────────────────────────────────
 
+// Deep links: /db-users?conn=ID&user=NAME&host=H&db=DB&schema=S&grant=1
+// (used by the connection card / context-menu shortcuts and the command palette)
+// On a deep link the connection list can still be loading; the wizard needs the driver.
+function waitForActiveConn(timeoutMs = 5000): Promise<void> {
+  if (activeConn.value) return Promise.resolve()
+  return new Promise(resolve => {
+    const stop = watch(activeConn, c => { if (c) { stop(); resolve() } })
+    setTimeout(() => { stop(); resolve() }, timeoutMs)
+  })
+}
+
+async function applyRouteQuery() {
+  await waitForActiveConn()
+  const q = route.query
+  const user = typeof q.user === 'string' ? q.user : ''
+  if (user) {
+    const host = typeof q.host === 'string' ? q.host : undefined
+    const u = users.value.find(x => x.username === user && (host == null || (x.host || '') === host))
+    if (u) selectUser(u)
+  }
+  if (q.grant === '1' && !forbidden.value) {
+    await openWizard({
+      user: user || undefined,
+      database: typeof q.db === 'string' ? q.db : undefined,
+      schema: typeof q.schema === 'string' ? q.schema : undefined,
+    })
+  }
+}
+
 onMounted(async () => {
-  if (props.activeConnId) await loadUsers()
+  const wanted = Number(route.query.conn)
+  if (wanted && wanted !== props.activeConnId) {
+    emit('set-conn', wanted) // the watcher below loads users for it
+    return
+  }
+  if (props.activeConnId) {
+    await loadUsers()
+    await applyRouteQuery()
+  }
 })
 
 watch(() => props.activeConnId, async (id) => {
   if (id) {
     selectedUser.value = null
     grants.value = []
+    defaultPrivs.value = []
     await loadUsers()
+    if (Number(route.query.conn) === id) await applyRouteQuery()
   }
 })
 
@@ -495,25 +908,38 @@ function grantLabel(g: GrantEntry) {
         <section class="page-hero">
           <div class="page-hero__content">
             <div class="page-kicker">Administration</div>
-            <div class="page-title">Database User Manager</div>
+            <div class="page-title">DB Users &amp; Grants</div>
             <div class="page-subtitle">
               Create and manage database-level users, passwords, and privilege grants — directly on the connected server.
+              Use <strong>Grant access</strong> to give a user read-only or read/write access to a whole schema, including tables created later.
             </div>
           </div>
-          <div class="page-hero__actions" v-if="isSupported && activeConnId">
+          <div class="page-hero__actions" v-if="isSupported && activeConnId && !forbidden">
             <button class="base-btn base-btn--ghost base-btn--sm" @click="loadUsers">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.43"/></svg>
               Refresh
             </button>
-            <button class="base-btn base-btn--primary base-btn--sm" @click="openCreateModal">
+            <button class="base-btn base-btn--ghost base-btn--sm" @click="openCreateModal">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               Create User
+            </button>
+            <button class="base-btn base-btn--primary base-btn--sm" :disabled="users.length === 0" @click="openWizard()">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              Grant access
             </button>
           </div>
         </section>
 
         <!-- No connection selected -->
         <ConnectionGate v-if="!isSupported" :drivers="['postgres', 'mysql', 'mariadb']" label="PostgreSQL or MySQL" short="database" purpose="to manage its database users and grants" icon="users" @select="(id: number) => emit('set-conn', id)" />
+
+        <!-- No permission -->
+        <EmptyState
+          v-else-if="forbidden"
+          icon="lock"
+          title="You don't have access to DB Users & Grants"
+          text="This page needs the &quot;Manage Database Users & Grants&quot; permission. Ask an administrator to add it to your role in Settings › Roles."
+        />
 
                 <!-- Main two-panel layout -->
         <div v-else class="dbu-layout">
@@ -579,6 +1005,9 @@ function grantLabel(g: GrantEntry) {
                   </div>
                 </div>
                 <div class="dbu-user-actions">
+                  <button class="dbu-icon-btn" title="Grant access to a schema / database" @click.stop="openWizard({ user: u.username, host: u.host || '' })">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                  </button>
                   <button class="dbu-icon-btn" title="Change password" @click.stop="openChangePw(u)">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                   </button>
@@ -612,6 +1041,7 @@ function grantLabel(g: GrantEntry) {
                 </div>
                 <div style="display:flex;gap:8px">
                   <button class="base-btn base-btn--ghost base-btn--sm" @click="openChangePw(selectedUser)">Change Password</button>
+                  <button class="base-btn base-btn--primary base-btn--sm" @click="openWizard({ user: selectedUser.username, host: selectedUser.host || '' })">Grant access</button>
                 </div>
               </div>
 
@@ -625,10 +1055,76 @@ function grantLabel(g: GrantEntry) {
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
                   Privileges
                 </button>
+                <button
+                  v-if="isPG"
+                  class="dbu-tab"
+                  :class="{ 'dbu-tab--active': activeTab === 'defaults' }"
+                  @click="activeTab = 'defaults'"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                  Future objects
+                  <span v-if="defaultPrivs.length" class="dbu-tab-count">{{ defaultPrivs.length }}</span>
+                </button>
+              </div>
+
+              <!-- Default privileges tab (PostgreSQL) -->
+              <div v-if="activeTab === 'defaults'" class="dbu-grants-panel">
+                <div class="dbu-help">
+                  <strong>ALTER DEFAULT PRIVILEGES</strong> — privileges this user automatically gets on objects created later.
+                  They only apply to objects created by the listed <em>owner</em> role.
+                </div>
+                <div v-if="loadingDefaultPrivs" class="dbu-loading">
+                  <svg class="spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                </div>
+                <div v-else-if="defaultPrivs.length === 0" class="dbu-grants-empty">
+                  No default privileges for this user. Use "Grant access" with "Also tables created later" to add them.
+                </div>
+                <div v-else class="dbu-grant-table-wrap">
+                  <table class="dbu-grant-table">
+                    <thead>
+                      <tr>
+                        <th class="dbu-th-target">Database › Schema</th>
+                        <th class="dbu-th-target">Objects</th>
+                        <th class="dbu-th-target">Created by</th>
+                        <th class="dbu-th-target">Privileges</th>
+                        <th class="dbu-th-del"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="d in defaultPrivs" :key="d.database + d.schema + d.owner + d.object_type">
+                        <td class="dbu-td-target">{{ d.database }} › {{ d.schema || '(all schemas)' }}</td>
+                        <td class="dbu-td-target">{{ d.objects || d.object_type }}</td>
+                        <td class="dbu-td-target">{{ d.owner }}</td>
+                        <td class="dbu-td-target">{{ d.privileges.join(', ') }}</td>
+                        <td class="dbu-td-del">
+                          <button class="dbu-icon-btn dbu-icon-btn--danger" title="Revoke (review first)" @click="revokeDefaultPriv(d)">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                          </button>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
 
               <!-- Grants tab -->
               <div v-if="activeTab === 'grants'" class="dbu-grants-panel">
+                <!-- Access summary per database › schema -->
+                <div v-if="accessSummary.length && !loadingGrants" class="dbu-summary">
+                  <div v-for="a in accessSummary" :key="a.key" class="dbu-summary-card">
+                    <div class="dbu-summary-scope">{{ a.database }} › {{ a.schema }}</div>
+                    <div class="dbu-summary-line">
+                      <span v-if="a.tableCount">{{ a.tablePrivs.join(', ') }} on {{ a.tableCount }} table{{ a.tableCount !== 1 ? 's' : '' }}</span>
+                      <span v-if="a.sequenceCount"> · {{ a.sequenceCount }} sequence{{ a.sequenceCount !== 1 ? 's' : '' }}</span>
+                    </div>
+                    <div v-if="a.futureObjects.length" class="dbu-summary-line dbu-dim">Future {{ a.futureObjects.join(' · ') }}</div>
+                    <div class="dbu-summary-actions">
+                      <button class="dbu-link-btn" @click="openWizard({ user: selectedUser.username, host: selectedUser.host || '', database: a.database, schema: a.schema })">Change</button>
+                      <button class="dbu-link-btn dbu-link-btn--danger" @click="openWizard({ user: selectedUser.username, host: selectedUser.host || '', database: a.database, schema: a.schema, action: 'revoke' })">Revoke</button>
+                    </div>
+                  </div>
+                </div>
+
                 <div class="dbu-grants-toolbar">
                   <button class="base-btn base-btn--ghost base-btn--sm" @click="openAddGrant">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -641,7 +1137,7 @@ function grantLabel(g: GrantEntry) {
                     :disabled="savingGrants"
                     @click="saveGrants"
                   >
-                    {{ savingGrants ? 'Saving…' : 'Save Changes' }}
+                    {{ savingGrants ? 'Saving…' : 'Review & save' }}
                   </button>
                   <span v-if="grantsDirty" class="dbu-dirty-badge">Unsaved changes</span>
                 </div>
@@ -1021,6 +1517,198 @@ function grantLabel(g: GrantEntry) {
         </div>
       </div>
     </Teleport>
+
+    <!-- ── Grant access wizard ─────────────────────────────────── -->
+    <Teleport to="body">
+      <div v-if="wiz.open" class="dbu-overlay" @click.self="wiz.open = false">
+        <div class="dbu-dialog dbu-dialog--wide">
+          <div class="dbu-dialog-head">
+            <div class="dbu-dialog-title">{{ wiz.action === 'revoke' ? 'Revoke access' : 'Grant access' }}</div>
+            <button class="dbu-icon-btn" @click="wiz.open = false">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div class="dbu-dialog-body">
+            <div class="dbu-level-pills">
+              <button class="dbu-level-pill" :class="{ 'dbu-level-pill--active': wiz.action === 'grant' }" @click="wiz.action = 'grant'">Grant</button>
+              <button class="dbu-level-pill" :class="{ 'dbu-level-pill--active': wiz.action === 'revoke' }" @click="wiz.action = 'revoke'">Revoke</button>
+            </div>
+
+            <div class="dbu-field">
+              <label class="dbu-label">1 · User</label>
+              <select class="dbu-select" v-model="wiz.userKey">
+                <option value="">— select —</option>
+                <option v-for="u in users" :key="userKey(u)" :value="userKey(u)">{{ u.username }}{{ u.host ? '@' + u.host : '' }}</option>
+              </select>
+              <span class="dbu-hint">Not there yet? <button class="dbu-link-btn" @click="wiz.open = false; openCreateModal()">Create the user</button> first.</span>
+            </div>
+
+            <div class="dbu-field-row">
+              <div class="dbu-field">
+                <label class="dbu-label">2 · Database</label>
+                <select class="dbu-select" v-model="wiz.database" @change="onWizDatabaseChange()">
+                  <option value="">— select —</option>
+                  <option v-for="d in availableDbs" :key="d" :value="d">{{ d }}</option>
+                </select>
+              </div>
+              <div v-if="isPG" class="dbu-field">
+                <label class="dbu-label">Schema</label>
+                <select class="dbu-select" v-model="wiz.schema" :disabled="!wiz.database" @change="onWizSchemaChange()">
+                  <option value="">— select —</option>
+                  <option v-for="sc in wizSchemas" :key="sc" :value="sc">{{ sc }}</option>
+                </select>
+              </div>
+            </div>
+
+            <template v-if="wiz.action === 'grant'">
+              <div class="dbu-field">
+                <label class="dbu-label">3 · Access</label>
+                <div class="dbu-preset-list">
+                  <label v-for="(info, key) in presetInfo" :key="key" class="dbu-preset" :class="{ 'dbu-preset--on': wiz.preset === key }">
+                    <input type="radio" :value="key" v-model="wiz.preset" />
+                    <span class="dbu-preset-name">{{ info.label }}</span>
+                    <span class="dbu-preset-desc">{{ isPG ? info.pg : info.mysql }}</span>
+                  </label>
+                </div>
+              </div>
+
+              <div v-if="wiz.preset === 'custom'" class="dbu-field dbu-priv-picker">
+                <label class="dbu-label">{{ isPG ? 'Table privileges' : 'Privileges' }}</label>
+                <div class="dbu-priv-grid">
+                  <label v-for="priv in (isPG ? pgTablePrivs : mysqlPrivs)" :key="priv" class="dbu-priv-pill" :class="{ 'dbu-priv-pill--on': wiz.tablePrivs.includes(priv) }">
+                    <input type="checkbox" style="display:none" :checked="wiz.tablePrivs.includes(priv)" @change="toggleIn(wiz.tablePrivs, priv)" />
+                    <span class="dbu-priv-pill-name">{{ priv }}</span>
+                  </label>
+                </div>
+                <template v-if="isPG && wiz.includeSeq">
+                  <label class="dbu-label" style="margin-top:8px">Sequence privileges</label>
+                  <div class="dbu-priv-grid">
+                    <label v-for="priv in pgSequencePrivs" :key="priv" class="dbu-priv-pill" :class="{ 'dbu-priv-pill--on': wiz.seqPrivs.includes(priv) }">
+                      <input type="checkbox" style="display:none" :checked="wiz.seqPrivs.includes(priv)" @change="toggleIn(wiz.seqPrivs, priv)" />
+                      <span class="dbu-priv-pill-name">{{ priv }}</span>
+                    </label>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <template v-if="isPG">
+              <label class="dbu-check">
+                <input type="checkbox" v-model="wiz.includeSeq" />
+                <span>Include sequences <span class="dbu-hint">(needed for serial / identity columns)</span></span>
+              </label>
+              <label class="dbu-check">
+                <input type="checkbox" v-model="wiz.includeFuture" />
+                <span>Also tables created later <span class="dbu-hint">(ALTER DEFAULT PRIVILEGES)</span></span>
+              </label>
+              <div v-if="wiz.includeFuture" class="dbu-field dbu-indent">
+                <label class="dbu-label">For objects created by</label>
+                <div v-if="wizOwnersLoading" class="dbu-hint">Loading roles…</div>
+                <div v-else-if="wizRoleChoices.length === 0" class="dbu-hint">Pick a schema first.</div>
+                <div v-else class="dbu-priv-grid">
+                  <label v-for="r in wizRoleChoices" :key="r" class="dbu-priv-pill" :class="{ 'dbu-priv-pill--on': wiz.futureRoles.includes(r) }">
+                    <input type="checkbox" style="display:none" :checked="wiz.futureRoles.includes(r)" @change="toggleIn(wiz.futureRoles, r)" />
+                    <span class="dbu-priv-pill-name">{{ r }}</span>
+                    <span class="dbu-priv-pill-desc">
+                      {{ r === wizOwners.current_user ? 'this connection' : '' }}{{ r === wizOwners.current_user && wizOwners.owners.includes(r) ? ' · ' : '' }}{{ wizOwners.owners.includes(r) ? 'owns tables here' : (r === wizOwners.schema_owner ? 'schema owner' : '') }}
+                    </span>
+                  </label>
+                </div>
+                <span class="dbu-hint">Default privileges only cover objects created by these roles — usually your migration / app owner.</span>
+              </div>
+            </template>
+            <div v-else class="dbu-dialog-note">
+              MySQL grants on <code>database.*</code> already cover tables created later.
+            </div>
+          </div>
+          <div class="dbu-dialog-foot">
+            <button class="base-btn base-btn--ghost base-btn--sm" @click="wiz.open = false">Cancel</button>
+            <button class="base-btn base-btn--primary base-btn--sm" :disabled="!wizCanPreview" @click="previewWizard">Review SQL</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- ── Review SQL → apply / submit for approval ────────────── -->
+    <Teleport to="body">
+      <div v-if="plan.open" class="dbu-overlay" @click.self="!plan.busy && (plan.open = false)">
+        <div class="dbu-dialog dbu-dialog--wide">
+          <div class="dbu-dialog-head">
+            <div class="dbu-dialog-title">{{ plan.title }}</div>
+            <button class="dbu-icon-btn" :disabled="plan.busy" @click="plan.open = false">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div class="dbu-dialog-body">
+            <div v-if="plan.loading" class="dbu-loading">
+              <svg class="spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+            </div>
+            <template v-else>
+              <div v-if="planStatementCount === 0 && !plan.error" class="dbu-grants-empty">Nothing to change — the user already has exactly these privileges.</div>
+              <template v-else-if="planStatementCount > 0">
+                <div class="dbu-plan-head">
+                  <span>{{ planStatementCount }} statement{{ planStatementCount !== 1 ? 's' : '' }} will run on <strong>{{ activeConn?.name }}</strong></span>
+                  <button class="dbu-link-btn" @click="copyPlanSql">Copy SQL</button>
+                </div>
+                <pre class="dbu-sql">{{ planSql }}</pre>
+              </template>
+
+              <div v-if="plan.approvalRequired" class="dbu-dialog-note dbu-dialog-note--warn">
+                Changes on this connection go through an approval workflow. Submit the SQL above for approval; it runs once approved.
+              </div>
+
+              <div v-if="plan.showRequestForm && planStatementCount > 0" class="dbu-request-form">
+                <div v-if="plan.workflows.length === 0" class="dbu-hint">No approval workflow applies to this connection.</div>
+                <template v-else>
+                  <div v-if="plan.workflows.length > 1" class="dbu-field">
+                    <label class="dbu-label">Workflow</label>
+                    <select class="dbu-select" v-model="plan.workflowId">
+                      <option v-for="wf in plan.workflows" :key="wf.id" :value="wf.id">{{ wf.name }}</option>
+                    </select>
+                  </div>
+                  <div class="dbu-field">
+                    <label class="dbu-label">Title <span class="dbu-hint">(optional)</span></label>
+                    <input class="dbu-input" v-model="plan.requestTitle" :placeholder="plan.title" />
+                  </div>
+                  <div class="dbu-field">
+                    <label class="dbu-label">Reason <span class="dbu-hint">(optional)</span></label>
+                    <input class="dbu-input" v-model="plan.requestDesc" placeholder="e.g. read-only access for the reporting team" />
+                  </div>
+                </template>
+              </div>
+
+              <div v-if="plan.error" class="dbu-error">{{ plan.error }}</div>
+            </template>
+          </div>
+          <div class="dbu-dialog-foot">
+            <button v-if="planOptsFromWizard()" class="base-btn base-btn--ghost base-btn--sm" :disabled="plan.busy" @click="backToWizard">Back</button>
+            <div style="flex:1"></div>
+            <button class="base-btn base-btn--ghost base-btn--sm" :disabled="plan.busy" @click="plan.open = false">Cancel</button>
+            <template v-if="!plan.loading && planStatementCount > 0">
+              <button
+                v-if="plan.workflows.length > 0 && !plan.showRequestForm"
+                class="base-btn base-btn--ghost base-btn--sm"
+                :disabled="plan.busy"
+                @click="plan.showRequestForm = true"
+              >Send for approval…</button>
+              <button
+                v-if="plan.showRequestForm && plan.workflows.length > 0"
+                class="base-btn base-btn--primary base-btn--sm"
+                :disabled="plan.busy"
+                @click="requestPlan"
+              >{{ plan.busy ? 'Submitting…' : 'Submit for approval' }}</button>
+              <button
+                v-if="!plan.approvalRequired"
+                class="base-btn base-btn--sm"
+                :class="plan.showRequestForm ? 'base-btn--ghost' : 'base-btn--primary'"
+                :disabled="plan.busy"
+                @click="applyPlan"
+              >{{ plan.busy && !plan.showRequestForm ? 'Applying…' : 'Apply now' }}</button>
+            </template>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -1178,6 +1866,7 @@ function grantLabel(g: GrantEntry) {
   font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 8px;
 }
 .dbu-grant-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 6px; }
+.dbu-grants-panel > .dbu-grant-table-wrap { margin: 0 16px 16px; }
 .dbu-grant-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .dbu-grant-table th {
   padding: 8px 10px; background: rgba(255,255,255,0.02);
@@ -1319,9 +2008,57 @@ function grantLabel(g: GrantEntry) {
 /* Responsive */
 @media (max-width: 700px) {
   .dbu-layout { grid-template-columns: 1fr; }
-  .dbu-panel--left { border-right: none; border-bottom: 1px solid var(--border); max-height: 260px; }
+  .dbu-panel--left { border-right: none; border-bottom: 1px solid var(--border); max-height: 320px; overflow: hidden; }
+  .dbu-user-list { min-height: 0; }
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 0.8s linear infinite; }
+/* ── Grant access wizard / SQL review ───────────────────────────── */
+.dbu-dialog--wide { width: min(640px, calc(100vw - 32px)); }
+.dbu-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.dbu-field-row > .dbu-field:only-child { grid-column: 1 / -1; }
+.dbu-preset-list { display: grid; gap: 6px; }
+.dbu-preset {
+  display: grid; grid-template-columns: auto 1fr; column-gap: 8px; align-items: center;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+}
+.dbu-preset input { grid-row: span 2; margin: 0; accent-color: var(--accent); }
+.dbu-preset--on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.dbu-preset-name { font-weight: 600; font-size: 13px; color: var(--text); }
+.dbu-preset-desc { font-size: 12px; color: var(--text-muted); }
+.dbu-check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
+.dbu-check input { margin-top: 2px; accent-color: var(--accent); }
+.dbu-indent { margin-left: 24px; }
+.dbu-link-btn {
+  background: none; border: none; padding: 0; font: inherit; font-size: 12px;
+  color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}
+.dbu-link-btn--danger { color: var(--danger); }
+.dbu-plan-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted); }
+.dbu-sql {
+  margin: 0; padding: 12px; max-height: 320px; overflow: auto;
+  background: var(--canvas); border: 1px solid var(--border); border-radius: 8px;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12px; line-height: 1.6;
+  color: var(--text); white-space: pre-wrap; word-break: break-word;
+}
+.dbu-request-form { display: grid; gap: 10px; padding-top: 4px; }
+.dbu-error {
+  padding: 8px 10px; border-radius: 8px; font-size: 12.5px;
+  color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+.dbu-dialog-note--warn { color: var(--warning, #b7791f); }
+.dbu-help { font-size: 12.5px; color: var(--text-muted); line-height: 1.5; padding: 12px 16px; }
+.dbu-tab-count {
+  font-size: 11px; padding: 0 6px; border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent);
+}
+.dbu-summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; padding: 16px 16px 4px; }
+.dbu-summary-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: grid; gap: 4px; }
+.dbu-summary-scope { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12.5px; font-weight: 600; color: var(--text); }
+.dbu-summary-line { font-size: 12px; color: var(--text); }
+.dbu-summary-actions { display: flex; gap: 12px; margin-top: 2px; }
+@media (max-width: 640px) {
+  .dbu-field-row { grid-template-columns: 1fr; }
+}
 </style>

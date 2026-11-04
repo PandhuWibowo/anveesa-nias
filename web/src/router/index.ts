@@ -405,8 +405,12 @@ const router = createRouter({
   ],
 })
 
-router.beforeEach((to) => {
-  const { isAuthenticated, authEnabled, hasAnyPermission, mustSetupMfa } = useAuth()
+router.beforeEach(async (to) => {
+  const { isAuthenticated, authEnabled, hasAnyPermission, mustSetupMfa, ensureAuth } = useAuth()
+
+  // Wait for the session on the first navigation (hard reload / pasted URL);
+  // otherwise authEnabled is still false here and every check below is skipped.
+  await ensureAuth()
 
   // Skip auth check if auth is not enabled
   if (!authEnabled.value) {
