@@ -22,7 +22,7 @@
     "@xterm/xterm": "^6.0.0",
     "axios": "^1.21.0",
     "codemirror": "^6.0.2",
-    "monaco-editor": "^0.56.0",
+    "monaco-editor": "^0.57.0",
     "naive-ui": "^2.40",
     "pinia": "^3.0.4",
     "qrcode.vue": "^3.11.0",
