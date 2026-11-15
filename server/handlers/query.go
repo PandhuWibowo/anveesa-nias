@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -173,12 +174,7 @@ func ExecuteQuery() http.HandlerFunc {
 		activeTx, _, hasTx := GetActiveTx(connID)
 
 		if isSelect {
-			var rows interface {
-				Columns() ([]string, error)
-				Next() bool
-				Scan(dest ...interface{}) error
-				Close() error
-			}
+			var rows rowsScanner
 
 			if hasTx {
 				rows, err = activeTx.QueryContext(r.Context(), req.SQL)
@@ -195,27 +191,19 @@ func ExecuteQuery() http.HandlerFunc {
 			cols, _ := rows.Columns()
 			result.Columns = cols
 
-			for rows.Next() {
-				vals := make([]interface{}, len(cols))
-				ptrs := make([]interface{}, len(cols))
-				for i := range vals {
-					ptrs[i] = &vals[i]
-				}
-				if err := rows.Scan(ptrs...); err != nil {
-					continue
-				}
-				row := make([]interface{}, len(cols))
-				for i, v := range vals {
-					switch t := v.(type) {
-					case []byte:
-						row[i] = string(t)
-					default:
-						row[i] = t
-					}
-				}
-				result.Rows = append(result.Rows, row)
+			// A row that cannot be read, or a result set that fails
+			// part-way through (connection dropped, statement cancelled),
+			// is an error, not a shorter answer: returning the rows that
+			// did make it reports a row_count the caller can only read as
+			// "the data looks like this", and it silently hides the rest.
+			data, scanErr := scanRows(rows, cols)
+			if scanErr != nil {
+				msg := sanitizeDBError(scanErr)
+				http.Error(w, jsonError(msg), dbErrorStatus(msg))
+				return
 			}
-			result.RowCount = len(result.Rows)
+			result.Rows = data
+			result.RowCount = len(data)
 		} else {
 			var affected int64
 			if hasTx {
@@ -254,6 +242,48 @@ func ExecuteQuery() http.HandlerFunc {
 
 		json.NewEncoder(w).Encode(result)
 	}
+}
+
+// rowsScanner is the part of sql.Rows the query handler uses. Naming it
+// keeps the handler independent of the concrete type, so a test can drive
+// the row-reading path without a database.
+type rowsScanner interface {
+	Columns() ([]string, error)
+	Next() bool
+	Scan(dest ...interface{}) error
+	Err() error
+	Close() error
+}
+
+// scanRows reads the result set into JSON-ready rows. Any failure — a row
+// that does not scan, or an error after the loop — aborts the whole result
+// rather than returning what was read so far.
+func scanRows(rows rowsScanner, cols []string) ([][]interface{}, error) {
+	data := make([][]interface{}, 0, len(cols))
+	for rows.Next() {
+		vals := make([]interface{}, len(cols))
+		ptrs := make([]interface{}, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, fmt.Errorf("read row %d: %w", len(data)+1, err)
+		}
+		row := make([]interface{}, len(cols))
+		for i, v := range vals {
+			switch t := v.(type) {
+			case []byte:
+				row[i] = string(t)
+			default:
+				row[i] = t
+			}
+		}
+		data = append(data, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read result set: %w", err)
+	}
+	return data, nil
 }
 
 // isReadSQLKeyword reports whether keyword (as returned by firstSQLKeyword)
