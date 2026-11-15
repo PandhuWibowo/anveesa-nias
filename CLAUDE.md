@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Anveesa Nias is an open-source internal developer platform (IDP). A Go HTTP API (`server/`) serves a Vue 3 + Vite frontend (`web/`). The app connects to user databases (PostgreSQL, MySQL, SQLite, SQL Server) and also uses its own internal database (postgres or mysql only — sqlite mentioned in docs is not supported by the current config validator) to store users, connections, audit logs, etc.
+Anveesa Nias is an open-source internal developer platform (IDP). A Go HTTP API (`server/`) serves a Vue 3 + Vite frontend (`web/`). The app connects to user databases (PostgreSQL, MySQL, SQLite, SQL Server) and also uses its own internal database (`DB_DRIVER` = `sqlite`, `postgres` or `mysql`; `.env.example` defaults to SQLite) to store users, connections, audit logs, etc.
 
 ## Commands
 
@@ -44,7 +44,7 @@ cd web && npm run format                     # prettier
 
 Copy `.env.example` to `.env` and set at minimum:
 - `DATABASE_URL` — internal app DB connection string
-- `DB_DRIVER` — `postgres` or `mysql`
+- `DB_DRIVER` — `sqlite`, `postgres` or `mysql`
 - `JWT_SECRET` — at least 32 chars in production
 - `NIAS_ENCRYPTION_KEY` — exactly 32 chars (encrypts stored DB credentials)
 
@@ -55,7 +55,7 @@ Generate secrets: `make secrets`
 ### Backend (`server/`)
 
 - **`main.go`** — single file containing `main()`, `registerRoutes()`, and local helpers. All route registration lives here. Uses stdlib `net/http` with `http.ServeMux`; no external router framework.
-- **`config/config.go`** — loads all config from env vars; validates required fields; rejects `DB_DRIVER` values other than `postgres`/`mysql`.
+- **`config/config.go`** — loads all config from env vars; validates required fields; accepts `DB_DRIVER` = `sqlite`, `postgres` or `mysql` (defaults to `postgres` when unset).
 - **`db/db.go`** — initializes the internal app DB, runs inline migrations (no migration tool), seeds the default admin user. The global `db.DB *sql.DB` is used directly throughout.
 - **`handlers/`** — one file per feature area (e.g. `connections.go`, `auth.go`, `analytics_dashboards.go`, `connection_templates.go`). Each handler is a function returning `http.HandlerFunc`. `models.go` defines shared types, all permission constants, and `DbPerm`/`AppPerm` helpers.
 - **`middleware/`** — `InjectUserContext` extracts JWT claims and injects them into `context.Context`; `RequireAppPermission` / `RequireAnyAppPermission` gate handlers by app-level permission strings; `RequireDbPermission` gates by per-connection DB operation permissions; `CORS`, `SecurityHeaders`, `Recovery`, and rate limiters wrap the global handler.
