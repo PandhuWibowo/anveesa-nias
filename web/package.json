@@ -23,7 +23,7 @@
     "axios": "^1.21.0",
     "codemirror": "^6.0.2",
     "monaco-editor": "^0.56.0",
-    "naive-ui": "^2.40",
+    "naive-ui": "^2.45",
     "pinia": "^3.0.4",
     "qrcode.vue": "^3.11.0",
     "sql-formatter": "^15.9.0",
