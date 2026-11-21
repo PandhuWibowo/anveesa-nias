@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/apache/cassandra-gocql-driver/v2 v2.1.2
 	github.com/coder/websocket v1.8.15
-	github.com/go-sql-driver/mysql v1.10.0
+	github.com/go-sql-driver/mysql v1.10.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/joho/godotenv v1.5.1
 	github.com/lib/pq v1.12.3
